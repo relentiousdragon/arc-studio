@@ -36,6 +36,7 @@
   },
   "bundle": {
     "active": true,
+    "category": "DeveloperTool",
     "createUpdaterArtifacts": true,
     "licenseFile": "../../../LICENSE",
     "icon": [
@@ -66,6 +67,11 @@
         }
       }
     ],
+    "linux": {
+      "deb": {
+        "desktopTemplate": "linux/arc-studio-desktop.desktop"
+      }
+    },
     "macOS": {
       "minimumSystemVersion": "14.0",
       "dmg": {

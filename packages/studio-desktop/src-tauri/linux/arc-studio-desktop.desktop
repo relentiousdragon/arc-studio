@@ -1,0 +1,10 @@
+[Desktop Entry]
+Categories=Development;
+Comment=ARC Studio desktop application
+Exec=arc-studio-desktop
+StartupWMClass=arc-studio-desktop
+Icon=arc-studio-desktop
+Name=ARC Studio
+Terminal=false
+Type=Application
+MimeType=application/vnd.arc-studio.project+json

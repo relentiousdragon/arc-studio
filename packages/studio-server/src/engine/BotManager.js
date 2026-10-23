@@ -1123,7 +1123,7 @@ export class BotManager {
     const next = variables.map((item) => {
       const name = String(item?.name || '').trim().slice(0, 64);
       const type = ['string', 'number', 'boolean', 'array', 'object'].includes(item?.type) ? item.type : '';
-      if (!item || typeof item.id !== 'string' || !/^project_var_[A-Za-z0-9_-]{1,100}$/.test(item.id)) throw new TypeError('A project variable has an invalid ID.');
+      if (!item || typeof item.id !== 'string' || !/^project_var_[A-Za-z0-9_-]{1,100}$/.test(item.id)) throw new TypeError(`A project variable has an invalid ID. (${item.id})`);
       if (!name) throw new TypeError('Every project variable needs a name.');
       const validName = /^(?=.{1,64}$)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(name);
       const discordAppIdVariable = item.id === 'project_var_discord_app_id';

@@ -1840,7 +1840,7 @@
     "embeds.json": [],
     "project-variables.json": [
       {
-        "id": "starter_xp_total",
+        "id": "project_var_starter_xp_total",
         "name": "serverActivity",
         "type": "number",
         "initialValue": 0
