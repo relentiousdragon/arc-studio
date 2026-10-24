@@ -47,3 +47,4 @@ packages/studio-server/data/*
 Thumbs.db
 .vscode/
 .idea/
+*.code-workspace

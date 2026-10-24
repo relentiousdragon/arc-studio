@@ -14,6 +14,7 @@ const getLocalUsername = () => {
   catch { return desktopConfig.localUsername || 'Admin'; }
 };
 const isUnsupportedNodeCompatibilityError = (message) => /node feature(?:s)? this desktop app does not support/i.test(String(message || ''));
+const xmasSnow = (date = new Date()) => date.getMonth() === 11 && date.getDate() >= 20;
 //
 export function SplashScreen({
   studioVersion = studioPackage.version,
@@ -112,8 +113,10 @@ export function SplashScreen({
   const [remoteUrl, setRemoteUrl] = useState(remoteWorkspaceUrl);
   const [lowPower, setLowPower] = useState(false);
   const [reducedMotion, setReducedMotion] = useState(() => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches || false);
+  const [xmas] = useState(() => xmasSnow());
   const [typedIntro, setTypedIntro] = useState(() => needsSetup ? '' : SETUP_TAGLINE);
   const fieldRefs = useRef({});
+  const snowCanvasRef = useRef(null);
 
   const credentialOrigin = (() => { try { return normalizeWorkspaceUrl(remoteUrl); } catch { return ''; } })();
   const usernameStorageKey = credentialOrigin ? `arc_remote_username:${credentialOrigin}` : '';
@@ -185,6 +188,20 @@ export function SplashScreen({
     media.addEventListener('change', update);
     return () => media.removeEventListener('change', update);
   }, []);
+  useEffect(() => {
+    if (!xmas || reducedMotion) return undefined;
+    const canvas = snowCanvasRef.current;
+    if (!canvas) return undefined;
+    let cancelled = false;
+    let stopSnow = () => {};
+    import('./snow.js')
+      .then(({ startSnow }) => { if (!cancelled) stopSnow = startSnow(canvas) || stopSnow; })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      stopSnow();
+    };
+  }, [xmas, reducedMotion]);
   useEffect(() => {
     const message = SETUP_TAGLINE;
     if (!needsSetup || lowPower || reducedMotion) {
@@ -504,6 +521,7 @@ export function SplashScreen({
 
   return (
     <main className={`auth-screen ${desktopMode ? 'is-desktop' : ''}`} data-initial-setup={needsSetup ? 'true' : undefined} data-low-power={lowPower ? 'true' : undefined}>
+      {xmas && !reducedMotion && <canvas ref={snowCanvasRef} className="splash-snow" aria-hidden="true" />}
       {desktopMode && <div className="auth-window-drag-region" data-tauri-drag-region="true" aria-hidden="true" />}
       <div className="auth-backdrop" aria-hidden="true"><span /><span /><span /></div>
       {needsSetup && !desktopServerError && <svg className="setup-network" viewBox="0 0 1440 900" preserveAspectRatio="none" aria-hidden="true">

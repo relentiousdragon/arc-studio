@@ -1674,6 +1674,8 @@ body.is-resizing-sidebar .slash-command-studio { transition: none !important; }
 
 /* First-run and sign-in surface */
 .auth-screen { position: relative; display: grid; place-items: center; width: 100%; height: 100%; overflow: auto; background: var(--page); }
+.splash-snow { --snow-color: rgba(255, 255, 255, .88); position: fixed; z-index: 40; inset: 0; width: 100vw; height: 100vh; pointer-events: none; }
+[data-theme="light"] .splash-snow { --snow-color: rgba(82, 101, 128, .55); }
 .auth-window-drag-region { position: fixed; z-index: 0; inset: 0; }
 .splash-build-info { position: fixed; z-index: 2; bottom: max(12px, env(safe-area-inset-bottom)); left: max(16px, env(safe-area-inset-left)); color: var(--muted); font: calc(9px * var(--arc-font-scale, 1))/1.4 "DM Mono", ui-monospace, SFMono-Regular, monospace; letter-spacing: .015em; opacity: .72; pointer-events: none; user-select: none; }
 .auth-screen.is-desktop::before, .auth-screen.is-desktop::after { position: fixed; z-index: 0; width: min(58vw, 820px); height: min(78vh, 760px); pointer-events: none; content: ""; opacity: .48; background: radial-gradient(ellipse at center, rgba(70, 125, 255, .19) 0%, rgba(83, 112, 226, .09) 28%, transparent 68%); transform: translate3d(0, 0, 0); animation: desktopGlow 26s ease-in-out infinite alternate; }
