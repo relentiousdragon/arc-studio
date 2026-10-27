@@ -1,4 +1,4 @@
-const CACHE_NAME = 'arc-studio-offline-v2';
+const CACHE_NAME = 'arc-studio-offline-v3';
 const OFFLINE_PAGE = '/offline.html';
 const LOGO_ASSETS = ['/arc.png', '/nightly-icon.png'];
 const OFFLINE_ASSETS = [OFFLINE_PAGE, ...LOGO_ASSETS];
