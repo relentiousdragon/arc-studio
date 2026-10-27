@@ -35,9 +35,22 @@ function buildMultipartBody(payload, legacyFileData, legacyFileName) {
   }
   if (files != null && !Array.isArray(files)) throw new TypeError('Files must be an array of file objects.');
   files = [...(files || [])];
+  const componentAttachmentReferences = [];
+  const visitComponent = (component) => {
+    if (!component || typeof component !== 'object') return;
+    for (const url of [component.file?.url, component.media?.url]) {
+      const match = /^attachment:\/\/(.+)$/i.exec(String(url || ''));
+      if (match) componentAttachmentReferences.push(match[1]);
+    }
+    if (component.accessory) visitComponent(component.accessory);
+    for (const child of component.components || []) visitComponent(child);
+    for (const item of component.items || []) visitComponent(item);
+  };
+  for (const component of payload.components || []) visitComponent(component);
   const oldData = legacyFileData ?? payload.file_data;
   if (oldData) files.unshift({ data: oldData, filename: legacyFileName ?? payload.file_name ?? 'attachment.bin' });
   if (!files.length) {
+    if (componentAttachmentReferences.length) throw new TypeError(`Component attachment “${componentAttachmentReferences[0]}” must match one of the attached filenames.`);
     for (const embed of payload.embeds || []) {
       for (const url of [embed?.image?.url, embed?.thumbnail?.url]) {
         const reference = /^attachment:\/\/(.+)$/.exec(String(url || ''));
@@ -65,6 +78,9 @@ function buildMultipartBody(payload, legacyFileData, legacyFileName) {
       const reference = /^attachment:\/\/(.+)$/.exec(String(url || ''));
       if (reference && !usedNames.has(reference[1].toLowerCase())) throw new TypeError(`Embed image “${reference[1]}” must match one of the attached filenames.`);
     }
+  }
+  for (const reference of componentAttachmentReferences) {
+    if (!usedNames.has(reference.toLowerCase())) throw new TypeError(`Component attachment “${reference}” must match one of the attached filenames.`);
   }
   const clean = { ...payload };
   delete clean.files;
@@ -384,6 +400,31 @@ export class RESTClient {
     return this.request('GET', `/guilds/${guildId}/channels`);
   }
 
+  getChannel(channelId) {
+    const id = String(channelId || '').trim();
+    if (!id) throw new TypeError('A channel ID is required.');
+    return this.request('GET', `/channels/${encodeURIComponent(id)}`);
+  }
+
+  getChannelMessages(channelId, { limit = 50, before, after, around } = {}) {
+    const id = String(channelId || '').trim();
+    if (!id) throw new TypeError('A channel ID is required.');
+    const cursors = [before, after, around].filter((value) => value != null && String(value).trim());
+    if (cursors.length > 1) throw new TypeError('Use only one message cursor: before, after, or around.');
+    const parsedLimit = Number(limit);
+    if (!Number.isInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > 100) throw new RangeError('Message history limit must be from 1 to 100.');
+    return this.request('GET', `/channels/${encodeURIComponent(id)}/messages`, {
+      query: { limit: parsedLimit, ...(before ? { before: String(before).trim() } : {}), ...(after ? { after: String(after).trim() } : {}), ...(around ? { around: String(around).trim() } : {}) }
+    });
+  }
+
+  getMessage(channelId, messageId) {
+    const channel = String(channelId || '').trim();
+    const message = String(messageId || '').trim();
+    if (!channel || !message) throw new TypeError('Channel and message IDs are required.');
+    return this.request('GET', `/channels/${encodeURIComponent(channel)}/messages/${encodeURIComponent(message)}`);
+  }
+
   createGuildChannel(guildId, channel, reason) {
     if (!guildId) throw new TypeError('A guild ID is required.');
     if (!channel || typeof channel.name !== 'string' || !channel.name.trim()) throw new TypeError('A channel name is required.');
@@ -536,7 +577,7 @@ export class RESTClient {
     return this.request('PATCH', `/channels/${channelId}/messages/${messageId}`, { body: buildMultipartBody(payload || {}) });
   }
 
-  createInteractionResponse(interactionId, interactionToken, responseData) {
+  createInteractionResponse(interactionId, interactionToken, responseData, { withResponse = false } = {}) {
     if (interactionId == null || !String(interactionId).trim()) throw new TypeError('An interaction ID is required.');
     if (interactionToken == null || !String(interactionToken).trim()) throw new TypeError('An interaction token is required.');
     const body = responseData && typeof responseData === 'object' ? { ...responseData } : responseData;
@@ -552,6 +593,7 @@ export class RESTClient {
     this.interactionResponseAttemptQueue.push({ interactionId: normalizedInteractionId, expiresAt });
     return this.request('POST', `/interactions/${normalizedInteractionId}/${interactionToken}/callback`, {
       body,
+      ...(withResponse ? { query: { with_response: true } } : {}),
       auth: false,
       maxRetries: 1
     });
