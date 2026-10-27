@@ -24,7 +24,7 @@
     "prepare:desktop": "npm run sync:version && npm run build:client && npm run prepare:desktop-runtime",
     "build:desktop": "npm run build --workspace=packages/studio-desktop",
     "dev": "npm run dev --workspace=packages/studio-server",
-    "build:client": "npm run sync:version && npm run build --workspace=packages/studio-client",
+    "build:client": "npm run sync:version && npm run build --workspace=packages/studio-client && node scripts/mark-client-build.mjs",
     "build": "npm run build:client",
     "test:chezcord": "npm run test --workspace=packages/chezcord",
     "test:server": "npm run test --workspace=packages/studio-server",
