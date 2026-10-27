@@ -4,11 +4,10 @@ export function parseEmoji(emoji) {
   if (!emoji) return undefined;
   if (typeof emoji === 'object') {
     if (emoji.id !== undefined || emoji.name !== undefined) {
-      return {
-        id: emoji.id || null,
-        name: emoji.name || '',
-        animated: Boolean(emoji.animated)
-      };
+      const name = emoji.name || '';
+      const id = emoji.id ? String(emoji.id) : '';
+      if (!id) return name ? { name } : undefined;
+      return { id, name, ...(emoji.animated ? { animated: true } : {}) };
     }
     return undefined;
   }
@@ -19,7 +18,7 @@ export function parseEmoji(emoji) {
     return {
       name: match[2],
       id: match[3],
-      animated: match[1] === 'a'
+      ...(match[1] === 'a' ? { animated: true } : {})
     };
   }
   const unbracketed = /^(?:(a):)?([a-zA-Z0-9_~]+):([0-9]+)$/.exec(str);
@@ -27,10 +26,10 @@ export function parseEmoji(emoji) {
     return {
       name: unbracketed[2],
       id: unbracketed[3],
-      animated: unbracketed[1] === 'a'
+      ...(unbracketed[1] === 'a' ? { animated: true } : {})
     };
   }
-  return { id: null, name: str };
+  return { name: str };
 }
 
 export class ButtonBuilder {
