@@ -65,6 +65,22 @@
             "public.json"
           ]
         }
+      },
+      {
+        "ext": [
+          "arcgraph"
+        ],
+        "name": "ARC Studio Graph",
+        "description": "ARC Studio graph file",
+        "mimeType": "application/vnd.arc-studio.graph+json",
+        "role": "Editor",
+        "rank": "Owner",
+        "exportedType": {
+          "identifier": "studio.arc.desktop.graph",
+          "conformsTo": [
+            "public.json"
+          ]
+        }
       }
     ],
     "linux": {
