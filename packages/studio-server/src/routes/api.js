@@ -1,22 +1,27 @@
 import { Router } from 'express';
+import { STATUS_CODES } from 'node:http';
 import { serverConfig } from '../config.js';
 import { createAuthMiddleware, requirePermission } from '../auth.js';
-import { NodeDefinitions, NodeCategories, NODE_SCHEMA_VERSION } from '../engine/NodeRegistry.js';
+import { NodeDefinitions, NODE_SCHEMA_VERSION, CLIENT_PROTOCOL_VERSION, getNodeRegistryPayload } from '../engine/NodeRegistry.js';
+import { getNodeRegistryCompatibility, getNodeRegistryRequiredFeatures, NODE_REGISTRY_PROTOCOL_VERSION } from '../engine/NodeRegistryContract.js';
 import { MockGateway } from '../engine/MockGateway.js';
 import { StartupDiagnostics } from '../engine/StartupDiagnostics.js';
 import { CryptoEngine } from '../security/CryptoEngine.js';
-import { buildBotArchive } from '../export/BotArchive.js';
+import { buildBotArchive, verifyBotArchiveIntegrity } from '../export/BotArchive.js';
 import { PluginStore } from '../engine/PluginStore.js';
 import { downloadSafeHttpFile } from '../engine/SafeHttpRequest.js';
 import { EmbedStore } from '../engine/EmbedStore.js';
 import { ActivityStore } from '../security/ActivityStore.js';
 import { ActivityWebhookDispatcher, ActivityWebhookStore } from '../security/ActivityWebhook.js';
 import { StarterProjects } from '../storage/StarterProjects.js';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { dataDir } from '../storage.js';
 import { botManagerContext } from '../engine/RequestBotManager.js';
+import { stableJson } from '../storage/Integrity.js';
+import { readClientAccessSettings, writeClientAccessSettings, isArcStudioOrigin, isArcStudioClientIdentity } from '../security/ClientAccessPolicy.js';
+import { isArcStudioClientVersionAllowed } from '../versioning/arcProjectCompatibility.js';
 //
 const ACTIVITY_WEBHOOK_AVATAR_URL = 'https://raw.githubusercontent.com/relentiousdragon/arc-studio/main/packages/studio-client/public/arc.png';
 
@@ -46,9 +51,47 @@ function graphNodeChanges(previous, next) {
   return changes;
 }
 
-export function createApiRouter(botManager, userStore, logger, managerForUser = () => botManager, broadcastWorkspace = () => {}, isUserOnline = () => false, clearDeletedGraphCollaboration = () => {}) {
+export function createApiRouter(botManager, userStore, logger, managerForUser = () => botManager, broadcastWorkspace = () => {}, isUserOnline = () => false, clearDeletedGraphCollaboration = () => {}, onGraphSaved = () => {}, broadcastProject = () => {}, disconnectUnknownClients = () => {}) {
   const router = Router();
+  router.use((req, res, next) => {
+    const requestId = randomUUID();
+    res.locals.arcRequestId = requestId;
+    res.set('X-Request-Id', requestId);
+    const json = res.json.bind(res);
+    res.json = (body) => {
+      if (res.statusCode >= 400 && body && typeof body === 'object' && !Array.isArray(body) && typeof body.type !== 'string') {
+        const code = typeof body.code === 'string' ? body.code : `HTTP_${res.statusCode}`;
+        const typeSlug = code.toLowerCase().replace(/[^a-z0-9.-]+/g, '-').replace(/^-+|-+$/g, '') || 'http-error';
+        res.type('application/problem+json');
+        body = {
+          ...body,
+          type: `urn:arc-studio:problem:${typeSlug}`,
+          title: STATUS_CODES[res.statusCode] || 'Request failed',
+          status: res.statusCode,
+          detail: typeof body.detail === 'string' ? body.detail : typeof body.error === 'string' ? body.error : STATUS_CODES[res.statusCode] || 'Request failed',
+          instance: req.path,
+          requestId
+        };
+        if (res.statusCode >= 500) logger.log('ERROR', `[API] requestId=${requestId} status=${res.statusCode} path=${req.path} code=${code}`);
+      }
+      return json(body);
+    };
+    next();
+  });
+  const botExportCache = new Map();
+  const botExportRuns = new Map();
+  const publishBotExport = (projectId, payload) => broadcastProject(projectId, { type: 'BOT_EXPORT_PROGRESS', payload: { projectId, ...payload } });
+  const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
   const authMiddleware = createAuthMiddleware(userStore);
+  const registryFeatures = () => getNodeRegistryRequiredFeatures(Object.values(NodeDefinitions));
+  const registryRevision = () => getNodeRegistryPayload().registryRevision;
+  const registryCompatibility = (client) => getNodeRegistryCompatibility(client, registryFeatures());
+  const publishRegistryChange = (previousRevision) => {
+    const nextRevision = registryRevision();
+    if (nextRevision !== previousRevision) {
+      broadcastWorkspace({ type: 'NODE_REGISTRY_UPDATED', protocolVersion: CLIENT_PROTOCOL_VERSION, payload: { registryRevision: nextRevision } });
+    }
+  };
   const embedStores = new Map();
   const getEmbedStore = () => {
     const filePath = path.join(botManager.projectDir, 'embeds.json');
@@ -161,9 +204,14 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
   });
 
   router.get('/health', (req, res) => {
+    const registry = getNodeRegistryPayload();
     res.json({
       status: 'ok',
       version: serverConfig.version,
+      minimumClientVersion: serverConfig.minimumClientVersion,
+      nodeSchemaVersion: NODE_SCHEMA_VERSION,
+      nodeRegistryProtocolVersion: NODE_REGISTRY_PROTOCOL_VERSION,
+      nodeRegistryRevision: registry.registryRevision,
       chezcordVersion: serverConfig.chezcordVersion,
       port: serverConfig.port,
       isSetupCompleted: userStore.isSetupCompleted()
@@ -171,6 +219,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
   });
 
   router.get('/system/status', (req, res) => {
+    const registry = getNodeRegistryPayload();
     res.json({
       isSetupCompleted: userStore.isSetupCompleted(),
       hasLocalAccount: !serverConfig.desktopMode || userStore.hasLocalAccount(),
@@ -178,6 +227,11 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       workspaceName: userStore.workspaceName,
       canResetPrimaryAdminWithMasterKey: userStore.isSetupCompleted() && !serverConfig.desktopMode && !serverConfig.isDefaultKey,
       version: serverConfig.version,
+      minimumClientVersion: serverConfig.minimumClientVersion,
+      nodeSchemaVersion: NODE_SCHEMA_VERSION,
+      nodeRegistryProtocolVersion: NODE_REGISTRY_PROTOCOL_VERSION,
+      nodeRegistryRevision: registry.registryRevision,
+      nodeRegistryRequiredFeatures: registry.requiredFeatures,
       chezcordVersion: serverConfig.chezcordVersion,
       collaborationFeatures: { transientCanvasMotion: true },
       supportedNodeTypes: Object.values(NodeDefinitions).map((definition) => definition.type)
@@ -186,6 +240,15 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
 
   router.post('/auth/setup', (req, res) => {
     const { masterKey, username, password, workspaceName, rememberMe } = req.body;
+    const clientBuild = req.body?.clientBuild;
+    if (!clientBuild || typeof clientBuild.version !== 'string'
+      || !isArcStudioClientVersionAllowed(clientBuild.version, serverConfig.minimumClientVersion)) {
+      return res.status(426).json({ error: `Connect using ARC Studio ${serverConfig.minimumClientVersion} or newer to set up this workspace.`, code: 'CLIENT_VERSION_BLOCKED', minimumVersion: serverConfig.minimumClientVersion, nodeSchemaVersion: NODE_SCHEMA_VERSION });
+    }
+    if (!isArcStudioClientIdentity(clientBuild)) return res.status(426).json({ error: 'This client does not support the workspace client protocol.', code: 'CLIENT_PROTOCOL_INCOMPATIBLE', requiredProtocolVersion: CLIENT_PROTOCOL_VERSION });
+    const registryCheck = registryCompatibility(clientBuild);
+    if (!registryCheck.compatible) return res.status(426).json({ error: 'This workspace uses node registry features that this client cannot display safely. Update ARC Studio to a compatible build.', code: 'NODE_REGISTRY_INCOMPATIBLE', minimumVersion: serverConfig.minimumClientVersion, nodeRegistryProtocolVersion: NODE_REGISTRY_PROTOCOL_VERSION, unsupportedFeatures: registryCheck.unsupportedFeatures });
+    if (!isArcStudioOrigin(req.headers.origin, req.headers)) return res.status(403).json({ error: 'Workspace setup is available only from ARC Studio.', code: 'CLIENT_NOT_ALLOWED' });
     try {
       const session = userStore.completeFirstTimeSetup({ masterKey, username, password, workspaceName, rememberMe: rememberMe === true });
       logger.info(`First-time setup completed successfully! Primary administrator created: "${session.user.username}"`);
@@ -210,6 +273,18 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     const { username, password, rememberMe, clientBuild } = req.body;
     if (!username || !password) {
       return res.status(400).json({ error: 'Username and password are required' });
+    }
+    if (!clientBuild || typeof clientBuild.version !== 'string'
+      || !isArcStudioClientVersionAllowed(clientBuild.version, serverConfig.minimumClientVersion)) {
+      return res.status(426).json({ error: `Update ARC Studio to ${serverConfig.minimumClientVersion} or newer to sign in.`, code: 'CLIENT_VERSION_BLOCKED', minimumVersion: serverConfig.minimumClientVersion, nodeSchemaVersion: NODE_SCHEMA_VERSION });
+    }
+    if (clientBuild.protocolVersion !== CLIENT_PROTOCOL_VERSION) return res.status(426).json({ error: 'This client does not support the workspace client protocol.', code: 'CLIENT_PROTOCOL_INCOMPATIBLE', requiredProtocolVersion: CLIENT_PROTOCOL_VERSION });
+    const registryCheck = registryCompatibility(clientBuild);
+    if (!registryCheck.compatible) return res.status(426).json({ error: 'This workspace uses node registry features that this client cannot display safely. Update ARC Studio to a compatible build.', code: 'NODE_REGISTRY_INCOMPATIBLE', minimumVersion: serverConfig.minimumClientVersion, nodeRegistryProtocolVersion: NODE_REGISTRY_PROTOCOL_VERSION, unsupportedFeatures: registryCheck.unsupportedFeatures });
+    const knownClient = isArcStudioClientIdentity(clientBuild) && isArcStudioOrigin(req.headers.origin, req.headers);
+    if ((serverConfig.desktopMode && !isArcStudioClientIdentity(clientBuild))
+      || (!serverConfig.desktopMode && !knownClient && readClientAccessSettings().allowUnknownClients !== true)) {
+      return res.status(403).json({ error: 'This workspace only accepts ARC Studio clients. Ask the workspace owner to allow unknown clients if you need to connect with other software.', code: 'CLIENT_NOT_ALLOWED' });
     }
 
     try {
@@ -336,6 +411,24 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     res.json({ user: req.user });
   });
 
+  router.get('/client-access', (req, res) => {
+    if (serverConfig.desktopMode) return res.sendStatus(404);
+    if (req.user?.isPrimaryAdmin !== true) return res.status(403).json({ error: 'Only the primary workspace owner can view client access settings.' });
+    res.json(readClientAccessSettings());
+  });
+
+  router.patch('/client-access', (req, res) => {
+    if (serverConfig.desktopMode) return res.sendStatus(404);
+    if (req.user?.isPrimaryAdmin !== true) return res.status(403).json({ error: 'Only the primary workspace owner can change client access settings.' });
+    if (typeof req.body?.allowUnknownClients !== 'boolean') return res.status(400).json({ error: 'allowUnknownClients must be a boolean.' });
+    try {
+      const settings = writeClientAccessSettings({ allowUnknownClients: req.body.allowUnknownClients });
+      if (!settings.allowUnknownClients) disconnectUnknownClients();
+      res.json({ success: true, ...settings });
+    }
+    catch (error) { res.status(500).json({ error: error.message || 'Could not save client access settings.' }); }
+  });
+
   router.post('/auth/logout', (req, res) => {
     const token = req.headers['x-arc-token'] || req.headers.authorization?.replace(/^Bearer\s+/i, '') || req.query.token;
     userStore.endSession(token);
@@ -379,23 +472,47 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
 
   router.get('/projects/:projectId/export', requirePermission('graphs:read'), (req, res) => {
     try {
-      const bundle = botManager.projectStore.exportProject(req.params.projectId, { includeSecrets: req.query.includeSecrets === '1' });
+      const projectManager = managerForUser({ ...req.user, activeProjectId: req.params.projectId }) || botManager;
+      const bundle = botManager.projectStore.exportProject(req.params.projectId, {
+        includeSecrets: req.query.includeSecrets === '1',
+        secretValueResolver: (scope, graphId, variableId) => projectManager.getSecretValue(scope, graphId, variableId)
+      });
+      res.setHeader('Cache-Control', 'no-store, private');
       res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`${bundle.project.name}.arcproject`)}`);
       res.json(bundle);
     } catch (error) { res.status(404).json({ error: error.message }); }
   });
 
+  router.post('/projects/:projectId/export/encrypted', requirePermission('graphs:read'), (req, res) => {
+    try {
+      const projectManager = managerForUser({ ...req.user, activeProjectId: req.params.projectId }) || botManager;
+      const bundle = botManager.projectStore.exportEncryptedProject(req.params.projectId, req.body?.password, {
+        includeSecrets: req.body?.includeSecrets === true,
+        secretValueResolver: (scope, graphId, variableId) => projectManager.getSecretValue(scope, graphId, variableId)
+      });
+      res.setHeader('Cache-Control', 'no-store, private');
+      res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`${botManager.projectStore.projects.find((item) => item.id === req.params.projectId)?.name || 'project'}.arcproject`)}`);
+      res.json(bundle);
+    } catch (error) { res.status(400).json({ error: error.message || 'Could not encrypt the project export.' }); }
+  });
+
   router.post('/projects/import', requirePermission('graphs:write'), (req, res) => {
     try {
-      const project = botManager.projectStore.importProject(req.body?.bundle, { trusted: req.body?.trusted === true, allowOldVersion: req.body?.allowOldVersion === true, ownerId: req.user.id });
+      const submittedBundle = req.body?.bundle;
+      const bundle = submittedBundle?.format === 'arc-project-encrypted'
+        ? botManager.projectStore.decryptProjectBundle(submittedBundle, req.body?.password)
+        : submittedBundle;
+      const integrityWarning = !bundle?.integrity;
+      const project = botManager.projectStore.importProject(bundle, { trusted: req.body?.trusted === true, allowOldVersion: req.body?.allowOldVersion === true, ownerId: req.user.id });
+      managerForUser({ ...req.user, activeProjectId: project.id })?.importProjectSecretValues();
       recordTeamActivity(req, 'project.imported', `Imported project “${project.name}”`, { projectId: project.id });
       broadcastWorkspace({ type: 'PROJECTS_UPDATED', payload: botManager.projectStore.list() });
-      res.json({ success: true, project, ...botManager.getProjects() });
+      res.json({ success: true, project, integrityWarning, ...botManager.getProjects() });
     } catch (error) {
       if (error.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' || error.code === 'PROJECT_REQUIRES_NEWER_ARC') {
         return res.status(409).json({ error: error.message, code: error.code, projectVersion: error.projectVersion || null, currentVersion: error.currentVersion || null, unknownProjectVersion: error.unknownProjectVersion === true });
       }
-      res.status(400).json({ error: error.message });
+      res.status(400).json({ error: error.message, ...(error.code ? { code: error.code } : {}) });
     }
   });
 
@@ -601,8 +718,10 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     try {
       const previous = getEmbedStore().list().find((embed) => embed.id === req.body?.id);
       const embed = getEmbedStore().save(req.body);
-      const blockTypes = [...new Set(embed.blocks.map((block) => block?.type).filter((type) => typeof type === 'string'))].slice(0, 40);
-      recordTeamActivity(req, previous ? 'embed.updated' : 'embed.created', `${previous ? 'Updated' : 'Created'} embed “${embed.name}”`, { embedId: embed.id, embedName: embed.name, blockCount: embed.blocks.length, blockTypes });
+      const assetBlocks = embed.kind === 'components-v2' ? embed.componentsV2Layout : embed.blocks;
+      const blockTypes = [...new Set(assetBlocks.map((block) => block?.type).filter((type) => typeof type === 'string'))].slice(0, 40);
+      const assetLabel = embed.kind === 'components-v2' ? 'Components V2 asset' : 'embed';
+      recordTeamActivity(req, previous ? 'embed.updated' : 'embed.created', `${previous ? 'Updated' : 'Created'} ${assetLabel} “${embed.name}”`, { embedId: embed.id, embedName: embed.name, blockCount: assetBlocks.length, blockTypes });
       const embeds = getEmbedStore().list();
       botManager.broadcastWS({ type: 'EMBEDS_UPDATED', payload: { embeds } });
       res.json({ success: true, embed, embeds });
@@ -865,11 +984,14 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
 
   // Node Registry Metadata
   router.get('/nodes/registry', (req, res) => {
-    res.json({
-      schemaVersion: NODE_SCHEMA_VERSION,
-      categories: NodeCategories,
-      definitions: NodeDefinitions
-    });
+    const registry = getNodeRegistryPayload();
+    res.set('ETag', `"${registry.registryRevision}"`);
+    res.set('Cache-Control', 'private, no-cache');
+    res.vary('Authorization');
+    res.vary('x-arc-token');
+    res.vary('Origin');
+    if (req.fresh) return res.status(304).end();
+    return res.json(registry);
   });
 
   router.get('/plugins/catalog', async (req, res) => {
@@ -933,8 +1055,10 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
   });
 
   router.post('/plugins/auto-update', requirePermission('graphs:write'), async (_req, res) => {
+    const previousRevision = registryRevision();
     try {
       const result = await PluginStore.autoUpdate(botManager);
+      publishRegistryChange(previousRevision);
       const manager = managerForUser(_req.user);
       res.json({ ...result, installed: installedPluginsForResponse(manager), updated: result.updated.map((plugin) => ({ ...plugin, installedBy: installerForResponse(plugin) })) });
     }
@@ -942,9 +1066,11 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
   });
 
   router.post('/plugins/import-local', requirePermission('graphs:write'), (req, res) => {
+    const previousRevision = registryRevision();
     try {
       if (req.body?.trustConfirmed !== true) return res.status(400).json({ error: 'Confirm that you trust this local plugin before importing it.' });
       const plugin = PluginStore.importLocal(req.body?.pack, botManager, { autoUpdate: req.body?.autoUpdate !== false, installedBy: req.user?.username });
+      publishRegistryChange(previousRevision);
       recordTeamActivity(req, 'plugin.imported', `Imported plugin pack “${plugin.name || plugin.id}”`, { pluginId: plugin.id, pluginName: plugin.name || '' });
       res.json({ success: true, plugin: { ...plugin, installedBy: installerForResponse(plugin) }, installed: installedPluginsForResponse(managerForUser(req.user)) });
     } catch (error) {
@@ -953,9 +1079,11 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
   });
 
   router.post('/plugins/import-adapter', requirePermission('graphs:write'), (req, res) => {
+    const previousRevision = registryRevision();
     try {
       if (req.body?.trustConfirmed !== true) return res.status(400).json({ error: 'Confirm that you trust this local plugin adapter before importing it.' });
       const plugin = PluginStore.importLocalAdapter(req.body?.manifest, req.body?.wasmBase64, { autoUpdate: req.body?.autoUpdate !== false, installedBy: req.user?.username });
+      publishRegistryChange(previousRevision);
       recordTeamActivity(req, 'plugin.imported', `Imported WebAssembly adapter “${plugin.name || plugin.id}”`, { pluginId: plugin.id, pluginName: plugin.name || '' });
       res.json({ success: true, plugin: { ...plugin, installedBy: installerForResponse(plugin) }, installed: installedPluginsForResponse(managerForUser(req.user)) });
     } catch (error) {
@@ -964,6 +1092,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
   });
 
   router.post('/plugins/:pluginId/install', requirePermission('graphs:write'), async (req, res) => {
+    const previousRevision = registryRevision();
     try {
       if (req.body?.trustConfirmed !== true) return res.status(400).json({ error: 'Confirm that you trust this plugin source before installing it.' });
       const manager = managerForUser(req.user);
@@ -980,6 +1109,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
         hostCodeConfirmed: req.body?.hostCodeConfirmed === true,
         ownerApprovedHostCode: manager.project.ownerId === req.user.id || req.user.permissions?.includes('*') === true
       });
+      publishRegistryChange(previousRevision);
       recordTeamActivity(req, 'plugin.installed', `Installed plugin pack “${plugin.name || plugin.id}”`, { pluginId: plugin.id, pluginName: plugin.name || '' });
       res.json({ success: true, plugin: { ...plugin, grantedPermissions: PluginStore.projectPermissions(manager.projectDir, plugin.id), installedBy: installerForResponse(plugin) }, installed: installedPluginsForResponse(manager) });
     } catch (error) {
@@ -989,9 +1119,11 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
   });
 
   router.delete('/plugins/:pluginId', requirePermission('graphs:write'), (req, res) => {
+    const previousRevision = registryRevision();
     try {
       const plugin = PluginStore.installed().find((item) => item.id === req.params.pluginId);
       PluginStore.uninstall(req.params.pluginId, botManager);
+      publishRegistryChange(previousRevision);
       recordTeamActivity(req, 'plugin.removed', `Removed plugin pack “${plugin?.name || req.params.pluginId}”`, { pluginId: req.params.pluginId, pluginName: plugin?.name || '' });
       res.json({ success: true, installed: installedPluginsForResponse(managerForUser(req.user)) });
     } catch (error) {
@@ -1078,7 +1210,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     }
   });
 
-  router.post('/graphs/export/bot.zip', requirePermission('graphs:read'), (req, res) => {
+  router.post('/graphs/export/bot.zip', requirePermission('graphs:read'), async (req, res) => {
     const includeBotToken = req.body?.includeBotToken === true;
     const includeCryptoSecret = req.body?.includeCryptoSecret === true;
     const permissions = req.user?.permissions || [];
@@ -1094,8 +1226,12 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     if (includeBotToken && !isActiveProject) return res.status(400).json({ error: 'Switch to the project whose bot token you want to include, then export again.' });
     const botToken = includeBotToken ? botManager.getBotToken() : null;
     if (includeBotToken && !botToken) return res.status(400).json({ error: 'No bot token is configured for this project.' });
-    const openGraphs = isActiveProject && Array.isArray(req.body?.graphs) ? req.body.graphs : [];
-    if (openGraphs.length > 1000) return res.status(413).json({ error: 'Too many graphs to export.' });
+    if (botExportRuns.has(projectId)) return res.status(409).json({ error: 'A bot export is already running for this project.', code: 'BOT_EXPORT_IN_PROGRESS' });
+    const exportId = typeof req.body?.exportId === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(req.body.exportId) ? req.body.exportId : randomUUID();
+    const startedAt = Date.now();
+    botExportRuns.set(projectId, exportId);
+    const report = (stage, progress, message) => publishBotExport(projectId, { exportId, stage, progress, message, status: 'running' });
+    report('preparing', 8, 'Preparing saved project data');
     try {
       let projectGraphs = botManager.getGraphs();
       let projectVariables = botManager.getProjectVariables();
@@ -1113,28 +1249,56 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
           projectVariables = Array.isArray(storedVariables) ? storedVariables : [];
         } else projectVariables = [];
       }
-      const byId = new Map(projectGraphs.map((graph) => [graph.id, graph]));
-      for (const graph of openGraphs) {
-        if (graph && typeof graph.id === 'string' && Array.isArray(graph.nodes) && Array.isArray(graph.connections)) byId.set(graph.id, graph);
-      }
-      const exportGraphs = [...byId.values()];
+      const exportGraphs = projectGraphs.map((graph) => ({
+        ...graph,
+        variables: Array.isArray(graph.variables) ? graph.variables.filter((variable) => variable?.secret !== true) : graph.variables
+      }));
+      projectVariables = projectVariables.filter((variable) => variable?.secret !== true);
       const projectOwner = userStore.users.find((user) => user.id === project.ownerId);
-      const archive = buildBotArchive(exportGraphs, projectVariables, PluginStore.exportAdapters(exportGraphs), {
+      const adapters = PluginStore.exportAdapters(exportGraphs);
+      const exportSettings = {
         includeCryptoSecret,
         includeBotToken,
         projectName: project.name,
         projectAuthor: projectOwner?.username || req.user?.username || 'Unknown',
         logRetentionDays: project.logRetentionDays ?? process.env.LOG_RETENTION_DAYS ?? 7,
-        statisticsSettings: botManager.commandStatistics.getSettings(),
-        ...(includeBotToken ? { botToken } : {})
-      });
+        statisticsSettings: botManager.commandStatistics.getSettings()
+      };
+      const fingerprintInput = { graphs: exportGraphs, projectVariables, adapters, project: project.name, owner: exportSettings.projectAuthor, logRetentionDays: exportSettings.logRetentionDays, statisticsSettings: exportSettings.statisticsSettings, includeCryptoSecret, includeBotToken, botTokenDigest: includeBotToken ? createHash('sha256').update(botToken).digest('hex') : '' };
+      const fingerprint = createHash('sha256').update(stableJson(fingerprintInput)).digest('hex');
+      const cacheKey = `${projectId}:${fingerprint}`;
+      let archive;
+      const cached = botExportCache.get(cacheKey);
+      if (cached && cached.expiresAt > Date.now()) {
+        archive = cached.archive;
+        report('checking-cache', 72, 'Using saved export and checking its integrity');
+        await nextTurn();
+      } else {
+        if (cached) botExportCache.delete(cacheKey);
+        report('zipping', 38, 'Building the bot ZIP');
+        await nextTurn();
+        archive = buildBotArchive(exportGraphs, projectVariables, adapters, { ...exportSettings, ...(includeBotToken ? { botToken } : {}) });
+      }
+      report('verifying', 88, cached && cached.expiresAt > Date.now() ? 'Verifying cached archive integrity' : 'Verifying SHA-256 file records');
+      await nextTurn();
+      verifyBotArchiveIntegrity(archive);
+      if (!cached || cached.expiresAt <= Date.now()) {
+        for (const key of botExportCache.keys()) if (key.startsWith(`${projectId}:`)) botExportCache.delete(key);
+        botExportCache.set(cacheKey, { archive, expiresAt: Date.now() + 30 * 60 * 1000 });
+      }
+      const remainingDisplayMs = Math.max(0, 500 - (Date.now() - startedAt));
+      if (remainingDisplayMs) await new Promise((resolve) => setTimeout(resolve, remainingDisplayMs));
       res.setHeader('Cache-Control', 'no-store, private');
       res.setHeader('Content-Type', 'application/zip');
       res.setHeader('Content-Disposition', 'attachment; filename="arc-bot-export.zip"');
       res.setHeader('Content-Length', archive.length);
       res.send(archive);
+      publishBotExport(projectId, { exportId, stage: 'complete', progress: 100, message: cached && cached.expiresAt > Date.now() ? 'Cached bot export is ready' : 'Bot export is ready', status: 'complete' });
     } catch (error) {
+      publishBotExport(projectId, { exportId, stage: 'failed', progress: 100, message: error.message || 'Could not create bot export', status: 'failed' });
       res.status(500).json({ error: `Could not create bot export: ${error.message}` });
+    } finally {
+      if (botExportRuns.get(projectId) === exportId) botExportRuns.delete(projectId);
     }
   });
 
@@ -1183,6 +1347,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       }
       const previous = botManager.getGraphs().find((graph) => graph.id === req.params.tabId) || null;
       const saved = botManager.saveGraph(req.params.tabId, req.body);
+      onGraphSaved(botManager.project?.id, saved);
       const changedNodes = graphNodeChanges(previous, saved);
       const connectionsChanged = JSON.stringify(previous?.connections || []) !== JSON.stringify(saved.connections || []);
       const variablesChanged = JSON.stringify(previous?.variables || []) !== JSON.stringify(saved.variables || []);
