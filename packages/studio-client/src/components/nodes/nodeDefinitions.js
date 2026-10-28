@@ -1,9 +1,17 @@
 import { getTemplateReferences, renderTextTemplate } from '../../../../studio-server/src/engine/TemplateExpressions.js';
-import { NodeCategories, NodeDefinitions } from '../../../../studio-server/src/engine/NodeRegistry.js';
+import { functionArgumentPinId, functionInputPinType, getFunctionGraphArguments, getFunctionInputArguments } from '../../../../studio-server/src/engine/FunctionGraphContract.js';
+import { getNodeArgumentPins, MAX_NODE_ARGUMENTS, NODE_SCHEMA_VERSION, resolveDynamicNodePins } from '../../../../studio-server/src/engine/DynamicNodePins.js';
+import {
+  CLIENT_PROTOCOL_VERSION, NODE_REGISTRY_PROTOCOL_VERSION, SUPPORTED_NODE_REGISTRY_FEATURES, getNodeRegistryCompatibility, validateNodeRegistryPayload
+} from '../../../../studio-server/src/engine/NodeRegistryContract.js';
 //
-export { NodeCategories, renderTextTemplate };
+export let NodeCategories = Object.freeze({});
+export { renderTextTemplate };
+export { NODE_SCHEMA_VERSION };
+export { CLIENT_PROTOCOL_VERSION, NODE_REGISTRY_PROTOCOL_VERSION, SUPPORTED_NODE_REGISTRY_FEATURES, getNodeRegistryCompatibility };
 
 export const PinColors = {
+  attachment: '#e8a34a',
   exec: 'var(--wire-exec)',
   variable: '#22c55e',
   arg: '#9299a6',
@@ -15,101 +23,8 @@ export const PinColors = {
   embed: '#f472b6'
 };
 
-export const MAX_NODE_ARGUMENTS = 50;
-
-export function getNodeArgumentPins(node, baseInputs = [], connections = []) {
-  const excluded = ['function_input', 'function_return', 'function_call', 'variable_get'];
-  if (!node || node.type.startsWith('event_') || excluded.includes(node.type) || node.type === 'data_permission_overwrites') return [];
-  if (BuiltInNodeDefinitions.some((definition) => definition.type === node.type && definition.pluginAdapter)) return [];
-  if (!['build_embed', 'build_modal', 'format_text', 'data_regex'].includes(node.type) && !baseInputs.some((pin) => pin.type === 'string')) return [];
-  const highestConnectedArgument = connections.reduce((highest, connection) => {
-    if (connection.targetNodeId !== node.id) return highest;
-    const match = /^arg_(\d+)$/.exec(connection.targetPinId);
-    return match ? Math.max(highest, Number(match[1])) : highest;
-  }, 0);
-  const count = Math.min(MAX_NODE_ARGUMENTS, Math.max(1, highestConnectedArgument + 1));
-  return Array.from({ length: count }, (_, index) => ({ id: `arg_${index + 1}`, label: `arg${index + 1}`, type: 'arg', defaultValue: '' }));
-}
-
-export function getArrayCreatePins(node, connections = []) {
-  if (node?.type !== 'data_array_create') return [];
-  const highestConnected = connections.reduce((highest, connection) => {
-    if (connection.targetNodeId !== node.id) return highest;
-    const match = /^item_(\d+)$/.exec(connection.targetPinId);
-    return match ? Math.max(highest, Number(match[1])) : highest;
-  }, 0);
-  const stored = Object.keys(node.data || {}).reduce((highest, key) => Math.max(highest, Number(/^item_(\d+)$/.exec(key)?.[1]) || 0), 0);
-  const count = Math.min(50, Math.max(1, highestConnected + 1, stored));
-  return Array.from({ length: count }, (_, index) => ({ id: `item_${index + 1}`, label: `Item ${index + 1}`, type: 'arg', defaultValue: null }));
-}
-
-export function getArrayCombinePins(node, connections = []) {
-  if (node?.type !== 'data_array_concat') return [];
-  const highestConnected = connections.reduce((highest, connection) => {
-    if (connection.targetNodeId !== node.id) return highest;
-    return Math.max(highest, Number(/^array_(\d+)$/.exec(connection.targetPinId)?.[1]) || 0);
-  }, 0);
-  const count = Math.min(50, Math.max(2, highestConnected + 1));
-  const pins = Array.from({ length: count }, (_, index) => ({ id: `array_${index + 1}`, label: `Array ${index + 1}`, type: 'object', defaultValue: [] }));
-  if (connections.some((connection) => connection.targetNodeId === node.id && ['array_a', 'array_b'].includes(connection.targetPinId))) {
-    pins.push({ id: 'array_a', label: 'Array A', type: 'object', defaultValue: [] }, { id: 'array_b', label: 'Array B', type: 'object', defaultValue: [] });
-  }
-  return pins;
-}
-
-export function getArrayAppendPins(node, connections = []) {
-  if (node?.type !== 'data_array_append') return [];
-  const highestConnected = connections.reduce((highest, connection) => {
-    if (connection.targetNodeId !== node.id) return highest;
-    return Math.max(highest, Number(/^item_(\d+)$/.exec(connection.targetPinId)?.[1]) || 0);
-  }, 0);
-  const stored = Object.keys(node.data || {}).reduce((highest, key) => Math.max(highest, Number(/^item_(\d+)$/.exec(key)?.[1]) || 0), 0);
-  const pins = Array.from({ length: Math.min(MAX_NODE_ARGUMENTS, Math.max(1, highestConnected + 1, stored)) }, (_, index) => ({ id: `item_${index + 1}`, label: `Item ${index + 1}`, type: 'arg', defaultValue: undefined }));
-  if (connections.some((connection) => connection.targetNodeId === node.id && connection.targetPinId === 'value')) {
-    pins.push({ id: 'value', label: 'Item', type: 'arg', defaultValue: undefined });
-  }
-  return pins;
-}
-
-export function getMathListPins(node, connections = []) {
-  if (!['math_sum', 'math_average'].includes(node?.type)) return [];
-  const pinIds = ['a', 'b', 'c', 'd'];
-  const highestConnected = connections.reduce((highest, connection) => {
-    if (connection.targetNodeId !== node.id) return highest;
-    const index = pinIds.indexOf(connection.targetPinId);
-    const extra = /^value_(\d+)$/.exec(connection.targetPinId);
-    return Math.max(highest, index >= 0 ? index + 1 : extra ? Number(extra[1]) : 0);
-  }, 0);
-  const count = Math.min(50, Math.max(2, highestConnected + 1));
-  return Array.from({ length: count }, (_, index) => ({ id: pinIds[index] || `value_${index + 1}`, label: index < 4 ? String.fromCharCode(65 + index) : `Value ${index + 1}`, type: 'number', defaultValue: 0 }));
-}
-
-export function getSwitchCasePins(node, connections = [], direction = 'inputs') {
-  if (node?.type !== 'branch_switch') return [];
-  const storedCount = Number(node.data?.caseCount) || 0;
-  const storedCases = Object.keys(node.data || {}).reduce((highest, key) => Math.max(highest, Number(/^case_(\d+)$/.exec(key)?.[1]) || 0), 0);
-  const highestConnected = connections.reduce((highest, connection) => {
-    if (connection.targetNodeId === node.id) return Math.max(highest, Number(/^case_(\d+)$/.exec(connection.targetPinId)?.[1]) || 0);
-    if (connection.sourceNodeId === node.id) return Math.max(highest, Number(/^case_(\d+)_exec$/.exec(connection.sourcePinId)?.[1]) || 0);
-    return highest;
-  }, 0);
-  const count = Math.min(50, Math.max(2, storedCount, storedCases, highestConnected + 1));
-  return Array.from({ length: count }, (_, index) => direction === 'outputs'
-    ? { id: `case_${index + 1}_exec`, label: `Case ${index + 1}`, type: 'exec' }
-    : { id: `case_${index + 1}`, label: `Case ${index + 1}`, type: 'string', defaultValue: '' });
-}
-
-export function getPermissionOverwritePins(node, connections = []) {
-  if (node?.type !== 'data_permission_overwrites') return [];
-  const highestConnectedTarget = connections.reduce((highest, connection) => {
-    if (connection.targetNodeId !== node.id) return highest;
-    const match = /^target_id_(\d+)$/.exec(connection.targetPinId);
-    return match ? Math.max(highest, Number(match[1])) : highest;
-  }, 0);
-  const existingTargetCount = Object.keys(node.data || {}).reduce((highest, key) => Math.max(highest, Number(/^target_id_(\d+)$/.exec(key)?.[1]) || 0), 0);
-  const count = Math.min(100, Math.max(1, Number(node.data?.overwriteCount) || 0, existingTargetCount, highestConnectedTarget + 1));
-  return Array.from({ length: count }, (_, index) => ({ id: `target_id_${index + 1}`, label: `Target ID ${index + 1}`, type: 'string', defaultValue: '' }));
-}
+export { getNodeArgumentPins, MAX_NODE_ARGUMENTS, resolveDynamicNodePins };
+export { functionArgumentPinId, functionInputPinType, getFunctionGraphArguments, getFunctionInputArguments };
 
 export function getTextTemplateSlots(template) {
   const slots = new Set();
@@ -145,7 +60,10 @@ export function createDefaultNodeData(type) {
     .map((control) => [control.key, control.defaultValue]));
   const nodeDefaults = definition?.defaultData || {};
   if (type === 'function_input') {
-    return { ...nodeDefaults, paramId: `param_${Date.now()}_${Math.random().toString(36).slice(2, 5)}` };
+    return {
+      ...nodeDefaults,
+      arguments: [{ paramId: `param_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`, name: 'Input', valueType: 'string', optional: false, defaultValue: '' }]
+    };
   }
   const pluginDefinition = definition?.pluginAdapter ? definition : null;
   if (pluginDefinition) return {
@@ -155,52 +73,51 @@ export function createDefaultNodeData(type) {
   };
   return { ...nodeDefaults, ...editorDefaults };
 }
+//
+export const BundledNodeTypes = new Set();
+export const BuiltInNodeDefinitions = [];
 
-const bundledNodeDefinitions = Object.values(NodeDefinitions);
-export const BundledNodeTypes = new Set(bundledNodeDefinitions.map((definition) => definition.type));
-export const BuiltInNodeDefinitions = [...bundledNodeDefinitions];
-
-export function setWorkspaceNodeDefinitions(definitions) {
+export function setWorkspaceNodeDefinitions(definitions, categories = {}) {
   if (definitions === null) {
     adapterNodeTypes.clear();
-    BuiltInNodeDefinitions.splice(0, BuiltInNodeDefinitions.length, ...bundledNodeDefinitions);
+    BuiltInNodeDefinitions.splice(0, BuiltInNodeDefinitions.length);
+    BundledNodeTypes.clear();
+    NodeCategories = Object.freeze({});
     return;
   }
   if (!Array.isArray(definitions)) throw new TypeError('Workspace node definitions must be an array.');
-  const bundledByType = new Map(bundledNodeDefinitions.map((definition) => [definition.type, definition]));
+  if (!categories || typeof categories !== 'object' || Array.isArray(categories)
+    || Object.values(categories).some((category) => typeof category !== 'string' || !category.trim())) {
+    throw new TypeError('Workspace returned invalid node categories.');
+  }
   const normalized = definitions.map((definition) => {
     if (!definition || typeof definition.type !== 'string' || !definition.type.trim()
       || !Array.isArray(definition.inputs) || !Array.isArray(definition.outputs)) {
       throw new TypeError('Workspace returned an invalid node definition.');
     }
-    const localDefinition = bundledByType.get(definition.type);
-    const requiresGenericEditor = !localDefinition
-      || JSON.stringify(localDefinition.inputs) !== JSON.stringify(definition.inputs);
+    const requiresGenericEditor = definition.pluginAdapter === true;
     return {
-      ...localDefinition,
       ...definition,
-      description: definition.description || localDefinition?.description || 'Description unavailable',
+      description: definition.description || 'Description unavailable',
       requiresGenericEditor,
       editorOnlyInputs: requiresGenericEditor ? definition.inputs : []
     };
   });
   adapterNodeTypes.clear();
   BuiltInNodeDefinitions.splice(0, BuiltInNodeDefinitions.length, ...normalized);
+  BundledNodeTypes.clear();
+  for (const definition of normalized) if (!definition.pluginAdapter) BundledNodeTypes.add(definition.type);
+  NodeCategories = Object.freeze({ ...categories });
 }
 
 export function getNodeRegistryDefinitions(registry) {
-  if (registry?.schemaVersion !== undefined && registry.schemaVersion !== 1) return null;
+  const issues = validateNodeRegistryPayload(registry, SUPPORTED_NODE_REGISTRY_FEATURES);
+  if (issues.length) throw new TypeError(`Workspace returned an incompatible node registry. ${issues.join(' ')}`);
   const definitions = Array.isArray(registry?.definitions)
     ? registry.definitions
     : registry?.definitions && typeof registry.definitions === 'object'
       ? Object.values(registry.definitions)
       : null;
-  if (!definitions?.length) return null;
-  if (definitions.some((definition) => !definition || typeof definition.type !== 'string'
-    || !Array.isArray(definition.inputs) || !Array.isArray(definition.outputs)
-    || [...definition.inputs, ...definition.outputs].some((pin) => !pin || typeof pin.id !== 'string' || typeof pin.label !== 'string' || typeof pin.type !== 'string'))) {
-    throw new TypeError('Workspace returned an invalid node registry.');
-  }
   return definitions;
 }
 
