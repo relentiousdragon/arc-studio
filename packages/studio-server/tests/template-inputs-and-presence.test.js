@@ -104,6 +104,7 @@ describe('template inputs and streaming presence', () => {
     };
 
     const result = await GraphRunner.execute(graph, 'MESSAGE_CREATE', { id: 'msg-1', author: { id: '987654321', username: 'ada' } }, {
+      mock: true,
       rest: {
         createInteractionResponse: async (...args) => replies.push(args)
       }
