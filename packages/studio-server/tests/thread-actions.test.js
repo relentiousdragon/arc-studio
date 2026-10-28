@@ -21,6 +21,7 @@ describe('thread graph actions', () => {
       ]
     };
     const result = await GraphRunner.execute(graph, 'MESSAGE_CREATE', { channel_id: 'parent-channel' }, {
+      mock: true,
       rest: {
         createThread: async (channelId, options) => {
           calls.push({ type: 'createThread', channelId, options });
