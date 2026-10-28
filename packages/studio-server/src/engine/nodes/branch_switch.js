@@ -5,6 +5,7 @@ export default {
   "category": "Logic & Flow",
   "label": "Switch / Case",
   "color": "#8b5cf6",
+  "dynamicPins": { "kind": "switch-cases", "min": 2, "max": 50 },
   "defaultData": {
     "caseCount": 2,
     "value": "",
