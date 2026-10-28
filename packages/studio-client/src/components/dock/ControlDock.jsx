@@ -11,6 +11,7 @@ import { onPageBlur } from '../../core/pageFocus.js';
 import { readAppStorage, writeAppStorage } from '../../core/storage.js';
 import { AnimatedDropdown } from '../ui/CustomControls.jsx';
 import { CharacterLimit } from '../ui/Inputs.jsx';
+import { CustomEmoji } from '../ui/CustomEmoji.jsx';
 import { getArcUiScale } from '../../core/uiScale.js';
 import { BuiltInNodeDefinitions } from '../nodes/nodeDefinitions.js';
 import { Modal } from '../ui/Modal.jsx';
@@ -31,6 +32,19 @@ function duplicateSlashCommandName(message) {
 
 function duplicateSlashCommandMessage(name) {
   return `Slash command /${name} is defined more than once. Names must be unique.`;
+}
+
+function flattenReviewedSlashOptions(options = [], parents = []) {
+  return (Array.isArray(options) ? options : []).flatMap((option) => {
+    const type = Number(option.type || 3);
+    const name = [...parents, option.name].filter(Boolean).join(' / ');
+    if (type === 1 || type === 2) return [
+      { key: `${name}:${type}`, name, description: `${type === 2 ? 'Subcommand group' : 'Subcommand'} · ${option.description || ''}` },
+      ...flattenReviewedSlashOptions(option.options, [...parents, option.name])
+    ];
+    const typeLabel = ({ 3: 'Text', 4: 'Integer', 5: 'Boolean', 6: 'User', 7: 'Channel', 8: 'Role', 9: 'Mentionable', 10: 'Number', 11: 'Attachment' })[type] || 'Argument';
+    return [{ key: name, name, description: `${typeLabel}${option.required ? ' · Required' : ' · Optional'} · ${option.description || ''}` }];
+  });
 }
 
 export function ControlDock({
@@ -986,7 +1000,7 @@ export function ControlDock({
             {appEmojis.length > emojiPageSize && <div className="app-emoji-toolbar"><label className="app-emoji-search"><Search size={13} /><input value={emojiSearch} onChange={(event) => { setEmojiSearch(event.target.value); setEmojiPage(0); }} placeholder="Search app emojis" aria-label="Search app emojis" /></label><span>{searchableEmojis.length} found</span></div>}
             <div className="app-emoji-list" aria-label="Application emojis">
               {loadingEmojis ? <span className="emoji-list-empty">Loading app emojis…</span> : visibleAppEmojis.map((emoji) => <div className="app-emoji-row" key={emoji.id}>
-                <img src={`https://cdn.discordapp.com/emojis/${encodeURIComponent(emoji.id)}.${emoji.animated ? 'gif' : 'webp'}?size=64`} alt="" />
+                <CustomEmoji src={`https://cdn.discordapp.com/emojis/${encodeURIComponent(emoji.id)}.${emoji.animated ? 'gif' : 'webp'}?size=64`} alt={`:${emoji.name}:`} className="app-emoji-image" />
                 <strong>:{emoji.name}:</strong><button className="app-emoji-id" type="button" onClick={() => copyEmojiId(emoji)} aria-label={copiedEmojiId === emoji.id ? `Copied ${emoji.name} emoji ID` : `Copy ${emoji.name} emoji ID`}>{copiedEmojiId === emoji.id ? <><Check size={11} />Copied</> : <><code>{emoji.id}</code><ClipboardCopy size={11} /></>}</button>
                 <button className="dock-icon-button danger-hover" onClick={() => deleteAppEmoji(emoji)} disabled={!networkOnline || Boolean(deletingEmojiId) || isDiscordRateLimited} title={!networkOnline ? 'Discord API actions are unavailable offline' : isDiscordRateLimited ? 'Discord API cooldown is active' : `Delete ${emoji.name}`} aria-label={`Delete ${emoji.name}`}><Trash2 size={13} /></button>
               </div>)}
@@ -1035,7 +1049,7 @@ export function ControlDock({
         {selectedReviewCommand ? <div className="review-command-detail">
           <button className="review-command-back" onClick={() => { setSelectedReviewCommand(null); setSelectedCommandStats(null); }}><ChevronLeft size={14} />All commands</button>
           <div className="review-command-description"><span className={`command-review-status is-${selectedReviewCommand.status.toLowerCase()}`}>{selectedReviewCommand.status}</span><p>{selectedReviewCommand.description || 'No description'}</p>{selectedReviewCommand.graphName && <small>Graph · {selectedReviewCommand.graphName}</small>}{(selectedReviewCommand.graphs || (selectedReviewCommand.graphId ? [{ id: selectedReviewCommand.graphId, name: selectedReviewCommand.graphName }] : [])).length > 0 && <div className="review-command-graph-links">{(selectedReviewCommand.graphs || [{ id: selectedReviewCommand.graphId, name: selectedReviewCommand.graphName }]).map((link) => <button key={link.id} type="button" onClick={() => { const graph = graphs.find((item) => item.id === link.id); if (graph) { setCommandListOpen(false); setSelectedReviewCommand(null); setCommandDirectoryItems(null); onOpenGraph?.(graph); } }}><FileText size={12} />Open {link.name}</button>)}</div>}</div>
-          {selectedReviewCommand.options?.length > 0 && <section className="review-command-options"><strong>Options</strong>{selectedReviewCommand.options.map((option) => <div key={option.name}><code>{option.name}</code><span>{option.description || option.type}{option.required ? ' · Required' : ''}</span></div>)}</section>}
+          {selectedReviewCommand.options?.length > 0 && <section className="review-command-options"><strong>Command structure</strong>{flattenReviewedSlashOptions(selectedReviewCommand.options).map((option) => <div key={option.key}><code>{option.name}</code><span>{option.description}</span></div>)}</section>}
           <section className="review-command-statistics"><div className="review-command-stats-heading"><strong>Usage</strong><span>{selectedCommandStats?.rangeDays ? `${selectedCommandStats.rangeDays === 'forever' ? 'All time' : `Last ${selectedCommandStats.rangeDays} days`}` : 'Loading'}</span></div>
             {loadingCommandStats ? <p className="command-review-empty">Loading statistics…</p> : selectedCommandStats ? <>
               <div className="review-command-stat-grid"><StatisticCard label="Uses" value={selectedCommandStats.uses} enabled={selectedCommandStats.tracking?.commandUsage} /><StatisticCard label="Unique users" value={selectedCommandStats.uniqueUsers} enabled={selectedCommandStats.tracking?.uniqueUsers} /><StatisticCard label="Returning users" value={selectedCommandStats.returningUsers} enabled={selectedCommandStats.tracking?.returningUsers} /></div>
