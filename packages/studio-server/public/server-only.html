@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#12151b">
+    <meta name="description" content="Connect to this private ARC Studio workspace using the ARC Studio app.">
+    <title>Private workspace · ARC Studio</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-synthesis: none; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; --page: #12151b; --panel: #191d25; --panel-raised: #202530; --line: #2b323e; --text: #eef1f6; --muted: #9ca6b4; --faint: #687384; --accent: #72a9ff; --accent-soft: rgb(87 145 255 / 13%); --glow: rgb(67 114 220 / 18%); }
+      :root[data-theme="light"] { color-scheme: light; --page: #f1f3f7; --panel: #fff; --panel-raised: #f7f8fa; --line: #dfe3e9; --text: #202632; --muted: #626d7c; --faint: #87909c; --accent: #356fd0; --accent-soft: rgb(53 111 208 / 9%); --glow: rgb(72 118 208 / 13%); }
+      :root[data-channel="nightly"] { --accent: #c79aff; --accent-soft: rgb(177 114 245 / 13%); --glow: rgb(156 97 232 / 17%); }
+      :root[data-channel="nightly"][data-theme="light"] { --accent: #8245c3; --accent-soft: rgb(130 69 195 / 9%); --glow: rgb(130 69 195 / 12%); }
+      * { box-sizing: border-box; }
+      html, body { width: 100%; min-width: 320px; min-height: 100%; margin: 0; }
+      body { min-height: 100vh; color: var(--text); background: radial-gradient(ellipse at 17% 42%, var(--glow), transparent 39%), var(--page); }
+      a { color: inherit; }
+      .shell { display: flex; min-height: 100vh; flex-direction: column; padding: 28px clamp(22px, 5vw, 76px) 20px; }
+      header { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+      .brand { display: inline-flex; align-items: center; gap: 11px; color: var(--text); font-size: 12px; font-weight: 760; letter-spacing: .13em; text-decoration: none; }
+      .brand img { width: 34px; height: 34px; object-fit: contain; }
+      .brand b { color: var(--muted); font-size: 10px; font-weight: 620; }
+      main { display: grid; width: min(1080px, 100%); flex: 1; grid-template-columns: minmax(0, 1fr) minmax(320px, 410px); align-items: center; gap: clamp(46px, 8vw, 112px); margin: 0 auto; padding: 56px 0 70px; }
+      .intro { min-width: 0; }
+      .eyebrow { display: inline-flex; align-items: center; gap: 8px; color: var(--accent); font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .14em; text-transform: uppercase; }
+      .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 14px var(--accent); }
+      h1 { max-width: 580px; margin: 22px 0 15px; font-size: clamp(38px, 5.5vw, 66px); font-weight: 590; letter-spacing: -.058em; line-height: 1.03; }
+      .intro-copy { max-width: 470px; margin: 0; color: var(--muted); font-size: 15px; line-height: 1.75; }
+      .graph-scene { position: relative; min-height: 200px; margin-top: 44px; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: linear-gradient(145deg, color-mix(in srgb, var(--panel) 88%, transparent), color-mix(in srgb, var(--page) 72%, transparent)); }
+      .graph-grid { position: absolute; inset: 0; opacity: .42; background-image: radial-gradient(var(--faint) .7px, transparent .7px); background-position: 8px 8px; background-size: 18px 18px; mask-image: linear-gradient(90deg, #000, transparent 90%); }
+      .graph-wires { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+      .graph-wires path { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-opacity: .52; stroke-dasharray: 5 7; animation: dash 18s linear infinite; }
+      .graph-wires path:nth-child(2) { stroke: #52c9bd; stroke-opacity: .42; animation-delay: -8s; }
+      @keyframes dash { to { stroke-dashoffset: -240; } }
+      .node { position: absolute; display: flex; min-width: 108px; align-items: center; gap: 9px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); box-shadow: 0 8px 24px rgb(0 0 0 / 10%); font-size: 10px; font-weight: 620; }
+      .node svg { width: 15px; height: 15px; flex: 0 0 auto; color: var(--accent); }
+      .node-start { top: 39%; left: 6%; }
+      .node-command { top: 18%; left: 39%; }
+      .node-action { right: 7%; bottom: 19%; }
+      .node-pill { margin-left: auto; color: var(--faint); font: 8px ui-monospace, monospace; }
+      .connection-card { padding: clamp(23px, 3.4vw, 34px); border: 1px solid var(--line); border-radius: 11px; background: color-mix(in srgb, var(--panel) 94%, transparent); box-shadow: 0 24px 80px rgb(0 0 0 / 14%); }
+      .card-icon { display: grid; width: 37px; height: 37px; place-items: center; margin-bottom: 22px; border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--line)); border-radius: 9px; background: var(--accent-soft); color: var(--accent); }
+      .card-icon svg { width: 17px; height: 17px; }
+      .connection-card h2 { margin: 0; font-size: 21px; font-weight: 620; letter-spacing: -.035em; }
+      .card-copy { margin: 10px 0 23px; color: var(--muted); font-size: 12px; line-height: 1.7; }
+      .url-label { display: block; margin-bottom: 8px; color: var(--muted); font-size: 10px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }
+      .url-row { display: flex; min-width: 0; gap: 7px; }
+      .workspace-url { width: 100%; min-width: 0; padding: 11px 12px; overflow: hidden; border: 1px solid var(--line); border-radius: 6px; outline: none; background: var(--page); color: var(--text); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; }
+      .copy { flex: 0 0 auto; padding: 0 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-raised); color: var(--text); font-size: 11px; font-weight: 650; cursor: pointer; }
+      .copy:hover { border-color: var(--accent); }
+      .connect-help-toggle { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; padding: 10px 0 0; border: 0; border-top: 1px solid var(--line); background: transparent; color: var(--muted); font: inherit; font-size: 11px; text-align: left; cursor: pointer; transition: color .18s ease; }
+      .connect-help-toggle:hover { color: var(--text); }
+      .connect-help-toggle svg { width: 15px; height: 15px; flex: 0 0 auto; color: var(--accent); transition: transform .28s cubic-bezier(.2,.75,.25,1); }
+      .connect-help-toggle[aria-expanded="true"] svg { transform: rotate(90deg); }
+      .steps-disclosure { display: grid; grid-template-rows: 0fr; visibility: hidden; opacity: 0; transform: translateY(-6px); transition: grid-template-rows .32s cubic-bezier(.2,.75,.25,1), opacity .22s ease, transform .32s cubic-bezier(.2,.75,.25,1), visibility .32s; }
+      .steps-disclosure.is-open { grid-template-rows: 1fr; visibility: visible; opacity: 1; transform: translateY(0); }
+      .steps-disclosure-inner { min-height: 0; overflow: hidden; }
+      .steps { display: grid; gap: 13px; margin: 17px 0 0; padding-left: 22px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+      .steps li { padding-left: 6px; }
+      .steps li::marker { color: var(--accent); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .steps a { color: var(--text); font-weight: 650; text-decoration-color: color-mix(in srgb, var(--accent) 58%, transparent); text-underline-offset: 3px; }
+      .copy-status { min-height: 15px; margin: 9px 0 0; color: var(--accent); font-size: 10px; }
+      footer { display: flex; align-items: end; justify-content: space-between; gap: 18px; color: var(--faint); font-size: 10px; }
+      .repo-link { display: inline-flex; align-items: center; gap: 7px; text-decoration: none; }
+      .repo-link:hover { color: var(--text); }
+      .repo-link svg { width: 14px; height: 14px; }
+      .version { text-align: right; font: 9px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; }
+      @media (max-width: 760px) {
+        .shell { padding: 19px 20px 16px; }
+        main { width: min(560px, 100%); grid-template-columns: minmax(0, 1fr); gap: 30px; padding: 52px 0 42px; }
+        h1 { max-width: 520px; font-size: clamp(40px, 11vw, 58px); }
+        .graph-scene { min-height: 175px; margin-top: 30px; }
+        .connection-card { width: 100%; }
+      }
+      @media (max-width: 420px) { .shell { padding-inline: 15px; } header { gap: 10px; } .brand { gap: 8px; font-size: 10px; } .brand img { width: 29px; height: 29px; } .version { font-size: 8px; } .connection-card { padding: 21px 18px; } .url-row { gap: 5px; } .copy { padding-inline: 9px; } footer { align-items: flex-start; flex-direction: column; gap: 10px; } .version { text-align: left; } }
+      @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <header>
+        <a class="brand" href="https://github.com/relentiousdragon/arc-studio" aria-label="ARC Studio on GitHub">
+          <img src="__LOGO__" alt="">
+          <span>ARC <b>STUDIO</b></span>
+        </a>
+      </header>
+      <main>
+        <section class="intro" aria-labelledby="page-title">
+          <h1 id="page-title">Visualize your Discord bot.</h1>
+          <p class="intro-copy">This ARC Studio workspace is running and ready for connections.</p>
+        </section>
+        <aside class="connection-card" aria-labelledby="connect-title">
+          <h2 id="connect-title">Connect to this private workspace</h2>
+          <p class="card-copy">Open ARC Studio and connect to this private workspace using the address below.</p>
+          <label class="url-label" for="workspace-url">Workspace address</label>
+          <div class="url-row">
+            <input class="workspace-url" id="workspace-url" type="text" value="__WORKSPACE_URL__" readonly aria-label="Workspace URL">
+            <button class="copy" id="copy-url" type="button">Copy</button>
+          </div>
+          <p class="copy-status" id="copy-status" role="status" aria-live="polite"></p>
+          <button class="connect-help-toggle" id="connect-help-toggle" type="button" aria-expanded="false" aria-controls="connect-steps">
+            <span>How to connect (?)</span>
+            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m6 3 5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <div class="steps-disclosure" id="connect-steps" aria-hidden="true">
+            <div class="steps-disclosure-inner">
+              <ol class="steps">
+                <li>Sign out of your local workspace.</li>
+                <li>Choose <strong>Connect to workspace</strong> on the login screen.</li>
+                <li>Paste this address and sign in with your workspace account.</li>
+              </ol>
+            </div>
+          </div>
+        </aside>
+      </main>
+      <footer>
+        <a class="repo-link" href="https://github.com/relentiousdragon/arc-studio" target="_blank" rel="noreferrer">
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 .7a7.3 7.3 0 0 0-2.3 14.2c.36.07.5-.16.5-.35v-1.35c-2.03.44-2.46-.86-2.46-.86-.33-.84-.81-1.07-.81-1.07-.66-.45.05-.44.05-.44.73.05 1.12.75 1.12.75.65 1.11 1.7.79 2.12.6.07-.47.25-.79.46-.97-1.62-.18-3.32-.81-3.32-3.61 0-.8.28-1.45.75-1.96-.08-.18-.33-.93.07-1.93 0 0 .61-.2 2 .75a6.92 6.92 0 0 1 3.64 0c1.39-.95 2-.75 2-.75.4 1 .15 1.75.07 1.93.47.51.75 1.16.75 1.96 0 2.81-1.7 3.43-3.33 3.61.26.23.49.67.49 1.35v2c0 .2.13.43.5.35A7.3 7.3 0 0 0 8 .7Z"/></svg>
+          ARC Studio on GitHub
+        </a>
+        <div class="version">ARC Studio __SERVER_VERSION__<br>Chezcord __CHEZCORD_VERSION__</div>
+      </footer>
+    </div>
+    <script>
+      (() => {
+        const root = document.documentElement;
+        const channel = '__RELEASE_CHANNEL__';
+        root.dataset.channel = channel;
+        const light = window.matchMedia('(prefers-color-scheme: light)');
+        const applyTheme = () => {
+          const theme = light.matches ? 'light' : 'dark';
+          root.dataset.theme = theme;
+          document.querySelector('meta[name="theme-color"]').content = theme === 'light' ? '#f1f3f7' : '#12151b';
+        };
+        applyTheme();
+        light.addEventListener?.('change', applyTheme);
+        const copyButton = document.getElementById('copy-url');
+        const urlInput = document.getElementById('workspace-url');
+        const status = document.getElementById('copy-status');
+        const helpToggle = document.getElementById('connect-help-toggle');
+        const connectSteps = document.getElementById('connect-steps');
+        helpToggle.addEventListener('click', () => {
+          const expanded = helpToggle.getAttribute('aria-expanded') === 'true';
+          helpToggle.setAttribute('aria-expanded', String(!expanded));
+          connectSteps.setAttribute('aria-hidden', String(expanded));
+          connectSteps.classList.toggle('is-open', !expanded);
+        });
+        copyButton.addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(urlInput.value);
+          } catch {
+            urlInput.focus();
+            urlInput.select();
+            document.execCommand('copy');
+            urlInput.setSelectionRange(0, 0);
+          }
+          status.textContent = 'Workspace address copied.';
+          copyButton.textContent = 'Copied';
+          window.setTimeout(() => { copyButton.textContent = 'Copy'; status.textContent = ''; }, 2200);
+        });
+        if ('serviceWorker' in navigator) {
+          window.addEventListener('load', () => navigator.serviceWorker.register('/service-worker.js', { scope: '/' }).catch(() => {}), { once: true });
+        }
+      })();
+    </script>
+  </body>
+</html>
