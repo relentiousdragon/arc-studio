@@ -7,6 +7,7 @@ import {
 import { DiscordTextField } from '../ui/DiscordTextField.jsx';
 import { TemplateVariableHints } from '../ui/TemplateVariableHints.jsx';
 import { DiscordLongTextField, LONG_TEXT_THRESHOLD } from '../ui/DiscordLongTextField.jsx';
+import { AttachmentUrlInput } from '../ui/AttachmentUrlInput.jsx';
 import { getTextTemplateSlots } from './nodeDefinitions.js';
 //
 export const EmbedBlockTypes = [
@@ -151,14 +152,18 @@ export function EmbedNodeBuilder({
   connectedInputIds = new Set(),
   wiredFields = {},
   appEmojis = [],
+  attachments = [],
   graphVariables = [],
   templateValuePaths = [],
-  templatePreviewValues = {}
+  templatePreviewValues = {},
+  focusedBlockId = null,
+  focusOnly = false,
+  onFocusBlock
 }) {
   const blocks = getEmbedBlocks(data);
-  const visibleBlocks = blocks.filter((block) => block.type !== 'color');
+  const visibleBlocks = blocks.filter((block) => block.type !== 'color' && (!focusOnly || block.id === focusedBlockId));
   const [dropTarget, setDropTarget] = useState(null);
-  const [collapsedBlockIds, setCollapsedBlockIds] = useState(() => new Set());
+  const [collapsedBlockIds, setCollapsedBlockIds] = useState(() => mode === 'studio' ? new Set(blocks.map((block) => block.id)) : new Set());
   const [recentColors, setRecentColors] = useState(() => {
     try {
       const validColors = (value) => Array.isArray(value) ? value.filter((color) => /^#[\da-f]{6}$/i.test(color)).map((color) => color.toUpperCase()) : [];
@@ -189,19 +194,22 @@ export function EmbedNodeBuilder({
     if (type !== 'field' && blocks.some((block) => block.type === type)) {
       const existing = blocks.find((b) => b.type === type);
       if (existing) {
+        onFocusBlock?.(existing.id);
         setCollapsedBlockIds((prev) => {
           const next = new Set(prev);
           next.delete(existing.id);
           return next;
         });
       }
-      const el = document.getElementById(`embed_block_${type}`);
+      const el = document.getElementById(`embed_block_${existing.id}`);
       el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;
     }
     if (type === 'field' && blocks.filter((block) => block.type === 'field').length >= 25) return;
     const next = [...blocks];
-    next.splice(index, 0, createEmbedBlock(type));
+    const block = createEmbedBlock(type);
+    next.splice(index, 0, block);
+    onFocusBlock?.(block.id);
     onChange?.(next);
   };
 
@@ -289,6 +297,7 @@ export function EmbedNodeBuilder({
       </label>
     );
     const Field = DiscordTextField;
+    const attachmentKind = url && (['image', 'thumbnail'].includes(block.type) || (['author', 'footer'].includes(block.type) && key === 'icon')) ? 'image' : '';
     const openTextEditor = (value) => onOpenTextStudio?.(label, value, maxLength, (next) => patchBlock(block.id, { [key]: next }), { blockId: block.id, blockKey: key });
     return (
       <label className={`embed-block-field ${message ? 'has-error' : ''}`}>
@@ -298,6 +307,19 @@ export function EmbedNodeBuilder({
         </div>
         {String(block[key] || '').length > LONG_TEXT_THRESHOLD ? (
           <DiscordLongTextField value={block[key] || ''} onOpenEditor={() => openTextEditor(block[key] || '')} label={label} maxLength={maxLength} />
+        ) : attachmentKind ? (
+          <AttachmentUrlInput
+            value={block[key] || ''}
+            attachments={attachments}
+            imageOnly
+            onChange={(next) => patchBlock(block.id, { [key]: next })}
+            onOpenTextEditor={() => openTextEditor(block[key] || '')}
+            inputMode="url"
+            maxLength={maxLength}
+            placeholder={label}
+            aria-invalid={message ? 'true' : undefined}
+            onPointerDown={(event) => event.stopPropagation()}
+          />
         ) : allowEmoji ? (
           <Field
             as={multiline ? 'textarea' : 'input'}
@@ -505,6 +527,11 @@ export function EmbedNodeBuilder({
                 type="button"
                 className={`embed-quick-chip ${isAdded ? 'is-added' : ''}`}
                 disabled={needsFooter}
+                draggable={!needsFooter && !(isAdded && type !== 'field')}
+                onDragStart={(event) => {
+                  event.dataTransfer.effectAllowed = 'copy';
+                  event.dataTransfer.setData('application/x-arc-studio-palette', JSON.stringify({ kind: 'palette', scope: 'embed', type }));
+                }}
                 onClick={() => addBlock(type)}
                 title={needsFooter ? 'Add a footer block before adding a timestamp.' : isAdded ? `${label} is already added (click to view)` : `Add ${label}`}
               >
@@ -517,7 +544,7 @@ export function EmbedNodeBuilder({
         </div>
 
         {/* Discord Embed Color Bar */}
-        <div className="embed-color-bar">
+        {!focusOnly && <div className="embed-color-bar">
           <span className="embed-color-bar-label">
             <Palette size={13} />
             <span>Accent Color</span>
@@ -542,7 +569,7 @@ export function EmbedNodeBuilder({
               className="embed-color-picker-input"
             />
           </div>
-        </div>
+        </div>}
       </div>
 
       {/* Blocks List */}
@@ -553,7 +580,8 @@ export function EmbedNodeBuilder({
         onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setDropTarget(null); }}
         onDrop={(event) => handleDrop(event, typeof dropTarget === 'number' ? dropTarget : blocks.length)}
       >
-          {visibleBlocks.map((block, index) => {
+          {visibleBlocks.map((block) => {
+          const index = blocks.indexOf(block);
           const descriptor = EmbedBlockTypes.find((item) => item.type === block.type);
           const Icon = descriptor?.icon || Type;
           const dropClass = dropTarget === index ? 'is-drop-before' : '';
@@ -562,7 +590,8 @@ export function EmbedNodeBuilder({
 
           return (
             <section
-              id={`embed_block_${block.type}`}
+              id={`embed_block_${block.id}`}
+              data-embed-block-type={block.type}
               className={`embed-subnode ${dropClass} ${isCollapsed ? 'is-collapsed' : ''}`}
               key={block.id}
               onDragEnter={(event) => {
@@ -632,7 +661,7 @@ export function EmbedNodeBuilder({
           );
         })}
 
-        {!visibleBlocks.length && (
+        {!focusOnly && !visibleBlocks.length && (
           <div className="embed-builder-empty">
             <p>Your embed is currently empty.</p>
             <span>Use the buttons above to add a Title, Description, Fields, or Images.</span>
