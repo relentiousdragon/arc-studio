@@ -16,11 +16,37 @@ import { createApiRouter } from './routes/api.js';
 import { createBotManagerProxy } from './engine/RequestBotManager.js';
 import { CollaborationLastSeen } from './storage/CollaborationLastSeen.js';
 import { isArcStudioClientVersionAllowed } from './versioning/arcProjectCompatibility.js';
+import { NodeDefinitions, NODE_SCHEMA_VERSION, CLIENT_PROTOCOL_VERSION, getNodeRegistryPayload } from './engine/NodeRegistry.js';
+import { getNodeRegistryCompatibility, getNodeRegistryRequiredFeatures, NODE_REGISTRY_PROTOCOL_VERSION } from './engine/NodeRegistryContract.js';
+import { isKnownArcStudioClient, readClientAccessSettings } from './security/ClientAccessPolicy.js';
+import { getActiveCollaborators, getCollaboratorColor, MAX_REALTIME_COLLABORATORS } from './engine/CollaborationLimits.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const logger = new Logger();
+const requiredNodeRegistryFeatures = () => getNodeRegistryRequiredFeatures(Object.values(NodeDefinitions));
+//
+function sendWebSocketProblem(ws, { code, status, title, detail, extensions = {} }) {
+  if (ws.readyState !== WebSocket.OPEN) return;
+  const requestId = randomUUID();
+  ws.send(JSON.stringify({
+    type: 'PROBLEM',
+    protocolVersion: CLIENT_PROTOCOL_VERSION,
+    payload: {
+      type: `urn:arc-studio:problem:${String(code || 'websocket-error').toLowerCase().replace(/[^a-z0-9.-]+/g, '-')}`,
+      code,
+      status,
+      title,
+      detail,
+      instance: `urn:arc-studio:request:${requestId}`,
+      requestId,
+      retryable: status >= 500,
+      ...extensions
+    }
+  }));
+}
+
 const diagnostics = StartupDiagnostics.run();
 const requiredEnvironmentFailure = diagnostics.checks.find((check) => check.name === 'Environment Variables' && check.status === 'FAIL');
 if (requiredEnvironmentFailure) {
@@ -35,9 +61,21 @@ const collaborationLastSeen = new CollaborationLastSeen();
 
 const app = express();
 const server = http.createServer(app);
+let websocketProxyWarningLogged = false;
+server.on('upgrade', (request, socket) => {
+  let pathname = '';
+  try { pathname = new URL(request.url || '/', 'http://localhost').pathname; } catch {}
+  if (pathname && pathname !== '/ws' && !websocketProxyWarningLogged) {
+    websocketProxyWarningLogged = true;
+    logger.log('WARN', `Received a WebSocket upgrade request for ${pathname}. ARC Studio expects /ws.`);
+  }
+  if (pathname && pathname !== '/ws') socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
+});
 const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 40 * 1024 * 1024 });
 //
 const liveGraphStates = new Map();
+const liveGraphAutosaveTimers = new Map();
+const liveGraphAutosaveFailures = new Set();
 const liveCollaborationActions = new Map();
 const liveGraphChatBubbles = new Map();
 const liveCanvasArrows = new Map();
@@ -48,12 +86,8 @@ let collaborationActionRevision = 0;
 const nextCollaborationActionRevision = () => ++collaborationActionRevision;
 const NOTE_EDIT_LOCK_TTL_MS = 15_000;
 const COLLAB_CURSOR_IDLE_MS = 30_000;
-const collaboratorColors = ['#63b3ed', '#f687b3', '#68d391', '#f6ad55', '#b794f4', '#4fd1c5', '#fc8181', '#90cdf4', '#fbd38d', '#9ae6b4'];
-const collaboratorColor = (id) => {
-  let hash = 0;
-  for (const char of String(id || '')) hash = (hash * 31 + char.charCodeAt(0)) | 0;
-  return collaboratorColors[(hash >>> 0) % collaboratorColors.length];
-};
+const activeWorkspaceCollaborators = () => getActiveCollaborators(wss.clients, WebSocket.OPEN);
+const collaboratorColor = (id) => getCollaboratorColor(id, activeWorkspaceCollaborators());
 const collaborationRoomKey = (projectId, graphId) => `${projectId}:${graphId}`;
 const sendToCollaborationRoom = (roomKey, data, excludedClient = null) => {
   const serialized = JSON.stringify(data);
@@ -155,7 +189,7 @@ function publishPresence() {
     if (!client.arcAuthenticated || client.readyState !== WebSocket.OPEN || !client.arcPresence) continue;
     const peers = [...wss.clients].filter((peer) => peer !== client && peer.arcAuthenticated && peer.readyState === WebSocket.OPEN
       && peer.arcPresence?.projectId === client.arcPresence.projectId && peer.arcPresence?.graphId === client.arcPresence.graphId)
-      .map((peer) => ({ id: peer.arcUser?.id, username: peer.arcUser?.username }))
+      .map((peer) => ({ id: peer.arcUser?.id, username: peer.arcUser?.username, color: peer.arcColor || collaboratorColor(peer.arcUser?.id) }))
       .filter((user) => user.id && user.username)
       .filter((user, index, users) => users.findIndex((item) => item.id === user.id) === index);
     client.send(JSON.stringify({ type: 'COLLABORATORS_UPDATED', payload: peers }));
@@ -230,6 +264,9 @@ function clearDeletedGraphCollaboration(projectId, graphId) {
   if (!projectId || !graphId) return;
   const key = `${projectId}:${graphId}`;
   const room = collaborationRoomKey(projectId, graphId);
+  clearTimeout(liveGraphAutosaveTimers.get(key));
+  liveGraphAutosaveTimers.delete(key);
+  liveGraphAutosaveFailures.delete(key);
   const actions = liveCollaborationActions.get(room);
   if (actions) {
     for (const userId of actions.keys()) sendToCollaborationRoom(room, {
@@ -283,8 +320,28 @@ function broadcast(data) {
   const json = JSON.stringify(data);
   for (const client of wss.clients) {
     if (client.arcAuthenticated && client.readyState === WebSocket.OPEN) {
+      if (data?.type === 'NODE_REGISTRY_UPDATED') {
+        const compatibility = getNodeRegistryCompatibility(client.arcClientIdentity, requiredNodeRegistryFeatures());
+        if (!compatibility.compatible) {
+          sendWebSocketProblem(client, {
+            code: 'NODE_REGISTRY_INCOMPATIBLE', status: 426, title: 'Node registry update required',
+            detail: 'The workspace node catalog now uses features that this client cannot display safely. Update ARC Studio to a compatible build.',
+            extensions: { nodeRegistryProtocolVersion: NODE_REGISTRY_PROTOCOL_VERSION, unsupportedFeatures: compatibility.unsupportedFeatures, requiredFeatures: compatibility.requiredFeatures }
+          });
+          client.close(1008, 'Node registry update required.');
+          continue;
+        }
+      }
       client.send(json);
     }
+  }
+}
+
+function broadcastProject(projectId, data) {
+  if (!projectId) return;
+  const json = JSON.stringify(data);
+  for (const client of wss.clients) {
+    if (client.arcAuthenticated && client.arcProjectId === projectId && client.readyState === WebSocket.OPEN) client.send(json);
   }
 }
 
@@ -361,6 +418,51 @@ managerForUser.stopOtherGateways = async (currentManager) => {
 };
 const scopedBotManager = createBotManagerProxy(botManager);
 
+function scheduleLiveGraphAutosave(projectId, graphId, delayMs = 1200) {
+  const key = `${projectId}:${graphId}`;
+  if (liveGraphAutosaveTimers.has(key)) return;
+  const timer = setTimeout(() => {
+    liveGraphAutosaveTimers.delete(key);
+    const state = liveGraphStates.get(key);
+    if (!state?.graph || projectStore.projects.find((project) => project.id === projectId)?.id !== projectId) return;
+    try {
+      const manager = managerForUser({ activeProjectId: projectId });
+      if (manager.deletedGraphIds?.has(graphId)) return;
+      const saved = manager.saveGraph(graphId, state.graph, { quiet: true });
+      liveGraphAutosaveFailures.delete(key);
+      const latest = liveGraphStates.get(key);
+      if (latest?.revision === state.revision) {
+        sendToCollaborationRoom(key, { type: 'GRAPH_AUTOSAVED', payload: { projectId, graphId, revision: state.revision, savedAt: Date.now() } });
+      }
+      return saved;
+    } catch (error) {
+      if (!liveGraphAutosaveFailures.has(key)) {
+        liveGraphAutosaveFailures.add(key);
+        logger.log('ERROR', `Could not auto-save collaborative graph ${graphId}: ${error.message}`);
+        sendToCollaborationRoom(key, { type: 'GRAPH_AUTOSAVE_FAILED', payload: { projectId, graphId, message: 'The workspace could not save this graph yet. It will retry automatically.' } });
+      }
+      scheduleLiveGraphAutosave(projectId, graphId, 5000);
+    }
+  }, delayMs);
+  timer.unref?.();
+  liveGraphAutosaveTimers.set(key, timer);
+}
+
+function flushLiveGraphAutosaves() {
+  for (const [key, timer] of liveGraphAutosaveTimers) {
+    clearTimeout(timer);
+    liveGraphAutosaveTimers.delete(key);
+    const state = liveGraphStates.get(key);
+    if (!state?.graph) continue;
+    try {
+      const manager = managerForUser({ activeProjectId: state.projectId });
+      if (manager.deletedGraphIds?.has(state.graphId)) continue;
+      manager.saveGraph(state.graphId, state.graph, { quiet: true });
+    }
+    catch (error) { logger.log('ERROR', `Could not flush collaborative graph ${state.graphId} during shutdown: ${error.message}`); }
+  }
+}
+
 const idleDisconnectTimer = !serverConfig.desktopMode ? setInterval(() => {
   const now = Date.now();
   for (const user of userStore.users) {
@@ -385,8 +487,48 @@ app.use('/api', createApiRouter(
   managerForUser,
   broadcast,
   (userId) => [...wss.clients].some((client) => client.arcAuthenticated && client.arcUser?.id === userId && client.readyState === WebSocket.OPEN),
-  clearDeletedGraphCollaboration
+  clearDeletedGraphCollaboration,
+  (projectId, graph) => {
+    const state = liveGraphStates.get(`${projectId}:${graph?.id}`);
+    if (state?.graph && !sameCollaborationValue(state.graph, graph)) scheduleLiveGraphAutosave(projectId, graph.id, 100);
+  },
+  broadcastProject,
+  () => {
+    for (const client of wss.clients) {
+      if (!client.arcAuthenticated || client.arcKnownClient !== false || client.readyState !== WebSocket.OPEN) continue;
+      sendWebSocketProblem(client, { code: 'CLIENT_NOT_ALLOWED', status: 403, title: 'Client not allowed', detail: 'The workspace owner disabled unknown clients.' });
+      client.close(1008, 'Unknown clients are disabled.');
+    }
+  }
 ));
+
+app.use('/api', (error, req, res, next) => {
+  if (res.headersSent) return next(error);
+  const status = Number.isInteger(error?.status) && error.status >= 400 && error.status <= 599 ? error.status : 500;
+  const requestId = randomUUID();
+  const code = typeof error?.type === 'string' && /^[a-z0-9_-]+$/i.test(error.type) ? error.type.toUpperCase() : `HTTP_${status}`;
+  const title = http.STATUS_CODES[status] || 'Request failed';
+  const detail = status >= 500 ? 'The server could not complete the request.' : String(error?.message || title);
+  if (status >= 500) logger.log('ERROR', `[API] requestId=${requestId} status=${status} path=${req.path} code=${code}`);
+  res.status(status).type('application/problem+json').set('X-Request-Id', requestId).json({
+    type: `urn:arc-studio:problem:${code.toLowerCase().replace(/[^a-z0-9.-]+/g, '-')}`,
+    title,
+    status,
+    detail,
+    instance: req.path,
+    requestId,
+    code,
+    error: detail
+  });
+});
+
+app.all('/ws', (req, res) => {
+  if (!websocketProxyWarningLogged) {
+    websocketProxyWarningLogged = true;
+    logger.log('WARN', 'Received a normal HTTP request at /ws. The reverse proxy must forward WebSocket upgrades, not only HTTP requests.');
+  }
+  res.status(426).json({ error: 'ARC Studio collaboration requires a WebSocket upgrade at /ws. Check reverse proxy WebSocket upgrade settings.' });
+});
 
 const clientDistPath = resolve(__dirname, '../../studio-client/dist');
 const serverOnlyMode = process.env.ARC_SERVER_ONLY === '1';
@@ -434,10 +576,62 @@ if (!serverOnlyMode && fs.existsSync(clientDistPath)) {
       });
     }
   });
+} else if (serverOnlyMode) {
+  const clientPublicPath = resolve(__dirname, '../../studio-client/public');
+  const serverOnlyHtmlPath = resolve(__dirname, '../public/server-only.html');
+  const offlineHtmlPath = resolve(clientPublicPath, 'offline.html');
+  const serviceWorkerPath = resolve(clientPublicPath, 'service-worker.js');
+  const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  })[character]);
+  const sendStaticFile = (filename, contentType, cacheControl) => (_req, res, next) => {
+    res.set('Cache-Control', cacheControl);
+    res.type(contentType).sendFile(filename, (error) => {
+      if (error) next(error);
+    });
+  };
+  const sendServerOnlyPage = (req, res, next) => {
+    try {
+      const forwardedProtocol = req.get('x-forwarded-proto')?.split(',')[0]?.trim();
+      const protocol = ['http', 'https'].includes(forwardedProtocol) ? forwardedProtocol : req.protocol;
+      const forwardedHost = req.get('x-forwarded-host')?.split(',')[0]?.trim();
+      const host = forwardedHost || req.get('host');
+      const workspaceUrl = new URL('/', `${protocol}://${host}`).href;
+      const isNightly = String(serverConfig.version).includes('-');
+      const logo = isNightly ? '/nightly-icon.png' : '/arc.png';
+      const html = fs.readFileSync(serverOnlyHtmlPath, 'utf8')
+        .replaceAll('__WORKSPACE_URL__', escapeHtml(workspaceUrl))
+        .replaceAll('__SERVER_VERSION__', escapeHtml(serverConfig.version))
+        .replaceAll('__CHEZCORD_VERSION__', escapeHtml(serverConfig.chezcordVersion))
+        .replaceAll('__LOGO__', logo)
+        .replaceAll('__RELEASE_CHANNEL__', isNightly ? 'nightly' : 'stable');
+      res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.set('Pragma', 'no-cache');
+      res.set('Expires', '0');
+      res.type('html').send(html);
+    } catch (error) {
+      next(error);
+    }
+  };
+  app.get('/', sendServerOnlyPage);
+  app.get('/service-worker.js', sendStaticFile(serviceWorkerPath, 'javascript', 'no-cache'));
+  app.get('/offline.html', sendStaticFile(offlineHtmlPath, 'html', 'no-cache'));
+  app.get('/arc.png', sendStaticFile(resolve(clientPublicPath, 'arc.png'), 'png', 'public, max-age=86400'));
+  app.get('/nightly-icon.png', sendStaticFile(resolve(clientPublicPath, 'nightly-icon.png'), 'png', 'public, max-age=86400'));
+  app.get('*', (req, res, next) => {
+    if (!req.path.startsWith('/api') && !req.path.startsWith('/ws')) return sendServerOnlyPage(req, res, next);
+    return next();
+  });
 }
 //
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, request) => {
   ws.arcAuthenticated = false;
+  ws.arcClientOrigin = String(request.headers.origin || '');
+  ws.arcRequestHeaders = request.headers;
   ws.arcOpenGraphIds = new Set();
   ws.arcTabsInitialized = false;
   const authTimeout = setTimeout(() => {
@@ -522,14 +716,25 @@ wss.on('connection', (ws) => {
     try {
       const msg = JSON.parse(data.toString());
       if (!ws.arcAuthenticated) {
+        if (msg.type === 'AUTH' && msg.protocolVersion !== CLIENT_PROTOCOL_VERSION) {
+          sendWebSocketProblem(ws, { code: 'CLIENT_PROTOCOL_INCOMPATIBLE', status: 426, title: 'Client protocol update required', detail: 'Update the client to a build that supports this workspace protocol.', extensions: { requiredProtocolVersion: CLIENT_PROTOCOL_VERSION } });
+          ws.close(1008, 'Client protocol update required.');
+          return;
+        }
         if (msg.type === 'AUTH' && !isArcStudioClientVersionAllowed(msg.clientVersion, serverConfig.minimumClientVersion)) {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({
-              type: 'CLIENT_VERSION_BLOCKED',
-              payload: { clientVersion: typeof msg.clientVersion === 'string' ? msg.clientVersion : null, minimumVersion: serverConfig.minimumClientVersion }
-            }));
-          }
+          sendWebSocketProblem(ws, { code: 'CLIENT_VERSION_BLOCKED', status: 426, title: 'Client update required', detail: `Update ARC Studio to ${serverConfig.minimumClientVersion} or newer.`, extensions: { clientVersion: typeof msg.clientVersion === 'string' ? msg.clientVersion : null, minimumVersion: serverConfig.minimumClientVersion } });
           ws.close(1008, 'Client update required.');
+          return;
+        }
+        const clientRegistry = msg.clientIdentity || msg;
+        const registryCompatibility = getNodeRegistryCompatibility(clientRegistry, requiredNodeRegistryFeatures());
+        if (msg.type === 'AUTH' && !registryCompatibility.compatible) {
+          sendWebSocketProblem(ws, {
+            code: 'NODE_REGISTRY_INCOMPATIBLE', status: 426, title: 'Node registry update required',
+            detail: 'This workspace uses node registry features that this client cannot display safely. Update ARC Studio to a compatible build.',
+            extensions: { nodeRegistryProtocolVersion: NODE_REGISTRY_PROTOCOL_VERSION, unsupportedFeatures: registryCompatibility.unsupportedFeatures, requiredFeatures: registryCompatibility.requiredFeatures }
+          });
+          ws.close(1008, 'Node registry update required.');
           return;
         }
         const user = msg.type === 'AUTH' ? userStore.validateSession(msg.token) : null;
@@ -542,18 +747,40 @@ wss.on('connection', (ws) => {
           ws.close(1008, 'Change your password before continuing.');
           return;
         }
+        const knownArcClient = isKnownArcStudioClient(msg.clientIdentity, ws.arcClientOrigin, ws.arcRequestHeaders)
+          && msg.clientIdentity.version === msg.clientVersion
+          && msg.clientIdentity.nodeRegistryProtocolVersion === NODE_REGISTRY_PROTOCOL_VERSION;
+        if (!serverConfig.desktopMode && !knownArcClient && readClientAccessSettings().allowUnknownClients !== true) {
+          sendWebSocketProblem(ws, { code: 'CLIENT_NOT_ALLOWED', status: 403, title: 'Client not allowed', detail: 'This workspace only accepts ARC Studio clients. Ask the workspace owner to allow unknown clients.' });
+          ws.close(1008, 'Client not allowed.');
+          return;
+        }
+        const activeCollaborators = activeWorkspaceCollaborators();
+        if (!activeCollaborators.some((collaborator) => collaborator.userId === user.id)
+          && activeCollaborators.length >= MAX_REALTIME_COLLABORATORS) {
+          sendWebSocketProblem(ws, {
+            code: 'COLLABORATOR_LIMIT_REACHED', status: 429, title: 'Workspace is full',
+            detail: `This workspace allows up to ${MAX_REALTIME_COLLABORATORS} real-time collaborators. Wait for someone to disconnect before joining.`
+          });
+          ws.close(1008, 'Workspace collaborator limit reached.');
+          return;
+        }
+        const assignedColor = getCollaboratorColor(user.id, activeCollaborators);
+        ws.arcKnownClient = knownArcClient;
         ws.arcAuthenticated = true;
         ws.arcAuthenticatedAt = Date.now();
         ws.arcLastActivityAt = ws.arcAuthenticatedAt;
         ws.arcToken = msg.token;
+        ws.arcClientIdentity = msg.clientIdentity || msg;
         ws.arcUser = { id: user.id, username: user.username, role: user.role, permissions: user.permissions || [] };
         ws.arcProjectId = projectStore.projects.some((project) => project.id === user.activeProjectId) ? user.activeProjectId : projectStore.activeProjectId;
         collaborationLastSeen.record(ws.arcProjectId, '', ws.arcUser);
         ws.arcManager = managerForUser({ ...user, activeProjectId: ws.arcProjectId });
-        ws.arcColor = collaboratorColor(user.id);
+        ws.arcColor = assignedColor;
         clearTimeout(authTimeout);
         ws.send(JSON.stringify({
           type: 'INIT_STATE',
+          protocolVersion: CLIENT_PROTOCOL_VERSION,
           payload: {
             botStatus: ws.arcManager.status,
             botMetrics: ws.arcManager.gatewayMetrics,
@@ -565,8 +792,13 @@ wss.on('connection', (ws) => {
             projects: ws.arcManager.getProjects(),
             projectVariables: ws.arcManager.getProjectVariables(),
             version: serverConfig.version,
+            nodeSchemaVersion: NODE_SCHEMA_VERSION,
+            nodeRegistryProtocolVersion: NODE_REGISTRY_PROTOCOL_VERSION,
+            nodeRegistryRevision: getNodeRegistryPayload().registryRevision,
+            nodeRegistryFeatures: requiredNodeRegistryFeatures(),
             chezcordVersion: serverConfig.chezcordVersion,
             collaborationFeatures: { transientCanvasMotion: true },
+            collaboratorColor: ws.arcColor,
             diagnostics,
             projectLastSeen: collaborationLastSeen.projectSnapshot(ws.arcUser?.id || '')
           }
@@ -626,12 +858,17 @@ wss.on('connection', (ws) => {
             || candidate.nodes.length > 2000 || candidate.connections.length > 10000) continue;
           if (!ws.arcUser?.permissions?.includes('*') && !ws.arcUser?.permissions?.includes('graphs:write')) continue;
           let serialized;
-          try { serialized = JSON.stringify(candidate); } catch { continue; }
+          let safeCandidate;
+          try {
+            safeCandidate = ws.arcManager.protectGraphSecrets(candidate);
+            serialized = JSON.stringify(safeCandidate);
+          } catch { continue; }
           if (serialized.length > 30_000_000) continue;
           const graphKey = `${projectId}:${candidate.id}`;
           if (!liveGraphStates.has(graphKey)) {
-            const graph = JSON.parse(serialized);
+            const graph = safeCandidate;
             liveGraphStates.set(graphKey, { projectId, graphId: graph.id, graph, revision: 0, updatedAt: Date.now(), user: { id: ws.arcUser.id, username: ws.arcUser.username }, serializedGraph: serialized, history: [{ revision: 0, graph }] });
+            scheduleLiveGraphAutosave(projectId, graph.id);
           }
           const sharedGraph = liveGraphStates.get(graphKey)?.graph;
           if (sharedGraph) {
@@ -806,7 +1043,10 @@ wss.on('connection', (ws) => {
           const recent = (ws.arcGraphChatSendTimes || []).filter((time) => now - time < 10_000);
           if (recent.length >= 5) {
             ws.arcGraphChatSendTimes = recent;
-            ws.send(JSON.stringify({ type: 'GRAPH_CHAT_REJECTED', payload: { reason: 'rate-limit', message: 'Please wait a moment before sending another canvas message.' } }));
+            ws.send(JSON.stringify({ type: 'GRAPH_CHAT_REJECTED', payload: {
+              clientActionId: typeof payload.clientActionId === 'string' ? payload.clientActionId.slice(0, 120) : '',
+              reason: 'rate-limit', message: 'Please wait a moment before sending another canvas message.'
+            } }));
             return;
           }
           recent.push(now);
@@ -818,6 +1058,7 @@ wss.on('connection', (ws) => {
           const fadeMs = Math.min(2_000, 500 + Math.ceil((length / 280) * 1_500));
           const bubble = {
             id: randomUUID(),
+            clientActionId: typeof payload.clientActionId === 'string' ? payload.clientActionId.slice(0, 120) : '',
             projectId,
             graphId,
             userId: ws.arcUser.id,
@@ -845,7 +1086,10 @@ wss.on('connection', (ws) => {
         if (!entry || entry.bubble.userId !== ws.arcUser.id || entry.bubble.expiresAt <= now) return;
         if (!ws.arcGraphChatMoveTimes || now - ws.arcGraphChatMoveTimes.windowAt >= 1000) ws.arcGraphChatMoveTimes = { windowAt: now, count: 0 };
         if (++ws.arcGraphChatMoveTimes.count > 30) return;
-        entry.bubble = { ...entry.bubble, x: point.x, y: point.y };
+        entry.bubble = {
+          ...entry.bubble, x: point.x, y: point.y,
+          clientActionId: typeof payload.clientActionId === 'string' ? payload.clientActionId.slice(0, 120) : ''
+        };
         sendToCollaborationRoom(roomKey, { type: 'GRAPH_CHAT_BUBBLE', payload: entry.bubble });
       } else if (msg.type === 'CANVAS_ARROW_ACTION') {
         const roomKey = ws.arcRoomKey;
@@ -873,6 +1117,7 @@ wss.on('connection', (ws) => {
           if (!start || !end || Math.hypot(end.x - start.x, end.y - start.y) < 8 || (room?.size || 0) >= 300) return;
           const arrow = {
             id: randomUUID(),
+            clientActionId: typeof payload.clientActionId === 'string' ? payload.clientActionId.slice(0, 120) : '',
             projectId,
             graphId,
             start,
@@ -908,11 +1153,11 @@ wss.on('connection', (ws) => {
             const end = canvasArrowPoint(item?.end);
             const entry = liveCanvasArrows.get(roomKey)?.get(id);
             return entry && entry.arrow.expiresAt > now && start && end && Math.hypot(end.x - start.x, end.y - start.y) >= 8
-              ? [{ entry, start, end }]
+              ? [{ entry, start, end, clientActionId: typeof item.clientActionId === 'string' ? item.clientActionId.slice(0, 120) : '' }]
               : [];
           });
           for (const move of moves) {
-            move.entry.arrow = { ...move.entry.arrow, start: move.start, end: move.end };
+            move.entry.arrow = { ...move.entry.arrow, start: move.start, end: move.end, clientActionId: move.clientActionId };
             sendToCollaborationRoom(roomKey, { type: 'CANVAS_ARROW_UPDATED', payload: move.entry.arrow });
           }
           return;
@@ -988,7 +1233,10 @@ wss.on('connection', (ws) => {
         const start = canvasArrowPoint(payload.start);
         const end = canvasArrowPoint(payload.end);
         if (!start || !end || Math.hypot(end.x - start.x, end.y - start.y) < 8) return;
-        entry.arrow = { ...entry.arrow, start, end };
+        entry.arrow = {
+          ...entry.arrow, start, end,
+          clientActionId: typeof payload.clientActionId === 'string' ? payload.clientActionId.slice(0, 120) : ''
+        };
         sendToCollaborationRoom(roomKey, { type: 'CANVAS_ARROW_UPDATED', payload: entry.arrow });
       } else if (msg.type === 'COLLAB_ACTION') {
         const roomKey = ws.arcRoomKey;
@@ -1155,13 +1403,13 @@ wss.on('connection', (ws) => {
             liveGraphStates.set(key, previous);
           }
         }
-        let candidateGraph = { ...graph };
+        let candidateGraph = ws.arcManager.protectGraphSecrets(graph);
         const baseRevision = Number(payload.baseRevision);
         if (previous && Number.isInteger(baseRevision) && baseRevision !== previous.revision) {
           const baseState = previous.history?.find((entry) => entry.revision === baseRevision);
           if (baseState) candidateGraph = mergeConcurrentGraphValue(baseState.graph, previous.graph, candidateGraph);
           else {
-            const syncPayload = { ...previous, clientId: payload.clientId, syncId: payload.syncId, resync: true };
+            const syncPayload = { ...previous, resync: true };
             delete syncPayload.serializedGraph;
             delete syncPayload.history;
             ws.send(JSON.stringify({ type: 'GRAPH_STATE_SYNC', payload: syncPayload }));
@@ -1288,6 +1536,7 @@ wss.on('connection', (ws) => {
           history: [...(previous?.history || (previous ? [{ revision: previous.revision, graph: previous.graph }] : [])), { revision, graph: candidateGraph }].slice(-(serializedGraph.length <= 1_000_000 ? 8 : 2))
         };
         liveGraphStates.set(key, state);
+        scheduleLiveGraphAutosave(projectId, graph.id);
         reportRejectedNoteEdits();
         const syncPayload = { ...state, clientId: payload.clientId, syncId: payload.syncId || null, sourceUserId: ws.arcUser.id };
         delete syncPayload.serializedGraph;
@@ -1330,12 +1579,20 @@ server.listen(serverConfig.port, serverConfig.host, () => {
   console.log(`  ★ ARC Studio:            v${serverConfig.version}`);
   console.log(`  ★ Chezcord:              v${serverConfig.chezcordVersion}`);
   console.log(`──────────────────────────────────────────────────────────────────────────────`);
-  console.log(`  ➜ ${serverOnlyMode ? 'API / WebSocket' : 'Web Studio'}:        ${localUrl}`);
-  console.log(`  ➜ Setup:                 ${userStore.isSetupCompleted() ? 'Complete' : 'Required'}`);
-  console.log(`  ➜ Master Setup Key:      Hidden`);
-  console.log(`  ➜ Project Log Retention: ${retention}`);
+  const bannerLabel = (label) => `  ➜ ${label.padEnd(24)} `;
+  console.log(`${bannerLabel(`${serverOnlyMode ? 'API / WebSocket' : 'Web Studio'}:`)}${localUrl}`);
+  console.log(`${bannerLabel('WebSocket:')}${localUrl.replace(/^http/, 'ws')}/ws`);
+  console.log(`${bannerLabel('Setup:')}${userStore.isSetupCompleted() ? 'Complete' : 'Required'}`);
+  console.log(`${bannerLabel('Master Setup Key:')}Hidden`);
+  console.log(`${bannerLabel('Project Log Retention:')}${retention}`);
   console.log(`==============================================================================`);
   for (const check of diagnostics.checks.filter((item) => item.status !== 'PASS')) console.log(`  ${check.status} ${check.name}: ${check.message}`);
+  const loopbackHost = ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(serverConfig.host.toLowerCase());
+  if (loopbackHost && activePort !== 3000) {
+    const warning = `Server binds to ${serverConfig.host}:${activePort}. If a reverse proxy exposes this workspace, point its upstream here and forward WebSocket upgrades for /ws with the path unchanged. successful login only confirms HTTP access.`;
+    console.warn(`  WARN Reverse proxy: ${warning}`);
+    logger.log('WARN', warning);
+  }
   if (serverConfig.wasSecretAutoGenerated) console.log('  INFO Session secret generated.');
   console.log('\n');
 });
@@ -1347,6 +1604,7 @@ if (process.env.ARC_DESKTOP_MODE === '1') {
     controlBuffer = `${controlBuffer}${chunk}`.slice(-128);
     if (controlBuffer.includes('ARC_STUDIO_SHUTDOWN')) {
       controlBuffer = '';
+      flushLiveGraphAutosaves();
       botManager.stopBot();
       botManager.flushStatistics();
       for (const manager of new Set(userBotManagers.values())) {
@@ -1361,3 +1619,18 @@ if (process.env.ARC_DESKTOP_MODE === '1') {
     }
   });
 }
+
+let shutdownStarted = false;
+const shutdownServer = () => {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+  flushLiveGraphAutosaves();
+  clearInterval(idleDisconnectTimer);
+  for (const client of wss.clients) client.close(1001, 'ARC Studio server is shutting down');
+  wss.close();
+  const forceExit = setTimeout(() => process.exit(0), 5000);
+  forceExit.unref();
+  server.close(() => logger.close(() => process.exit(0)));
+};
+process.once('SIGINT', shutdownServer);
+process.once('SIGTERM', shutdownServer);
