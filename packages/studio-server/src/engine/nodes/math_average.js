@@ -4,6 +4,7 @@ export default {
   "category": "Math",
   "label": "Average",
   "color": "#38bdf8",
+  "dynamicPins": { "kind": "math-list", "baseIds": ["a", "b", "c", "d"], "extraPrefix": "value_", "extraLabel": "Value", "type": "number", "defaultValue": 0, "min": 2, "max": 50 },
   "inputs": [
     {
       "id": "a",
