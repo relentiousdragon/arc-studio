@@ -4,6 +4,7 @@ export default {
   "category": "Values & Data",
   "label": "Combine Arrays",
   "color": "#06b6d4",
+  "dynamicPins": { "kind": "array-combine" },
   "inputs": [
     {
       "id": "array_1",
