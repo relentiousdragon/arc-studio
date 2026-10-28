@@ -344,7 +344,7 @@ export function SplashScreen({
       const body = needsSetup
         ? localDesktopSetup
           ? { username: username.trim(), password, rememberMe: persistChoice }
-          : { masterKey: masterKey.trim(), username: username.trim(), password, rememberMe: persistChoice, ...(!desktopMode ? { workspaceName: serverWorkspaceName.trim() } : {}) }
+          : { masterKey: masterKey.trim(), username: username.trim(), password, rememberMe: persistChoice, clientBuild: await getClientBuildInfo(), ...(!desktopMode ? { workspaceName: serverWorkspaceName.trim() } : {}) }
         : { username: username.trim(), password, rememberMe: persistChoice, clientBuild: await getClientBuildInfo() };
       let response;
       let data = {};
