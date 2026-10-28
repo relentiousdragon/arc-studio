@@ -2,6 +2,7 @@ export default {
   "description": "True when an odd number of inputs are true. Add inputs by connecting them, up to 25.",
   "introducedAt": "2026-10-16T00:00:00.000Z",
   "type": "logic_xor_many",
+  "dynamicPins": { "kind": "indexed-inputs", "prefix": "input_", "label": "Input {index}", "type": "boolean", "defaultValue": false, "min": 2, "max": 25 },
   "category": "Logic & Flow",
   "label": "Boolean XOR (Multi-input)",
   "color": "#f59e0b",
