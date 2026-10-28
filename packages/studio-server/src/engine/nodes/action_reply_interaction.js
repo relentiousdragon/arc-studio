@@ -1,5 +1,5 @@
 export default {
-  "description": "Responds to a slash command or component interaction with text, embeds, attachments, and interactive components",
+  "description": "Responds to an interaction within Discord’s 3 second initial response window, or edits a deferred response",
   "type": "action_reply_interaction",
   "category": "Discord Actions",
   "label": "Reply to Interaction",
@@ -62,6 +62,31 @@ export default {
       "id": "exec",
       "label": "Exec",
       "type": "exec"
+    },
+    {
+      "id": "interaction_id",
+      "label": "Interaction ID",
+      "type": "string"
+    },
+    {
+      "id": "application_id",
+      "label": "Application ID",
+      "type": "string"
+    },
+    {
+      "id": "interaction_token",
+      "label": "Interaction Token",
+      "type": "string"
+    },
+    {
+      "id": "message_id",
+      "label": "Message ID",
+      "type": "string"
+    },
+    {
+      "id": "message",
+      "label": "Response Message",
+      "type": "object"
     }
   ]
 };
