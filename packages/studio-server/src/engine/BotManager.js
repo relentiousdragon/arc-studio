@@ -2,6 +2,7 @@ import { Client, CommandStatistics, GatewayIntents, RESTClient } from 'chezcord'
 import { registerAsyncEventHandler } from './AsyncEventHandler.js';
 import { MockGateway } from './MockGateway.js';
 import { GraphRunner } from './GraphRunner.js';
+import { GraphWebSocketManager } from './nodes/runtime/websocket.js';
 import { startCronScheduler } from './CronSchedule.js';
 import { waitForGatewayReady } from './GatewayReadyWaiter.js';
 import { NodeDefinitions } from './NodeRegistry.js';
@@ -12,6 +13,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { ProjectStore } from '../storage/ProjectStore.js';
 import { envFilePath } from '../storage.js';
+import { findFocusedSlashOption, findSlashParameter, flattenSlashParameters, getFocusedSlashOptionPath, normalizeSlashCommandOptions, validateSlashCommandOptions } from './SlashCommandOptions.js';
 
 const botConfigAad = 'arc-studio-bot-config-v1';
 const botTokenAad = 'arc-studio-bot-token-v1';
@@ -22,6 +24,7 @@ const BOT_UPTIME_VARIABLE_ID = 'project_var_bot_uptime';
 const BOT_STATISTICS_VARIABLE_ID = 'project_var_bot_statistics';
 const APP_LATENCY_INTERVAL_MS = 30_000;
 const BOT_UPTIME_INTERVAL_MS = 1_000;
+const SECRET_VARIABLE_MASK = '••••••';
 //
 function isDiscordVerifiedBot(user) {
   const rawFlags = user?.public_flags ?? user?.flags;
@@ -60,6 +63,9 @@ export class BotManager {
     this.project = this.projectStore.projects.find((item) => item.id === options.projectId) || this.projectStore.active();
     this.disabledBuiltInProjectVariables = new Set(Array.isArray(this.project.disabledBuiltInVariables) ? this.project.disabledBuiltInVariables : []);
     this.setProjectPaths();
+    this.secretValues = new Map();
+    this.secretEnvelopes = new Map();
+    this.loadSecretStore();
     this.encryptedBotToken = null;
     /** @type {Client|null} */
     this.client = null;
@@ -92,6 +98,11 @@ export class BotManager {
       process.env.DISCORD_BOT_TOKEN = '';
     }
     this.mockGateway = new MockGateway();
+    this.graphWebSockets = new GraphWebSocketManager();
+    this.webSocketDispatchGraphEvent = null;
+    this.graphWebSockets.on('event', ({ eventName, payload }) => {
+      this.webSocketDispatchGraphEvent?.(eventName, payload).catch((error) => this.log('ERROR', `WebSocket graph event ${eventName} failed: ${error.message}`));
+    });
     this.logs = [];
     this.maxLogs = 500;
     this.statisticsSaveTimer = null;
@@ -137,6 +148,7 @@ export class BotManager {
     this.botConfigPath = path.join(directory, 'bot-config.json');
     this.statisticsStorePath = path.join(directory, 'statistics.json');
     this.projectVariablesPath = path.join(directory, 'project-variables.json');
+    this.secretStorePath = path.join(directory, 'secrets.json');
     this.logger?.setProjectScope(path.join(directory, 'logs'), this.project.logRetentionDays ?? null);
   }
 
@@ -154,6 +166,8 @@ export class BotManager {
   switchProject(id) {
     if (this.status === 'ONLINE' || this.status === 'CONNECTING') throw new Error('Stop the gateway before switching projects.');
     this.stopBotUptime();
+    this.graphWebSockets.closeAll();
+    this.webSocketDispatchGraphEvent = null;
     if (id !== this.project.id) {
       this.discordUnauthorizedCount = 0;
       this.discordAuthWarning = null;
@@ -168,6 +182,7 @@ export class BotManager {
     this.disabledBuiltInProjectVariables = new Set(Array.isArray(project.disabledBuiltInVariables) ? project.disabledBuiltInVariables : []);
     fs.mkdirSync(this.projectStore.directory(id), { recursive: true, mode: 0o700 });
     this.setProjectPaths();
+    this.loadSecretStore();
     this.projectVariables = this.loadProjectVariables();
     this.encryptedBotToken = null;
     this.botProfile = null;
@@ -767,59 +782,18 @@ export class BotManager {
         continue;
       }
       const rawOptions = Array.isArray(node.data?.options) ? node.data.options : [];
-      if (rawOptions.length > 25) {
-        errors.push(`/${name} can have at most 25 arguments.`);
+      const optionErrors = validateSlashCommandOptions(rawOptions, name);
+      if (optionErrors.length) {
+        errors.push(...optionErrors);
         continue;
       }
-      const commandOptions = [];
-      let invalidOption = false;
-      for (const option of rawOptions) {
-        const optionName = String(option?.name || '').trim();
-        const optionDescription = String(option?.description || '').trim();
-        const optionType = Number(option?.type || 3);
-        const required = Boolean(option?.required);
-        if (!/^[a-z0-9_-]{1,32}$/.test(optionName) || !optionDescription || Array.from(optionDescription).length > 100 || ![3, 4, 5, 6, 7, 8, 9, 10, 11].includes(optionType)) {
-          errors.push(`/${name} has an invalid argument. Names must use 1–32 lowercase letters, numbers, underscores, or hyphens; descriptions need 1–100 characters.`);
-          invalidOption = true;
-          break;
-        }
-        if (commandOptions.some((item) => item.name === optionName)) {
-          errors.push(`/${name} uses the argument name “${optionName}” more than once.`);
-          invalidOption = true;
-          break;
-        }
-        const autocomplete = Boolean(option?.autocomplete);
-        if (autocomplete && ![3, 4, 10].includes(optionType)) {
-          errors.push(`/${name} argument “${optionName}” supports autocomplete only for text, integer, or number types.`);
-          invalidOption = true;
-          break;
-        }
-        if (autocomplete && option?.dynamicAutocomplete && (!(graph.nodes || []).some((item) => item.type === 'event_slash_autocomplete') || !(graph.nodes || []).some((item) => item.type === 'action_respond_autocomplete'))) {
-          errors.push(`/${name} argument “${optionName}” uses graph-generated suggestions but its graph needs On Command Autocomplete and Respond to Autocomplete nodes.`);
-          invalidOption = true;
-          break;
-        }
-        const choices = Array.isArray(option?.choices) ? option.choices.filter((choice) => String(choice?.name || '').trim() && choice.value !== undefined).slice(0, 25) : [];
-        if (choices.length && ![3, 4, 10].includes(optionType)) {
-          errors.push(`/${name} argument “${optionName}” cannot have choices for this type.`);
-          invalidOption = true;
-          break;
-        }
-        if (choices.some((choice) => String(choice.name).length > 100 || ([4, 10].includes(optionType) && !Number.isFinite(Number(choice.value))) || (optionType === 4 && !Number.isInteger(Number(choice.value))))) {
-          errors.push(`/${name} argument “${optionName}” has a choice with an invalid label or value.`);
-          invalidOption = true;
-          break;
-        }
-        const apiOption = { type: optionType, name: optionName, description: optionDescription, required };
-        if (autocomplete) apiOption.autocomplete = true;
-        else if (choices.length) apiOption.choices = choices.map((choice) => ({
-          name: String(choice.name).trim().slice(0, 100),
-          value: optionType === 4 ? Number.parseInt(choice.value, 10) : optionType === 10 ? Number(choice.value) : String(choice.value).slice(0, 100)
-        }));
-        commandOptions.push(apiOption);
+      const dynamicAutocompleteMissing = flattenSlashParameters(rawOptions).some(({ option }) => option.autocomplete && option.dynamicAutocomplete)
+        && (!(graph.nodes || []).some((item) => item.type === 'event_slash_autocomplete') || !(graph.nodes || []).some((item) => item.type === 'action_respond_autocomplete'));
+      if (dynamicAutocompleteMissing) {
+        errors.push(`/${name} uses graph-generated suggestions but its graph needs On Command Autocomplete and Respond to Autocomplete nodes.`);
+        continue;
       }
-      if (invalidOption) continue;
-      commandOptions.sort((left, right) => Number(right.required) - Number(left.required));
+      const commandOptions = normalizeSlashCommandOptions(rawOptions);
       desired.push({
         name,
         description,
@@ -841,7 +815,7 @@ export class BotManager {
   getCommandPermissionRequirements(graphs) {
     const permissions = new Set();
     for (const graph of graphs) for (const node of graph.nodes || []) {
-      if (['action_send_message', 'action_edit_message'].includes(node.type)) {
+      if (['action_send_message', 'action_edit_message', 'action_edit_components'].includes(node.type)) {
         permissions.add('View Channels');
         permissions.add('Send Messages');
         if (node.type === 'action_send_message'
@@ -1025,7 +999,7 @@ export class BotManager {
     if (!graphData || graphData.id !== graphId || !Array.isArray(graphData.nodes) || !Array.isArray(graphData.connections)) {
       throw new TypeError('A snapshot must include the selected graph and its nodes and connections.');
     }
-    const graph = structuredClone(graphData);
+    const graph = this.protectGraphSecrets(graphData);
     delete graph.isDirty;
     const automatic = options.automatic === true;
     const retentionHours = automatic ? Number(options.retentionHours ?? 12) : null;
@@ -1073,7 +1047,7 @@ export class BotManager {
 
   saveGraphTemplate(graphData, name) {
     if (!graphData || !Array.isArray(graphData.nodes) || !Array.isArray(graphData.connections)) throw new TypeError('A graph template must include nodes and connections arrays.');
-    const template = { ...graphData, id: `template_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, name: String(name || graphData.name || 'Untitled template').trim().slice(0, 80), isTemplate: true, updatedAt: new Date().toISOString() };
+    const template = this.protectGraphSecrets({ ...graphData, id: `template_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, name: String(name || graphData.name || 'Untitled template').trim().slice(0, 80), isTemplate: true, updatedAt: new Date().toISOString() });
     delete template.isDirty;
     this.graphTemplates = [template, ...this.graphTemplates];
     this.persistGraphLibrary();
@@ -1082,6 +1056,8 @@ export class BotManager {
 
   deleteGraphTemplate(templateId) {
     this.graphTemplates = this.graphTemplates.filter((template) => template.id !== templateId);
+    const secretPrefix = `graph:${templateId}:`;
+    this.setSecretValues([], [...this.secretValues.keys()].filter((key) => key.startsWith(secretPrefix)));
     if (this.defaultGraphId === templateId) this.defaultGraphId = 'tab_slash_help';
     this.persistGraphLibrary();
   }
@@ -1104,7 +1080,12 @@ export class BotManager {
   getVariableState(graph, mode = 'live') {
     const states = mode === 'mock' ? this.mockVariableStates : this.variableStates;
     if (!states.has(graph.id)) states.set(graph.id, new Map());
-    return states.get(graph.id);
+    const state = states.get(graph.id);
+    for (const variable of graph.variables || []) if (variable?.secret && !state.has(variable.id)) {
+      const secret = this.getSecretValue('graph', graph.id, variable.id);
+      if (secret !== undefined) state.set(variable.id, structuredClone(secret));
+    }
+    return state;
   }
 
   loadProjectVariables() {
@@ -1114,18 +1095,188 @@ export class BotManager {
     } catch { return []; }
   }
 
-  getProjectVariables() { return this.projectVariables.map((variable) => ({ ...variable })); }
+  getProjectVariables() { return this.projectVariables.map((variable) => ({ ...variable, ...(variable.secret ? { initialValue: SECRET_VARIABLE_MASK } : {}) })); }
+
+  secretStoreKey(scope, graphId, variableId) {
+    return scope === 'project' ? `project:${variableId}` : `graph:${graphId}:${variableId}`;
+  }
+
+  secretStoreAad(key) { return `arc-secret-variable-v1:${this.project.id}:${key}`; }
+
+  loadSecretStore() {
+    this.secretValues = new Map();
+    this.secretEnvelopes = new Map();
+    try {
+      if (!fs.existsSync(this.secretStorePath)) return;
+      try { fs.chmodSync(this.secretStorePath, 0o600); } catch {}
+      const stored = JSON.parse(fs.readFileSync(this.secretStorePath, 'utf8'));
+      for (const [key, envelope] of Object.entries(stored?.entries || {})) {
+        try {
+          const parsed = CryptoEngine.decryptObject(envelope, serverConfig.botTokenEncryptionKey, this.secretStoreAad(key));
+          if (parsed && Object.hasOwn(parsed, 'value')) {
+            this.secretValues.set(key, parsed.value);
+            this.secretEnvelopes.set(key, envelope);
+          }
+        } catch {
+          if (Array.isArray(this.logs)) this.log('WARN', 'An encrypted project variable could not be opened. Reenter its value in Variables.');
+          else console.warn('[Security] An encrypted project variable could not be opened. Reenter its value in Variables.');
+        }
+      }
+    } catch {}
+  }
+
+  persistSecretStore() {
+    fs.mkdirSync(path.dirname(this.secretStorePath), { recursive: true, mode: 0o700 });
+    try { fs.chmodSync(path.dirname(this.secretStorePath), 0o700); } catch {}
+    const entries = Object.fromEntries(this.secretEnvelopes);
+    const temporaryPath = `${this.secretStorePath}.tmp`;
+    fs.writeFileSync(temporaryPath, JSON.stringify({ version: 1, entries }, null, 2), { mode: 0o600 });
+    try { fs.chmodSync(temporaryPath, 0o600); } catch {}
+    fs.renameSync(temporaryPath, this.secretStorePath);
+    try { fs.chmodSync(this.secretStorePath, 0o600); } catch {}
+  }
+
+  getSecretValue(scope, graphId, variableId) {
+    return this.secretValues.get(this.secretStoreKey(scope, graphId, variableId));
+  }
+
+  importProjectSecretValues() {
+    const updates = [];
+    const sanitizeGraph = (graph, secretGraphId = graph?.id, importValues = true) => {
+      if (!graph || !Array.isArray(graph.variables)) return graph;
+      let changed = false;
+      const variables = graph.variables.map((variable) => {
+        if (!variable || typeof variable !== 'object' || !Object.hasOwn(variable, 'secretValue')) return variable;
+        changed = true;
+        const safe = { ...variable };
+        if (safe.secret === true) {
+          if (importValues) {
+            updates.push([this.secretStoreKey('graph', secretGraphId, safe.id), structuredClone(safe.secretValue)]);
+            safe.secretStored = true;
+            safe.initialValue = SECRET_VARIABLE_MASK;
+          } else delete safe.secretStored;
+        }
+        delete safe.secretValue;
+        return safe;
+      });
+      return changed ? { ...graph, variables } : graph;
+    };
+    let graphsChanged = false;
+    this.graphs = new Map([...this.graphs].map(([id, graph]) => {
+      const safe = sanitizeGraph(graph, id);
+      if (safe !== graph) graphsChanged = true;
+      return [id, safe];
+    }));
+    if (graphsChanged) this.persistGraphs();
+    let libraryChanged = false;
+    this.graphTemplates = this.graphTemplates.map((graph) => {
+      const safe = sanitizeGraph(graph, graph.id);
+      if (safe !== graph) libraryChanged = true;
+      return safe;
+    });
+    this.graphSnapshots = this.graphSnapshots.map((snapshot) => {
+      const graph = sanitizeGraph(snapshot.graph, snapshot.graphId, false);
+      if (graph === snapshot.graph) return snapshot;
+      libraryChanged = true;
+      return { ...snapshot, graph };
+    });
+    if (libraryChanged) this.persistGraphLibrary();
+    let projectVariablesChanged = false;
+    this.projectVariables = this.projectVariables.map((variable) => {
+      if (!variable || typeof variable !== 'object' || !Object.hasOwn(variable, 'secretValue')) return variable;
+      projectVariablesChanged = true;
+      const safe = { ...variable };
+      if (safe.secret === true) {
+        updates.push([this.secretStoreKey('project', '', safe.id), structuredClone(safe.secretValue)]);
+        safe.secretStored = true;
+        safe.initialValue = SECRET_VARIABLE_MASK;
+      }
+      delete safe.secretValue;
+      return safe;
+    });
+    if (projectVariablesChanged) {
+      const temporaryPath = `${this.projectVariablesPath}.tmp`;
+      fs.writeFileSync(temporaryPath, JSON.stringify(this.projectVariables, null, 2), { mode: 0o600 });
+      fs.renameSync(temporaryPath, this.projectVariablesPath);
+    }
+    this.setSecretValues(updates);
+    return updates.length;
+  }
+
+  setSecretValues(updates, removals = []) {
+    let changed = false;
+    for (const [key, value] of updates) {
+      if (!this.secretValues.has(key) || JSON.stringify(this.secretValues.get(key)) !== JSON.stringify(value)) {
+        const storedValue = structuredClone(value);
+        this.secretValues.set(key, storedValue);
+        this.secretEnvelopes.set(key, CryptoEngine.encryptObject({ value: storedValue }, serverConfig.botTokenEncryptionKey, this.secretStoreAad(key)));
+        changed = true;
+      }
+    }
+    for (const key of removals) {
+      const removedValue = this.secretValues.delete(key);
+      const removedEnvelope = this.secretEnvelopes.delete(key);
+      if (removedValue || removedEnvelope) changed = true;
+    }
+    if (changed) this.persistSecretStore();
+    return changed;
+  }
+
+  protectGraphSecrets(graphData) {
+    if (!graphData || typeof graphData.id !== 'string' || !Array.isArray(graphData.variables)) return graphData;
+    const next = structuredClone(graphData);
+    const existing = this.graphs.get(next.id);
+    const oldVariables = new Map((existing?.variables || []).map((variable) => [variable.id, variable]));
+    const secretUpdates = [];
+    const changedSecrets = [];
+    next.variables = next.variables.map((variable) => {
+      if (!variable || typeof variable.id !== 'string') return variable;
+      const previous = oldVariables.get(variable.id);
+      const secret = Boolean(variable.secret || previous?.secret);
+      if (!secret) { delete variable.secretValue; return variable; }
+      const key = this.secretStoreKey('graph', next.id, variable.id);
+      let value;
+      if (Object.hasOwn(variable, 'secretValue')) value = variable.secretValue;
+      else if (this.secretValues.has(key)) value = this.secretValues.get(key);
+      else if (!previous?.secret && variable.initialValue !== SECRET_VARIABLE_MASK) value = variable.initialValue;
+      else value = variable.type === 'number' ? 0 : variable.type === 'boolean' ? false : variable.type === 'array' ? [] : variable.type === 'object' ? {} : '';
+      secretUpdates.push([key, value]);
+      if (JSON.stringify(this.secretValues.get(key)) !== JSON.stringify(value)) changedSecrets.push([variable.id, value]);
+      const safe = { ...variable, secret: true, secretStored: true, initialValue: SECRET_VARIABLE_MASK };
+      delete safe.secretValue;
+      return safe;
+    });
+    this.setSecretValues(secretUpdates);
+    for (const [variableId, value] of changedSecrets) for (const states of [this.variableStates, this.mockVariableStates]) {
+      const state = states?.get(next.id);
+      if (state) state.set(variableId, structuredClone(value));
+    }
+    return next;
+  }
 
   setProjectVariables(variables, { allowDiscordAppIdUpdate = false, allowAppLatencyUpdate = false, allowManagedVariableUpdate = false } = {}) {
+    this.secretValues ||= new Map();
+    this.secretEnvelopes ||= new Map();
+    this.projectVariableStates ||= new Map();
+    this.mockProjectVariableStates ||= new Map();
     if (!Array.isArray(variables) || variables.length > 100) throw new TypeError('A project can have at most 100 shared variables.');
     const names = new Set();
     const existingVariables = new Map(this.projectVariables.map((variable) => [variable.id, variable]));
+    const secretUpdates = new Map();
     const next = variables.map((item) => {
       const name = String(item?.name || '').trim().slice(0, 64);
       const type = ['string', 'number', 'boolean', 'array', 'object'].includes(item?.type) ? item.type : '';
       if (!item || typeof item.id !== 'string' || !/^project_var_[A-Za-z0-9_-]{1,100}$/.test(item.id)) throw new TypeError(`A project variable has an invalid ID. (${item.id})`);
       if (!name) throw new TypeError('Every project variable needs a name.');
-      const validName = /^(?=.{1,64}$)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(name);
+      const previousVariable = existingVariables.get(item.id);
+      const secret = Boolean(item.secret || previousVariable?.secret);
+      const defaultSecretValue = type === 'number' ? 0 : type === 'boolean' ? false : type === 'array' ? [] : type === 'object' ? {} : '';
+      const requestedValue = secret
+        ? Object.hasOwn(item, 'secretValue') ? item.secretValue
+          : previousVariable?.secret && this.getSecretValue('project', '', item.id) !== undefined ? this.getSecretValue('project', '', item.id)
+            : item.initialValue === SECRET_VARIABLE_MASK ? defaultSecretValue : item.initialValue
+        : item.initialValue;
+      const validName = /^(?=.{1,64}$)[A-Za-z0-9]+(?:_+[A-Za-z0-9]+|-[A-Za-z0-9]+)*$/.test(name);
       const discordAppIdVariable = item.id === 'project_var_discord_app_id';
       const appLatencyVariable = item.id === APP_LATENCY_VARIABLE_ID;
       const gatewayLatencyVariable = item.id === GATEWAY_LATENCY_VARIABLE_ID;
@@ -1137,6 +1288,7 @@ export class BotManager {
             : botUptimeVariable ? 'BOT_UPTIME'
               : botStatisticsVariable ? 'BOT_STATISTICS' : '';
       const managedVariable = Boolean(managedVariableName);
+      if (secret && managedVariable) throw new TypeError('ARC managed variables cannot be marked secret.');
       if (discordAppIdVariable && this.disabledBuiltInProjectVariables.has('DISCORD_APP_ID')) {
         throw new TypeError('ARC no longer owns DISCORD_APP_ID in this project. Recreate it as a regular project variable.');
       }
@@ -1156,20 +1308,19 @@ export class BotManager {
       if (reservedManagedName && item.id !== matchingManagedId && !this.disabledBuiltInProjectVariables.has(name)) {
         throw new TypeError(`${name} is reserved for the ARC managed project variable.`);
       }
-      const unchangedLegacyName = existingVariables.get(item.id)?.name === name && /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name);
-      if (!validName && !reservedManagedName && !unchangedLegacyName) throw new TypeError(`Project variable “${name}” must use 1–64 letters or numbers, with single hyphens between them.`);
+      if (!validName && !reservedManagedName) throw new TypeError(`Project variable “${name}” must start and end with a letter or number, with letters, numbers, hyphens, or underscores inside.`);
       if (!type) throw new TypeError(`Project variable “${name}” has an unsupported type.`);
       const expectedType = (managedVariableName === 'BOT_STATISTICS' || name === 'BOT_STATISTICS') ? 'object' : 'number';
       if ((managedVariable || reservedManagedName) && type !== expectedType) throw new TypeError(`${managedVariableName || name} must be a ${expectedType} variable.`);
       if (managedVariable && name !== managedVariableName) throw new TypeError(`The ${managedVariableName} variable name cannot be changed.`);
       const previousReserved = existingVariables.get(item.id);
       if (discordAppIdVariable && previousReserved && !allowDiscordAppIdUpdate
-        && String(item.initialValue) !== String(previousReserved.initialValue)) throw new TypeError('DISCORD_APP_ID is managed by the connected Discord application and cannot be edited.');
+        && String(requestedValue) !== String(previousReserved.initialValue)) throw new TypeError('DISCORD_APP_ID is managed by the connected Discord application and cannot be edited.');
       if (names.has(name.toLowerCase())) throw new TypeError(`Project variable name “${name}” is used more than once.`);
       names.add(name.toLowerCase());
       let initialValue;
       if (discordAppIdVariable) {
-        initialValue = String(item.initialValue ?? '');
+        initialValue = String(requestedValue ?? '');
         if (!/^\d{15,22}$/.test(initialValue)) throw new TypeError('DISCORD_APP_ID must be a valid Discord application ID.');
       } else if (managedVariable && previousReserved && !allowManagedVariableUpdate
         && !(appLatencyVariable && allowAppLatencyUpdate)
@@ -1180,18 +1331,39 @@ export class BotManager {
         } else {
           initialValue = Number(currentValue) || 0;
         }
-      } else if (type === 'number') initialValue = Number.isFinite(Number(item.initialValue)) ? Number(item.initialValue) : 0;
-      else if (type === 'boolean') initialValue = Boolean(item.initialValue);
+      } else if (type === 'number') initialValue = Number.isFinite(Number(requestedValue)) ? Number(requestedValue) : 0;
+      else if (type === 'boolean') initialValue = Boolean(requestedValue);
       else if (type === 'array' || type === 'object') {
-        const valid = type === 'array' ? Array.isArray(item.initialValue) : item.initialValue && typeof item.initialValue === 'object' && !Array.isArray(item.initialValue);
+        const valid = type === 'array' ? Array.isArray(requestedValue) : requestedValue && typeof requestedValue === 'object' && !Array.isArray(requestedValue);
         if (!valid) throw new TypeError(`Project variable “${name}” needs a JSON ${type}.`);
-        const serialized = JSON.stringify(item.initialValue);
+        const serialized = JSON.stringify(requestedValue);
         if (serialized.length > 10000) throw new TypeError(`Project variable “${name}” exceeds the 10,000 character JSON limit.`);
         initialValue = JSON.parse(serialized);
-      } else initialValue = String(item.initialValue ?? '').slice(0, 10000);
-      return { id: item.id, name, type, initialValue, ...(managedVariable ? { systemManaged: true } : {}), updatedAt: new Date().toISOString() };
+      } else initialValue = String(requestedValue ?? '').slice(0, 10000);
+      if (secret) {
+        const key = this.secretStoreKey('project', '', item.id);
+        const previousSecretValue = this.getSecretValue('project', '', item.id);
+        let secretValue = Object.hasOwn(item, 'secretValue') ? item.secretValue
+          : previousVariable?.secret && previousSecretValue !== undefined ? previousSecretValue : initialValue;
+        if (type === 'number') secretValue = Number.isFinite(Number(secretValue)) ? Number(secretValue) : 0;
+        else if (type === 'boolean') secretValue = Boolean(secretValue);
+        else if (type === 'array' || type === 'object') {
+          const valid = type === 'array' ? Array.isArray(secretValue) : secretValue && typeof secretValue === 'object' && !Array.isArray(secretValue);
+          if (!valid || JSON.stringify(secretValue).length > 10000) throw new TypeError(`Secret project variable “${name}” needs a JSON ${type} under 10,000 characters.`);
+          secretValue = JSON.parse(JSON.stringify(secretValue));
+        } else secretValue = String(secretValue ?? '').slice(0, 10000);
+        secretUpdates.set(key, secretValue);
+        initialValue = SECRET_VARIABLE_MASK;
+      }
+      return { id: item.id, name, type, initialValue, ...(secret ? { secret: true, secretStored: true } : {}), ...(managedVariable ? { systemManaged: true } : {}), updatedAt: new Date().toISOString() };
     });
     const previousById = new Map(this.projectVariables.map((variable) => [variable.id, variable]));
+    const secretChangedIds = new Set(next.filter((variable) => variable.secret).filter((variable) =>
+      JSON.stringify(this.getSecretValue('project', '', variable.id)) !== JSON.stringify(secretUpdates.get(this.secretStoreKey('project', '', variable.id)))
+    ).map((variable) => variable.id));
+    const activeSecretKeys = new Set(next.filter((variable) => variable.secret).map((variable) => this.secretStoreKey('project', '', variable.id)));
+    const removedSecretKeys = [...this.secretValues.keys()].filter((key) => key.startsWith('project:') && !activeSecretKeys.has(key));
+    this.setSecretValues(secretUpdates, removedSecretKeys);
     if (previousById.has('project_var_discord_app_id') && !next.some((variable) => variable.id === 'project_var_discord_app_id')) {
       this.disabledBuiltInProjectVariables.add('DISCORD_APP_ID');
       const projectRecord = this.projectStore.projects.find((item) => item.id === this.project.id);
@@ -1215,8 +1387,10 @@ export class BotManager {
     for (const state of [this.projectVariableStates, this.mockProjectVariableStates]) {
       for (const variable of next) {
         const previous = previousById.get(variable.id);
-        if (!previous || previous.type !== variable.type || JSON.stringify(previous.initialValue) !== JSON.stringify(variable.initialValue)) {
-          state.set(variable.id, structuredClone(variable.initialValue));
+        if (secretChangedIds.has(variable.id)) {
+          state.set(variable.id, structuredClone(this.getSecretValue('project', '', variable.id)));
+        } else if (!previous || previous.type !== variable.type || JSON.stringify(previous.initialValue) !== JSON.stringify(variable.initialValue)) {
+          state.set(variable.id, structuredClone(variable.secret ? this.getSecretValue('project', '', variable.id) : variable.initialValue));
         }
       }
     }
@@ -1312,12 +1486,22 @@ export class BotManager {
   }
 
   getProjectVariableState(mode = 'live') {
-    return mode === 'mock' ? this.mockProjectVariableStates : this.projectVariableStates;
+    const state = mode === 'mock' ? this.mockProjectVariableStates : this.projectVariableStates;
+    for (const variable of this.projectVariables) if (variable.secret && !state.has(variable.id)) {
+      const secret = this.getSecretValue('project', '', variable.id);
+      if (secret !== undefined) state.set(variable.id, structuredClone(secret));
+    }
+    return state;
   }
 
-  saveGraph(tabId, graphData) {
+  saveGraph(tabId, graphData, { quiet = false } = {}) {
     if (!graphData || !Array.isArray(graphData.nodes) || !Array.isArray(graphData.connections)) {
       throw new TypeError('A graph must include nodes and connections arrays.');
+    }
+    graphData = this.protectGraphSecrets(graphData);
+    if (Array.isArray(graphData.variables)) {
+      const activeSecretKeys = new Set(graphData.variables.filter((variable) => variable?.secret).map((variable) => this.secretStoreKey('graph', tabId, variable.id)));
+      this.setSecretValues([], [...this.secretValues.keys()].filter((key) => key.startsWith(`graph:${tabId}:`) && !activeSecretKeys.has(key)));
     }
     if (Array.isArray(graphData.variables)) {
       if (graphData.variables.length > 100) throw new TypeError('A graph can have at most 100 variables.');
@@ -1325,23 +1509,22 @@ export class BotManager {
       const existingVariables = new Map((this.graphs.get(tabId)?.variables || []).map((variable) => [variable.id, variable]));
       for (const variable of graphData.variables) {
         const name = String(variable?.name || '').trim();
-        const validName = /^(?=.{1,64}$)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(name);
-        const unchangedLegacyName = existingVariables.get(variable?.id)?.name === name && /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name);
-        if (!validName && !unchangedLegacyName) throw new TypeError('Variable names must use 1–64 letters or numbers, with single hyphens between them.');
+        const validName = /^(?=.{1,64}$)[A-Za-z0-9]+(?:_+[A-Za-z0-9]+|-[A-Za-z0-9]+)*$/.test(name);
+        if (!validName) throw new TypeError('Variable names must start and end with a letter or number, with letters, numbers, hyphens, or underscores inside.');
         if (names.has(name.toLowerCase())) throw new TypeError(`Variable name “${name}” is used more than once.`);
         names.add(name.toLowerCase());
         const type = variable?.type;
         if (!['string', 'number', 'boolean', 'array', 'object'].includes(type)) throw new TypeError(`Variable “${name}” has an unsupported type.`);
         if (type === 'array' || type === 'object') {
-          const value = variable.initialValue;
+          const value = variable.secret ? this.getSecretValue('graph', tabId, variable.id) : variable.initialValue;
           const valid = type === 'array' ? Array.isArray(value) : value && typeof value === 'object' && !Array.isArray(value);
           if (!valid || JSON.stringify(value).length > 10000) throw new TypeError(`Variable “${name}” needs a JSON ${type} under 10,000 characters.`);
-        } else if (type === 'string' && String(variable.initialValue ?? '').length > 10000) throw new TypeError(`Variable “${name}” exceeds the 10,000 character value limit.`);
+        } else if (type === 'string' && String(variable.secret ? this.getSecretValue('graph', tabId, variable.id) ?? '' : variable.initialValue ?? '').length > 10000) throw new TypeError(`Variable “${name}” exceeds the 10,000 character value limit.`);
       }
       for (const node of graphData.nodes.filter((item) => item?.type === 'variable_create')) {
         const name = String(node.data?.name || '').trim();
-        const validName = /^(?=.{1,64}$)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(name) || /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name);
-        if (!validName) throw new TypeError('Create Variable nodes need a valid 1–64 character variable name.');
+        const validName = /^(?=.{1,64}$)[A-Za-z0-9]+(?:_+[A-Za-z0-9]+|-[A-Za-z0-9]+)*$/.test(name);
+        if (!validName) throw new TypeError('Create Variable names must start and end with a letter or number, with letters, numbers, hyphens, or underscores inside.');
         if (names.has(name.toLowerCase())) throw new TypeError(`Variable name “${name}” is used more than once.`);
         names.add(name.toLowerCase());
       }
@@ -1356,8 +1539,10 @@ export class BotManager {
         for (const variable of graphData.variables) {
           nextIds.add(variable.id);
           const previous = previousVariables.get(variable.id);
-          if (!previous || previous.type !== variable.type || previous.persist !== variable.persist || JSON.stringify(previous.initialValue) !== JSON.stringify(variable.initialValue)) {
-            state.set(variable.id, structuredClone(variable.initialValue));
+          const nextInitialValue = variable.secret ? this.getSecretValue('graph', tabId, variable.id) : variable.initialValue;
+          const previousInitialValue = previous?.secret ? this.getSecretValue('graph', tabId, variable.id) : previous?.initialValue;
+          if (!previous || previous.type !== variable.type || previous.persist !== variable.persist || JSON.stringify(previousInitialValue) !== JSON.stringify(nextInitialValue)) {
+            state.set(variable.id, structuredClone(nextInitialValue));
           }
         }
         for (const variableId of state.keys()) if (!nextIds.has(variableId)) state.delete(variableId);
@@ -1370,7 +1555,7 @@ export class BotManager {
       this.botProfile.intentSummary = this.getIntentPlan();
       this.broadcastWS({ type: 'BOT_STATUS', payload: { status: this.status, user: this.botProfile } });
     }
-    this.log('INFO', `Saved visual graph tab: "${graphData.name || tabId}"`);
+    if (!quiet) this.log('INFO', `Saved visual graph tab: "${graphData.name || tabId}"`);
     return this.graphs.get(tabId);
   }
 
@@ -1381,6 +1566,8 @@ export class BotManager {
     this.deletedGraphIds.add(tabId);
     this.variableStates.delete(tabId);
     this.mockVariableStates.delete(tabId);
+    const secretPrefix = `graph:${tabId}:`;
+    this.setSecretValues([], [...this.secretValues.keys()].filter((key) => key.startsWith(secretPrefix)));
     this.persistGraphs();
     if (this.botProfile) {
       this.botProfile.intentSummary = this.getIntentPlan();
@@ -1473,6 +1660,8 @@ export class BotManager {
     const configuredToken = this.getBotToken();
     if (this.client && ['CONNECTING', 'ONLINE'].includes(this.status) && (!requestedToken || requestedToken === configuredToken)) return this.client;
     const startGeneration = ++this.botStartGeneration;
+    this.graphWebSockets.closeAll();
+    this.webSocketDispatchGraphEvent = null;
     this.stopCronScheduler?.();
     this.stopCronScheduler = null;
     if (requestedToken) this.setBotToken(requestedToken);
@@ -1554,7 +1743,9 @@ export class BotManager {
         : null;
       const listeningGraphs = [...this.graphs.values()].filter((graph) => graph.graphType !== 'function'
         && (!onlyGraphId || graph.id === onlyGraphId)
-        && (graph.nodes || []).some((node) => NodeDefinitions[node.type]?.gatewayEvent === normalizedEventName));
+        && (graph.nodes || []).some((node) => NodeDefinitions[node.type]?.gatewayEvent === normalizedEventName
+          && (!String(normalizedEventName).startsWith('WEBSOCKET_') || !String(node.data?.filter_connection_id || '').trim()
+            || String(node.data.filter_connection_id).trim() === String(payload?.connectionId || ''))));
       await Promise.all(listeningGraphs.map(async (graph) => {
         if (this.graphs.get(graph.id) !== graph) return;
         const isReadyEvent = normalizedEventName === 'READY';
@@ -1572,11 +1763,13 @@ export class BotManager {
             projectDir: this.projectDir,
             rest: this.client.rest,
             client: this.client,
+            webSockets: this.graphWebSockets,
             resolveFunctionGraph: (graphId) => this.graphs.get(graphId),
             variablesState: this.getVariableState(graph),
             projectVariables: this.projectVariables,
             projectVariablesState: this.getProjectVariableState(),
             getGraphVariableState: (targetGraph) => this.getVariableState(targetGraph),
+            getSecretVariableValue: (variableId, scope, sourceGraph) => this.getSecretValue(scope, scope === 'project' ? '' : sourceGraph?.id, variableId),
             appEmojis: this.applicationEmojis,
             interactionState,
             canDeploySlashCommands: () => {
@@ -1653,16 +1846,9 @@ export class BotManager {
         const commandName = String(interaction.data?.name || '').toLowerCase();
         const graph = [...this.graphs.values()].find((item) => (item.nodes || []).some((node) => node.type === 'event_slash_command' && String(node.data?.commandName || '').toLowerCase() === commandName));
         const commandNode = graph?.nodes?.find((node) => node.type === 'event_slash_command' && String(node.data?.commandName || '').toLowerCase() === commandName);
-        const findFocused = (options = []) => {
-          for (const option of options) {
-            if (option.focused) return option;
-            const nested = findFocused(option.options || []);
-            if (nested) return nested;
-          }
-          return null;
-        };
-        const focused = findFocused(interaction.data?.options || []);
-        const option = commandNode?.data?.options?.find((item) => item.name === focused?.name);
+        const focusedPath = getFocusedSlashOptionPath(interaction.data?.options || []);
+        const focused = focusedPath?.length ? focusedPath[focusedPath.length - 1] : '';
+        const option = findSlashParameter(commandNode?.data?.options, focusedPath || []);
         if (option?.autocomplete && option.dynamicAutocomplete && graph?.nodes?.some((node) => node.type === 'event_slash_autocomplete')) {
           const interactionState = { applicationId: interaction.application_id || '', acknowledged: false, deferred: false, pending: null };
           await dispatchGraphEvent('INTERACTION_CREATE', interaction, graph.id, interactionState);
@@ -1672,7 +1858,7 @@ export class BotManager {
           }
           return;
         }
-        const typed = String(focused?.value ?? '').toLocaleLowerCase();
+        const typed = String(findFocusedSlashOption(interaction.data?.options || [])?.value ?? '').toLocaleLowerCase();
         const choices = option?.autocomplete && Array.isArray(option.choices)
           ? option.choices.filter((choice) => String(choice.name || '').toLocaleLowerCase().includes(typed)).slice(0, 25).map((choice) => ({
             name: String(choice.name || '').slice(0, 100),
@@ -1719,6 +1905,8 @@ export class BotManager {
       this.stopCronScheduler?.();
       this.stopCronScheduler = null;
       this.graphRunAbortController?.abort();
+      this.graphWebSockets.closeAll();
+      this.webSocketDispatchGraphEvent = null;
       this.stopBotUptime();
       this.status = 'ERROR';
       this.broadcastWS({ type: 'BOT_STATUS', payload: { status: this.status, error: err.message } });
@@ -1793,6 +1981,7 @@ export class BotManager {
               ...(application.flags_new !== undefined ? { flags_new: application.flags_new } : {})
             }
           };
+    this.webSocketDispatchGraphEvent = dispatchGraphEvent;
           this.botProfile.intentSummary = this.getIntentPlan();
           this.persistBotConfig();
           this.broadcastWS({ type: 'BOT_STATUS', payload: { status: this.status, user: this.botProfile } });
@@ -1813,6 +2002,8 @@ export class BotManager {
     this.stopCronScheduler = null;
     this.graphRunAbortController?.abort();
     this.graphRunAbortController = null;
+    this.graphWebSockets.closeAll();
+    this.webSocketDispatchGraphEvent = null;
     this.stopBotUptime();
     this.resetGatewayLatency();
     if (this.client) {
@@ -1897,6 +2088,7 @@ export class BotManager {
       projectVariables: this.projectVariables,
       projectVariablesState: this.getProjectVariableState('mock'),
       getGraphVariableState: (targetGraph) => this.getVariableState(targetGraph, 'mock'),
+      getSecretVariableValue: (variableId, scope, sourceGraph) => this.getSecretValue(scope, scope === 'project' ? '' : sourceGraph?.id, variableId),
       appEmojis: this.applicationEmojis,
       mock: true,
       debug: Boolean(debugSession),
