@@ -1,7 +1,7 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, FileCode2, Plus, X } from 'lucide-react';
-import { getNodeTemplateInputPins, getTextTemplateSlots, PinColors } from './nodeDefinitions.js';
+import { AlertTriangle, FileCode2, Plus, Trash2, X } from 'lucide-react';
+import { functionArgumentPinId, functionInputPinType, getFunctionGraphArguments, getFunctionInputArguments, getNodeTemplateInputPins, getTextTemplateSlots, PinColors } from './nodeDefinitions.js';
 import { bitfieldToPermissions, DISCORD_PERMISSIONS } from './permissionCatalog.js';
 import { AnimatedCheckbox, AnimatedDropdown } from '../ui/CustomControls.jsx';
 import { CharacterLimit } from '../ui/Inputs.jsx';
@@ -128,7 +128,7 @@ function numericNodeInputValue(value, { min = -Infinity, max = Infinity, fallbac
 
 function CanvasNodeView({
   node, definition, authToken = '', connectedInputIds = new Set(), graphVariables = [], templatePreviewValues = {}, callableGraphs = [], selected = false, illuminated = false, isLocked = false, findOptions = null, isFindCurrent = false,
-  snappedPin = null, appEmojis = [], modalFieldOptions = [], onSelect, onDelete, onNodeDataChange, onPinStartConnect, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph
+  snappedPin = null, appEmojis = [], modalFieldOptions = [], componentsV2SourceConnected = false, onSelect, onDelete, onNodeDataChange, onPinStartConnect, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph
 }) {
   const nodeDef = definition || { label: node.label || node.type, color: '#778196', category: 'Node', inputs: [], outputs: [] };
   const execFirst = (pins = []) => [...pins].sort((left, right) => Number(right.type === 'exec') - Number(left.type === 'exec'));
@@ -210,7 +210,7 @@ function CanvasNodeView({
         <div className="node-pin-column node-pin-inputs">{inputs.map((pin, index) => renderPin(pin, 'input', index))}</div>
         <div className="node-pin-column node-pin-outputs">{outputs.map((pin, index) => renderPin(pin, 'output', index))}</div>
       </div>
-      {!nodeDef.requiresGenericEditor && renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues)}
+      {!nodeDef.requiresGenericEditor && renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues, componentsV2SourceConnected)}
       {(nodeDef.requiresGenericEditor || nodeDef.editorOnlyInputs?.length > 0) && <div className="node-config node-config-stack node-schema-fallback">
         {nodeDef.requiresGenericEditor && <span className="node-config-hint">This workspace schema differs from this client’s editor. These values are used by the workspace server.</span>}
         {nodeDef.editorOnlyInputs.filter((pin) => pin.type !== 'exec' && !connectedInputIds.has(pin.id)).map((pin) => {
@@ -305,7 +305,7 @@ function equalCallableGraphOptions(left = [], right = [], node) {
 function functionSignature(graph) {
   const nodes = graph?.nodes || [];
   return JSON.stringify({
-    inputs: nodes.filter((item) => item.type === 'function_input').map((item) => [item.id, item.data?.paramId, item.data?.name, item.data?.optional, item.data?.valueType, item.data?.defaultValue]),
+    inputs: getFunctionGraphArguments(graph).map((item) => [item.paramId, item.name, item.optional, item.valueType, item.defaultValue]),
     returnType: nodes.find((item) => item.type === 'function_return')?.data?.valueType || null
   });
 }
@@ -418,7 +418,7 @@ function renderSchemaControls(node, controls, update, connectedInputIds) {
   </div>;
 }
 
-function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues) {
+function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues, componentsV2SourceConnected = false) {
   const isConnected = (pinId) => connectedInputIds.has(pinId);
   if (node.type === 'branch_switch') {
     const cases = nodeDef.inputs.filter((pin) => /^case_\d+$/.test(pin.id));
@@ -461,6 +461,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     /></FallbackField>;
   };
   const valueTypes = [{ value: 'number', label: 'Number' }, { value: 'string', label: 'Text' }, { value: 'boolean', label: 'Boolean' }, { value: 'object', label: 'Object / Array' }];
+  const functionArgumentTypes = [...valueTypes, { value: 'channel_id', label: 'Channel ID' }, { value: 'interaction_token', label: 'Interaction Token' }];
   if (node.type === 'data_get_modal_value') {
     const fieldId = String(node.data?.custom_id ?? '');
     const fieldOptions = [...new Map(modalFieldOptions.map((item) => [item.value, item])).values()];
@@ -540,18 +541,30 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     </div>;
   }
   if (node.type === 'function_input') {
-    const type = node.data?.valueType || 'number';
-    const optional = node.data?.optional !== false;
-    const defaultValue = node.data?.defaultValue ?? defaultValueForType(type);
+    const argumentsList = getFunctionInputArguments(node);
+    const legacy = !Array.isArray(node.data?.arguments);
+    const writeArguments = (next) => update('arguments', next.map(({ paramId, name, valueType, optional, defaultValue }) => ({ paramId, name, valueType, optional, defaultValue })));
+    const updateArgument = (index, patch) => {
+      const next = argumentsList.map((argument, itemIndex) => itemIndex === index ? { ...argument, ...patch } : argument);
+      if (legacy) {
+        const argument = next[0];
+        update({ name: argument.name, valueType: argument.valueType, optional: argument.optional, defaultValue: argument.defaultValue });
+      } else writeArguments(next);
+    };
     return <div className="node-config node-config-stack function-node-config">
-      <CharacterLimit value={node.data?.name || ''} maxLength={40}><input value={node.data?.name || ''} maxLength={40} onChange={(event) => update('name', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Input name" aria-label="Function input name" /></CharacterLimit>
-      <AnimatedDropdown value={type} options={valueTypes} onChange={(value) => update({ valueType: value, defaultValue: defaultValueForType(value) })} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Function input type" className="node-select" />
-      <div className="function-input-option"><span>Optional input</span><AnimatedCheckbox checked={optional} label="Optional input" onChange={(value) => update('optional', value)} onPointerDown={(event) => event.stopPropagation()} /></div>
-      {optional && (type === 'object'
-        ? <span className="node-config-hint">Default is an empty object. Connect an array or object node to supply data.</span>
-        : type === 'boolean'
-        ? <div className="function-input-default"><span>Default value</span><AnimatedCheckbox checked={Boolean(defaultValue)} label="Default value" onChange={(value) => update('defaultValue', value)} onPointerDown={(event) => event.stopPropagation()} /></div>
-        : <label className="function-input-default"><span>Default value</span><input type={type === 'number' ? 'number' : 'text'} step={type === 'number' ? 'any' : undefined} value={type === 'number' ? (Number.isFinite(Number(defaultValue)) ? Number(defaultValue) : 0) : defaultValue} onChange={(event) => update('defaultValue', type === 'number' ? (Number.isFinite(Number(event.target.value)) ? Number(event.target.value) : 0) : event.target.value)} onPointerDown={(event) => event.stopPropagation()} aria-label="Optional function input default value" /></label>)}
+      <span className="node-config-hint">Entry point for this function graph. Add every argument here.</span>
+      {argumentsList.map((argument, index) => <section className="function-input-argument" key={argument.paramId}>
+        <header><strong>{argument.name || `Input ${index + 1}`}</strong>{(!legacy || argumentsList.length > 1) && <button type="button" className="node-config-action is-danger" aria-label={`Remove ${argument.name || 'function input'}`} onClick={() => writeArguments(argumentsList.filter((_item, itemIndex) => itemIndex !== index))}><Trash2 size={12} /></button>}</header>
+        <CharacterLimit value={argument.name || ''} maxLength={40}><input value={argument.name || ''} maxLength={40} onChange={(event) => updateArgument(index, { name: event.target.value })} onPointerDown={(event) => event.stopPropagation()} placeholder="Input name" aria-label="Function input name" /></CharacterLimit>
+        <AnimatedDropdown value={argument.valueType} options={functionArgumentTypes} onChange={(value) => updateArgument(index, { valueType: value, defaultValue: defaultValueForType(functionInputPinType({ valueType: value })) })} onPointerDown={(event) => event.stopPropagation()} ariaLabel={`Type for ${argument.name || `Input ${index + 1}`}`} className="node-select" />
+        <div className="function-input-option"><span>Optional input</span><AnimatedCheckbox checked={argument.optional} label="Optional input" onChange={(value) => updateArgument(index, { optional: value })} onPointerDown={(event) => event.stopPropagation()} /></div>
+        {argument.optional && (argument.valueType === 'object'
+          ? <span className="node-config-hint">Default is an empty object. Connect an array or object node to supply data.</span>
+          : argument.valueType === 'boolean'
+          ? <div className="function-input-default"><span>Default value</span><AnimatedCheckbox checked={Boolean(argument.defaultValue)} label="Default value" onChange={(value) => updateArgument(index, { defaultValue: value })} onPointerDown={(event) => event.stopPropagation()} /></div>
+          : <label className="function-input-default"><span>Default value</span><input type={argument.valueType === 'number' ? 'number' : 'text'} step={argument.valueType === 'number' ? 'any' : undefined} value={argument.valueType === 'number' ? (Number.isFinite(Number(argument.defaultValue)) ? Number(argument.defaultValue) : 0) : argument.defaultValue} onChange={(event) => updateArgument(index, { defaultValue: argument.valueType === 'number' ? (Number.isFinite(Number(event.target.value)) ? Number(event.target.value) : 0) : event.target.value })} onPointerDown={(event) => event.stopPropagation()} aria-label={`Optional ${argument.name || 'function input'} default value`} />{argument.valueType === 'channel_id' && <small>Must be a valid Discord ID when the function runs.</small>}</label>)}
+      </section>)}
+      <button type="button" className="node-config-action" onPointerDown={(event) => event.stopPropagation()} onClick={() => writeArguments([...argumentsList, { paramId: `param_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, name: `Input ${argumentsList.length + 1}`, valueType: 'string', optional: false, defaultValue: '' }])}><Plus size={12} /> Add argument</button>
     </div>;
   }
   if (node.type === 'function_return') {
@@ -638,13 +651,11 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       <div className="node-config"><FallbackField label="Minimum decimals">{isConnected('minimum_fraction_digits') ? <span>Connected</span> : <NodeNumberInput min="0" max="20" step="1" value={node.data?.minimum_fraction_digits ?? 0} onChange={(event) => update('minimum_fraction_digits', numericNodeInputValue(event.target.value, { min: 0, max: 20, integer: true }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Minimum fraction digits" />}</FallbackField><FallbackField label="Maximum decimals">{isConnected('maximum_fraction_digits') ? <span>Connected</span> : <NodeNumberInput min="0" max="20" step="1" value={node.data?.maximum_fraction_digits ?? 2} onChange={(event) => update('maximum_fraction_digits', numericNodeInputValue(event.target.value, { min: 0, max: 20, integer: true }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Maximum fraction digits" />}</FallbackField></div>
     </div>;
   }
-  if (node.type.startsWith('math_')) {
-    if (node.type === 'math_random') return <div className="node-config node-config-stack">
+  if (node.type === 'math_random') return <div className="node-config node-config-stack">
       {!isConnected('min') && <FallbackField label="Minimum"><NodeNumberInput allowEmpty step="any" value={node.data?.min ?? 0} onChange={(event) => update('min', numericNodeInputValue(event.target.value, { allowEmpty: true }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Random number minimum" />
       </FallbackField>}
       {!isConnected('max') && <FallbackField label="Maximum"><NodeNumberInput allowEmpty step="any" value={node.data?.max ?? 1} onChange={(event) => update('max', numericNodeInputValue(event.target.value, { allowEmpty: true }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Random number maximum" /></FallbackField>}
     </div>;
-  }
   if (node.type === 'function_math') {
     return <div className="node-config"><AnimatedDropdown value={node.data?.operation || 'add'} options={[{ value: 'add', label: 'A + B' }, { value: 'subtract', label: 'A − B' }, { value: 'multiply', label: 'A × B' }, { value: 'divide', label: 'A ÷ B' }, { value: 'modulo', label: 'A mod B' }]} onChange={(value) => update('operation', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Arithmetic operation" className="node-select" /></div>;
   }
@@ -692,10 +703,11 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
   }
   if (node.type === 'variable_get' || node.type === 'variable_set') {
     const currentScope = node.data?.scope || 'graph';
-    const variableOptions = graphVariables.map((variable) => ({ value: `${variable.scope || 'graph'}:${variable.id}`, label: `${variable.scope === 'project' ? 'Project' : 'Graph'} · ${variable.name} · ${variable.type}` }));
+    const selectableVariables = node.type === 'variable_set' ? graphVariables.filter((variable) => variable.readOnly !== true) : graphVariables;
+    const variableOptions = selectableVariables.map((variable) => ({ value: `${variable.scope || 'graph'}:${variable.id}`, label: `${variable.scope === 'project' ? 'Project' : 'Graph'} · ${variable.name} · ${variable.type}` }));
     const selectedScope = selectedVariable?.scope || currentScope;
     return <div className="node-config node-config-stack">
-      {graphVariables.length ? <AnimatedDropdown value={`${selectedScope}:${node.data?.variableId || ''}`} onChange={(value) => { const separator = value.indexOf(':'); update({ scope: value.slice(0, separator), variableId: value.slice(separator + 1) }); }} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Project or graph variable" placeholder="Select variable" options={variableOptions} className="node-select" /> : <button className="node-config-action" onClick={(event) => { event.stopPropagation(); onOpenVariables?.(); }}><Plus size={12} /> Create variable</button>}
+      {selectableVariables.length ? <AnimatedDropdown value={`${selectedScope}:${node.data?.variableId || ''}`} onChange={(value) => { const separator = value.indexOf(':'); update({ scope: value.slice(0, separator), variableId: value.slice(separator + 1) }); }} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Project or graph variable" placeholder="Select variable" options={variableOptions} className="node-select" /> : node.type === 'variable_set' && graphVariables.length ? <span className="node-config-hint">No writable variables are available.</span> : <button className="node-config-action" onClick={(event) => { event.stopPropagation(); onOpenVariables?.(); }}><Plus size={12} /> Create variable</button>}
       {selectedVariable && <span className="node-config-hint">{selectedVariable.name} · {selectedVariable.type}</span>}
     </div>;
   }
@@ -716,13 +728,17 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     const templateSuggestions = nodeDef.inputs.filter((pin) => /^arg_\d+$/.test(pin.id)).map((pin) => ({ name: pin.id.replace(/^arg_/, 'arg'), label: pin.label }));
     return <EmbedNodeBuilder data={node.data || {}} connectedInputIds={connectedInputIds} appEmojis={appEmojis} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} templatePreviewValues={templatePreviewValues} onChange={(blocks) => update('blocks', blocks)} onOpenStudio={() => onOpenEmbedStudio?.(node)} onOpenTextStudio={(label, value, maxLength, applyValue, parentBlockContext) => onOpenTextStudio?.(node, null, label, value, maxLength, applyValue, '', parentBlockContext)} />;
   }
+  if (node.type === 'build_components') {
+    return <div className="node-config node-config-stack"><span className="node-config-hint">Build a Discord Components V2 message with text, sections, galleries, files, separators, containers, and interactive controls.</span><button type="button" className="node-config-action node-config-studio-action" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onOpenEmbedStudio?.(node); }}><Plus size={12} /> Open Component Studio{node.data?.componentsV2?.length ? ` · ${node.data.componentsV2.length} blocks` : ''}</button></div>;
+  }
   if (node.type === 'build_modal') return <div className="node-config node-config-stack"><button type="button" className="node-config-action node-config-studio-action" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onOpenModalStudio?.(node); }}><Plus size={12} /> Edit popup modal{node.data?.modal?.components?.length ? ` · ${node.data.modal.components.length} fields` : ''}</button></div>;
   if (node.type === 'action_send_message') {
     const componentsConnected = isConnected('components');
     return <div className="node-config node-config-stack">
       {!isConnected('channel_id') && <label className="node-config-fallback"><span>Channel ID</span><input value={node.data?.channel_id ?? ''} onChange={(event) => update('channel_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Channel ID" /></label>}
       {!isConnected('thread_id') && <label className="node-config-fallback"><span>Thread ID (Optional)</span><input value={node.data?.thread_id ?? ''} onChange={(event) => update('thread_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Overrides Channel ID when set" aria-label="Thread ID" /></label>}
-      {!isConnected('content') && <label className="node-config-fallback"><span>Message content</span>{textEditor('content', 'Message content', 2000, 'Used when unconnected')}</label>}
+      {(node.data?.componentsV2Enabled || componentsV2SourceConnected) && <span className="node-config-hint">Components V2 is enabled. Message content and embeds are disabled.</span>}
+      {!(node.data?.componentsV2Enabled || componentsV2SourceConnected) && !isConnected('content') && <label className="node-config-fallback"><span>Message content</span>{textEditor('content', 'Message content', 2000, 'Used when unconnected')}</label>}
       {!isConnected('mention_replied_user') && <FallbackCheckbox label="Mention Replied User" checked={node.data?.mention_replied_user ?? (isConnected('reply_to_message_id') || Boolean(node.data?.reply_to_message_id))} onChange={(value) => update('mention_replied_user', value)} />}
       {!isConnected('files') && <AttachmentPicker files={node.data?.files || []} authToken={authToken} onChange={(files) => update('files', files)} />}
       <button type="button" className={`node-config-action ${componentsConnected ? 'is-disabled' : ''}`} disabled={componentsConnected} title={componentsConnected ? 'Components input is connected. Edit the source node on the canvas instead.' : undefined} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { if (componentsConnected) return; event.stopPropagation(); onOpenEmbedStudio?.(node); }}><Plus size={12} /> {componentsConnected ? 'Components wired (edit source node)' : `Edit message components${node.data?.components?.length ? ` · ${node.data.components.length} rows` : ''}`}</button>
@@ -733,9 +749,19 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     return <div className="node-config node-config-stack">
       {!isConnected('channel_id') && <label className="node-config-fallback"><span>Channel ID</span><input value={node.data?.channel_id ?? ''} onChange={(event) => update('channel_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Channel ID" /></label>}
       {!isConnected('message_id') && <label className="node-config-fallback"><span>Message ID</span><input value={node.data?.message_id ?? ''} onChange={(event) => update('message_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Message ID" /></label>}
-      {!isConnected('content') && <label className="node-config-fallback"><span>New content (Optional)</span>{textEditor('content', 'New content', 2000, 'Leave empty to keep existing')}</label>}
+      {(node.data?.componentsV2Enabled || componentsV2SourceConnected) && <span className="node-config-hint">Components V2 is enabled. Message content and embeds are disabled.</span>}
+      {!(node.data?.componentsV2Enabled || componentsV2SourceConnected) && !isConnected('content') && <label className="node-config-fallback"><span>New content (Optional)</span>{textEditor('content', 'New content', 2000, 'Leave empty to keep existing')}</label>}
       {!isConnected('files') && <AttachmentPicker files={node.data?.files || []} authToken={authToken} onChange={(files) => update('files', files)} />}
       <button type="button" className={`node-config-action ${componentsConnected ? 'is-disabled' : ''}`} disabled={componentsConnected} title={componentsConnected ? 'Components input is connected. Edit the source node on the canvas instead.' : undefined} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { if (componentsConnected) return; event.stopPropagation(); onOpenEmbedStudio?.(node); }}><Plus size={12} /> {componentsConnected ? 'Components wired (edit source node)' : `Edit message components${node.data?.components?.length ? ` · ${node.data.components.length} rows` : ''}`}</button>
+    </div>;
+  }
+  if (node.type === 'action_edit_components') {
+    const componentsConnected = isConnected('components');
+    return <div className="node-config node-config-stack">
+      {!isConnected('channel_id') && <label className="node-config-fallback"><span>Channel ID</span><input value={node.data?.channel_id ?? ''} onChange={(event) => update('channel_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Channel ID" /></label>}
+      {!isConnected('message_id') && <label className="node-config-fallback"><span>Message ID</span><input value={node.data?.message_id ?? ''} onChange={(event) => update('message_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Message ID" /></label>}
+      {componentsV2SourceConnected && <span className="node-config-hint">The connected Components V2 layout replaces the message components.</span>}
+      <button type="button" className={`node-config-action ${componentsConnected ? 'is-disabled' : ''}`} disabled={componentsConnected} title={componentsConnected ? 'Components input is connected. Edit the source node on the canvas instead.' : undefined} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { if (componentsConnected) return; event.stopPropagation(); onOpenEmbedStudio?.(node); }}><Plus size={12} /> {componentsConnected ? 'Components wired (edit source node)' : `Edit components${node.data?.components?.length ? ` · ${node.data.components.length} rows` : ''}`}</button>
     </div>;
   }
   if (node.type === 'modify_embed') {
@@ -757,7 +783,8 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       {!isConnected('interaction_token') && !node.data?.interaction_token && (
         <span className="node-config-warning" role="status"><AlertTriangle size={12} /> Connect an interaction token to reply</span>
       )}
-      {!isConnected('content') && <label className="node-config-fallback"><span>Reply content</span>{textEditor('content', 'Reply content', 2000, 'Used when unconnected')}</label>}
+      {(node.data?.componentsV2Enabled || componentsV2SourceConnected) && <span className="node-config-hint">Components V2 is enabled. Message content and embeds are disabled.</span>}
+      {!(node.data?.componentsV2Enabled || componentsV2SourceConnected) && !isConnected('content') && <label className="node-config-fallback"><span>Reply content</span>{textEditor('content', 'Reply content', 2000, 'Used when unconnected')}</label>}
       {!isConnected('files') && <AttachmentPicker files={node.data?.files || []} authToken={authToken} onChange={(files) => update('files', files)} />}
       <button type="button" className={`node-config-action ${componentsConnected ? 'is-disabled' : ''}`} disabled={componentsConnected} title={componentsConnected ? 'Components input is connected. Edit the source node on the canvas instead.' : undefined} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { if (componentsConnected) return; event.stopPropagation(); onOpenEmbedStudio?.(node); }}><Plus size={12} /> {componentsConnected ? 'Components wired (edit source node)' : `Edit message components${node.data?.components?.length ? ` · ${node.data.components.length} rows` : ''}`}</button>
     </div>;
@@ -768,7 +795,8 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       {!isConnected('interaction_token') && !node.data?.interaction_token && (
         <span className="node-config-warning" role="status"><AlertTriangle size={12} /> Connect an interaction token to edit</span>
       )}
-      {!isConnected('content') && <label className="node-config-fallback"><span>New content (Optional)</span>{textEditor('content', 'New content', 2000, 'Leave empty to keep existing')}</label>}
+      {(node.data?.componentsV2Enabled || componentsV2SourceConnected) && <span className="node-config-hint">Components V2 is enabled. Message content and embeds are disabled.</span>}
+      {!(node.data?.componentsV2Enabled || componentsV2SourceConnected) && !isConnected('content') && <label className="node-config-fallback"><span>New content (Optional)</span>{textEditor('content', 'New content', 2000, 'Leave empty to keep existing')}</label>}
       {!isConnected('files') && <AttachmentPicker files={node.data?.files || []} authToken={authToken} onChange={(files) => update('files', files)} />}
       <button type="button" className={`node-config-action ${componentsConnected ? 'is-disabled' : ''}`} disabled={componentsConnected} title={componentsConnected ? 'Components input is connected. Edit the source node on the canvas instead.' : undefined} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { if (componentsConnected) return; event.stopPropagation(); onOpenEmbedStudio?.(node); }}><Plus size={12} /> {componentsConnected ? 'Components wired (edit source node)' : `Edit message components${node.data?.components?.length ? ` · ${node.data.components.length} rows` : ''}`}</button>
     </div>;
