@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { getArcUiScale } from '../../core/uiScale.js';
 import { readAppStorage, writeAppStorage } from '../../core/storage.js';
 import { onPageBlur } from '../../core/pageFocus.js';
-import { BookmarkPlus, Braces, Calculator, ChevronDown, ChevronRight, Clock3, Copy, Database, FileCode2, FileUp, FolderTree, GitCompare, MoreHorizontal, PackageOpen, Pencil, Play, Plus, Puzzle, RotateCcw, Save, Search, Sparkles, Star, Trash2, X } from 'lucide-react';
+import { BookmarkPlus, Braces, Calculator, ChevronDown, ChevronRight, Clock3, Copy, Database, FileCode2, FileUp, FolderTree, GitCompare, Layers, MoreHorizontal, PackageOpen, Pencil, Play, Plus, Puzzle, RotateCcw, Save, Search, Sparkles, Star, Trash2, X } from 'lucide-react';
 import { BuiltInNodeDefinitions, createDefaultNodeData, getVisibleNewNodeDefinitions, isNodeDefinitionNew, markNewNodeDefinitionsSeen } from '../nodes/nodeDefinitions.js';
 import { NodeTypeIcon } from '../nodes/NodeTypeIcon.jsx';
 import { CharacterLimit } from '../ui/Inputs.jsx';
@@ -22,7 +22,7 @@ function readLibraryExpansion() {
 }
 
 export function GraphLibraryPanel({
-  graphs = [], templates = [], snapshots = [], nodePrefabs = [], embedAssets = [], graphVariables = [], graphActivity = [], definitions = BuiltInNodeDefinitions, newNodesUserKey = 'anonymous', defaultGraphId, activeGraph, openGraphIds = [], activeTabId, usageScope = 'default', desktopMode = false, canImportGraph = true, sidebarWidth = 320, activeSection: activeSectionProp, onActiveSectionChange, onSidebarResize, onClose, onOpenGraph, onImportGraph, onUseTemplate, onCreateFunction, onDeleteGraph, onDeleteGraphs, onDuplicateGraph, onRenameGraph, onSaveTemplate, onDeleteTemplate, onSetDefault, onExportBot, exportInProgress = false, onAddNode, onAddPrefab, onDeletePrefab, onCreateEmbed, onOpenEmbed, onDeleteEmbed, onManageVariables, onCreateSnapshot, onDeleteSnapshot, onRestoreSnapshot
+  graphs = [], templates = [], snapshots = [], nodePrefabs = [], embedAssets = [], graphVariables = [], graphActivity = [], definitions = BuiltInNodeDefinitions, newNodesUserKey = 'anonymous', defaultGraphId, activeGraph, openGraphIds = [], activeTabId, usageScope = 'default', desktopMode = false, canImportGraph = true, sidebarWidth = 320, activeSection: activeSectionProp, onActiveSectionChange, onSidebarResize, onClose, onOpenGraph, onImportGraph, onUseTemplate, onCreateFunction, onDeleteGraph, onDeleteGraphs, onDuplicateGraph, onRenameGraph, onSaveTemplate, onDeleteTemplate, onSetDefault, onExportBot, exportInProgress = false, onAddNode, onAddPrefab, onDeletePrefab, onCreateEmbed, onCreateComponentsV2, onOpenEmbed, onDeleteEmbed, onManageVariables, onCreateSnapshot, onDeleteSnapshot, onRestoreSnapshot
 }) {
   const uiScale = getArcUiScale();
   const [query, setQuery] = useState('');
@@ -95,12 +95,14 @@ export function GraphLibraryPanel({
   const compatibleTypes = useMemo(() => new Set(definitions.map((definition) => definition.type)), [definitions]);
   const compatiblePrefabs = nodePrefabs.filter((prefab) => compatibleTypes.has(prefab.node?.type));
   const filteredPrefabs = search(prefabSearchIndex, compatiblePrefabs).filter((prefab) => compatibleTypes.has(prefab.node?.type));
-  const filteredEmbeds = search(embedSearchIndex, embedAssets);
+  const searchedAssets = search(embedSearchIndex, embedAssets);
+  const filteredEmbeds = searchedAssets.filter((asset) => asset.kind !== 'components-v2');
+  const filteredComponentsV2 = searchedAssets.filter((asset) => asset.kind === 'components-v2');
   const filteredVariables = search(variableSearchIndex, graphVariables);
   const activeSnapshots = snapshots.filter((snapshot) => snapshot.graphId === activeGraph?.id);
   const frequentNodes = rankByUsage(searchNodes, usage.nodes, (node) => node.type, 5);
   const frequentGraphs = graphs.length >= 10 ? rankByUsage(filteredGraphs, usage.graphs, (graph) => graph.id, 3) : [];
-  const frequentEmbeds = embedAssets.length >= 10 ? rankByUsage(filteredEmbeds, usage.embeds, (asset) => asset.id, 3) : [];
+  const frequentEmbeds = filteredEmbeds.length >= 10 ? rankByUsage(filteredEmbeds, usage.embeds, (asset) => asset.id, 3) : [];
   const allGraphGroupNames = groupGraphs(graphs).map(([name]) => name);
   const allNodeGroupNames = groupNodes(definitions.filter((node) => !node.hidden)).map(([name]) => name);
   const activeGroupKind = activeSection === 'graphs' ? 'graphs' : activeSection === 'nodes' ? 'nodes' : null;
@@ -194,8 +196,8 @@ export function GraphLibraryPanel({
 
   const ignoreLibraryDrop = (event) => {
     const types = event.dataTransfer.types;
-    const hasPayload = window.__arcNodeDragPayload || window.__arcGraphDragPayload || window.__arcEmbedDragPayload
-      || types.includes('application/x-arc-node') || types.includes('application/x-arc-graph-call') || types.includes('application/x-arc-embed-asset')
+    const hasPayload = window.__arcNodeDragPayload || window.__arcGraphDragPayload || window.__arcEmbedDragPayload || window.__arcComponentsV2DragPayload
+      || types.includes('application/x-arc-node') || types.includes('application/x-arc-graph-call') || types.includes('application/x-arc-embed-asset') || types.includes('application/x-arc-components-v2-asset')
       || readLibraryTransferText(event.dataTransfer).startsWith('arc-studio:');
     if (!hasPayload) return;
     event.preventDefault();
@@ -204,6 +206,7 @@ export function GraphLibraryPanel({
     window.__arcNodeDragPayload = null;
     window.__arcGraphDragPayload = null;
     window.__arcEmbedDragPayload = null;
+    window.__arcComponentsV2DragPayload = null;
     clearLibraryDragPayload();
   };
 
@@ -214,7 +217,15 @@ export function GraphLibraryPanel({
     setLibraryTransferData(event, 'application/x-arc-embed-asset', payload);
   };
 
-  const finishEmbedDrag = () => { window.__arcEmbedDragPayload = null; clearLibraryDragPayload(); };
+  const startComponentsV2Drag = (event, asset) => {
+    recordUsage('embeds', asset.id);
+    const payload = { type: 'components-v2-asset', id: asset.id, name: asset.name || 'Untitled Components V2', componentsV2Layout: asset.componentsV2Layout || [], attachments: asset.attachments || [] };
+    window.__arcComponentsV2DragPayload = payload;
+    const transferPayload = { ...payload, attachments: [] };
+    setLibraryTransferData(event, 'application/x-arc-components-v2-asset', transferPayload);
+  };
+
+  const finishEmbedDrag = () => { window.__arcEmbedDragPayload = null; window.__arcComponentsV2DragPayload = null; clearLibraryDragPayload(); };
 
   const startGraphDrag = (event, graph) => {
     recordUsage('graphs', graph.id);
@@ -253,7 +264,7 @@ export function GraphLibraryPanel({
       if (!drag.active) {
         if (drag.payload.nodeType) recordUsageRef.current('nodes', drag.payload.nodeType);
         if (drag.payload.type === 'graph-call') recordUsageRef.current('graphs', drag.payload.graphId);
-        if (drag.payload.type === 'embed-asset') recordUsageRef.current('embeds', drag.payload.id);
+        if (drag.payload.type === 'embed-asset' || drag.payload.type === 'components-v2-asset') recordUsageRef.current('embeds', drag.payload.id);
       }
       drag.active = true;
       event.preventDefault();
@@ -369,7 +380,7 @@ export function GraphLibraryPanel({
 
   return <aside className="graph-library-panel" aria-label="Graph library" style={{ '--arc-sidebar-width': `${sidebarWidth}px` }} onDragOver={previewLibraryDrag} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setLibraryDragGhost(null); }} onDrop={ignoreLibraryDrop}>
     <SidebarResizeHandle width={sidebarWidth} defaultWidth={320} onResize={onSidebarResize} />
-    <header className="graph-library-header"><span><FolderTree size={15} /> Library</span><div className="graph-library-header-actions">{activeGroupKind && activeGroupNames.length > 0 && <button className="graph-library-expand-all" onClick={toggleAllGroups} aria-label={`${allGroupsExpanded ? 'Collapse' : 'Expand'} all ${activeGroupKind} groups`} title={`${allGroupsExpanded ? 'Collapse' : 'Expand'} all ${activeGroupKind} groups`}><ChevronDown size={12} /><span>{allGroupsExpanded ? 'Collapse all' : 'Expand all'}</span></button>}<input ref={importGraphInputRef} type="file" accept=".json,application/json" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) onImportGraph?.(file); event.target.value = ''; }} /><button className="icon-button compact" onClick={() => importGraphInputRef.current?.click()} disabled={!canImportGraph} aria-label="Import graph JSON" title={canImportGraph ? 'Import graph JSON' : 'Graph editing access required'}><FileUp size={14} /></button><button className="icon-button compact" onClick={onClose} aria-label="Close graph library"><X size={14} /></button></div></header>
+    <header className="graph-library-header"><span><FolderTree size={15} /> Library</span><div className="graph-library-header-actions">{activeGroupKind && activeGroupNames.length > 0 && <button className="graph-library-expand-all" onClick={toggleAllGroups} aria-label={`${allGroupsExpanded ? 'Collapse' : 'Expand'} all ${activeGroupKind} groups`} title={`${allGroupsExpanded ? 'Collapse' : 'Expand'} all ${activeGroupKind} groups`}><ChevronDown size={12} /><span>{allGroupsExpanded ? 'Collapse all' : 'Expand all'}</span></button>}<input ref={importGraphInputRef} type="file" accept=".arcgraph,application/vnd.arc-studio.graph+json" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) onImportGraph?.(file); event.target.value = ''; }} /><button className="icon-button compact" onClick={() => importGraphInputRef.current?.click()} disabled={!canImportGraph} aria-label="Import graph file" title={canImportGraph ? 'Import .arcgraph file' : 'Graph editing access required'}><FileUp size={14} /></button><button className="icon-button compact" onClick={onClose} aria-label="Close graph library"><X size={14} /></button></div></header>
     <div className="graph-library-tabs" role="tablist" aria-label="Library sections">
       {[
         ['graphs', 'Graphs', FolderTree],
@@ -464,7 +475,7 @@ export function GraphLibraryPanel({
         {!activeSnapshots.length && <div className="graph-library-empty">{activeGraph ? 'No checkpoints for this graph' : 'Open a graph to see its checkpoints'}</div>}
       </>}
       {activeSection === 'assets' && <>
-        <div className="graph-library-section-heading graph-library-subsection"><span><Sparkles size={13} /> Embeds</span><small>{embedAssets.length}</small><button className="graph-library-section-action" onClick={onCreateEmbed} aria-label="Create embed" title="Create embed"><Plus size={13} /></button></div>
+        <div className="graph-library-section-heading graph-library-subsection"><span><Sparkles size={13} /> Embeds</span><small>{filteredEmbeds.length}</small><button className="graph-library-section-action" onClick={onCreateEmbed} aria-label="Create embed" title="Create embed"><Plus size={13} /></button></div>
         {frequentEmbeds.length > 0 && <section className="graph-library-frequent">
           <div className="graph-library-section-heading graph-library-subsection"><span><Star size={13} /> Frequently used</span><small>{frequentEmbeds.length} / 3</small></div>
           <div className="graph-library-frequent-list">{frequentEmbeds.map((asset) => <button key={asset.id} className="graph-library-entry" onClick={() => { recordUsage('embeds', asset.id); onOpenEmbed?.(asset); }} title="Open embed"><Sparkles size={14} /><span>{asset.name || 'Untitled embed'}</span></button>)}</div>
@@ -473,13 +484,20 @@ export function GraphLibraryPanel({
           <button className="graph-library-entry" draggable={!desktopMode} onPointerDown={(event) => beginPointerDrag(event, { type: 'embed-asset', id: asset.id, name: asset.name || 'Untitled embed', blocks: asset.blocks || [], components: asset.components || [] })} onClickCapture={suppressClickAfterDrag} onDragStart={(event) => startEmbedDrag(event, asset)} onDragEnd={finishEmbedDrag} onClick={() => { recordUsage('embeds', asset.id); onOpenEmbed?.(asset); }} title="Open embed or drag it onto the canvas"><Sparkles size={13} /><span>{asset.name || 'Untitled embed'}</span></button>
           <button className="graph-library-more" onClick={(event) => openEmbedMenu(event, asset)} aria-label={`Actions for ${asset.name || 'embed'}`} title="Embed actions"><MoreHorizontal size={14} /></button>
         </div>)}
-        {!filteredEmbeds.length && <div className="graph-library-empty">{embedAssets.length ? 'No matching embeds' : 'No saved embeds'}</div>}
+        {!filteredEmbeds.length && <div className="graph-library-empty">{embedAssets.some((asset) => asset.kind !== 'components-v2') ? 'No matching embeds' : 'No saved embeds'}</div>}
+        <div className="graph-library-section-heading graph-library-subsection"><span><Layers size={13} /> Components V2</span><small>{filteredComponentsV2.length}</small><button className="graph-library-section-action" onClick={onCreateComponentsV2} aria-label="Create Components V2" title="Create Components V2"><Plus size={13} /></button></div>
+        {filteredComponentsV2.map((asset) => <div className={`graph-library-item ${contextMenu?.kind === 'embed' && contextMenu.graph?.id === asset.id ? 'is-context-menu-open' : ''}`} key={asset.id} onContextMenu={(event) => openEmbedMenu(event, asset)}>
+          <button className="graph-library-entry" draggable={!desktopMode} onPointerDown={(event) => beginPointerDrag(event, { type: 'components-v2-asset', id: asset.id, name: asset.name || 'Untitled Components V2', componentsV2Layout: asset.componentsV2Layout || [], attachments: asset.attachments || [] })} onClickCapture={suppressClickAfterDrag} onDragStart={(event) => startComponentsV2Drag(event, asset)} onDragEnd={finishEmbedDrag} onClick={() => { recordUsage('embeds', asset.id); onOpenEmbed?.(asset); }} title="Open Components V2 or drag it onto a compatible node"><Layers size={13} /><span>{asset.name || 'Untitled Components V2'}</span></button>
+          <button className="graph-library-more" onClick={(event) => openEmbedMenu(event, asset)} aria-label={`Actions for ${asset.name || 'Components V2'}`} title="Components V2 actions"><MoreHorizontal size={14} /></button>
+        </div>)}
+        {!filteredComponentsV2.length && <div className="graph-library-empty">{embedAssets.some((asset) => asset.kind === 'components-v2') ? 'No matching Components V2 assets' : 'No saved Components V2 assets'}</div>}
       </>}
     </div>
     <footer className="graph-library-footer">
-      <button className="graph-template-button" onClick={onCreateFunction}><Calculator size={14} /><span>New function graph</span></button>
+      <button className="graph-template-button" onClick={onCreateFunction} title="Create a new function graph"><Calculator size={14} /><span>New function</span></button>
       <button className="graph-template-button" onClick={onCreateEmbed}><Sparkles size={14} /><span>New embed</span></button>
-      <button className="graph-template-button" onClick={() => onSaveTemplate?.(activeGraph)} disabled={!activeGraph}><BookmarkPlus size={14} /><span>Save active graph as template</span></button>
+      <button className="graph-template-button" onClick={() => onSaveTemplate?.(activeGraph)} disabled={!activeGraph}><BookmarkPlus size={14} /><span>Save graph as template</span></button>
+      <button className="graph-template-button" onClick={onCreateComponentsV2}><Layers size={14} /><span>New Component</span></button>
       <button className="graph-export-button" onClick={() => onExportBot?.()} disabled={exportInProgress || (!graphs.length && !openGraphIds.length)}><PackageOpen size={15} /><span>{exportInProgress ? 'Exporting…' : 'Export app'}</span><kbd>.zip</kbd></button>
     </footer>
     {libraryDragGhost && <div className="library-drag-ghost" style={{ left: libraryDragGhost.x, top: libraryDragGhost.y, '--node-accent': libraryDragGhost.color }} aria-hidden="true"><NodeTypeIcon type={libraryDragGhost.type} color={libraryDragGhost.color} size={14} /><span>{libraryDragGhost.label}</span></div>}
@@ -503,8 +521,8 @@ export function GraphLibraryPanel({
         <button onClick={() => { onAddPrefab?.(contextMenu.graph); setContextMenu(null); }}><FileCode2 size={14} /> Add to graph</button>
         <button className="is-danger" onClick={() => { onDeletePrefab?.(contextMenu.graph); setContextMenu(null); }}><X size={14} /> Delete saved node</button>
       </> : contextMenu.kind === 'embed' ? <>
-        <button onClick={() => { onOpenEmbed?.(contextMenu.graph); setContextMenu(null); }}><Pencil size={14} /> Edit in Embed Studio</button>
-        <button className="is-danger" onClick={() => { onDeleteEmbed?.(contextMenu.graph); setContextMenu(null); }}><X size={14} /> Delete embed</button>
+        <button onClick={() => { onOpenEmbed?.(contextMenu.graph); setContextMenu(null); }}><Pencil size={14} /> {contextMenu.graph.kind === 'components-v2' ? 'Edit in Component Studio' : 'Edit in Embed Studio'}</button>
+        <button className="is-danger" onClick={() => { onDeleteEmbed?.(contextMenu.graph); setContextMenu(null); }}><X size={14} /> {contextMenu.graph.kind === 'components-v2' ? 'Delete Components V2' : 'Delete embed'}</button>
       </> : <>
         <button onClick={() => { onUseTemplate?.(contextMenu.graph); setContextMenu(null); }}><Play size={14} /> Create from template</button>
         <button onClick={() => { onSetDefault?.(contextMenu.graph); setContextMenu(null); }}><Star size={14} fill={defaultGraphId === contextMenu.graph.id ? 'currentColor' : 'none'} /> {defaultGraphId === contextMenu.graph.id ? 'Default for new graphs' : 'Set as new graph default'}</button>
