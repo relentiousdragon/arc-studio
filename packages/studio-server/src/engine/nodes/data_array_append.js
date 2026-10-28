@@ -4,6 +4,7 @@ export default {
   "category": "Values & Data",
   "label": "Append Array Items",
   "color": "#06b6d4",
+  "dynamicPins": { "kind": "array-append-items", "id": "item_{index}", "label": "Item {index}", "connectionPrefix": "item_", "type": "arg", "min": 1, "max": 50, "revealNext": true },
   "inputs": [
     {
       "id": "array",
