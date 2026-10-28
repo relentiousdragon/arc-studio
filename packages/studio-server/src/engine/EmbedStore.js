@@ -2,11 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { dataDir } from '../storage.js';
+import { buildDiscordComponentsV2, validateDiscordComponentsV2 } from './nodes/runtime/builders.js';
 
 const embedStorePath = path.join(dataDir, 'embeds.json');
 const MAX_EMBEDS = 1000;
 const MAX_BLOCKS = 40;
 const MAX_ASSET_BYTES = 64_000;
+const MAX_COMPONENTS_V2_ASSET_BYTES = 34 * 1024 * 1024;
+const MAX_LIBRARY_BYTES = 128 * 1024 * 1024;
 const MAX_COMPONENT_ROWS = 5;
 //
 function normalizeComponents(value) {
@@ -46,7 +49,7 @@ export class EmbedStore {
   load() {
     try {
       const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf8'));
-      this.embeds = Array.isArray(parsed) ? parsed.filter((item) => item && typeof item.id === 'string' && Array.isArray(item.blocks)).slice(0, MAX_EMBEDS) : [];
+      this.embeds = Array.isArray(parsed) ? parsed.filter((item) => item && typeof item.id === 'string' && (Array.isArray(item.blocks) || item.kind === 'components-v2' && Array.isArray(item.componentsV2Layout))).slice(0, MAX_EMBEDS) : [];
     } catch {
       this.embeds = [];
     }
@@ -57,14 +60,29 @@ export class EmbedStore {
   }
 
   save(input, idOverride = null) {
-    if (!input || typeof input !== 'object' || !Array.isArray(input.blocks)) throw new TypeError('An embed must include a blocks array.');
-    if (input.blocks.length > MAX_BLOCKS) throw new RangeError(`An embed can contain at most ${MAX_BLOCKS} blocks.`);
+    if (!input || typeof input !== 'object') throw new TypeError('A library asset is required.');
+    const isComponentsV2 = input.kind === 'components-v2';
+    if (isComponentsV2) {
+      if (!Array.isArray(input.componentsV2Layout) || input.componentsV2Layout.length > MAX_BLOCKS) throw new RangeError(`A Components V2 asset can contain at most ${MAX_BLOCKS} top level blocks.`);
+      const validationErrors = validateDiscordComponentsV2(buildDiscordComponentsV2(input.componentsV2Layout));
+      if (validationErrors.length) throw new TypeError(validationErrors.slice(0, 4).join(' '));
+    } else {
+      if (!Array.isArray(input.blocks)) throw new TypeError('An embed must include a blocks array.');
+      if (input.blocks.length > MAX_BLOCKS) throw new RangeError(`An embed can contain at most ${MAX_BLOCKS} blocks.`);
+    }
     const id = String(idOverride || input.id || `embed_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`).slice(0, 100);
     const name = String(input.name || 'Untitled embed').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 80) || 'Untitled embed';
-    const asset = { id, name, blocks: structuredClone(input.blocks), components: normalizeComponents(input.components), updatedAt: new Date().toISOString() };
-    if (Buffer.byteLength(JSON.stringify(asset), 'utf8') > MAX_ASSET_BYTES) throw new RangeError('This embed is too large to save.');
+    const asset = isComponentsV2
+      ? { id, name, kind: 'components-v2', blocks: [], components: [], componentsV2Layout: structuredClone(input.componentsV2Layout), attachments: Array.isArray(input.attachments) ? structuredClone(input.attachments) : [], updatedAt: new Date().toISOString() }
+      : { id, name, blocks: structuredClone(input.blocks), components: normalizeComponents(input.components), updatedAt: new Date().toISOString() };
+    const assetBytes = Buffer.byteLength(JSON.stringify(asset), 'utf8');
+    if (assetBytes > (isComponentsV2 ? MAX_COMPONENTS_V2_ASSET_BYTES : MAX_ASSET_BYTES)) throw new RangeError(isComponentsV2 ? 'This Components V2 layout and its attachments are too large to save.' : 'This embed is too large to save.');
     const existingIndex = this.embeds.findIndex((embed) => embed.id === id);
     if (existingIndex < 0 && this.embeds.length >= MAX_EMBEDS) throw new RangeError('The shared embed library is full.');
+    const nextEmbeds = [...this.embeds];
+    if (existingIndex < 0) nextEmbeds.unshift(asset);
+    else nextEmbeds[existingIndex] = asset;
+    if (Buffer.byteLength(JSON.stringify(nextEmbeds), 'utf8') > MAX_LIBRARY_BYTES) throw new RangeError('The shared asset library has reached its storage limit.');
     if (existingIndex < 0) this.embeds.unshift(asset);
     else this.embeds[existingIndex] = asset;
     this.persist();
