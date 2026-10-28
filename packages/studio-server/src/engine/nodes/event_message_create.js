@@ -1,6 +1,7 @@
 export default {
   "description": "Fires for every new message. Use Split Text to break message content into parts.",
   "type": "event_message_create",
+  "dynamicPins": { "kind": "connected-output-arguments", "prefix": "argument_", "label": "Legacy Argument {index}", "type": "string", "max": 50 },
   "category": "Events",
   "label": "On Message Create",
   "color": "#5865F2",
