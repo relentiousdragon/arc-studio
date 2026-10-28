@@ -64,6 +64,7 @@ const icons = {
   delay: Timer,
   action_send_message: Send,
   action_edit_message: MessageSquareReply,
+  action_edit_components: MessageSquareReply,
   action_reply_interaction: MessageSquareReply,
   action_defer_reply: MessageSquareReply,
   action_defer_update: RefreshCw,
