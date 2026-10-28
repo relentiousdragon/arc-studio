@@ -1,4 +1,6 @@
 import studioPackage from '../../package.json';
+import { NODE_SCHEMA_VERSION } from '../../../studio-server/src/engine/DynamicNodePins.js';
+import { CLIENT_PROTOCOL_VERSION, NODE_REGISTRY_PROTOCOL_VERSION, SUPPORTED_NODE_REGISTRY_FEATURES } from '../../../studio-server/src/engine/NodeRegistryContract.js';
 //
 function normalizePlatform(value) {
   const platform = String(value || '').toLowerCase();
@@ -20,6 +22,11 @@ function normalizeArchitecture(value) {
 export async function getClientBuildInfo() {
   const fallback = {
     version: studioPackage.version,
+    product: 'arc-studio',
+    protocolVersion: CLIENT_PROTOCOL_VERSION,
+    nodeSchemaVersion: NODE_SCHEMA_VERSION,
+    nodeRegistryProtocolVersion: NODE_REGISTRY_PROTOCOL_VERSION,
+    nodeRegistryFeatures: SUPPORTED_NODE_REGISTRY_FEATURES,
     platform: normalizePlatform(navigator.userAgentData?.platform || navigator.platform),
     architecture: ''
   };
@@ -30,6 +37,11 @@ export async function getClientBuildInfo() {
       if (desktopInfo && typeof desktopInfo === 'object') {
         return {
           version: String(desktopInfo.version || fallback.version),
+          product: fallback.product,
+          protocolVersion: fallback.protocolVersion,
+          nodeSchemaVersion: fallback.nodeSchemaVersion,
+          nodeRegistryProtocolVersion: fallback.nodeRegistryProtocolVersion,
+          nodeRegistryFeatures: fallback.nodeRegistryFeatures,
           platform: normalizePlatform(desktopInfo.platform) || fallback.platform,
           architecture: normalizeArchitecture(desktopInfo.architecture)
         };
