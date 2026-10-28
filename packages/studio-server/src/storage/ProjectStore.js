@@ -1,16 +1,63 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, randomBytes, scryptSync, createCipheriv, createDecipheriv } from 'node:crypto';
 import { dataDir } from '../storage.js';
 import { serverConfig } from '../config.js';
 import { getStarterProject } from './StarterProjects.js';
 import { compareArcStudioVersions, currentArcStudioVersion, projectVersionAge } from '../versioning/arcProjectCompatibility.js';
+import { withIntegrity, verifyIntegrity } from './Integrity.js';
 
 const registryPath = path.join(dataDir, 'projects.json');
 const projectRoot = path.join(dataDir, 'projects');
 const projectFiles = ['graphs.json', 'graph-library.json', 'bot-config.json', 'statistics.json', 'embeds.json', 'project-variables.json'];
 const DEFAULT_MAX_PROJECTS = 10;
+const PROJECT_EXPORT_KDF = Object.freeze({ N: 32768, r: 8, p: 1 });
+const PROJECT_EXPORT_AAD = 'arc-studio-encrypted-project-v1';
 //
+function normalizeExportPassword(password) {
+  if (typeof password !== 'string' || password.length < 12 || password.length > 1024) throw new TypeError('Use an export password between 12 and 1,024 characters.');
+  return password;
+}
+
+function encryptProjectBundle(bundle, password) {
+  normalizeExportPassword(password);
+  const salt = randomBytes(16);
+  const iv = randomBytes(12);
+  const key = scryptSync(password, salt, 32, { ...PROJECT_EXPORT_KDF, maxmem: 128 * 1024 * 1024 });
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  cipher.setAAD(Buffer.from(PROJECT_EXPORT_AAD));
+  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(bundle), 'utf8'), cipher.final()]);
+  return {
+    format: 'arc-project-encrypted', version: 1, cipher: 'aes-256-gcm', kdf: 'scrypt', ...PROJECT_EXPORT_KDF,
+    salt: salt.toString('base64'), iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), data: ciphertext.toString('base64')
+  };
+}
+
+function decryptProjectBundle(envelope, password) {
+  normalizeExportPassword(password);
+  if (!envelope || envelope.format !== 'arc-project-encrypted' || envelope.version !== 1 || envelope.cipher !== 'aes-256-gcm'
+    || envelope.kdf !== 'scrypt' || envelope.N !== PROJECT_EXPORT_KDF.N || envelope.r !== PROJECT_EXPORT_KDF.r || envelope.p !== PROJECT_EXPORT_KDF.p) {
+    throw new TypeError('This encrypted project format is not supported.');
+  }
+  try {
+    const salt = Buffer.from(envelope.salt, 'base64');
+    const iv = Buffer.from(envelope.iv, 'base64');
+    const tag = Buffer.from(envelope.tag, 'base64');
+    const data = Buffer.from(envelope.data, 'base64');
+    if (salt.length !== 16 || iv.length !== 12 || tag.length !== 16 || data.length > 128 * 1024 * 1024) throw new Error('Invalid encrypted project data.');
+    const key = scryptSync(password, salt, 32, { ...PROJECT_EXPORT_KDF, maxmem: 128 * 1024 * 1024 });
+    const decipher = createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAAD(Buffer.from(PROJECT_EXPORT_AAD));
+    decipher.setAuthTag(tag);
+    const plaintext = Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8');
+    const bundle = JSON.parse(plaintext);
+    if (!bundle || bundle.format !== 'arc-project') throw new Error('Invalid project payload.');
+    return bundle;
+  } catch {
+    throw new Error('The password is incorrect or the encrypted project file is damaged.');
+  }
+}
+
 function cleanName(value) {
   const name = String(value || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 64);
   if (!name) throw new TypeError('Enter a project name.');
@@ -176,7 +223,7 @@ export class ProjectStore {
     return value;
   }
 
-  exportProject(id, { includeSecrets = false } = {}) {
+  exportProject(id, { includeSecrets = false, secretValueResolver = null } = {}) {
     const project = this.projects.find((item) => item.id === id);
     if (!project) throw new Error('That project no longer exists.');
     const files = {};
@@ -185,10 +232,46 @@ export class ProjectStore {
       catch { files[filename] = filename === 'graphs.json' ? { graphs: [], deletedIds: [] } : filename === 'graph-library.json' ? { templates: [], snapshots: [] } : {}; }
     }
     let sensitiveCount = 0;
+    const defaultValueForType = (type) => type === 'number' ? 0 : type === 'boolean' ? false : type === 'array' ? [] : type === 'object' ? {} : '';
+    const sanitizeVariables = (variables, scope, graphId, allowSecretValues = true) => variables.map((variable) => {
+      if (!variable?.secret) return sanitizeSecretDefinitions(variable, scope, graphId, allowSecretValues);
+      sensitiveCount += 1;
+      const safe = { ...variable, secret: true, initialValue: defaultValueForType(variable.type || variable.valueType) };
+      delete safe.secretStored;
+      delete safe.secretValue;
+      if (includeSecrets && allowSecretValues) {
+        const secretValue = typeof secretValueResolver === 'function'
+          ? secretValueResolver(scope, graphId, variable.id)
+          : variable.secretValue;
+        if (secretValue !== undefined) safe.secretValue = structuredClone(secretValue);
+      }
+      return safe;
+    });
+    const sanitizeSecretDefinitions = (value, scope = 'graph', graphId = '', allowSecretValues = true) => {
+      if (Array.isArray(value)) return value.map((entry) => sanitizeSecretDefinitions(entry, scope, graphId, allowSecretValues));
+      if (!value || typeof value !== 'object') return value;
+      const currentGraphId = typeof value.id === 'string' && Array.isArray(value.nodes) ? value.id : graphId;
+      return Object.fromEntries(Object.entries(value).map(([key, entry]) => {
+        if (key === 'variables' && Array.isArray(entry)) return [key, sanitizeVariables(entry, scope, currentGraphId, allowSecretValues)];
+        if (key === 'snapshots' && Array.isArray(entry)) return [key, entry.map((snapshot) => sanitizeSecretDefinitions(snapshot, scope, graphId, false))];
+        if (key === 'graphId' && typeof entry === 'string') return [key, entry];
+        if (key === 'graph' && entry && typeof entry === 'object') {
+          const snapshotGraphId = typeof value.graphId === 'string' ? value.graphId : graphId;
+          return [key, sanitizeSecretDefinitions(entry, scope, snapshotGraphId, allowSecretValues)];
+        }
+        return [key, sanitizeSecretDefinitions(entry, scope, currentGraphId, allowSecretValues)];
+      }));
+    };
+    for (const filename of projectFiles) {
+      files[filename] = filename === 'project-variables.json' && Array.isArray(files[filename])
+        ? sanitizeVariables(files[filename], 'project', '')
+        : sanitizeSecretDefinitions(files[filename]);
+    }
     const redact = (value) => {
       if (Array.isArray(value)) return value.map(redact);
       if (!value || typeof value !== 'object') return value;
       return Object.fromEntries(Object.entries(value).flatMap(([key, entry]) => {
+        if (key === 'secret' && entry === true) return [[key, true]];
         if (/token|authorization|cookie|secret|password|api[-_]?key|headers?/i.test(key)) {
           if (entry !== '' && entry !== null && entry !== undefined) sensitiveCount += 1;
           return includeSecrets ? [[key, redact(entry)]] : [];
@@ -201,12 +284,26 @@ export class ProjectStore {
     if ((typeof botConfig === 'string' && botConfig.length > 0)
       || (botConfig && typeof botConfig === 'object' && Object.keys(botConfig).length > 0)) sensitiveCount += 1;
     exportedFiles['bot-config.json'] = {};
-    return { format: 'arc-project', version: 1, project: { name: project.name, exportedAt: new Date().toISOString(), createdWithVersion: currentArcStudioVersion }, files: exportedFiles, sensitiveData: includeSecrets ? undefined : { omittedFields: sensitiveCount } };
+    return withIntegrity({ format: 'arc-project', version: 1, project: { name: project.name, exportedAt: new Date().toISOString(), createdWithVersion: currentArcStudioVersion }, files: exportedFiles, sensitiveData: includeSecrets ? undefined : { omittedFields: sensitiveCount } });
+  }
+
+  exportEncryptedProject(id, password, options = {}) {
+    return encryptProjectBundle(this.exportProject(id, options), password);
+  }
+
+  decryptProjectBundle(envelope, password) {
+    return decryptProjectBundle(envelope, password);
   }
 
   importProject(bundle, { trusted = false, allowOldVersion = false, ownerId = '' } = {}) {
     if (!trusted) throw new Error('Confirm that you trust this project file before importing it.');
     if (!bundle || bundle.format !== 'arc-project' || bundle.version !== 1 || !bundle.files || typeof bundle.files !== 'object' || Array.isArray(bundle.files)) throw new TypeError('This is not a supported ARC project file.');
+    const integrity = verifyIntegrity(bundle);
+    if (!integrity.valid) {
+      const error = new Error('The project file integrity check failed. This file may be corrupted or altered.');
+      error.code = 'PROJECT_INTEGRITY_FAILED';
+      throw error;
+    }
     const createdWithVersion = bundle.project?.createdWithVersion;
     const versionOrder = createdWithVersion ? compareArcStudioVersions(createdWithVersion, currentArcStudioVersion) : null;
     if (versionOrder === 1) {
