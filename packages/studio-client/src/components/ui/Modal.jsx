@@ -1,12 +1,51 @@
-import React, { useEffect, useRef } from 'react';
-import { X } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { ChevronDown, X } from 'lucide-react';
 //
-export function Modal({ isOpen, onClose, onConfirm, title, subtitle, icon: Icon, iconClassName = '', headerMeta, children, footer, maxWidth, panelClassName = '', shake = false }) {
+export function Modal({ isOpen, onClose, onConfirm, title, subtitle, icon: Icon, iconClassName = '', headerMeta, children, footer, maxWidth, panelClassName = '', shake = false, showScrollCue = false }) {
   const dialogRef = useRef(null);
+  const bodyRef = useRef(null);
+  const [hasMoreContent, setHasMoreContent] = useState(false);
+  const [scrollCueMounted, setScrollCueMounted] = useState(false);
   const onCloseRef = useRef(onClose);
   const onConfirmRef = useRef(onConfirm);
   onCloseRef.current = onClose;
   onConfirmRef.current = onConfirm;
+
+  useEffect(() => {
+    const body = bodyRef.current;
+    if (!isOpen || !showScrollCue || !body) {
+      setHasMoreContent(false);
+      setScrollCueMounted(false);
+      return undefined;
+    }
+    let hideTimer = 0;
+    const updateScrollCue = () => {
+      const remaining = body.scrollHeight - body.clientHeight - body.scrollTop;
+      const canScrollFurther = remaining > 8;
+      setHasMoreContent(canScrollFurther);
+      if (canScrollFurther) {
+        window.clearTimeout(hideTimer);
+        hideTimer = 0;
+        setScrollCueMounted(true);
+      } else if (!hideTimer) {
+        hideTimer = window.setTimeout(() => setScrollCueMounted(false), 180);
+      }
+    };
+    updateScrollCue();
+    body.addEventListener('scroll', updateScrollCue, { passive: true });
+    const resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateScrollCue);
+    resizeObserver?.observe(body);
+    const mutationObserver = typeof MutationObserver === 'undefined' ? null : new MutationObserver(updateScrollCue);
+    mutationObserver?.observe(body, { childList: true, subtree: true, characterData: true });
+    window.addEventListener('resize', updateScrollCue);
+    return () => {
+      body.removeEventListener('scroll', updateScrollCue);
+      resizeObserver?.disconnect();
+      mutationObserver?.disconnect();
+      window.removeEventListener('resize', updateScrollCue);
+      window.clearTimeout(hideTimer);
+    };
+  }, [isOpen, showScrollCue, children]);
 
   useEffect(() => {
     if (!isOpen) return undefined;
@@ -55,7 +94,8 @@ export function Modal({ isOpen, onClose, onConfirm, title, subtitle, icon: Icon,
         {headerMeta && <div className="modal-header-meta">{headerMeta}</div>}
         <button type="button" className="icon-button" onClick={(event) => { event.stopPropagation(); onClose?.(); }} aria-label="Close dialog"><X size={17} /></button>
       </header>
-      <div className="modal-body">{children}</div>
+      <div ref={bodyRef} className="modal-body">{children}</div>
+      {showScrollCue && scrollCueMounted && <button type="button" className={`modal-scroll-cue ${hasMoreContent ? '' : 'is-hiding'}`} aria-label="Scroll to the remaining options" onClick={() => bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight, behavior: 'smooth' })}><ChevronDown size={15} /></button>}
       {footer && <footer className="modal-footer">{footer}</footer>}
     </section>
   </div>;
