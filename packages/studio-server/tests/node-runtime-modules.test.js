@@ -107,6 +107,7 @@ test('Discord REST permission errors fail the graph run without escaping the nod
       { sourceNodeId: 'event', sourcePinId: 'exec', targetNodeId: 'action', targetPinId: 'exec' }
     ]
   }, 'MESSAGE_CREATE', { content: 'runtime test' }, {
+    mock: true,
     rest: {
       createMessage: async () => {
         const error = new Error('Missing Access');
