@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { CanvasNode } from '../nodes/CanvasNode.jsx';
-import { BuiltInNodeDefinitions, getArrayAppendPins, getArrayCombinePins, getArrayCreatePins, getMathListPins, getNodeArgumentPins, getNodeTemplateInputPins, getPermissionOverwritePins, getSwitchCasePins, PinColors, getTextTemplateSlots } from '../nodes/nodeDefinitions.js';
+import { BuiltInNodeDefinitions, functionArgumentPinId, functionInputPinType, getFunctionGraphArguments, getFunctionInputArguments, getNodeArgumentPins, getNodeTemplateInputPins, PinColors, getTextTemplateSlots, resolveDynamicNodePins } from '../nodes/nodeDefinitions.js';
 import { ChevronDown, ChevronUp, FastForward, FileCode2, FolderTree, Hand, LockKeyhole, LockOpen, Maximize, Minus, MousePointer2, Plus, Scissors, Search, StepForward, Type, X } from 'lucide-react';
 import { embedBlockPins, getEmbedBlocks, getEmbedFieldSocketLabels } from '../nodes/EmbedNodeBuilder.jsx';
 import { getArcUiScale } from '../../core/uiScale.js';
@@ -87,7 +87,9 @@ function GraphChatBubble({ bubble, isOwn, zoom, displayScale, onMove }) {
   const dragRef = useRef(null);
   const lastMoveSentRef = useRef(0);
   const pendingMoveRef = useRef(null);
-  useEffect(() => setPosition({ x: bubble.x, y: bubble.y }), [bubble.x, bubble.y]);
+  useEffect(() => {
+    if (!dragRef.current) setPosition({ x: bubble.x, y: bubble.y });
+  }, [bubble.x, bubble.y]);
   const sendPosition = (point) => {
     onMove?.(bubble.id, point);
     lastMoveSentRef.current = Date.now();
@@ -299,7 +301,7 @@ export function NodeCanvas({
       id: graph.id,
       name: graph.name,
       nodes: (graph.nodes || []).filter((node) => node.type === 'function_input' || node.type === 'function_return').map((node) => node.type === 'function_input'
-        ? [node.id, node.type, node.data?.paramId, node.data?.name, node.data?.optional, node.data?.valueType, node.data?.defaultValue]
+        ? [node.id, node.type, getFunctionInputArguments(node)]
         : [node.id, node.type, node.data?.valueType])
     }));
     const signature = JSON.stringify(signatureData);
@@ -497,6 +499,11 @@ export function NodeCanvas({
     }, 100);
     return () => window.clearInterval(timer);
   }, [canvasArrows.length, localTransientArrows.length]);
+  useEffect(() => {
+    const acknowledged = new Set(transientArrows.map((arrow) => arrow?.clientActionId).filter(Boolean));
+    if (!acknowledged.size) return;
+    setLocalTransientArrows((previous) => previous.filter((arrow) => !acknowledged.has(arrow.clientActionId)));
+  }, [transientArrows]);
   useEffect(() => {
     const current = new Map([
       ...transientArrows.filter((arrow) => arrow?.id && arrow.start && arrow.end).map((arrow) => [arrow.id, arrow]),
@@ -1002,6 +1009,7 @@ export function NodeCanvas({
       const count = Math.min(16, Math.max(1, highestConnected + 1));
       return { ...nextDefinition, inputs: [...inputs, ...Array.from({ length: count - 1 }, (_, index) => ({ ...execPin, id: `${baseId}_${index + 2}`, label: `Exec ${index + 2}` }))] };
     };
+    const schemaPins = resolveDynamicNodePins(definition, node, nodeConnections.incident);
     if (node.type === 'utility_wire_extender') {
       const resolvePin = (nodeId, pinId, direction, seen = new Set()) => {
         const key = `${nodeId}:${pinId}:${direction}`;
@@ -1024,75 +1032,30 @@ export function NodeCanvas({
           ? resolvePin(wire.sourceNodeId, wire.sourcePinId, 'output', seen)
           : resolvePin(wire.targetNodeId, wire.targetPinId, 'input', seen);
       };
-      const highestUsed = nodeConnections.incident.reduce((highest, wire) => {
-        const endpoint = wire.sourceNodeId === node.id ? wire.sourcePinId : wire.targetNodeId === node.id ? wire.targetPinId : '';
-        return Math.max(highest, Number(/^value_(?:in|out)_(\d+)$/.exec(endpoint)?.[1]) || (endpoint === 'value_in' || endpoint === 'value_out' ? 1 : 0));
-      }, 0);
-      const legacyFirst = nodeConnections.incident.some((wire) => (wire.sourceNodeId === node.id && wire.sourcePinId === 'value_out') || (wire.targetNodeId === node.id && wire.targetPinId === 'value_in'));
-      const pairCount = Math.min(7, Math.max(1, highestUsed + 1));
-      const inputs = [{ ...definition.inputs[0] }];
-      const outputs = [{ ...definition.outputs[0] }];
-      for (let index = 1; index <= pairCount; index += 1) {
-        const inputId = legacyFirst && index === 1 ? 'value_in' : `value_in_${index}`;
-        const outputId = legacyFirst && index === 1 ? 'value_out' : `value_out_${index}`;
+      const resolveExtenderPin = (pin) => {
+        if (pin.type === 'exec') return pin;
+        const index = pin.id.match(/_(\d+)$/)?.[1] || '1';
+        const inputId = pin.id.startsWith('value_in') ? pin.id : `value_in_${index}`;
+        const outputId = pin.id.startsWith('value_out') ? pin.id : `value_out_${index}`;
         const incoming = connectionByNodePin.incoming.get(node.id)?.get(inputId);
         const outgoing = connectionByNodePin.outgoing.get(node.id)?.get(outputId);
         const inferred = (incoming && resolvePin(incoming.sourceNodeId, incoming.sourcePinId, 'output'))
           || (outgoing && resolvePin(outgoing.targetNodeId, outgoing.targetPinId, 'input'));
-        const type = inferred?.type && inferred.type !== 'any' ? inferred.type : 'any';
-        const label = inferred?.label || `Any Value ${index}`;
-        inputs.push({ id: inputId, label, type });
-        outputs.push({ id: outputId, label, type });
-      }
+        return inferred?.type && inferred.type !== 'any' ? { ...pin, label: inferred.label || pin.label, type: inferred.type } : pin;
+      };
+      const inputs = (schemaPins?.inputs || definition.inputs).map(resolveExtenderPin);
+      const outputs = (schemaPins?.outputs || definition.outputs).map(resolveExtenderPin);
       return withExecInputPins({ ...definition, inputs, outputs });
     };
     const withArgumentPins = (nextDefinition) => {
-      const argumentPins = getNodeArgumentPins(node, nextDefinition.inputs || [], nodeConnections.incident);
+      const argumentPins = nextDefinition.pluginAdapter ? [] : getNodeArgumentPins(node, nextDefinition.inputs || [], nodeConnections.incident);
       const existingIds = new Set((nextDefinition.inputs || []).map((pin) => pin.id));
       const withArguments = argumentPins.length
         ? { ...nextDefinition, inputs: [...(nextDefinition.inputs || []), ...argumentPins.filter((pin) => !existingIds.has(pin.id))] }
         : nextDefinition;
       return withExecInputPins(withArguments);
     };
-    if (node.type === 'event_message_create') {
-      const highestArgument = nodeConnections.outgoing.reduce((highest, wire) => Math.max(highest, Number(/^argument_(\d+)$/.exec(wire.sourcePinId)?.[1]) || 0), 0);
-      const argumentOutputs = Array.from({ length: Math.min(50, highestArgument) }, (_, index) => ({ id: `argument_${index + 1}`, label: `Legacy Argument ${index + 1}`, type: 'string' }));
-      return withArgumentPins({ ...definition, outputs: [...definition.outputs.filter((pin) => !/^argument_\d+$/.test(pin.id)), ...argumentOutputs] });
-    }
-    if (node.type === 'event_slash_command') {
-      const optionOutputs = (Array.isArray(node.data?.options) ? node.data.options : []).filter((option) => /^[a-z0-9_-]{1,32}$/.test(String(option.name || ''))).map((option) => ({ id: `option_${option.name}`, label: option.name, type: ({ 4: 'number', 10: 'number', 5: 'boolean' })[Number(option.type)] || 'string' }));
-      return withArgumentPins({ ...definition, outputs: [...definition.outputs.filter((pin) => !pin.id.startsWith('option_')), ...optionOutputs] });
-    }
-    if (node.type === 'data_permission_overwrites') return withExecInputPins({ ...definition, inputs: getPermissionOverwritePins(node, nodeConnections.incident) });
-    if (node.type === 'data_string_split' || node.type === 'data_parse_prefix_command') {
-      const partPrefix = node.type === 'data_string_split' ? 'part_' : 'argument_';
-      const partPattern = node.type === 'data_string_split' ? /^part_(\d+)$/ : /^argument_(\d+)$/;
-      const highest = nodeConnections.outgoing.reduce((value, wire) => {
-        return Math.max(value, Number(partPattern.exec(wire.sourcePinId)?.[1]) || 0);
-      }, 0);
-      const partCount = Math.min(50, Math.max(1, highest + 1));
-      const partOutputs = Array.from({ length: partCount }, (_, index) => ({
-        id: `${partPrefix}${index + 1}`,
-        label: node.type === 'data_string_split' ? `Part ${index + 1}` : `Argument ${index + 1}`,
-        type: 'string'
-      }));
-      return withExecInputPins({ ...definition, outputs: [...definition.outputs, ...partOutputs] });
-    }
-    if (node.type === 'data_array_create') return withExecInputPins({ ...definition, inputs: getArrayCreatePins(node, nodeConnections.incident) });
-    if (node.type === 'data_array_append') return withExecInputPins({ ...definition, inputs: [...definition.inputs.filter((pin) => pin.id === 'array'), ...getArrayAppendPins(node, nodeConnections.incident)] });
-    if (node.type === 'data_array_concat') return withExecInputPins({ ...definition, inputs: getArrayCombinePins(node, nodeConnections.incident) });
-    if (node.type === 'math_sum' || node.type === 'math_average') return withExecInputPins({ ...definition, inputs: getMathListPins(node, nodeConnections.incident) });
-    if (node.type === 'branch_switch') return withExecInputPins({
-      ...definition,
-      inputs: [...definition.inputs.filter((pin) => !/^case_\d+$/.test(pin.id)), ...getSwitchCasePins(node, nodeConnections.incident, 'inputs')],
-      outputs: [...definition.outputs.filter((pin) => !/^case_\d+_exec$/.test(pin.id)), ...getSwitchCasePins(node, nodeConnections.incident, 'outputs')]
-    });
-    if (node.type === 'logic_xor_many') {
-      const highest = nodeConnections.incoming.reduce((value, wire) => Math.max(value, Number(/^input_(\d+)$/.exec(wire.targetPinId)?.[1]) || 0), 0);
-      const count = Math.min(25, Math.max(2, highest + 1));
-      const inputs = Array.from({ length: count }, (_, index) => ({ id: `input_${index + 1}`, label: `Input ${index + 1}`, type: 'boolean', defaultValue: false }));
-      return withExecInputPins({ ...definition, inputs });
-    }
+    if (schemaPins) return withExecInputPins({ ...definition, ...schemaPins });
     if (node.type === 'variable_create') {
       const valueWire = connectionByNodePin.incoming.get(node.id)?.get('value');
       const sourceNode = valueWire && definitionNodesById.get(valueWire.sourceNodeId);
@@ -1127,11 +1090,11 @@ export function NodeCanvas({
         return canvasGraphVariables.find((item) => item.id === targetNode.data?.variableId) || null;
       };
       const variable = resolveVariable(node);
-      const pinType = ['array', 'object'].includes(variable?.type) ? 'object' : variable?.type || 'string';
+      const pinType = ['array', 'object', 'attachment'].includes(variable?.type) ? 'object' : variable?.type || 'string';
       const pinLabel = variable?.name || 'Value';
       return node.type === 'variable_get'
-        ? withArgumentPins({ ...definition, outputs: definition.outputs.map((pin) => pin.id === 'value' ? { ...pin, label: pinLabel, type: pinType, colorType: variable?.type || pinType } : pin) })
-        : withArgumentPins({ ...definition, inputs: definition.inputs.map((pin) => pin.id === 'value' ? { ...pin, label: pinLabel, type: pinType, colorType: variable?.type || pinType, defaultValue: variable?.initialValue ?? '' } : pin) });
+        ? withArgumentPins({ ...definition, outputs: definition.outputs.map((pin) => pin.id === 'value' ? { ...pin, label: pinLabel, type: pinType, colorType: variable?.type === 'attachment' ? 'attachment' : variable?.type || pinType } : pin) })
+        : withArgumentPins({ ...definition, inputs: definition.inputs.map((pin) => pin.id === 'value' ? { ...pin, label: pinLabel, type: pinType, colorType: variable?.type === 'attachment' ? 'attachment' : variable?.type || pinType, defaultValue: variable?.initialValue ?? '' } : pin) });
     }
     if (node.type === 'build_embed' && Array.isArray(node.data?.blocks)) {
       return withArgumentPins({ ...definition, inputs: embedBlockPins(getEmbedBlocks(node.data), canvasGraphVariables) });
@@ -1161,12 +1124,18 @@ export function NodeCanvas({
       }) });
     }
     if (node.type === 'function_input') {
-      const type = node.data?.valueType || 'number';
+      const hasArgumentList = Array.isArray(node.data?.arguments);
       return withExecInputPins({
         ...definition,
-        outputs: [
+        outputs: hasArgumentList ? [
           { id: 'exec', label: 'Exec', type: 'exec' },
-          { id: 'value', label: node.data?.name || 'Value', type }
+          ...getFunctionInputArguments(node).map((argument) => ({
+            id: functionArgumentPinId(argument), label: argument.name, type: functionInputPinType(argument),
+            ...(argument.valueType === 'channel_id' || argument.valueType === 'interaction_token' ? { semanticType: argument.valueType } : {})
+          }))
+        ] : [
+          { id: 'exec', label: 'Exec', type: 'exec' },
+          { id: 'value', label: node.data?.name || 'Value', type: node.data?.valueType || 'number' }
         ]
       });
     }
@@ -1182,13 +1151,13 @@ export function NodeCanvas({
     }
     if (node.type === 'function_call') {
       const target = functionGraphDefinitionViews.find((graph) => graph.id === node.data?.graphId);
-      const params = (target?.nodes || []).filter((item) => item.type === 'function_input');
+      const params = getFunctionGraphArguments(target);
       const returnNode = target?.nodes?.find((item) => item.type === 'function_return');
       return withExecInputPins({
         ...definition,
         inputs: [
           { id: 'exec', label: 'Exec', type: 'exec' },
-          ...params.map((param) => ({ id: `arg_${param.data?.paramId || param.id}`, label: `${param.data?.name || 'Input'}${param.data?.optional !== false ? ' (optional)' : ''}`, type: param.data?.valueType || 'number', defaultValue: param.data?.defaultValue ?? defaultForType(param.data?.valueType) }))
+          ...params.map((param) => ({ id: functionArgumentPinId(param), label: `${param.name || 'Input'}${param.optional ? ' (optional)' : ''}`, type: functionInputPinType(param), defaultValue: param.defaultValue ?? defaultForType(functionInputPinType(param)), ...(param.valueType === 'channel_id' || param.valueType === 'interaction_token' ? { semanticType: param.valueType } : {}) }))
         ],
         outputs: [
           { id: 'exec', label: 'Exec', type: 'exec' },
@@ -1278,11 +1247,11 @@ export function NodeCanvas({
     const target = document.elementFromPoint(clientX, clientY);
     if (!target || !container.contains(target)) { setLibraryDragPreview(null); return; }
     const bounds = container.getBoundingClientRect();
-    const type = payload?.previewNode?.type || payload?.prefabNode?.type || payload?.nodeType || (payload?.type === 'graph-call' ? 'function_call' : payload?.type === 'embed-asset' ? 'build_embed' : null);
+    const type = payload?.previewNode?.type || payload?.prefabNode?.type || payload?.nodeType || (payload?.type === 'graph-call' ? 'function_call' : payload?.type === 'embed-asset' ? 'build_embed' : payload?.type === 'components-v2-asset' ? 'build_components' : null);
     const definition = definitionsByType.get(type);
     if (!definition) { setLibraryDragPreview(null); return; }
     const targetGraph = payload.type === 'graph-call' ? callableGraphs.find((graph) => graph.id === payload.graphId) : null;
-    const sourceNode = payload.previewNode || payload.prefabNode || (targetGraph ? { type, label: `Call ${targetGraph.name || 'Graph'}`, data: { graphId: targetGraph.id } } : payload.type === 'embed-asset' ? { type, label: payload.name || 'Embed', data: { blocks: payload.blocks || [], embedName: payload.name || 'Untitled embed' } } : null);
+    const sourceNode = payload.previewNode || payload.prefabNode || (targetGraph ? { type, label: `Call ${targetGraph.name || 'Graph'}`, data: { graphId: targetGraph.id } } : payload.type === 'embed-asset' ? { type, label: payload.name || 'Embed', data: { blocks: payload.blocks || [], embedName: payload.name || 'Untitled embed' } } : payload.type === 'components-v2-asset' ? { type, label: payload.name || 'Components V2', data: { componentsV2: payload.componentsV2Layout || [] } } : null);
     const node = sourceNode
       ? { ...sourceNode, id: '__arc_drag_preview__', type, x: 0, y: 0, data: sourceNode.data || {} }
       : { id: '__arc_drag_preview__', type, x: 0, y: 0, data: {} };
@@ -1295,17 +1264,19 @@ export function NodeCanvas({
   }, [definitionsByType, callableGraphs, getNodeDefinition, onCollaborationAction, pan, zoom]);
 
   const updateLibraryDragPreview = (event) => {
-    const activePayload = window.__arcNodeDragPayload || window.__arcGraphDragPayload || window.__arcEmbedDragPayload;
+    const activePayload = window.__arcNodeDragPayload || window.__arcGraphDragPayload || window.__arcEmbedDragPayload || window.__arcComponentsV2DragPayload;
     const raw = readTransferData(event.dataTransfer, 'application/x-arc-node');
     const graphRaw = readTransferData(event.dataTransfer, 'application/x-arc-graph-call');
     const embedRaw = readTransferData(event.dataTransfer, 'application/x-arc-embed-asset');
+    const componentsV2Raw = readTransferData(event.dataTransfer, 'application/x-arc-components-v2-asset');
     const fallback = parseLibraryTransferText(readTransferData(event.dataTransfer, 'text/plain'));
     let payload = activePayload;
     if (!payload && raw) { try { payload = JSON.parse(raw); } catch {} }
     if (!payload && graphRaw) { try { payload = { type: 'graph-call', ...JSON.parse(graphRaw) }; } catch {} }
     if (!payload && embedRaw) { try { payload = JSON.parse(embedRaw); } catch {} }
+    if (!payload && componentsV2Raw) { try { payload = JSON.parse(componentsV2Raw); } catch {} }
     if (!payload && fallback) payload = window.__arcLibraryDragPayloads?.[fallback.token]?.payload;
-    if (!payload || (!payload.previewNode?.type && !payload.nodeType && !payload.prefabNode?.type && payload.type !== 'graph-call' && payload.type !== 'embed-asset')) {
+    if (!payload || (!payload.previewNode?.type && !payload.nodeType && !payload.prefabNode?.type && payload.type !== 'graph-call' && payload.type !== 'embed-asset' && payload.type !== 'components-v2-asset')) {
       setLibraryDragPreview(null);
       return;
     }
@@ -1314,19 +1285,57 @@ export function NodeCanvas({
     showLibraryDragPreview(payload, event.clientX, event.clientY);
   };
 
+  const applyComponentsV2AssetToTarget = useCallback((payload, targetElement) => {
+    const targetId = targetElement?.closest?.('[data-node-card-id]')?.getAttribute('data-node-card-id');
+    const target = nodes.find((node) => node.id === targetId);
+    if (!target) return false;
+    const allowedMessageTypes = new Set(['action_send_message', 'action_reply_interaction', 'action_edit_message', 'action_edit_components', 'action_edit_interaction_reply']);
+    const layout = Array.isArray(payload?.componentsV2Layout) ? payload.componentsV2Layout : [];
+    let reason = '';
+    if (!layout.length) reason = 'This Components V2 asset is empty.';
+    else if (target.type === 'build_components') {
+      if ((target.data?.componentsV2 || []).length) reason = 'This Component Builder already has content.';
+    } else if (allowedMessageTypes.has(target.type)) {
+      const incoming = connections.filter((connection) => connection.targetNodeId === target.id);
+      const isWired = (pinId) => incoming.some((connection) => connection.targetPinId === pinId);
+      const hasEmbedContent = Array.isArray(target.data?.blocks) && target.data.blocks.length > 0;
+      const hasLegacyComponents = Array.isArray(target.data?.components) && target.data.components.some((row) => row.components?.length);
+      const hasV2Content = Array.isArray(target.data?.componentsV2Layout) && target.data.componentsV2Layout.length > 0;
+      if (isWired('content') || String(target.data?.content || '').trim()) reason = 'Message content must be empty and unconnected.';
+      else if (isWired('embed') || hasEmbedContent) reason = 'The embed must be empty and unconnected.';
+      else if (isWired('components') || hasLegacyComponents || hasV2Content) reason = 'Components must be empty and unconnected.';
+    } else reason = 'Drop this asset onto a Component Builder or a message action node.';
+
+    if (reason) {
+      shakeNode(target.id);
+      return true;
+    }
+    const nextNodes = nodes.map((node) => {
+      if (node.id !== target.id) return node;
+      const attachmentsByName = new Map((node.data?.attachments || []).map((attachment) => [String(attachment.filename || '').toLowerCase(), attachment]));
+      for (const attachment of payload.attachments || []) attachmentsByName.set(String(attachment.filename || '').toLowerCase(), attachment);
+      return node.type === 'build_components'
+        ? { ...node, data: { ...node.data, componentsV2: structuredCloneSafe(layout), attachments: [...attachmentsByName.values()] } }
+        : { ...node, data: { ...node.data, componentsV2Enabled: true, componentsV2Layout: structuredCloneSafe(layout), attachments: [...attachmentsByName.values()] } };
+    });
+    onNodesChange?.(nextNodes);
+    return true;
+  }, [connections, nodes, onNodesChange, shakeNode]);
+
   const dropLibraryPayload = useCallback((payload, clientX, clientY, targetElement) => {
     const container = containerRef.current;
     if (!container || !targetElement || !container.contains(targetElement)) return;
     const bounds = container.getBoundingClientRect();
     const displayScale = getCanvasDisplayScale(container);
     const position = { x: Math.round(((clientX - bounds.left) / displayScale - pan.x) / zoom), y: Math.round(((clientY - bounds.top) / displayScale - pan.y) / zoom) };
-    if (payload?.type === 'embed-asset') {
+    if (payload?.type === 'components-v2-asset') applyComponentsV2AssetToTarget(payload, targetElement);
+    else if (payload?.type === 'embed-asset') {
       const targetId = targetElement.closest?.('[data-node-card-id]')?.getAttribute('data-node-card-id');
       const target = nodes.find((node) => node.id === targetId && node.type === 'build_embed');
       if (target) onNodesChange?.(nodes.map((node) => node.id === target.id ? { ...node, data: { ...node.data, blocks: structuredCloneSafe(payload.blocks || []), embedName: payload.name || 'Untitled embed' } } : node));
       else onNodeDrop?.(payload, position);
     } else onNodeDrop?.(payload, position);
-  }, [nodes, onNodesChange, onNodeDrop, pan, zoom]);
+  }, [applyComponentsV2AssetToTarget, nodes, onNodesChange, onNodeDrop, pan, zoom]);
 
   useEffect(() => {
     if (!desktopMode) return undefined;
@@ -1682,19 +1691,26 @@ export function NodeCanvas({
     pasteNodes();
   }
 
-  const shakeNode = (nodeId) => {
+  function shakeNode(nodeId) {
     if (!nodeId) return;
     window.clearTimeout(shakeTimerRef.current);
     setShakingNodeId(null);
     requestAnimationFrame(() => setShakingNodeId(nodeId));
     shakeTimerRef.current = window.setTimeout(() => setShakingNodeId(null), 240);
-  };
+  }
 
   const updateNodeData = (nodeId, data, label) => {
     onCollaborationAction?.({ kind: 'node-edit', nodeId });
+    const previousNode = nodes.find((node) => node.id === nodeId);
+    const migratingFunctionInput = previousNode?.type === 'function_input' && !Array.isArray(previousNode.data?.arguments) && Array.isArray(data?.arguments);
     const nextNodes = nodes.map((node) => node.id === nodeId ? { ...node, data: { ...node.data, ...data }, ...(label !== undefined ? { label } : {}) } : node);
+    const nextConnectionsSource = migratingFunctionInput && data.arguments[0]
+      ? connections.map((connection) => connection.sourceNodeId === nodeId && connection.sourcePinId === 'value'
+        ? { ...connection, sourcePinId: `arg_${data.arguments[0].paramId}` }
+        : connection)
+      : connections;
     const nodesById = new Map(nextNodes.map((node) => [node.id, node]));
-    const nextConnections = connections.filter((connection) => {
+    const nextConnections = nextConnectionsSource.filter((connection) => {
       const sourceNode = nodesById.get(connection.sourceNodeId);
       const targetNode = nodesById.get(connection.targetNodeId);
       if (!sourceNode || !targetNode) return false;
@@ -1703,7 +1719,7 @@ export function NodeCanvas({
       return sourcePin && targetPin && (sourcePin.type === targetPin.type || sourcePin.type === 'arg' || targetPin.type === 'arg' || sourcePin.type === 'any' || targetPin.type === 'any');
     });
     onNodesChange?.(nextNodes);
-    if (nextConnections.length !== connections.length) onConnectionsChange?.(nextConnections);
+    if (nextConnections.length !== connections.length || nextConnections.some((connection, index) => connection !== connections[index])) onConnectionsChange?.(nextConnections);
   };
 
   const startPan = (event) => {
@@ -2099,20 +2115,20 @@ export function NodeCanvas({
       onCollaborationAction?.({ kind: 'cursor', cursor: end, mode: 'move', selectedNodeIds }, true);
       if (!canvasLocked && Math.hypot(end.x - drawingArrow.start.x, end.y - drawingArrow.start.y) >= 8) {
         const now = Date.now();
-        const payload = { start: drawingArrow.start, end };
-        if (onCanvasArrowAction?.('create', payload) === false) {
-          setLocalTransientArrows((previous) => [...previous, {
-            id: `local_arrow_${crypto.randomUUID()}`,
-            ...payload,
-            color: currentUser?.color || getCollaboratorColor(currentUser?.id),
-            createdBy: currentUser?.username || 'You',
-            createdById: currentUser?.id || '',
-            createdByRole: currentUser?.role || 'viewer',
-            createdAt: now,
-            expiresAt: now + 12_000,
-            locked: false
-          }]);
-        }
+        const clientActionId = globalThis.crypto?.randomUUID?.() || `local-arrow-${now}-${Math.random().toString(36).slice(2)}`;
+        const payload = { start: drawingArrow.start, end, clientActionId };
+        setLocalTransientArrows((previous) => [...previous, {
+          id: `local_arrow_${clientActionId}`,
+          ...payload,
+          color: currentUser?.color || getCollaboratorColor(currentUser?.id),
+          createdBy: currentUser?.username || 'You',
+          createdById: currentUser?.id || '',
+          createdByRole: currentUser?.role || 'viewer',
+          createdAt: now,
+          expiresAt: now + 12_000,
+          locked: false
+        }]);
+        onCanvasArrowAction?.('create', payload);
       }
       return;
     }
@@ -3341,32 +3357,42 @@ const previewOutput = (node, outputId, seen = new Set()) => {
         const graphRaw = readTransferData(event.dataTransfer, 'application/x-arc-graph-call');
         const raw = readTransferData(event.dataTransfer, 'application/x-arc-node');
         const embedRaw = readTransferData(event.dataTransfer, 'application/x-arc-embed-asset');
+        const componentsV2Raw = readTransferData(event.dataTransfer, 'application/x-arc-components-v2-asset');
         const fallback = parseLibraryTransferText(readTransferData(event.dataTransfer, 'text/plain'));
         let nodePayload = window.__arcNodeDragPayload;
         let graphPayload = window.__arcGraphDragPayload;
         let embedPayload = window.__arcEmbedDragPayload;
+        let componentsV2Payload = window.__arcComponentsV2DragPayload;
         if (raw) { try { nodePayload = JSON.parse(raw); } catch {} }
         if (graphRaw) { try { graphPayload = JSON.parse(graphRaw); } catch {} }
         if (embedRaw) { try { embedPayload = JSON.parse(embedRaw); } catch {} }
+        if (componentsV2Raw) { try { componentsV2Payload = JSON.parse(componentsV2Raw); } catch {} }
+        if (componentsV2Payload?.id && window.__arcComponentsV2DragPayload?.id === componentsV2Payload.id) {
+          componentsV2Payload = { ...componentsV2Payload, attachments: window.__arcComponentsV2DragPayload.attachments || [] };
+        }
         const fallbackPayload = fallback && window.__arcLibraryDragPayloads?.[fallback.token]?.payload;
-        if (!nodePayload && !graphPayload && !embedPayload && fallbackPayload) {
+        if (!nodePayload && !graphPayload && !embedPayload && !componentsV2Payload && fallbackPayload) {
           if (fallback.mimeType === 'application/x-arc-node') nodePayload = fallbackPayload;
           else if (fallback.mimeType === 'application/x-arc-graph-call') graphPayload = fallbackPayload;
           else if (fallback.mimeType === 'application/x-arc-embed-asset') embedPayload = fallbackPayload;
+          else if (fallback.mimeType === 'application/x-arc-components-v2-asset') componentsV2Payload = fallbackPayload;
         }
         setLibraryDragPreview(null);
         if (collaborationCursorRef.current) onCollaborationAction?.({ kind: 'cursor', cursor: collaborationCursorRef.current, mode: 'move', selectedNodeIds }, true);
         window.__arcNodeDragPayload = null;
         window.__arcGraphDragPayload = null;
         window.__arcEmbedDragPayload = null;
-        if (!nodePayload && !graphPayload && !embedPayload) return;
+        window.__arcComponentsV2DragPayload = null;
+        if (!nodePayload && !graphPayload && !embedPayload && !componentsV2Payload) return;
         event.preventDefault();
         event.stopPropagation();
         const bounds = containerRef.current.getBoundingClientRect();
         const displayScale = getCanvasDisplayScale(containerRef.current);
         try {
           const position = { x: Math.round(((event.clientX - bounds.left) / displayScale - pan.x) / zoom), y: Math.round(((event.clientY - bounds.top) / displayScale - pan.y) / zoom) };
-          if (embedPayload) {
+          if (componentsV2Payload) {
+            applyComponentsV2AssetToTarget(componentsV2Payload, event.target);
+          } else if (embedPayload) {
             const targetId = event.target instanceof Element ? event.target.closest('[data-node-card-id]')?.getAttribute('data-node-card-id') : null;
             const target = nodes.find((node) => node.id === targetId && node.type === 'build_embed');
             if (target) {
@@ -3382,7 +3408,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
       style={{ '--grid-size': `${gridSize}px`, '--grid-x': `${viewportRef.current.pan.x}px`, '--grid-y': `${viewportRef.current.pan.y}px` }}
     >
       <div className={`canvas-surface ${settings.showGrid === false ? 'is-grid-hidden' : ''}`} aria-hidden="true" />
-      {connectingWire?.clickToConnect && <div className="wire-connect-hint">Click or tap a matching socket to connect <kbd>Esc</kbd> cancels</div>}
+      {connectingWire?.clickToConnect && <div className="wire-connect-hint">Click or tap a matching socket to connect <kbd>Esc</kbd></div>}
 
       <div ref={canvasWorldRef} className="canvas-world" style={{ transform: `translate3d(${viewportRef.current.pan.x}px, ${viewportRef.current.pan.y}px, 0) scale(${zoom})`, willChange: canvasQualityMode === "quality" ? "auto" : "transform" }}>
         {tagGroupLayouts.map((group) => <div key={group.id} className="canvas-tag-group" aria-hidden="true" style={{ left: group.left, top: group.top, width: group.width, height: group.height, '--tag-group-color': group.color }} />)}
@@ -3479,6 +3505,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
                 definition={definition}
                 authToken={authToken}
                 connectedInputIds={connectedInputIds.get(node.id) || EMPTY_PIN_SET}
+                componentsV2SourceConnected={Boolean(connectionByNodePin.incoming.get(node.id)?.get('components') && nodeById.get(connectionByNodePin.incoming.get(node.id).get('components').sourceNodeId)?.type === 'build_components')}
                 graphVariables={canvasGraphVariables}
                 templatePreviewValues={templatePreviewValues}
                 modalFieldOptions={modalFieldOptions}
@@ -3526,7 +3553,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
             : focusedNoteId === note.id && collaborationOnline && mayEdit
               ? !collaborationReady ? 'Connecting…' : ownsNoteLock ? 'Editing' : 'Waiting for edit access…'
               : 'Note';
-          const displayPosition = remotePosition || activePosition;
+          const displayPosition = noteDragInitial ? activePosition : remotePosition || activePosition;
           return <article key={note.id} data-note-id={note.id} className={`canvas-note-card ${note.locked ? 'is-locked' : ''} ${selectedNoteIds.includes(note.id) ? 'is-selected' : ''} ${remoteOwner || lockHeldByOther ? 'is-collaborator-active' : ''} ${remoteActions.some((peer) => peer.action?.kind === 'note-drag' && (peer.action.noteId === note.id || peer.action.noteIds?.includes(note.id))) ? 'is-collaborator-dragging' : ''} ${remotePosition ? 'is-remote-moving' : ''} ${remoteActions.some((peer) => peer.action?.selectedNoteIds?.includes(note.id)) ? 'is-collaborator-selected' : ''}`} style={{ left: displayPosition.x, top: displayPosition.y, '--note-color': note.color || '#f6d365', '--collaborator-color': remoteOwner?.color || noteLock?.color || '#b794f4' }} onPointerDown={(event) => { event.stopPropagation(); if (!(event.target instanceof Element) || !event.target.closest('.canvas-note-header')) handleNoteSelectionPointerDown(event, note.id); }} onContextMenu={(event) => { event.stopPropagation(); openContextMenu(event); }}>
             <header className="canvas-note-header" onPointerDown={(event) => {
               if (event.button !== 0 || event.target instanceof Element && event.target.closest('button') || !mayEdit || lockHeldByOther) return;
@@ -3811,7 +3838,7 @@ function estimateNodeCardHeight(node, definition) {
   else if (node?.type === 'action_web_fetch') configHeight = 470;
   else if (node?.type === 'action_web_retry') configHeight = 590;
   else if (node?.type === 'action_http_download') configHeight = 320;
-  else if (node?.type === 'action_send_message' || node?.type === 'action_edit_message') configHeight = 490;
+  else if (node?.type === 'action_send_message' || node?.type === 'action_edit_message' || node?.type === 'action_edit_components') configHeight = 490;
   else if (['action_create_thread', 'action_start_thread_from_message'].includes(node?.type)) configHeight = 320;
   else if (node?.type === 'branch_switch') configHeight = 150;
   else if (definition?.pluginAdapter) configHeight = 120 + (definition.inputs || []).filter((pin) => pin.type !== 'exec').length * 42;
