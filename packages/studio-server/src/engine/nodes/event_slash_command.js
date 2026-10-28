@@ -1,6 +1,7 @@
 export default {
   "description": "Fires when an application slash command is invoked",
   "type": "event_slash_command",
+  "dynamicPins": { "kind": "slash-options", "version": 2 },
   "category": "Events",
   "label": "On Slash Command",
   "color": "#5865F2",
@@ -17,6 +18,16 @@ export default {
     {
       "id": "command_name",
       "label": "Command Name",
+      "type": "string"
+    },
+    {
+      "id": "subcommand_group_name",
+      "label": "Subcommand Group",
+      "type": "string"
+    },
+    {
+      "id": "subcommand_name",
+      "label": "Subcommand",
       "type": "string"
     },
     {
