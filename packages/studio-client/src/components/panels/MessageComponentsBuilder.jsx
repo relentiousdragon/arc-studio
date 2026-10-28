@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { ArrowLeft, ArrowRight, ChevronDown, ChevronUp, ExternalLink, Plus, Trash2, X } from 'lucide-react';
 import { AnimatedCheckbox, AnimatedDropdown } from '../ui/CustomControls.jsx';
 import { DiscordTextField } from '../ui/DiscordTextField.jsx';
+import { CustomEmoji } from '../ui/CustomEmoji.jsx';
 //
 export const BUTTON_STYLES = [
   { value: 'primary', label: 'Primary (Blurple)', color: '#5865F2' },
@@ -38,10 +39,10 @@ export function parseDiscordEmoji(input, appEmojis = []) {
       return {
         id,
         name,
-        animated: Boolean(input.animated)
+        ...(input.animated ? { animated: true } : {})
       };
     }
-    return isSingleUnicodeEmoji(name) ? { id: null, name, animated: false } : undefined;
+    return isSingleUnicodeEmoji(name) ? { name } : undefined;
   }
   const str = String(input).trim();
   if (!str) return undefined;
@@ -50,7 +51,7 @@ export function parseDiscordEmoji(input, appEmojis = []) {
     return {
       name: match[2],
       id: match[3],
-      animated: match[1] === 'a'
+      ...(match[1] === 'a' ? { animated: true } : {})
     };
   }
   const unbracketed = /^(?:(a):)?([a-zA-Z0-9_~]{2,32}):(\d+)$/.exec(str);
@@ -58,7 +59,7 @@ export function parseDiscordEmoji(input, appEmojis = []) {
     return {
       name: unbracketed[2],
       id: unbracketed[3],
-      animated: unbracketed[1] === 'a'
+      ...(unbracketed[1] === 'a' ? { animated: true } : {})
     };
   }
   const shortcode = /^:([a-zA-Z0-9_~]{2,32}):$/.exec(str);
@@ -66,9 +67,9 @@ export function parseDiscordEmoji(input, appEmojis = []) {
     ? appEmojis.find((emoji) => emoji?.name?.toLowerCase() === shortcode[1].toLowerCase())
     : null;
   if (found?.id && found.name) {
-    return { id: String(found.id), name: found.name, animated: Boolean(found.animated) };
+    return { id: String(found.id), name: found.name, ...(found.animated ? { animated: true } : {}) };
   }
-  return isSingleUnicodeEmoji(str) ? { id: null, name: str, animated: false } : undefined;
+  return isSingleUnicodeEmoji(str) ? { name: str } : undefined;
 }
 
 function isSingleUnicodeEmoji(value) {
@@ -129,15 +130,7 @@ export function renderComponentEmoji(emoji, appEmojis = []) {
   if (parsed.id) {
     const ext = parsed.animated ? 'gif' : 'webp';
     const url = `https://cdn.discordapp.com/emojis/${encodeURIComponent(parsed.id)}.${ext}?size=48&quality=lossless`;
-    return (
-      <img
-        src={url}
-        alt={`:${parsed.name}:`}
-        title={`:${parsed.name}:`}
-        className="component-emoji-img"
-        loading="lazy"
-      />
-    );
+    return <CustomEmoji src={url} alt={`:${parsed.name}:`} className="component-emoji-frame" />;
   }
   if (parsed.name) {
     return <span className="component-emoji-text">{parsed.name}</span>;
@@ -149,7 +142,7 @@ export function createComponentRow() {
   return { id: componentId(), components: [] };
 }
 
-export function createMessageButton(style = 'primary', label = 'Button', emoji = '') {
+export function createMessageButton(style = 'primary', label = 'Button 1', emoji = '') {
   return {
     id: componentId(),
     type: 'button',
@@ -215,8 +208,13 @@ export function MessageComponentsBuilder({
   appEmojis = [],
   graphVariables = [],
   onChange,
+  allowMultipleRows = true,
   selectedComponentId = null,
-  onSelectComponent = null
+  onSelectComponent = null,
+  focusedRowId = null,
+  onFocusRow = null,
+  focusOnly = false,
+  canAddComponent = true
 }) {
   const [internalSelectedId, setInternalSelectedId] = useState(null);
   const activeSelectedId = selectedComponentId !== null ? selectedComponentId : internalSelectedId;
@@ -256,22 +254,54 @@ export function MessageComponentsBuilder({
   };
 
   const addRow = () => {
-    if (rows.length >= 5) return;
+    if (rows.length >= 5 || !canAddComponent) return;
     const newRow = createComponentRow();
     update([...rows, newRow]);
   };
 
   const addButton = (row) => {
-    if (row.components.length >= 5) return;
+    if (row.components.length >= 5 || !canAddComponent) return;
     const newBtn = createMessageButton('primary', `Button ${row.components.length + 1}`);
     patchRow(row.id, { components: [...row.components, newBtn] });
     setSelected(newBtn.id);
   };
 
   const addSelect = (row) => {
+    if (!canAddComponent) return;
     const newSelect = createStringSelect();
     patchRow(row.id, { components: [newSelect] });
     setSelected(newSelect.id);
+  };
+
+  const addPaletteItem = (type) => {
+    if (!canAddComponent) return;
+    if (type !== 'row') {
+      const compatibleRow = rows.find((row) => type === 'button'
+        ? row.components.length < 5 && !row.components.some((component) => SELECT_COMPONENT_TYPES[component.type])
+        : row.components.length === 0);
+      if (compatibleRow) {
+        const component = type === 'button' ? createMessageButton('primary', `Button ${compatibleRow.components.length + 1}`) : createStringSelect();
+        patchRow(compatibleRow.id, { components: [...compatibleRow.components, component] });
+        onFocusRow?.(compatibleRow.id, component.id);
+        setSelected(component.id);
+        return;
+      }
+    }
+    if (rows.length >= 5) return;
+    const row = createComponentRow();
+    let selectedId = null;
+    if (type === 'button') {
+      const button = createMessageButton();
+      row.components = [button];
+      selectedId = button.id;
+    } else if (type === 'select') {
+      const menu = createStringSelect();
+      row.components = [menu];
+      selectedId = menu.id;
+    }
+    update([...rows, row]);
+    onFocusRow?.(row.id, selectedId);
+    setSelected(selectedId);
   };
 
   const removeComponent = (row, itemId) => {
@@ -295,26 +325,38 @@ export function MessageComponentsBuilder({
 
   return (
     <div className="message-components-builder">
-      <div className="component-builder-heading">
+      {!focusOnly && <div className="component-builder-heading">
         <div>
-          <strong>Action Rows & Interactive Components</strong>
-          <span>Compose up to 5 action rows. Each row can hold up to 5 buttons or 1 select menu.</span>
+          <strong>{allowMultipleRows ? 'Action Rows & Interactive Components' : 'Interactive Controls'}</strong>
+          <span>{allowMultipleRows ? 'Compose up to 5 action rows. Each row can hold up to 5 buttons or 1 select menu.' : 'This row can hold up to 5 buttons or one select menu.'}</span>
         </div>
-        <button
+        {allowMultipleRows && <button
           type="button"
           className="component-add-row"
-          disabled={rows.length >= 5}
+          disabled={rows.length >= 5 || !canAddComponent}
           onClick={addRow}
           title={rows.length >= 5 ? 'Discord supports at most 5 action rows' : 'Add a new action row'}
         >
           <Plus size={13} /> Add Row
-        </button>
-      </div>
+        </button>}
+      </div>}
+
+      {focusOnly && allowMultipleRows && <div className="component-creation-palette" aria-label="Add message components">
+        {[['button', 'Button'], ['select', 'Select menu'], ['row', 'Action row']].map(([type, label]) => {
+          const hasCompatibleRow = rows.some((row) => type === 'button'
+            ? row.components.length < 5 && !row.components.some((component) => SELECT_COMPONENT_TYPES[component.type])
+            : type === 'select' && row.components.length === 0);
+          const disabled = !canAddComponent || (type === 'row' ? rows.length >= 5 : rows.length >= 5 && !hasCompatibleRow);
+          return <button key={type} type="button" draggable={!disabled} disabled={disabled} onClick={() => addPaletteItem(type)} onDragStart={(event) => { event.dataTransfer.effectAllowed = 'copy'; event.dataTransfer.setData('application/x-arc-studio-palette', JSON.stringify({ kind: 'palette', scope: 'components', type })); }} title={disabled ? 'Discord supports at most 5 action rows' : `Add or drag ${label.toLowerCase()} to the preview`}><Plus size={13} />{label}</button>;
+        })}
+      </div>}
 
       <div className="component-rows-stack">
-        {rows.map((row, rowIndex) => {
+        {rows.map((row, sourceRowIndex) => {
+          if (focusOnly && row.id !== focusedRowId) return null;
+          const rowIndex = sourceRowIndex;
           const isSelectRow = row.components.length > 0 && SELECT_COMPONENT_TYPES[row.components[0]?.type];
-          const canAddMoreButtons = !isSelectRow && row.components.length > 0 && row.components.length < 5;
+          const canAddMoreButtons = canAddComponent && !isSelectRow && row.components.length > 0 && row.components.length < 5;
 
           return (
             <section className="component-action-row" key={row.id}>
@@ -360,10 +402,10 @@ export function MessageComponentsBuilder({
                 {!row.components.length && (
                   <div className="component-row-empty">
                     <span className="component-empty-label">Empty row:</span>
-                    <button type="button" className="component-quick-add-btn" onClick={() => addButton(row)}>
+                    <button type="button" disabled={!canAddComponent} className="component-quick-add-btn" onClick={() => addButton(row)}>
                       <Plus size={13} /> Add Button
                     </button>
-                    <button type="button" className="component-quick-add-btn" onClick={() => addSelect(row)}>
+                    <button type="button" disabled={!canAddComponent} className="component-quick-add-btn" onClick={() => addSelect(row)}>
                       <Plus size={13} /> Add Select Menu
                     </button>
                   </div>
@@ -709,7 +751,7 @@ export function MessageComponentsBuilder({
                             onChange={(disabled) => patchComponent(row.id, component.id, { disabled })}
                             label="Disabled button"
                           />
-                          <span>Disabled state (user cannot click)</span>
+                          <button type="button" className="component-disabled-option-label" aria-pressed={Boolean(component.disabled)} onClick={() => patchComponent(row.id, component.id, { disabled: !component.disabled })}>Disabled state (user cannot click)</button>
                         </div>
                       </div>
                     )}
@@ -723,7 +765,7 @@ export function MessageComponentsBuilder({
         {!rows.length && (
           <div className="component-builder-empty">
             <p>No action rows added yet.</p>
-            <button type="button" className="component-add-row-primary" onClick={addRow}>
+            <button type="button" className="component-add-row-primary" disabled={!canAddComponent} onClick={addRow}>
               <Plus size={14} /> Add First Action Row
             </button>
           </div>
