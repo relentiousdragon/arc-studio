@@ -1,7 +1,10 @@
 import { NodeDefinitions } from './NodeRegistry.js';
+import { getNodeArgumentPins, resolveDynamicNodePins } from './DynamicNodePins.js';
+import { defaultValueForFunctionType, functionArgumentPinId, getFunctionGraphArguments, getFunctionInputArguments } from './FunctionGraphContract.js';
+import { flattenSlashParameters, slashOptionPinId } from './SlashCommandOptions.js';
 import { evaluateDataNode } from './nodes/runtime/data.js';
 import { evaluateLogicNode } from './nodes/runtime/logic.js';
-import { buildDiscordComponents, buildDiscordModal } from './nodes/runtime/builders.js';
+import { buildDiscordComponents, buildDiscordComponentsV2, buildDiscordModal, validateDiscordComponentsV2 } from './nodes/runtime/builders.js';
 import {
   executeCountedLoop, executeParallelBranches, executeRepeatWhile, parseWaitUntilTime,
   selectIfBranch, selectSwitchBranch, validateDelayDuration, validateLoopCount,
@@ -14,6 +17,7 @@ import { getTemplateReferences, renderTextTemplate } from './TemplateExpressions
 //
 const DISCORD_GUILD_NODE_TYPES = new Set([
   'action_fetch_user', 'action_fetch_guild', 'action_fetch_member',
+  'action_fetch_channel', 'action_fetch_channel_messages', 'action_fetch_message',
   'action_create_thread', 'action_start_thread_from_message',
   'action_create_channel', 'action_edit_channel', 'action_delete_channel',
   'action_create_role', 'action_member_role', 'action_moderate_member',
@@ -24,6 +28,7 @@ const DISCORD_INTERACTION_NODE_TYPES = new Set([
   'action_edit_interaction_reply', 'action_show_modal', 'action_respond_autocomplete'
 ]);
 const NETWORK_NODE_TYPES = new Set(['action_http_download', 'action_web_fetch', 'action_web_retry']);
+const WEBSOCKET_NODE_TYPES = new Set(['action_websocket_connect', 'action_websocket_send', 'action_websocket_close']);
 const CRYPTO_NODE_TYPES = new Set([
   'action_crypto_hash', 'action_crypto_hmac', 'action_crypto_verify_hmac',
   'action_crypto_encrypt', 'action_crypto_decrypt', 'action_crypto_random'
@@ -42,31 +47,6 @@ function findModalSubmittedValue(components, customId) {
   return visit(components);
 }
 
-function getNodeArgumentPins(node, connections = []) {
-  const baseInputs = NodeDefinitions[node?.type]?.inputs || [];
-  if (!node || node.type.startsWith('event_') || ['function_input', 'function_return', 'function_call', 'variable_get', 'data_permission_overwrites'].includes(node.type)) return [];
-  if (NodeDefinitions[node.type]?.pluginAdapter) return [];
-  if (!['build_embed', 'build_modal', 'format_text'].includes(node.type) && !baseInputs.some((pin) => pin.type === 'string')) return [];
-  const highestConnectedArgument = connections.reduce((highest, connection) => {
-    if (connection.targetNodeId !== node.id) return highest;
-    const match = /^arg_(\d+)$/.exec(connection.targetPinId);
-    return match ? Math.max(highest, Number(match[1])) : highest;
-  }, 0);
-  const count = Math.min(50, Math.max(1, highestConnectedArgument + 1));
-  return Array.from({ length: count }, (_, index) => ({ id: `arg_${index + 1}`, label: `arg${index + 1}`, type: 'arg', defaultValue: '' }));
-}
-
-function getPermissionOverwritePins(node, connections = []) {
-  const highestConnectedTarget = connections.reduce((highest, connection) => {
-    if (connection.targetNodeId !== node?.id) return highest;
-    const match = /^target_id_(\d+)$/.exec(connection.targetPinId);
-    return match ? Math.max(highest, Number(match[1])) : highest;
-  }, 0);
-  const existingTargetCount = Object.keys(node?.data || {}).reduce((highest, key) => Math.max(highest, Number(/^target_id_(\d+)$/.exec(key)?.[1]) || 0), 0);
-  const count = Math.min(100, Math.max(1, Number(node?.data?.overwriteCount) || 0, existingTargetCount, highestConnectedTarget + 1));
-  return Array.from({ length: count }, (_, index) => ({ id: `target_id_${index + 1}`, label: `Target ID ${index + 1}`, type: 'string', defaultValue: '' }));
-}
-
 function getNodeInputs(node, connections = [], variables = []) {
   const inputs = getNodeBaseInputs(node, connections);
   const knownVariables = new Set(variables.map((variable) => variable.name?.toLowerCase()).filter(Boolean));
@@ -83,94 +63,19 @@ function getNodeInputs(node, connections = [], variables = []) {
       }
     }
   }
-  return [...inputs, ...[...slots].map((name) => ({ id: `slot_${name}`, label: name, type: 'arg', defaultValue: '' }))];
+  const argumentPins = getNodeArgumentPins(node, inputs, connections);
+  const existingIds = new Set(inputs.map((pin) => pin.id));
+  return [...inputs, ...argumentPins.filter((pin) => !existingIds.has(pin.id)), ...[...slots].map((name) => ({ id: `slot_${name}`, label: name, type: 'arg', defaultValue: '' }))];
 }
 
 function getNodeBaseInputs(node, connections = []) {
-  if (node?.type === 'math_sum' || node?.type === 'math_average') {
-    const pinIds = ['a', 'b', 'c', 'd'];
-    const highest = connections.reduce((value, wire) => {
-      if (wire.targetNodeId !== node.id) return value;
-      const index = pinIds.indexOf(wire.targetPinId);
-      const extra = /^value_(\d+)$/.exec(wire.targetPinId);
-      return Math.max(value, index >= 0 ? index + 1 : extra ? Number(extra[1]) : 0);
-    }, 0);
-    return Array.from({ length: Math.min(50, Math.max(2, highest + 1)) }, (_, index) => ({ id: pinIds[index] || `value_${index + 1}`, label: index < 4 ? String.fromCharCode(65 + index) : `Value ${index + 1}`, type: 'number', defaultValue: 0 }));
-  }
-  if (node?.type === 'data_array_create') {
-    const highest = connections.reduce((value, wire) => {
-      if (wire.targetNodeId !== node.id) return value;
-      return Math.max(value, Number(/^item_(\d+)$/.exec(wire.targetPinId)?.[1]) || 0);
-    }, 0);
-    const stored = Object.keys(node.data || {}).reduce((value, key) => Math.max(value, Number(/^item_(\d+)$/.exec(key)?.[1]) || 0), 0);
-    return Array.from({ length: Math.min(50, Math.max(1, highest + 1, stored)) }, (_, index) => ({ id: `item_${index + 1}`, label: `Item ${index + 1}`, type: 'arg', defaultValue: null }));
-  }
-  if (node?.type === 'data_array_append') {
-    const highest = connections.reduce((value, wire) => {
-      if (wire.targetNodeId !== node.id) return value;
-      return Math.max(value, Number(/^item_(\d+)$/.exec(wire.targetPinId)?.[1]) || 0);
-    }, 0);
-    const stored = Object.keys(node.data || {}).reduce((value, key) => Math.max(value, Number(/^item_(\d+)$/.exec(key)?.[1]) || 0), 0);
-    const pins = Array.from({ length: Math.min(50, Math.max(1, highest + 1, stored)) }, (_, index) => ({ id: `item_${index + 1}`, label: `Item ${index + 1}`, type: 'arg', defaultValue: undefined }));
-    if (connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'value')) pins.push({ id: 'value', label: 'Item', type: 'arg', defaultValue: undefined });
-    return [NodeDefinitions.data_array_append.inputs[0], ...pins];
-  }
-  if (node?.type === 'data_array_concat') {
-    const highest = connections.reduce((value, wire) => {
-      if (wire.targetNodeId !== node.id) return value;
-      return Math.max(value, Number(/^array_(\d+)$/.exec(wire.targetPinId)?.[1]) || 0);
-    }, 0);
-    const pins = Array.from({ length: Math.min(50, Math.max(2, highest + 1)) }, (_, index) => ({ id: `array_${index + 1}`, label: `Array ${index + 1}`, type: 'object', defaultValue: [] }));
-    if (connections.some((wire) => wire.targetNodeId === node.id && ['array_a', 'array_b'].includes(wire.targetPinId))) {
-      pins.push({ id: 'array_a', label: 'Array A', type: 'object', defaultValue: [] }, { id: 'array_b', label: 'Array B', type: 'object', defaultValue: [] });
-    }
-    return pins;
-  }
-  if (node?.type === 'data_permission_overwrites') return getPermissionOverwritePins(node, connections);
-  if (node?.type === 'utility_wire_extender') {
-    const highest = connections.reduce((value, wire) => {
-      const match = wire.targetNodeId === node.id
-        ? /^value_in_(\d+)$/.exec(wire.targetPinId)
-        : wire.sourceNodeId === node.id ? /^value_out_(\d+)$/.exec(wire.sourcePinId) : null;
-      const legacy = (wire.targetNodeId === node.id && wire.targetPinId === 'value_in') || (wire.sourceNodeId === node.id && wire.sourcePinId === 'value_out');
-      return match ? Math.max(value, Number(match[1])) : legacy ? Math.max(value, 1) : value;
-    }, 0);
-    const legacyFirst = connections.some((wire) => (wire.targetNodeId === node.id && wire.targetPinId === 'value_in') || (wire.sourceNodeId === node.id && wire.sourcePinId === 'value_out'));
-    return Array.from({ length: Math.min(7, Math.max(1, highest + 1)) }, (_, index) => ({ id: legacyFirst && index === 0 ? 'value_in' : `value_in_${index + 1}`, label: `Any Value ${index + 1}`, type: 'any' }));
-  }
-  return NodeDefinitions[node?.type]?.inputs || [];
+  const schemaPins = resolveDynamicNodePins(NodeDefinitions[node?.type], node, connections);
+  return schemaPins?.inputs || NodeDefinitions[node?.type]?.inputs || [];
 }
 
 function getNodeOutputs(node, connections = []) {
-  if (node?.type === 'event_slash_command') {
-    const options = (Array.isArray(node.data?.options) ? node.data.options : []).filter((option) => /^[a-z0-9_-]{1,32}$/.test(String(option.name || '')));
-    return [...(NodeDefinitions[node.type]?.outputs || []), ...options.map((option) => ({ id: `option_${option.name}`, label: option.name, type: ({ 4: 'number', 10: 'number', 5: 'boolean' })[Number(option.type)] || 'string' }))];
-  }
-  if (node?.type === 'data_string_split' || node?.type === 'data_parse_prefix_command') {
-    const prefix = node.type === 'data_string_split' ? 'part_' : 'argument_';
-    const pattern = node.type === 'data_string_split' ? /^part_(\d+)$/ : /^argument_(\d+)$/;
-    const highest = connections.reduce((value, wire) => {
-      if (wire.sourceNodeId !== node.id) return value;
-      return Math.max(value, Number(pattern.exec(wire.sourcePinId)?.[1]) || 0);
-    }, 0);
-    const itemCount = Math.min(50, Math.max(1, highest + 1));
-    const itemPins = Array.from({ length: itemCount }, (_, index) => ({
-      id: `${prefix}${index + 1}`,
-      label: node.type === 'data_string_split' ? `Part ${index + 1}` : `Argument ${index + 1}`,
-      type: 'string'
-    }));
-    return [...(NodeDefinitions[node.type]?.outputs || []), ...itemPins];
-  }
-  if (node?.type !== 'utility_wire_extender') return NodeDefinitions[node?.type]?.outputs || [];
-  const highest = connections.reduce((value, wire) => {
-    const match = wire.sourceNodeId === node.id
-      ? /^value_out_(\d+)$/.exec(wire.sourcePinId)
-      : wire.targetNodeId === node.id ? /^value_in_(\d+)$/.exec(wire.targetPinId) : null;
-    const legacy = (wire.sourceNodeId === node.id && wire.sourcePinId === 'value_out') || (wire.targetNodeId === node.id && wire.targetPinId === 'value_in');
-    return match ? Math.max(value, Number(match[1])) : legacy ? Math.max(value, 1) : value;
-  }, 0);
-  const legacyFirst = connections.some((wire) => (wire.sourceNodeId === node.id && wire.sourcePinId === 'value_out') || (wire.targetNodeId === node.id && wire.targetPinId === 'value_in'));
-  return [...(NodeDefinitions[node.type]?.outputs || []).filter((pin) => pin.type === 'exec'), ...Array.from({ length: Math.min(7, Math.max(1, highest + 1)) }, (_, index) => ({ id: legacyFirst && index === 0 ? 'value_out' : `value_out_${index + 1}`, label: `Any Value ${index + 1}`, type: 'any' }))];
+  const schemaPins = resolveDynamicNodePins(NodeDefinitions[node?.type], node, connections);
+  return schemaPins?.outputs || NodeDefinitions[node?.type]?.outputs || [];
 }
 
 export class GraphRunner {
@@ -237,36 +142,83 @@ export class GraphRunner {
     };
     const createdGraphVariables = nodes.filter((node) => node.type === 'variable_create').flatMap((node) => {
       const name = String(node.data?.name || '').trim();
-      if (!name || (!/^(?=.{1,64}$)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(name) && !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name))) return [];
+      if (!name || !/^(?=.{1,64}$)[A-Za-z0-9]+(?:_+[A-Za-z0-9]+|-[A-Za-z0-9]+)*$/.test(name)) return [];
       const type = inferCreatedVariableType(node) || 'string';
       const initialValue = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'value') ? defaultValueForType(type) : node.data?.value ?? defaultValueForType(type);
       return [{ id: `nodevar_${node.id}`, name, type, valueType: type, initialValue, persist: node.data?.persist !== false, nodeOwned: true, sourceNodeId: node.id }];
     });
-    const graphVariables = [...declaredGraphVariables, ...createdGraphVariables.filter((created) => !declaredGraphVariables.some((variable) => variable.id === created.id))];
+    const usedVariableNames = new Set([...declaredGraphVariables, ...createdGraphVariables].map((variable) => String(variable?.name || '').toLowerCase()).filter(Boolean));
+    const attachmentVariables = nodes.filter((node) => node.type === 'event_slash_command').flatMap((node) => {
+      const commandName = String(node.data?.commandName || 'command').replace(/[^A-Za-z0-9_-]/g, '_');
+      return flattenSlashParameters(node.data?.options).filter(({ option }) => Number(option?.type) === 11).map(({ option, path }) => {
+        const baseName = `${commandName}_${path.join('_')}`.slice(0, 64);
+        let name = baseName;
+        let suffix = 2;
+        while (usedVariableNames.has(name.toLowerCase())) {
+          const marker = `_${suffix++}`;
+          name = `${baseName.slice(0, 64 - marker.length)}${marker}`;
+        }
+        usedVariableNames.add(name.toLowerCase());
+        return {
+          id: `slash_attachment_${node.id}_${path.join('.')}`,
+          name,
+          type: 'attachment',
+          initialValue: { id: '', filename: '', url: '', content_type: '', size: 0 },
+          persist: false,
+          readOnly: true,
+          sourceNodeId: node.id,
+          sourceOptionName: option.name,
+          sourceOptionPinId: slashOptionPinId(path)
+        };
+      });
+    });
+    const graphVariables = [...declaredGraphVariables, ...createdGraphVariables.filter((created) => !declaredGraphVariables.some((variable) => variable.id === created.id)), ...attachmentVariables];
     const projectVariables = Array.isArray(context.projectVariables) ? context.projectVariables.filter((variable) => variable && typeof variable.id === 'string') : [];
     const localVariableDefinitions = new Map(graphVariables.map((variable) => [variable.id, variable]));
     const projectVariableDefinitions = new Map(projectVariables.map((variable) => [variable.id, variable]));
     const persistentVariableValues = context.variablesState instanceof Map ? context.variablesState : new Map();
     const runVariableValues = new Map();
     const projectVariableValues = context.projectVariablesState instanceof Map ? context.projectVariablesState : new Map();
-    const initializeVariableValues = (definitions, values, runValues = null) => {
+    const runtimeSecretValues = new Set();
+    const registerRuntimeSecretValue = (value, seen = new Set()) => {
+      if (value === null || value === undefined || seen.has(value) && typeof value === 'object') return;
+      runtimeSecretValues.add(value);
+      if (typeof value === 'object') {
+        seen.add(value);
+        for (const child of Object.values(value)) registerRuntimeSecretValue(child, seen);
+      }
+    };
+    const initializeVariableValues = (definitions, values, runValues = null, scope = 'graph', sourceGraph = graph) => {
       for (const variable of definitions.values()) {
+        const secretInitialValue = variable.secret ? context.getSecretVariableValue?.(variable.id, scope, sourceGraph) : undefined;
+        const initialValue = secretInitialValue === undefined
+          ? variable.secret ? defaultValueForType(variable.valueType || variable.type) : variable.initialValue
+          : secretInitialValue;
         if (runValues && variable.persist === false) {
-          const initialValue = coerceVariableValue(variable.initialValue, variable.valueType || variable.type, variable.initialValue);
-          runValues.set(variable.id, initialValue);
-          values.set(variable.id, initialValue);
+          const runValue = coerceVariableValue(initialValue, variable.valueType || variable.type, initialValue);
+          runValues.set(variable.id, runValue);
+          values.set(variable.id, runValue);
+          if (variable.secret) {
+            registerRuntimeSecretValue(initialValue);
+            registerRuntimeSecretValue(runValue);
+          }
           continue;
         }
-        const current = values.has(variable.id) ? values.get(variable.id) : variable.initialValue;
-        values.set(variable.id, coerceVariableValue(current, variable.valueType || variable.type, variable.initialValue));
+        const current = values.has(variable.id) ? values.get(variable.id) : initialValue;
+        values.set(variable.id, coerceVariableValue(current, variable.valueType || variable.type, initialValue));
+        if (variable.secret) {
+          registerRuntimeSecretValue(initialValue);
+          registerRuntimeSecretValue(values.get(variable.id));
+        }
       }
       for (const variableId of values.keys()) if (!definitions.has(variableId)) values.delete(variableId);
     };
     initializeVariableValues(localVariableDefinitions, persistentVariableValues, runVariableValues);
-    initializeVariableValues(projectVariableDefinitions, projectVariableValues);
+    initializeVariableValues(projectVariableDefinitions, projectVariableValues, null, 'project', graph);
     const getVariableValue = (variableId, scope = 'graph') => {
       if (scope === 'project') return projectVariableValues.get(variableId);
       const definition = localVariableDefinitions.get(variableId);
+      if (definition?.readOnly && definition.type === 'attachment') return dataCache.get(`${definition.sourceNodeId}:${definition.sourceOptionPinId || `option_${definition.sourceOptionName}`}`) ?? null;
       return (definition?.persist === false ? runVariableValues : persistentVariableValues).get(variableId);
     };
     const variableReference = (variableId, scope = 'graph') => variableId
@@ -283,13 +235,66 @@ export class GraphRunner {
       return variableReference(node.data?.variableId, node.data?.scope);
     };
     const setVariableValue = (variableId, scope, value, definition) => {
+      if (definition?.readOnly) throw new Error(`Variable “${definition.name}” is read only.`);
       const values = scope === 'project' ? projectVariableValues : definition?.persist === false ? runVariableValues : persistentVariableValues;
       const fallback = values.get(variableId);
       values.set(variableId, coerceVariableValue(value, definition?.valueType || definition?.type, fallback ?? definition?.initialValue));
+      if (definition?.secret) registerRuntimeSecretValue(values.get(variableId));
       return values.get(variableId);
     };
+    const secretValuesForRedaction = () => {
+      const secrets = new Set(runtimeSecretValues);
+      for (const variable of [...graphVariables, ...projectVariables]) {
+        if (variable.secret) secrets.add(getVariableValue(variable.id, projectVariableDefinitions.has(variable.id) ? 'project' : 'graph'));
+      }
+      return secrets;
+    };
 
+    const redactSecretText = (message) => {
+      const text = String(message ?? '');
+      for (const value of secretValuesForRedaction()) {
+        if (value === null || value === undefined || value === '') continue;
+        if (typeof value === 'string' && value && text.includes(value)) return '[redacted]';
+        if (value && typeof value === 'object') {
+          try {
+            const serialized = JSON.stringify(value);
+            if (serialized.length > 2 && text.includes(serialized)) return '[redacted]';
+          } catch {}
+        }
+        if (typeof value === 'boolean' && new RegExp(`\\b${value}\\b`, 'i').test(text)) return '[redacted]';
+        if (typeof value === 'number' && Number.isFinite(value)) {
+          const escaped = String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          if (new RegExp(`(?<![\\w.])${escaped}(?![\\w.])`).test(text)) return '[redacted]';
+        }
+      }
+      return text;
+    };
+    const containsSecretValue = (value) => {
+      if (value === null || value === undefined) return false;
+      for (const secret of secretValuesForRedaction()) {
+        if (secret === null || secret === undefined || secret === '') continue;
+        if (typeof value === 'string' && typeof secret === 'string' && value.includes(secret)) return true;
+        if (typeof value === 'string' && typeof secret === 'boolean' && new RegExp(`\\b${secret}\\b`, 'i').test(value)) return true;
+        if (typeof value === 'string' && typeof secret === 'number' && Number.isFinite(secret)) {
+          const escaped = String(secret).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          if (new RegExp(`(?<![\\w.])${escaped}(?![\\w.])`).test(value)) return true;
+        }
+        if (value && typeof value === 'object' && secret && typeof secret === 'object') {
+          try { if (JSON.stringify(value) === JSON.stringify(secret)) return true; } catch {}
+        }
+        if (typeof value === 'string' && secret && typeof secret === 'object') {
+          try {
+            const serialized = JSON.stringify(secret);
+            if (serialized.length > 2 && value.includes(serialized)) return true;
+          } catch {}
+        }
+        if (typeof value !== 'object' && Object.is(value, secret)) return true;
+        if (Array.isArray(value) ? value.some(containsSecretValue) : typeof value === 'object' && Object.values(value).some(containsSecretValue)) return true;
+      }
+      return false;
+    };
     const log = (msg) => {
+      msg = redactSecretText(msg);
       const loop = repeatLoopStack.at(-1);
       if (loop && loop.iteration > 1) {
         const now = Date.now();
@@ -304,6 +309,7 @@ export class GraphRunner {
     };
 
     const debugValue = (value, pinId = '') => {
+      if (containsSecretValue(value)) return '[redacted]';
       if (/(token|secret|passphrase|password|ciphertext|headers|response_body|^body$|^json$|^url$)/i.test(pinId)) return '[redacted]';
       if (typeof value === 'string') return value.length > 1200 ? `${value.slice(0, 1200)}…` : value;
       if (value === null || ['number', 'boolean'].includes(typeof value)) return value;
@@ -319,7 +325,7 @@ export class GraphRunner {
         const resolved = dataCache.has(key) ? dataCache.get(key) : resolveOutput(node, pin.id);
         return resolved !== undefined ? [{ pinId: pin.id, label: pin.label || pin.id, value: debugValue(resolved, pin.id) }] : [];
       });
-      const step = { nodeId: node.id, type: node.type, label: node.label || NodeDefinitions[node.type]?.label || node.type, status, inputs, outputs, ...(error ? { error } : {}) };
+      const step = { nodeId: node.id, type: node.type, label: node.label || NodeDefinitions[node.type]?.label || node.type, status, inputs, outputs, ...(error ? { error: redactSecretText(error) } : {}) };
       debugSteps.push(step);
       if (debugSteps.length > 500) debugSteps.shift();
       await context.onDebugStep?.(step);
@@ -332,11 +338,13 @@ export class GraphRunner {
     const resolveMessageFiles = (node, connectedFiles) => {
       const embedWire = findInputConnection(node.id, 'embed');
       const embedNode = embedWire && nodes.find((item) => item.id === embedWire.sourceNodeId);
+      const componentsWire = findInputConnection(node.id, 'components');
+      const componentsNode = componentsWire && nodes.find((item) => item.id === componentsWire.sourceNodeId);
       let normalizedConnectedFiles = connectedFiles;
       if (typeof normalizedConnectedFiles === 'string') {
         try { normalizedConnectedFiles = JSON.parse(normalizedConnectedFiles); } catch { normalizedConnectedFiles = []; }
       }
-      const files = [...(Array.isArray(normalizedConnectedFiles) ? normalizedConnectedFiles : normalizedConnectedFiles?.filename && normalizedConnectedFiles?.data ? [normalizedConnectedFiles] : []), ...(Array.isArray(node.data?.attachments) ? node.data.attachments : []), ...(Array.isArray(embedNode?.data?.attachments) ? embedNode.data.attachments : [])];
+      const files = [...(Array.isArray(normalizedConnectedFiles) ? normalizedConnectedFiles : normalizedConnectedFiles?.filename && normalizedConnectedFiles?.data ? [normalizedConnectedFiles] : []), ...(Array.isArray(node.data?.attachments) ? node.data.attachments : []), ...(Array.isArray(embedNode?.data?.attachments) ? embedNode.data.attachments : []), ...(Array.isArray(componentsNode?.data?.attachments) ? componentsNode.data.attachments : [])];
       const unique = new Map();
       for (const file of files) if (file?.filename && file?.data) unique.set(String(file.filename).toLowerCase(), file);
       return [...unique.values()];
@@ -352,7 +360,7 @@ export class GraphRunner {
       seen.add(key);
       const source = nodes.find((item) => item.id === nodeId);
       if (!source) return;
-      if (['variable_get', 'function_call', 'format_text', 'build_embed', 'build_modal', 'data_get_modal_value', 'modify_embed'].includes(source.type)
+      if (['variable_get', 'function_call', 'format_text', 'build_embed', 'build_modal', 'build_components', 'data_get_modal_value', 'modify_embed'].includes(source.type)
         || source.type.startsWith('math_') || source.type.startsWith('logic_') || source.type.startsWith('data_') || source.type.startsWith('value_') || source.type === 'compare_text') {
         for (const cacheKey of dataCache.keys()) if (cacheKey.startsWith(`${source.id}:`)) dataCache.delete(cacheKey);
       }
@@ -385,6 +393,12 @@ export class GraphRunner {
       }
       if (sourceNode.type === 'variable_set' && pinId === 'variable') return resolveVariableReference(sourceNode, seen);
       if (sourceNode.type === 'function_input') {
+        const argument = getFunctionInputArguments(sourceNode).find((item) => functionArgumentPinId(item) === pinId);
+        if (argument) return dataCache.has(`${sourceNode.id}:${pinId}`)
+          ? dataCache.get(`${sourceNode.id}:${pinId}`)
+          : eventPayload?.argumentValues instanceof Map && eventPayload.argumentValues.has(argument.paramId)
+            ? eventPayload.argumentValues.get(argument.paramId)
+            : argument.defaultValue;
         const cacheKey = `${sourceNode.id}:value`;
         if (dataCache.has(cacheKey)) return dataCache.get(cacheKey);
         return sourceNode.data?.defaultValue ?? defaultValueForType(sourceNode.data?.valueType);
@@ -467,14 +481,13 @@ export class GraphRunner {
         if (dataCache.has(cacheKey)) return dataCache.get(cacheKey);
         const targetGraph = context.resolveFunctionGraph?.(sourceNode.data?.graphId);
         if (!targetGraph) return undefined;
-        const parameters = targetGraph.nodes.filter((node) => node.type === 'function_input');
-        const missingParameter = parameters.find((parameter) => parameter.data?.optional === false
-          && !connections.some((wire) => wire.targetNodeId === sourceNode.id && wire.targetPinId === `arg_${parameter.data?.paramId || parameter.id}`));
-        if (missingParameter) throw new Error(`${targetGraph.name || 'Function'} requires an input for “${missingParameter.data?.name || 'Input'}”.`);
+        const parameters = getFunctionGraphArguments(targetGraph);
+        const missingParameter = parameters.find((parameter) => parameter.optional === false
+          && !connections.some((wire) => wire.targetNodeId === sourceNode.id && wire.targetPinId === functionArgumentPinId(parameter)));
+        if (missingParameter) throw new Error(`${targetGraph.name || 'Function'} requires an input for “${missingParameter.name || 'Input'}”.`);
         const argumentValues = new Map(parameters.map((parameter) => {
-          const parameterId = parameter.data?.paramId || parameter.id;
-          const value = resolveDataInput(sourceNode, `arg_${parameterId}`, parameter.data?.defaultValue ?? defaultValueForType(parameter.data?.valueType), seen);
-          return [parameterId, value];
+          const value = resolveDataInput(sourceNode, functionArgumentPinId(parameter), parameter.defaultValue ?? defaultValueForFunctionType(parameter.valueType), seen);
+          return [parameter.paramId, value];
         }));
         const result = evaluateFunctionGraph(targetGraph, argumentValues, {
           ...context,
@@ -482,10 +495,10 @@ export class GraphRunner {
             if (scope === 'project') return getVariableValue(variableId, 'project');
             const definitions = new Map((functionGraph.variables || []).map((variable) => [variable.id, variable]));
             const state = context.getGraphVariableState?.(functionGraph) || (functionGraph.id === graph.id ? persistentVariableValues : new Map());
-            initializeVariableValues(definitions, state);
+            initializeVariableValues(definitions, state, null, 'graph', functionGraph);
             const variable = definitions.get(variableId);
             return variable?.persist === false
-              ? coerceVariableValue(variable.initialValue, variable.valueType || variable.type, variable.initialValue)
+              ? coerceVariableValue(variable.secret ? context.getSecretVariableValue?.(variableId, 'graph', functionGraph) ?? defaultValueForType(variable.valueType || variable.type) : variable.initialValue, variable.valueType || variable.type, variable.initialValue)
               : state.get(variableId);
           }
         }, []);
@@ -514,6 +527,11 @@ export class GraphRunner {
         const embed = buildEmbedFromNode(sourceNode, seen);
         dataCache.set(cacheKey, embed);
         return embed;
+      }
+      if (sourceNode.type === 'build_components' && pinId === 'components') {
+        const components = buildDiscordComponentsV2(sourceNode.data?.componentsV2, (value) => renderNodeTemplate(sourceNode, value));
+        dataCache.set(cacheKey, components);
+        return components;
       }
       if (sourceNode.type === 'modify_embed') {
         const baseEmbed = resolveDataInput(sourceNode, 'embed', null, seen) || {};
@@ -656,11 +674,22 @@ export class GraphRunner {
     }
 
     function resolveMessageComponents(node) {
-      if (!findInputConnection(node.id, 'components')) return buildDiscordComponents(node.data?.components, (value) => renderNodeTemplate(node, value));
+      if (!findInputConnection(node.id, 'components')) {
+        if (node.data?.componentsV2Enabled) {
+          const built = buildDiscordComponentsV2(node.data?.componentsV2Layout, (value) => renderNodeTemplate(node, value));
+          return { ...built, validationErrors: validateDiscordComponentsV2(built) };
+        }
+        return buildDiscordComponents(node.data?.components, (value) => renderNodeTemplate(node, value));
+      }
+      const componentsWire = findInputConnection(node.id, 'components');
+      const componentSource = componentsWire && nodes.find((item) => item.id === componentsWire.sourceNodeId);
       const renderNested = (value) => typeof value === 'string' ? renderNodeTemplate(node, value)
         : Array.isArray(value) ? value.map(renderNested)
           : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([key, nested]) => [key, renderNested(nested)])) : value;
-      return renderNested(resolveDataInput(node, 'components', []));
+      const rawResolved = resolveDataInput(node, 'components', []);
+      const resolved = componentSource?.type === 'build_components' ? rawResolved : renderNested(rawResolved);
+      if (resolved?.format === 'arc-components-v2') return { ...resolved, validationErrors: validateDiscordComponentsV2(resolved) };
+      return resolved;
     }
 
     function buildEmbedFromNode(embedNode, seen = new Set()) {
@@ -748,6 +777,8 @@ export class GraphRunner {
       : nodes.find((node) => {
       const definition = NodeDefinitions[node.type];
       if (definition?.gatewayEvent !== normalizedEvent) return false;
+      if (String(normalizedEvent).startsWith('WEBSOCKET_') && String(node.data?.filter_connection_id || '').trim()
+        && String(node.data.filter_connection_id).trim() !== String(eventPayload?.connectionId || '')) return false;
       if (node.type === 'event_message_create' && typeof node.data?.prefix === 'string' && node.data.prefix
         && !String(eventPayload?.content || '').trimStart().startsWith(node.data.prefix)) return false;
       if (node.type === 'event_cron' && eventPayload?.cronNodeId && node.id !== eventPayload.cronNodeId) return false;
@@ -789,12 +820,12 @@ export class GraphRunner {
       const argumentValues = eventPayload?.argumentValues instanceof Map
         ? eventPayload.argumentValues
         : new Map(Object.entries(eventPayload?.argumentValues || {}));
-      for (const inputNode of nodes.filter((n) => n.type === 'function_input')) {
-        const paramId = inputNode.data?.paramId || inputNode.id;
-        const value = argumentValues.has(paramId)
-          ? argumentValues.get(paramId)
-          : (inputNode.data?.defaultValue ?? defaultValueForType(inputNode.data?.valueType));
-        dataCache.set(`${inputNode.id}:value`, value);
+      for (const inputNode of nodes.filter((node) => node.type === 'function_input')) {
+        for (const argument of getFunctionInputArguments(inputNode)) {
+          const value = argumentValues.has(argument.paramId) ? argumentValues.get(argument.paramId) : argument.defaultValue;
+          dataCache.set(`${inputNode.id}:${functionArgumentPinId(argument)}`, value);
+          if (argument.legacy) dataCache.set(`${inputNode.id}:value`, value);
+        }
       }
     }
 
@@ -824,16 +855,38 @@ export class GraphRunner {
       dataCache.set(`${startNode.id}:application_id`, eventPayload.application_id || '');
       dataCache.set(`${startNode.id}:interaction_id`, eventPayload.id || '');
       dataCache.set(`${startNode.id}:interaction_token`, eventPayload.token || '');
+      const selectedPath = (eventPayload.data?.options || []).find((option) => [1, 2].includes(Number(option.type)));
+      const selectedGroup = Number(selectedPath?.type) === 2 ? selectedPath : null;
+      const selectedSubcommand = selectedGroup
+        ? (selectedGroup.options || []).find((option) => Number(option.type) === 1)
+        : Number(selectedPath?.type) === 1 ? selectedPath : null;
+      const subcommandGroupName = selectedGroup?.name || '';
+      const subcommandName = selectedSubcommand?.name || '';
+      dataCache.set(`${startNode.id}:subcommand_group_name`, subcommandGroupName);
+      dataCache.set(`${startNode.id}:subcommand_name`, subcommandName);
       const commandOptions = {};
       const flattenOptions = (options = []) => {
         for (const option of options) {
           if (Array.isArray(option.options)) flattenOptions(option.options);
-          else if (option.name) commandOptions[option.name] = option.value ?? option.user ?? option.channel ?? option.role ?? option.attachment ?? null;
+          else if (option.name) {
+            if (Number(option.type) === 11) {
+              const attachmentId = option.value ?? option.attachment;
+              commandOptions[option.name] = eventPayload.data?.resolved?.attachments?.[attachmentId]
+                || (option.attachment && typeof option.attachment === 'object' ? option.attachment : null);
+            } else commandOptions[option.name] = option.value ?? option.user ?? option.channel ?? option.role ?? option.attachment ?? null;
+          }
         }
       };
       flattenOptions(eventPayload.data?.options || []);
+      if (subcommandName) commandOptions.$subcommand = subcommandName;
+      if (subcommandGroupName) commandOptions.$subcommand_group = subcommandGroupName;
       dataCache.set(`${startNode.id}:options`, commandOptions);
-      for (const [name, value] of Object.entries(commandOptions)) dataCache.set(`${startNode.id}:option_${name}`, value);
+      for (const { option, path, pinId } of flattenSlashParameters(startNode.data?.options)) {
+        const value = commandOptions[option.name] ?? null;
+        if (path.length === 1 || path.slice(0, -1).join('.') === [subcommandGroupName, subcommandName].filter(Boolean).join('.')) {
+          dataCache.set(`${startNode.id}:${pinId}`, value);
+        }
+      }
     } else if (eventNodeType === 'event_slash_autocomplete') {
       const commandOptions = {};
       let focused = null;
@@ -903,7 +956,7 @@ export class GraphRunner {
       log(`[Graph] Executing node: ${targetNode.label || targetNode.type} (${targetNode.id})`);
 
       try {
-        const debugInputs = context.debug ? [...getNodeInputs(targetNode, connections, [...graphVariables, ...projectVariables]), ...getNodeArgumentPins(targetNode, connections)].filter((pin) => pin.type !== 'exec').map((pin) => ({
+        const debugInputs = context.debug ? getNodeInputs(targetNode, connections, [...graphVariables, ...projectVariables]).filter((pin) => pin.type !== 'exec').map((pin) => ({
           pinId: pin.id,
           label: pin.label || pin.id,
           value: debugValue(resolveDataInput(targetNode, pin.id, targetNode.data?.[pin.id] ?? pin.defaultValue), pin.id)
@@ -1043,14 +1096,13 @@ export class GraphRunner {
           const callStack = Array.isArray(context.graphCallStack) ? context.graphCallStack : [graph.id];
           if (callStack.includes(targetGraph.id)) throw new Error('Function call cycle detected. Graphs cannot call themselves or call each other in a loop.');
           if (callStack.length >= 24) throw new Error('Function call nesting exceeded 24 levels.');
-          const parameters = (targetGraph.nodes || []).filter((node) => node.type === 'function_input');
-          const missingParameter = parameters.find((parameter) => parameter.data?.optional === false
-            && !connections.some((wire) => wire.targetNodeId === targetNode.id && wire.targetPinId === `arg_${parameter.data?.paramId || parameter.id}`));
-          if (missingParameter) throw new Error(`${targetGraph.name || 'Function'} requires an input for “${missingParameter.data?.name || 'Input'}”.`);
+          const parameters = getFunctionGraphArguments(targetGraph);
+          const missingParameter = parameters.find((parameter) => parameter.optional === false
+            && !connections.some((wire) => wire.targetNodeId === targetNode.id && wire.targetPinId === functionArgumentPinId(parameter)));
+          if (missingParameter) throw new Error(`${targetGraph.name || 'Function'} requires an input for “${missingParameter.name || 'Input'}”.`);
           const argumentValues = new Map(parameters.map((parameter) => {
-            const parameterId = parameter.data?.paramId || parameter.id;
-            const value = resolveDataInput(targetNode, `arg_${parameterId}`, parameter.data?.defaultValue ?? defaultValueForType(parameter.data?.valueType));
-            return [parameterId, value];
+            const value = resolveDataInput(targetNode, functionArgumentPinId(parameter), parameter.defaultValue ?? defaultValueForFunctionType(parameter.valueType));
+            return [parameter.paramId, value];
           }));
           log(`[Call Function] Invoking ${targetGraph.name || targetGraph.id}.`);
           const nestedResult = await GraphRunner.execute(targetGraph, 'FUNCTION_CALL', {
@@ -1114,13 +1166,14 @@ export class GraphRunner {
             log
           });
           if (result !== false) currentExecWires.push(...findExecOutputs(targetNode.id, result === 'failure' ? 'failure_exec' : 'exec'));
-        } else if (targetNode.type === 'action_send_message' || targetNode.type === 'action_edit_message') {
+        } else if (['action_send_message', 'action_edit_message', 'action_edit_components'].includes(targetNode.type)) {
           const { executeDiscordMessageNode } = await import('./nodes/runtime/discord_messages.js');
           await executeDiscordMessageNode(targetNode, {
             resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
             resolveComponents: () => resolveMessageComponents(targetNode),
             resolveFiles: (files) => resolveMessageFiles(targetNode, files),
             buildEmbed: () => buildEmbedFromNode(targetNode),
+            isInputConnected: (pinId) => Boolean(findInputConnection(targetNode.id, pinId)),
             rest: context.rest,
             setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value),
             log
@@ -1174,6 +1227,7 @@ export class GraphRunner {
             resolveComponents: () => resolveMessageComponents(targetNode),
             resolveFiles: (files) => resolveMessageFiles(targetNode, files),
             buildEmbed: () => buildEmbedFromNode(targetNode),
+            isInputConnected: (pinId) => Boolean(findInputConnection(targetNode.id, pinId)),
             rest: context.rest,
             log,
             state: interactionState,
@@ -1199,6 +1253,15 @@ export class GraphRunner {
             log
           });
           currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+        } else if (WEBSOCKET_NODE_TYPES.has(targetNode.type)) {
+          const { executeWebSocketNode } = await import('./nodes/runtime/websocket.js');
+          const result = await executeWebSocketNode(targetNode, {
+            resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
+            setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value),
+            context,
+            log
+          });
+          currentExecWires.push(...findExecOutputs(targetNode.id, result === 'failure' ? 'failure_exec' : 'exec'));
         } else if (CRYPTO_NODE_TYPES.has(targetNode.type)) {
           const { executeCryptoNode } = await import('./nodes/runtime/crypto.js');
           executeCryptoNode(targetNode, {
@@ -1210,13 +1273,14 @@ export class GraphRunner {
         }
         await recordDebugStep(targetNode, debugInputs);
       } catch (nodeErr) {
-        if (nodeErr?.name === 'AbortError') return { error: nodeErr.message };
-        log(`[Node Error] Failed on node ${targetNode.id}: ${nodeErr.message}`);
+        const safeError = redactSecretText(nodeErr?.message || String(nodeErr));
+        if (nodeErr?.name === 'AbortError') return { error: safeError };
+        log(`[Node Error] Failed on node ${targetNode.id}: ${safeError}`);
         try {
-          context.onNodeError?.({ graphId: graph.id, graphName: graph.name || graph.id, nodeId: targetNode.id, nodeLabel: targetNode.label || NodeDefinitions[targetNode.type]?.label || targetNode.type, error: nodeErr.message || String(nodeErr) });
+          context.onNodeError?.({ graphId: graph.id, graphName: graph.name || graph.id, nodeId: targetNode.id, nodeLabel: targetNode.label || NodeDefinitions[targetNode.type]?.label || targetNode.type, error: safeError });
         } catch {}
-        if (context.debug) await recordDebugStep(targetNode, [], 'error', nodeErr.message);
-        return { error: nodeErr.message };
+        if (context.debug) await recordDebugStep(targetNode, [], 'error', safeError);
+        return { error: safeError };
       }
     }
       return null;
@@ -1299,21 +1363,21 @@ function evaluateFunctionGraph(graph, argumentValues, context, callStack) {
         if (argumentMatch && Number(argumentMatch[1]) >= 1 && Number(argumentMatch[1]) <= 50) return resolveInput(node, `arg_${Number(argumentMatch[1])}`, undefined);
         const variable = graphVariables.find((item) => item.name?.toLowerCase() === name.toLowerCase()) || projectVariables.find((item) => item.name?.toLowerCase() === name.toLowerCase());
         if (variable) return getVariableValue(variable.id, projectVariableDefinitions.has(variable.id) ? 'project' : 'graph');
-        const argumentNode = nodes.find((item) => item.type === 'function_input' && item.data?.name?.toLowerCase() === name.toLowerCase());
-        const fallback = argumentNode ? resolveOutput(argumentNode, 'value') : undefined;
+        const argument = getFunctionGraphArguments(graph).find((item) => item.name.toLowerCase() === name.toLowerCase());
+        const inputNode = argument && nodes.find((item) => item.id === argument.inputNodeId);
+        const fallback = argument && inputNode ? resolveOutput(inputNode, argument.legacy ? 'value' : functionArgumentPinId(argument)) : undefined;
         const value = resolveInput(node, `slot_${name}`, fallback);
         return value;
       }, context.appEmojis);
     } else if (node.type === 'function_call') {
       const nestedGraph = context.resolveFunctionGraph?.(node.data?.graphId);
       if (nestedGraph) {
-        const nestedParams = nestedGraph.nodes.filter((item) => item.type === 'function_input');
-        const missingParameter = nestedParams.find((parameter) => parameter.data?.optional === false
-          && !inputWire(node.id, `arg_${parameter.data?.paramId || parameter.id}`));
-        if (missingParameter) throw new Error(`${nestedGraph.name || 'Function'} requires an input for “${missingParameter.data?.name || 'Input'}”.`);
+        const nestedParams = getFunctionGraphArguments(nestedGraph);
+        const missingParameter = nestedParams.find((parameter) => parameter.optional === false
+          && !inputWire(node.id, functionArgumentPinId(parameter)));
+        if (missingParameter) throw new Error(`${nestedGraph.name || 'Function'} requires an input for “${missingParameter.name || 'Input'}”.`);
         const nestedValues = new Map(nestedParams.map((parameter) => {
-          const parameterId = parameter.data?.paramId || parameter.id;
-          return [parameterId, resolveInput(node, `arg_${parameterId}`, parameter.data?.defaultValue ?? defaultValueForType(parameter.data?.valueType))];
+          return [parameter.paramId, resolveInput(node, functionArgumentPinId(parameter), parameter.defaultValue ?? defaultValueForFunctionType(parameter.valueType))];
         }));
         result = evaluateFunctionGraph(nestedGraph, nestedValues, context, nextStack);
       }
@@ -1353,6 +1417,7 @@ function coerceVariableValue(value, type = 'string', fallback) {
     if (typeof value === 'string') return !['', 'false', '0', 'no', 'off'].includes(value.trim().toLowerCase());
     return Boolean(value);
   }
+  if (type === 'attachment') return value && typeof value === 'object' ? value : fallback ?? null;
   if (type === 'array' || type === 'object') {
     const valid = type === 'array' ? Array.isArray(value) : value && typeof value === 'object' && !Array.isArray(value);
     if (!valid) return fallback ?? defaultValueForType(type);
