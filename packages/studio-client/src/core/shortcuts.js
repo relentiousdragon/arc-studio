@@ -13,11 +13,18 @@ export const DEFAULT_SHORTCUTS = {
   toggleLibrary: 'shift+l',
   openSearch: 'mod+k',
   addNote: 'n',
-  emojiPicker: 'mod+shift+e',
+  emojiPicker: 'mod+shift+.',
+  exportBot: 'mod+shift+e',
   saveGraph: 'mod+s',
   undo: 'mod+z',
   redo: 'mod+shift+z'
 };
+
+export function getDefaultShortcut(action, platform = '') {
+  const browserMac = platform === 'browser' && typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || '');
+  if (action === 'redo' && platform !== 'macos' && !browserMac) return 'mod+y';
+  return DEFAULT_SHORTCUTS[action] || '';
+}
 
 const keyAliases = { ' ': 'space', '+': 'plus', '-': 'minus', ',': 'comma', '.': 'period', '/': 'slash', '\\': 'backslash', '[': 'bracketleft', ']': 'bracketright' };
 const displayAliases = { plus: '+', minus: '−', comma: ',', period: '.', slash: '/', backslash: '\\', bracketleft: '[', bracketright: ']' };
