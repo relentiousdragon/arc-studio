@@ -4,6 +4,7 @@ export default {
   "category": "Values & Data",
   "label": "Channel Permission Overwrites",
   "color": "#06b6d4",
+  "dynamicPins": { "kind": "permission-overwrites", "max": 100 },
   "defaultData": {
     "overwriteCount": 1,
     "target_id_1": "",
