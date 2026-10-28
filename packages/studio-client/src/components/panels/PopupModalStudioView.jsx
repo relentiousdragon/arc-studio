@@ -11,7 +11,7 @@ function validateModal(modal) {
   const fields = Array.isArray(modal?.components) ? modal.components : [];
   if (!title || title.length > 45) return 'Enter a modal title (45 characters maximum).';
   if (!customId || customId.length > 100) return 'Enter a modal custom ID (100 characters maximum).';
-  if (fields.length < 1 || fields.length > 5) return 'A modal must contain 1–5 fields.';
+  if (fields.length < 1 || fields.length > 5) return 'Modal must contain 1–5 top level components. Each input uses one labeled component.';
   const ids = new Set();
   for (const [index, field] of fields.entries()) {
     const type = field.type || 'text';
