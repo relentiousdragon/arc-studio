@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
-use tauri::{Manager, RunEvent, State, Webview, WebviewWindowBuilder, WindowEvent};
+use tauri::{Emitter, Manager, RunEvent, State, Webview, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_updater::UpdaterExt;
 
 const UPDATE_REPOSITORY: &str = match option_env!("ARC_UPDATE_REPOSITORY") {
@@ -76,6 +76,14 @@ struct StagedUpdateStatus {
     version: String,
     body: Option<String>,
     staged: bool,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateDownloadProgress {
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+    percent: Option<u8>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -317,12 +325,37 @@ async fn install_channel_update<R: tauri::Runtime>(app: tauri::AppHandle<R>, web
     let _ = updater_endpoint(&channel)?;
     let update = webview.resources_table().get::<tauri_plugin_updater::Update>(rid)
         .map_err(|error| format!("The selected update is no longer available: {error}"))?;
-    let bytes = update.download(|_, _| {}, || {}).await.map_err(|error| format!("Could not download the ARC Studio update: {error}"))?;
-    update.verify(&bytes).map_err(|error| format!("The ARC Studio update signature could not be verified: {error}"))?;
-    let metadata_path = prepare_update_rollback(&app)?;
-    arm_update_rollback(&metadata_path)?;
-    update.install(&bytes).map_err(|error| format!("Could not install the ARC Studio update: {error}"))?;
-    app.restart();
+    let mut downloaded_bytes = 0_u64;
+    let mut last_progress_at = Instant::now();
+    let mut last_percent = None;
+    let app_handle = app.clone();
+    let bytes = update.download(|chunk_length, total_bytes| {
+        downloaded_bytes = downloaded_bytes.saturating_add(chunk_length as u64);
+        let percent = total_bytes.filter(|total| *total > 0).map(|total| ((downloaded_bytes.saturating_mul(100) / total).min(99)) as u8);
+        let should_emit = percent != last_percent || last_progress_at.elapsed() >= Duration::from_millis(120);
+        if should_emit {
+            let _ = app_handle.emit("arc-studio-update-download-progress", UpdateDownloadProgress { downloaded_bytes, total_bytes, percent });
+            last_progress_at = Instant::now();
+            last_percent = percent;
+        }
+    }, || {}).await.map_err(|error| format!("Could not download the ARC Studio update: {error}"))?;
+    stage_update_package(&app, &channel, &update.version, &update.raw_json, &bytes)?;
+    Ok(())
+}
+
+fn stage_update_package<R: tauri::Runtime>(app: &tauri::AppHandle<R>, channel: &str, version: &str, raw_json: &serde_json::Value, bytes: &[u8]) -> Result<(), String> {
+    let (metadata_path, package_path) = staged_update_paths(app)?;
+    let directory = metadata_path.parent().ok_or_else(|| "Could not prepare update storage.".to_string())?;
+    fs::create_dir_all(directory).map_err(|error| format!("Could not prepare update storage: {error}"))?;
+    let metadata = StagedUpdateMetadata { channel: channel.to_string(), version: version.to_string(), raw_json: raw_json.clone() };
+    let metadata_temp = metadata_path.with_extension("json.tmp");
+    let package_temp = package_path.with_extension("bin.tmp");
+    fs::write(&package_temp, bytes).map_err(|error| format!("Could not save the downloaded update: {error}"))?;
+    fs::write(&metadata_temp, serde_json::to_vec(&metadata).map_err(|error| format!("Could not save update details: {error}"))?)
+        .map_err(|error| format!("Could not save update details: {error}"))?;
+    fs::rename(&package_temp, &package_path).map_err(|error| format!("Could not stage the update package: {error}"))?;
+    fs::rename(&metadata_temp, &metadata_path).map_err(|error| format!("Could not stage update details: {error}"))?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -348,14 +381,7 @@ async fn stage_stable_update<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Res
         }
     }
     let bytes = update.download(|_, _| {}, || {}).await.map_err(|error| format!("Could not download ARC Studio update: {error}"))?;
-    let metadata = StagedUpdateMetadata { channel: "stable".to_string(), version: version.clone(), raw_json };
-    let metadata_temp = metadata_path.with_extension("json.tmp");
-    let package_temp = package_path.with_extension("bin.tmp");
-    fs::write(&package_temp, bytes).map_err(|error| format!("Could not save the downloaded update: {error}"))?;
-    fs::write(&metadata_temp, serde_json::to_vec(&metadata).map_err(|error| format!("Could not save update details: {error}"))?)
-        .map_err(|error| format!("Could not save update details: {error}"))?;
-    fs::rename(&package_temp, &package_path).map_err(|error| format!("Could not stage the update package: {error}"))?;
-    fs::rename(&metadata_temp, &metadata_path).map_err(|error| format!("Could not stage update details: {error}"))?;
+    stage_update_package(&app, "stable", &version, &raw_json, &bytes)?;
     Ok(Some(StagedUpdateStatus { version, body, staged: true }))
 }
 
@@ -410,14 +436,17 @@ fn read_arc_project_file(path: String) -> Result<String, String> {
 }
 
 fn is_arc_graph_path(path: &Path) -> bool {
-    path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.to_ascii_lowercase().ends_with(".arc.json"))
+    path.file_name().and_then(|name| name.to_str()).is_some_and(|name| {
+        let name = name.to_ascii_lowercase();
+        name.ends_with(".arcgraph") || name.ends_with(".arc.json")
+    })
 }
 
 #[tauri::command]
 fn read_arc_graph_file(path: String) -> Result<String, String> {
     let path = PathBuf::from(path);
     if !is_arc_graph_path(&path) {
-        return Err("Choose an .arc.json graph file.".to_string());
+        return Err("Choose an .arcgraph file.".to_string());
     }
     let metadata = fs::metadata(&path).map_err(|error| format!("Could not read the graph file: {error}"))?;
     if !metadata.is_file() || metadata.len() > 128 * 1024 * 1024 {
@@ -952,7 +981,8 @@ fn main() {
                 .separator().item(&save_graph).item(&export_graph).item(&export_project).build()?;
 
             let undo = MenuItemBuilder::with_id("edit.undo", "Undo").accelerator("CmdOrCtrl+Z").build(handle)?;
-            let redo = MenuItemBuilder::with_id("edit.redo", "Redo").accelerator("CmdOrCtrl+Shift+Z").build(handle)?;
+            let redo_accelerator = if cfg!(target_os = "macos") { "CmdOrCtrl+Shift+Z" } else { "CmdOrCtrl+Y" };
+            let redo = MenuItemBuilder::with_id("edit.redo", "Redo").accelerator(redo_accelerator).build(handle)?;
             let cut = PredefinedMenuItem::cut(handle, None)?;
             let copy = PredefinedMenuItem::copy(handle, None)?;
             let paste = PredefinedMenuItem::paste(handle, None)?;
