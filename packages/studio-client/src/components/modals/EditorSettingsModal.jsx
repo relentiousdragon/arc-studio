@@ -4,7 +4,7 @@ import { Modal } from '../ui/Modal.jsx';
 import { Toggle, SelectInput, TextInput } from '../ui/Inputs.jsx';
 import { Button } from '../ui/Button.jsx';
 import { arcEvents } from '../../core/ArcEvents.js';
-import { DEFAULT_SHORTCUTS, formatShortcut, getShortcutReservation, normalizeShortcutBinding, shortcutFromEvent } from '../../core/shortcuts.js';
+import { DEFAULT_SHORTCUTS, formatShortcut, getDefaultShortcut, getShortcutReservation, normalizeShortcutBinding, shortcutFromEvent } from '../../core/shortcuts.js';
 import { apiUrl } from '../../core/api.js';
 import studioPackage from '../../../package.json';
 import chezcordPackage from '../../../../chezcord/package.json';
@@ -35,6 +35,7 @@ const shortcutActions = [
   ['openSearch', 'Open node search'],
   ['addNote', 'Add note'],
   ['emojiPicker', 'Open emoji picker'],
+  ['exportBot', 'Export bot'],
   ['saveGraph', 'Save graph'],
   ['undo', 'Undo'],
   ['redo', 'Redo']
@@ -47,7 +48,7 @@ function openExternal(event) {
   invoke('open_external_url', { url: event.currentTarget.href }).catch(() => {});
 }
 
-export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSettings, onAutoLayout, onExportGraph, onResetLocalData, themeChoice = 'system', onThemeChange, desktopMode = false, localWorkspace = false, canResetLocalWorkspace = false, platform = '', appUpdate = null, serverUpdate = null, stableUpdateReady = null, releaseChannel = 'stable', onOpenStudioUpdate, networkOnline = true, authToken = '', activeProjectId = '', canManageLogRetention = false, canManageActivityWebhook = false, idleDisconnectMinutes = 15, canManageIdleDisconnect = false, onSetIdleDisconnectMinutes }) {
+export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSettings, onAutoLayout, onExportGraph, onResetLocalData, themeChoice = 'system', onThemeChange, desktopMode = false, localWorkspace = false, externalWorkspace = false, canResetLocalWorkspace = false, canManageClientAccess = false, platform = '', appUpdate = null, serverUpdate = null, stableUpdateReady = null, downloadedUpdateReady = null, updateInstalling = false, releaseChannel = 'stable', onOpenStudioUpdate, networkOnline = true, authToken = '', activeProjectId = '', canManageLogRetention = false, canManageActivityWebhook = false, idleDisconnectMinutes = 15, canManageIdleDisconnect = false, onSetIdleDisconnectMinutes }) {
   const [activeTab, setActiveTab] = useState('canvas');
   const [recording, setRecording] = useState(null);
   const [shortcutCaptureError, setShortcutCaptureError] = useState('');
@@ -62,8 +63,13 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
   const [activityWebhookMessage, setActivityWebhookMessage] = useState('');
   const [activityWebhookLoading, setActivityWebhookLoading] = useState(false);
   const [activityWebhookSaving, setActivityWebhookSaving] = useState(false);
+  const [allowUnknownClients, setAllowUnknownClients] = useState(false);
+  const [clientAccessLoading, setClientAccessLoading] = useState(false);
+  const [clientAccessSaving, setClientAccessSaving] = useState(false);
+  const [clientAccessMessage, setClientAccessMessage] = useState('');
   const update = (key, value) => onUpdateSettings({ ...settings, [key]: value });
-  const shortcuts = { ...DEFAULT_SHORTCUTS, ...(settings.shortcuts || {}) };
+  const shortcuts = { ...DEFAULT_SHORTCUTS, redo: getDefaultShortcut('redo', platform), ...(settings.shortcuts || {}) };
+  if (!settings.shortcuts?.redo || settings.shortcuts.redo === DEFAULT_SHORTCUTS.redo) shortcuts.redo = getDefaultShortcut('redo', platform);
   const confirmLocalReset = async () => {
     if (resetPending || !resetPassword || !canResetLocalWorkspace) return;
     setResetPending(true);
@@ -112,6 +118,39 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
     }).catch(() => { if (active) setLogRetentionMessage('Could not load this project’s retention setting.'); });
     return () => { active = false; };
   }, [isOpen, activeTab, authToken, activeProjectId]);
+
+  useEffect(() => {
+    if (!isOpen || activeTab !== 'collaboration' || !authToken || !externalWorkspace || !canManageClientAccess) return undefined;
+    if (!networkOnline) { setClientAccessMessage('Connect to the workspace to load this setting.'); return undefined; }
+    let active = true;
+    setClientAccessLoading(true);
+    fetch(apiUrl('/api/client-access'), { headers: { 'x-arc-token': authToken } })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Could not load client access settings.');
+        if (active) { setAllowUnknownClients(data.allowUnknownClients === true); setClientAccessMessage(''); }
+      })
+      .catch((error) => { if (active) setClientAccessMessage(error.message || 'Could not load client access settings.'); })
+      .finally(() => { if (active) setClientAccessLoading(false); });
+    return () => { active = false; };
+  }, [isOpen, activeTab, authToken, externalWorkspace, canManageClientAccess, networkOnline]);
+
+  const saveClientAccess = async (allow) => {
+    setClientAccessSaving(true);
+    setClientAccessMessage('Saving…');
+    try {
+      const response = await fetch(apiUrl('/api/client-access'), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
+        body: JSON.stringify({ allowUnknownClients: allow })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not save client access settings.');
+      setAllowUnknownClients(data.allowUnknownClients === true);
+      setClientAccessMessage(data.allowUnknownClients ? 'Unknown clients are allowed.' : 'Only ARC Studio clients are allowed.');
+    } catch (error) { setClientAccessMessage(error.message || 'Could not save client access settings.'); }
+    finally { setClientAccessSaving(false); }
+  };
 
   useEffect(() => {
     if (!isOpen || activeTab !== 'logs' || !authToken || !canManageActivityWebhook || (desktopMode && localWorkspace)) return undefined;
@@ -196,13 +235,15 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
 
     {activeTab === 'collaboration' && <div className="settings-section settings-tab-content">
       <div className="settings-section-heading"><span>Graph synchronization</span></div>
-      <p className="settings-description">Open graphs sync live to collaborators over the workspace connection. Live edits stay in memory until they are saved.</p>
-      <Toggle label="Auto-save graphs" description="Persist unsaved graph changes automatically." checked={settings.autoSave !== false} onChange={(value) => update('autoSave', value)} />
-      <div className="settings-snapshot-options" aria-disabled={settings.autoSave === false} style={{ opacity: settings.autoSave === false ? .48 : 1, pointerEvents: settings.autoSave === false ? 'none' : 'auto' }}>
-        <SelectInput label="Save interval" value={String(settings.autoSaveIntervalSeconds ?? 30)} options={[
-          ['5', '5 seconds'], ['15', '15 seconds'], ['30', '30 seconds'], ['60', '1 minute'], ['120', '2 minutes'], ['300', '5 minutes']
-        ].map(([value, label]) => ({ value, label }))} onChange={(value) => update('autoSaveIntervalSeconds', Number(value))} />
-      </div>
+      {localWorkspace ? <>
+        <p className="settings-description">Graphs save to this computer automatically. Live collaboration is not used in Local Workspace.</p>
+        <Toggle label="Auto-save graphs" description="Persist unsaved graph changes automatically." checked={settings.autoSave !== false} onChange={(value) => update('autoSave', value)} />
+        <div className="settings-snapshot-options" aria-disabled={settings.autoSave === false} style={{ opacity: settings.autoSave === false ? .48 : 1, pointerEvents: settings.autoSave === false ? 'none' : 'auto' }}>
+          <SelectInput label="Save interval" value={String(settings.autoSaveIntervalSeconds ?? 30)} options={[
+            ['5', '5 seconds'], ['15', '15 seconds'], ['30', '30 seconds'], ['60', '1 minute'], ['120', '2 minutes'], ['300', '5 minutes']
+          ].map(([value, label]) => ({ value, label }))} onChange={(value) => update('autoSaveIntervalSeconds', Number(value))} />
+        </div>
+      </> : <p className="settings-description">The workspace server saves live graph changes and keeps them available after a reconnect.</p>}
       {!desktopMode || !localWorkspace ? <>
         <div className="settings-section-heading"><span>Idle sessions</span></div>
         {canManageIdleDisconnect
@@ -210,9 +251,15 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
             ['0', 'Never'], ['1', '1 minute'], ['5', '5 minutes'], ['10', '10 minutes'], ['15', '15 minutes'], ['30', '30 minutes'], ['60', '1 hour'], ['120', '2 hours'], ['240', '4 hours'], ['480', '8 hours'], ['1440', '24 hours']
           ].map(([value, label]) => ({ value, label }))} onChange={(value) => onSetIdleDisconnectMinutes?.(Number(value))} />
           : <p className="settings-description">{idleDisconnectMinutes === 0 ? 'This project does not sign users out for inactivity.' : `This project signs users out after ${idleDisconnectMinutes} minute${idleDisconnectMinutes === 1 ? '' : 's'} of inactivity.`}</p>}
-        <small className="settings-shortcut-hint">Project owners and workspace admins can change this. Local Workspace never disconnects for inactivity.</small>
+        <small className="settings-shortcut-hint">Project owners and workspace admins can change this.</small>
       </> : <p className="settings-description">Local Workspace is exempt from idle disconnects.</p>}
-      {!networkOnline && <small className="settings-shortcut-hint">Auto-save will resume when the workspace reconnects. Live collaboration requires a connection.</small>}
+      {!networkOnline && <small className="settings-shortcut-hint">Live collaboration pauses while this device is offline. The workspace keeps the last graph state it received.</small>}
+      {externalWorkspace && canManageClientAccess && <>
+        <div className="settings-section-heading"><span>Client access</span></div>
+        <Toggle label="Allow unknown clients" description="Allows other compatible clients to connect. The minimum protocol version and account authentication are still required." checked={allowUnknownClients} disabled={clientAccessLoading || clientAccessSaving || !networkOnline} onChange={saveClientAccess} />
+        <div className="client-access-security-note" role="note">Browser origin checks block cross site browser access.</div>
+        {clientAccessMessage && <small className="settings-shortcut-hint" role="status">{clientAccessMessage}</small>}
+      </>}
       <div className="settings-section-heading"><span>Automatic snapshots</span></div>
       <Toggle label="Automatic snapshots" description="Checkpoint open graphs while you work. Unchanged graphs are skipped." checked={settings.autoSnapshots !== false} onChange={(value) => update('autoSnapshots', value)} />
       <div className="settings-snapshot-options" aria-disabled={settings.autoSnapshots === false} style={{ opacity: settings.autoSnapshots === false ? .48 : 1, pointerEvents: settings.autoSnapshots === false ? 'none' : 'auto' }}>
@@ -289,7 +336,7 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
       <div className="settings-shortcut-gesture"><strong>Collaborative arrows</strong><span>Hold {platform === 'macos' ? 'Option' : 'Alt'} and Shift, then drag on the canvas. Arrows fade after 10 seconds unless you keep them.</span></div>
       <div className="settings-shortcut-gesture"><strong>Colored sections</strong><span>Hold {platform === 'macos' ? 'Option' : 'Alt'} and drag a node to move it between sections. It stays grouped while inside; drag it fully outside to remove it. The section won’t stretch to follow the node.</span></div>
       {shortcutCaptureError && <p className="field-error" role="alert">{shortcutCaptureError}</p>}
-      <div className="settings-shortcut-actions"><small>Shortcuts are saved on this device. Press Esc while recording to cancel.</small><Button variant="secondary" onClick={() => update('shortcuts', { ...DEFAULT_SHORTCUTS })}>Restore defaults</Button></div>
+      <div className="settings-shortcut-actions"><small>Shortcuts are saved on this device. Press Esc while recording to cancel.</small><Button variant="secondary" onClick={() => update('shortcuts', { ...DEFAULT_SHORTCUTS, redo: getDefaultShortcut('redo', platform) })}>Restore defaults</Button></div>
     </div>}
 
     {activeTab === 'data' && desktopMode && <div className="settings-section settings-tab-content">
@@ -326,9 +373,11 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
         {desktopMode && <><div className="settings-about-credit"><strong>Release channel</strong><span>{releaseChannel === 'nightly' ? 'Nightly' : 'Stable'}</span></div>
         <p className="settings-description">{releaseChannel === 'nightly' ? 'Nightly updates ask before downloading and installing.' : 'Stable updates download automatically and apply next launch.'}</p></>}
         {serverUpdate && <a href={serverUpdate.url} target="_blank" rel="noreferrer" onClick={openExternal}><Download size={14} /><span>ARC Studio Server update · v{serverUpdate.version}</span><ExternalLink size={12} /></a>}
-        {stableUpdateReady && <div className="settings-update-explainer"><strong>ARC Studio v{stableUpdateReady.version} is ready</strong><span>It will be applied the next time you launch the app.</span></div>}
-        {appUpdate ? <a href={appUpdate.url} target="_blank" rel="noreferrer" onClick={(event) => { if (appUpdate.native) { event.preventDefault(); onOpenStudioUpdate?.(appUpdate.url); } else openExternal(event); }}><Download size={14} /><span>{appUpdate.native ? `Install update · v${appUpdate.version}` : `${appUpdate.kind === 'major' ? 'Major' : appUpdate.kind === 'feature' ? 'Feature' : 'Maintenance'} update · v${appUpdate.version}`}</span>{appUpdate.native ? null : <ExternalLink size={12} />}</a>
-          : !serverUpdate && !stableUpdateReady && <div className="settings-about-credit"><strong>{networkOnline ? 'No updates available' : 'Update check when online'}</strong></div>}
+        {(downloadedUpdateReady || stableUpdateReady) && <div className="settings-update-explainer"><strong>ARC Studio v{downloadedUpdateReady?.version || stableUpdateReady.version} is ready</strong><span>It will be applied the next time you launch the app.</span></div>}
+        {appUpdate?.native
+          ? <button type="button" className="settings-about-update-button" disabled={updateInstalling} onClick={() => onOpenStudioUpdate?.(appUpdate.url)}><Download size={14} /><span>{updateInstalling ? 'Downloading update…' : `Install update · v${appUpdate.version}`}</span></button>
+          : appUpdate ? <a href={appUpdate.url} target="_blank" rel="noreferrer" onClick={openExternal}><Download size={14} /><span>{`${appUpdate.kind === 'major' ? 'Major' : appUpdate.kind === 'feature' ? 'Feature' : 'Maintenance'} update · v${appUpdate.version}`}</span><ExternalLink size={12} /></a>
+          : !serverUpdate && !stableUpdateReady && !downloadedUpdateReady && <div className="settings-about-credit"><strong>{networkOnline ? 'No updates available' : 'Update check when online'}</strong></div>}
       </section>
       <section className="settings-about-section" aria-labelledby="about-project-heading">
         <h3 id="about-project-heading">Project</h3>
@@ -338,6 +387,7 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
       <section className="settings-about-section" aria-labelledby="about-credits-heading">
         <h3 id="about-credits-heading">Credits</h3>
         <a href="https://github.com/relentiousdragon" target="_blank" rel="noreferrer" onClick={openExternal}><span className="settings-about-credit-name">@relentiousdragon</span><ExternalLink size={12} /></a>
+        <a href="https://github.com/relentiousdragon/arc-studio/graphs/contributors" target="_blank" rel="noreferrer" onClick={openExternal}><span>View Contributors</span><ExternalLink size={12} /></a>
       </section>
       <section className="settings-about-license">
         <Scale size={15} />
