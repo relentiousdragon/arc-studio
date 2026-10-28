@@ -2,6 +2,7 @@ import { evaluateDataNode } from './data.js';
 
 const GUILD_NODE_TYPES = new Set([
   'action_fetch_user', 'action_fetch_guild', 'action_fetch_member',
+  'action_fetch_channel', 'action_fetch_channel_messages', 'action_fetch_message',
   'action_create_thread', 'action_start_thread_from_message',
   'action_create_channel', 'action_edit_channel', 'action_delete_channel',
   'action_create_role', 'action_member_role', 'action_moderate_member',
@@ -62,6 +63,50 @@ export async function executeDiscordGuildNode(node, {
             premium_since: member.premium_since || '', deaf: Boolean(member.deaf), mute: Boolean(member.mute), pending: Boolean(member.pending)
           })) setOutput(pinId, value);
           log(`[Get Server Member] Fetched member ${user.id || userId} in server ${guildId}.`);
+          return true;
+        } else if (node.type === 'action_fetch_channel') {
+          const channelId = String(resolveInput('channel_id', node.data?.channel_id || '')).trim();
+          if (!channelId) throw new TypeError('Get Channel Info needs a Channel ID.');
+          if (typeof rest?.getChannel !== 'function') throw new Error('Get Channel Info requires a connected Discord REST client.');
+          const channel = await rest.getChannel(channelId);
+          if (!channel || typeof channel !== 'object' || Array.isArray(channel)) throw new Error('Discord did not return a valid channel object.');
+          for (const [pinId, value] of Object.entries({
+            channel, channel_id_out: channel.id || channelId, name: channel.name || '', type: Number(channel.type) || 0,
+            guild_id: channel.guild_id || '', parent_id: channel.parent_id || '', topic: channel.topic || '',
+            nsfw: Boolean(channel.nsfw), last_message_id: channel.last_message_id || ''
+          })) setOutput(pinId, value);
+          log(`[Get Channel Info] Fetched channel ${channel.id || channelId}.`);
+          return true;
+        } else if (node.type === 'action_fetch_channel_messages') {
+          const channelId = String(resolveInput('channel_id', node.data?.channel_id || '')).trim();
+          const limit = Number(resolveInput('limit', node.data?.limit ?? 50));
+          const before = String(resolveInput('before', node.data?.before || '')).trim();
+          const after = String(resolveInput('after', node.data?.after || '')).trim();
+          const around = String(resolveInput('around', node.data?.around || '')).trim();
+          if (!channelId) throw new TypeError('Get Channel Messages needs a Channel ID.');
+          if (typeof rest?.getChannelMessages !== 'function') throw new Error('Get Channel Messages requires a connected Discord REST client.');
+          const messages = await rest.getChannelMessages(channelId, { limit, before, after, around });
+          if (!Array.isArray(messages)) throw new Error('Discord did not return a valid message list.');
+          setOutput('messages', messages);
+          setOutput('count', messages.length);
+          setOutput('first_message', messages[0] || null);
+          setOutput('last_message', messages.at(-1) || null);
+          log(`[Get Channel Messages] Fetched ${messages.length} message${messages.length === 1 ? '' : 's'} from ${channelId}.`);
+          return true;
+        } else if (node.type === 'action_fetch_message') {
+          const channelId = String(resolveInput('channel_id', node.data?.channel_id || '')).trim();
+          const messageId = String(resolveInput('message_id', node.data?.message_id || '')).trim();
+          if (!channelId || !messageId) throw new TypeError('Get Message needs a Channel ID and Message ID.');
+          if (typeof rest?.getMessage !== 'function') throw new Error('Get Message requires a connected Discord REST client.');
+          const message = await rest.getMessage(channelId, messageId);
+          if (!message || typeof message !== 'object' || Array.isArray(message)) throw new Error('Discord did not return a valid message object.');
+          for (const [pinId, value] of Object.entries({
+            message, message_id_out: message.id || messageId, channel_id_out: message.channel_id || channelId,
+            content: message.content || '', author_id: message.author?.id || '', timestamp: message.timestamp || '',
+            edited_timestamp: message.edited_timestamp || '', attachments: message.attachments || [], embeds: message.embeds || [],
+            components: message.components || [], pinned: Boolean(message.pinned)
+          })) setOutput(pinId, value);
+          log(`[Get Message] Fetched message ${message.id || messageId} from ${channelId}.`);
           return true;
   } else if (node.type === 'action_create_thread') {
           const channelId = String(resolveInput('channel_id', node.data?.channel_id || '')).trim();
