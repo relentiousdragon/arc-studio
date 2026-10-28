@@ -27,6 +27,7 @@ export function TopBar({
   const newGraphMenuRef = useRef(null);
   const uiScale = getArcUiScale();
   const shortcutModifier = shortcutPlatform === 'macos' ? '⌘' : 'Ctrl';
+  const redoShortcut = shortcutPlatform === 'macos' ? `${shortcutModifier} + Shift + Z` : `${shortcutModifier} + Y`;
   const toggleWindowMaximize = () => {
     const invoke = window.__TAURI_INTERNALS__?.invoke;
     if (desktopMode && typeof invoke === 'function') {
@@ -163,7 +164,7 @@ export function TopBar({
 
       <div className="topbar-actions">
         <button className="topbar-icon-button history-action" onClick={onUndo} disabled={!canUndo} title={`Undo (${shortcutModifier} + Z)`} aria-label="Undo"><Undo2 size={15} /></button>
-        <button className="topbar-icon-button history-action" onClick={onRedo} disabled={!canRedo} title={`Redo (${shortcutModifier} + Shift + Z)`} aria-label="Redo"><Redo2 size={15} /></button>
+        <button className="topbar-icon-button history-action" onClick={onRedo} disabled={!canRedo} title={`Redo (${redoShortcut})`} aria-label="Redo"><Redo2 size={15} /></button>
         {validationStatus !== 'success' && <>
           <button className={`topbar-icon-button validate-action is-${validationStatus}`} onClick={onValidate} title={checkLabel} aria-label={checkLabel}>
             {validationStatus === 'error' ? <AlertCircle size={16} /> : <CircleAlert size={16} />}
