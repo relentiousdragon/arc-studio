@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { deflateRawSync } from 'node:zlib';
-import { randomBytes } from 'node:crypto';
+import { deflateRawSync, inflateRawSync } from 'node:zlib';
+import { randomBytes, createHash } from 'node:crypto';
+import { NodeDefinitions } from '../engine/NodeRegistry.js';
 
 const serverRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const repoRoot = path.resolve(serverRoot, '../..');
@@ -50,14 +51,16 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
   const requiredRuntimeModules = new Set(['builders.js', 'control_flow.js', 'data.js', 'logic.js']);
   const runtimeTypeGroups = [
     [['action_http_download', 'action_web_fetch', 'action_web_retry'], 'network.js'],
+    [['action_websocket_connect', 'action_websocket_send', 'action_websocket_close'], 'websocket.js'],
     [['action_set_custom_status', 'action_set_presence'], 'discord_presence.js'],
-    [['action_send_message', 'action_edit_message'], 'discord_messages.js'],
+    [['action_send_message', 'action_edit_message', 'action_edit_components'], 'discord_messages.js'],
     [[
       'action_reply_interaction', 'action_defer_reply', 'action_defer_update',
       'action_edit_interaction_reply', 'action_show_modal', 'action_respond_autocomplete'
     ], 'discord_interactions.js'],
     [[
       'action_fetch_user', 'action_fetch_guild', 'action_fetch_member',
+      'action_fetch_channel', 'action_fetch_channel_messages', 'action_fetch_message',
       'action_create_thread', 'action_start_thread_from_message',
       'action_create_channel', 'action_edit_channel', 'action_delete_channel',
       'action_create_role', 'action_member_role', 'action_moderate_member',
@@ -70,6 +73,7 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
   if ([...usedTypes].some((type) => type.startsWith('action_crypto_'))) requiredRuntimeModules.add('crypto.js');
   const exports = normalizePluginExports(pluginAdapters, usedTypes);
   const dependencies = { chezcord: 'file:./chezcord' };
+  if (requiredRuntimeModules.has('websocket.js')) dependencies.ws = '^8.18.0';
   const environment = [];
   const permissionSections = [];
   const pluginFiles = [];
@@ -123,10 +127,13 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
     { name: 'project-variables.json', data: JSON.stringify(safeProjectVariables) },
     { name: 'src/env.js', data: runtimeEnv },
     { name: 'src/index.js', data: runtimeIndex
+      .replace('__ARC_WEBSOCKET_IMPORT__', requiredRuntimeModules.has('websocket.js') ? "import { GraphWebSocketManager } from './engine/nodes/runtime/websocket.js';" : '')
       .replace('__ARC_PROJECT_NAME__', JSON.stringify(projectName))
       .replace('__ARC_PROJECT_AUTHOR__', JSON.stringify(projectAuthor))
       .replace('__ARC_STATISTICS_SETTINGS__', JSON.stringify(statisticsSettings)) },
     { name: 'src/engine/GraphRunner.js', data: readText('src/engine/GraphRunner.js') },
+    { name: 'src/engine/DynamicNodePins.js', data: readText('src/engine/DynamicNodePins.js') },
+    { name: 'src/engine/SlashCommandOptions.js', data: readText('src/engine/SlashCommandOptions.js') },
     { name: 'src/engine/TemplateExpressions.js', data: readText('src/engine/TemplateExpressions.js') },
     { name: 'src/engine/MathOperations.js', data: readText('src/engine/MathOperations.js') },
     { name: 'src/engine/CronSchedule.js', data: readText('src/engine/CronSchedule.js') },
@@ -141,10 +148,18 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
     entries.push({ name: 'src/security/CryptoEngine.js', data: standaloneCryptoSource() });
   }
   const nodeSourceRoot = path.resolve(serverRoot, 'src/engine/nodes');
+  const usedBuiltInSchemaFiles = new Set([...usedTypes]
+    .filter((type) => NodeDefinitions[type] && !NodeDefinitions[type].pluginAdapter && path.posix.basename(type) === type)
+    .map((type) => `${type}.js`));
+  const schemaImports = [...usedBuiltInSchemaFiles].sort().map((file, index) => `import node${index} from './${file}';`).join('\n');
+  const schemaNames = [...usedBuiltInSchemaFiles].sort().map((_file, index) => `node${index}`).join(', ');
+  entries.push({ name: 'src/engine/nodes/index.js', data: `${schemaImports}\nexport const nodeDefinitions = [${schemaNames}];\n` });
   for (const file of walk(nodeSourceRoot)) {
     if (!file.endsWith('.js')) continue;
     const relative = path.relative(nodeSourceRoot, file).split(path.sep).join('/');
-    if (relative.startsWith('runtime/') && !requiredRuntimeModules.has(path.posix.basename(relative))) continue;
+    if (relative.startsWith('runtime/')) {
+      if (!requiredRuntimeModules.has(path.posix.basename(relative))) continue;
+    } else if (!usedBuiltInSchemaFiles.has(relative)) continue;
     entries.push({ name: `src/engine/nodes/${relative}`, data: fs.readFileSync(file) });
   }
   if (exports.some((plugin) => plugin.kind === 'wasm-adapter')) entries.push({ name: 'src/engine/WasmAdapterRuntime.js', data: readText('src/engine/WasmAdapterRuntime.js') });
@@ -156,7 +171,47 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
       entries.push({ name: `chezcord/${relative}`, data: fs.readFileSync(file) });
     }
   }
+  const integrityFiles = Object.fromEntries(entries.map((entry) => {
+    const bytes = Buffer.isBuffer(entry.data) ? entry.data : Buffer.from(String(entry.data));
+    return [entry.name, createHash('sha256').update(bytes).digest('hex')];
+  }));
+  entries.push({ name: 'integrity.json', data: JSON.stringify({ format: 'arc-bot-integrity', version: 1, algorithm: 'sha256', files: integrityFiles }, null, 2) });
   return zip(entries);
+}
+
+export function verifyBotArchiveIntegrity(archive) {
+  if (!Buffer.isBuffer(archive)) throw new TypeError('The bot archive is not a Buffer.');
+  const extracted = new Map();
+  let offset = 0;
+  while (offset + 30 <= archive.length && archive.readUInt32LE(offset) === 0x04034b50) {
+    const method = archive.readUInt16LE(offset + 8);
+    const expectedCrc = archive.readUInt32LE(offset + 14);
+    const compressedSize = archive.readUInt32LE(offset + 18);
+    const uncompressedSize = archive.readUInt32LE(offset + 22);
+    const filenameLength = archive.readUInt16LE(offset + 26);
+    const extraLength = archive.readUInt16LE(offset + 28);
+    const nameStart = offset + 30;
+    const dataStart = nameStart + filenameLength + extraLength;
+    const dataEnd = dataStart + compressedSize;
+    if (dataEnd > archive.length) throw new Error('The generated bot ZIP has a truncated entry.');
+    const name = archive.toString('utf8', nameStart, nameStart + filenameLength);
+    const compressed = archive.subarray(dataStart, dataEnd);
+    const bytes = method === 8 ? inflateRawSync(compressed) : method === 0 ? compressed : null;
+    if (!bytes || bytes.length !== uncompressedSize || crc32(bytes) !== expectedCrc) throw new Error(`ZIP integrity check failed for ${name}.`);
+    extracted.set(name, bytes);
+    offset = dataEnd;
+  }
+  const integrityBytes = extracted.get('integrity.json');
+  if (!integrityBytes) throw new Error('The bot export has no SHA-256 integrity manifest.');
+  const manifest = JSON.parse(integrityBytes.toString('utf8'));
+  if (manifest?.format !== 'arc-bot-integrity' || manifest?.algorithm !== 'sha256' || !manifest.files || typeof manifest.files !== 'object') throw new Error('The bot export has an invalid SHA-256 integrity manifest.');
+  const expectedNames = Object.keys(manifest.files);
+  if (expectedNames.length !== extracted.size - 1) throw new Error('The bot export integrity manifest does not cover every ZIP file.');
+  for (const name of expectedNames) {
+    const bytes = extracted.get(name);
+    if (!bytes || createHash('sha256').update(bytes).digest('hex') !== manifest.files[name]) throw new Error(`SHA-256 integrity check failed for ${name}.`);
+  }
+  return true;
 }
 
 function normalizePluginExports(pluginAdapters, usedTypes) {
@@ -372,14 +427,40 @@ function crc32(buffer) {
 const runtimeIndex = `import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import './env.js';
+__ARC_WEBSOCKET_IMPORT__
 import { Client, GatewayIntents, CommandStatistics } from 'chezcord';
 import { GraphRunner } from './engine/GraphRunner.js';
 import { NodeDefinitions } from './engine/NodeRegistry.js';
+import { flattenSlashParameters, normalizeSlashCommandOptions, validateSlashCommandOptions } from './engine/SlashCommandOptions.js';
 import { startCronScheduler } from './engine/CronSchedule.js';
 import { PluginStore } from './engine/PluginStore.js';
 
 const token = process.env.DISCORD_BOT_TOKEN;
+function verifyExportIntegrity() {
+  try {
+    const exportRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+    const manifestPath = path.join(exportRoot, 'integrity.json');
+    if (!fs.existsSync(manifestPath)) {
+      console.warn('[Integrity] SHA-256 manifest is missing. Export files could not be checked.');
+      return;
+    }
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    if (manifest?.format !== 'arc-bot-integrity' || manifest?.algorithm !== 'sha256' || !manifest.files || typeof manifest.files !== 'object') throw new Error('Unsupported integrity manifest.');
+    const mismatches = [];
+    for (const [name, expected] of Object.entries(manifest.files)) {
+      const filePath = path.resolve(exportRoot, name);
+      if (!filePath.startsWith(exportRoot + path.sep) || typeof expected !== 'string') { mismatches.push(name); continue; }
+      if (!fs.existsSync(filePath) || createHash('sha256').update(fs.readFileSync(filePath)).digest('hex') !== expected) mismatches.push(name);
+    }
+    if (mismatches.length) console.error('[Integrity] Export files failed SHA-256 verification and may be corrupted: ' + mismatches.slice(0, 10).join(', '));
+    else console.log('[Integrity] SHA-256 checks passed for ' + Object.keys(manifest.files).length + ' exported files.');
+  } catch (error) {
+    console.warn('[Integrity] File verification could not run: ' + (error?.message || 'unknown error'));
+  }
+}
+verifyExportIntegrity();
 if (!token) {
   console.error('Set DISCORD_BOT_TOKEN in .env before starting the bot.');
   process.exit(1);
@@ -484,6 +565,7 @@ for (const graph of graphs) for (const node of graph.nodes || []) {
 }
 const intents = [...requiredIntentNames].reduce((mask, name) => mask | (GatewayIntents[name] || 0), 0);
 const client = new Client({ token, intents });
+const graphWebSockets = typeof GraphWebSocketManager === 'undefined' ? null : new GraphWebSocketManager();
 const appProbeStartedAt = performance.now();
 const app = await client.rest.getCurrentApplication().catch(() => null);
 let appLatency = app ? Math.round(performance.now() - appProbeStartedAt) : 0;
@@ -561,17 +643,13 @@ async function deploySlashCommands() {
     if (!name || !description) throw new Error('Every slash command needs a name and description before deployment.');
     if (names.has(name)) throw new Error('Duplicate slash command /' + name + ' is configured in more than one graph.');
     names.add(name);
-    if ((node.data?.options || []).some((option) => option?.autocomplete && option?.dynamicAutocomplete)
+    const optionErrors = validateSlashCommandOptions(node.data?.options || [], name);
+    if (optionErrors.length) throw new Error(optionErrors.join(' '));
+    if (flattenSlashParameters(node.data?.options).some(({ option }) => option?.autocomplete && option?.dynamicAutocomplete)
       && (!(graph.nodes || []).some((item) => item.type === 'event_slash_autocomplete') || !(graph.nodes || []).some((item) => item.type === 'action_respond_autocomplete'))) {
       throw new Error('Slash command /' + name + ' uses graph-generated suggestions but needs On Command Autocomplete and Respond to Autocomplete nodes.');
     }
-    const options = (Array.isArray(node.data?.options) ? node.data.options : []).map((option) => {
-      const type = Number(option.type) || 3;
-      const result = { type, name: String(option.name || '').trim().toLowerCase(), description: String(option.description || '').trim(), required: Boolean(option.required) };
-      if (option.autocomplete) result.autocomplete = true;
-      else if (Array.isArray(option.choices) && option.choices.length) result.choices = option.choices.slice(0, 25).map((choice) => ({ name: String(choice.name || '').slice(0, 100), value: type === 4 ? Number.parseInt(choice.value, 10) : type === 10 ? Number(choice.value) : String(choice.value ?? '').slice(0, 100) }));
-      return result;
-    }).sort((a, b) => Number(b.required) - Number(a.required));
+    const options = normalizeSlashCommandOptions(node.data?.options || []);
     desired.push({ name, description, type: 1, ...(options.length ? { options } : {}), ...(node.data?.defaultMemberPermissions ? { default_member_permissions: String(node.data.defaultMemberPermissions) } : {}), ...(Array.isArray(node.data?.integrationTypes) ? { integration_types: node.data.integrationTypes } : {}), ...(Array.isArray(node.data?.contexts) ? { contexts: node.data.contexts } : {}) });
   }
   if (desired.length > 100) throw new Error('Discord allows at most 100 global slash commands.');
@@ -621,16 +699,23 @@ client.on('interactionCreate', async (interaction) => {
     const commandName = String(interaction.data?.name || '').toLowerCase();
     const graph = graphs.find((item) => (item.nodes || []).some((node) => node.type === 'event_slash_command' && String(node.data?.commandName || '').toLowerCase() === commandName));
     const commandNode = graph?.nodes?.find((node) => node.type === 'event_slash_command' && String(node.data?.commandName || '').toLowerCase() === commandName);
-    const findFocused = (options) => {
+    const findFocusedPath = (options, path = []) => {
       for (const option of options || []) {
-        if (option.focused) return option;
-        const nested = findFocused(option.options);
+        const next = [...path, option.name];
+        if (option.focused) return { option, path: next };
+        const nested = findFocusedPath(option.options, next);
         if (nested) return nested;
       }
       return null;
     };
-    const focused = findFocused(interaction.data?.options);
-    const configured = commandNode?.data?.options?.find((option) => option.name === focused?.name);
+    const focusedEntry = findFocusedPath(interaction.data?.options);
+    const focused = focusedEntry?.option;
+    let configuredOptions = commandNode?.data?.options || [];
+    let configured = null;
+    for (const optionName of focusedEntry?.path || []) {
+      configured = configuredOptions.find((option) => option.name === optionName);
+      configuredOptions = configured?.options || [];
+    }
     if (configured?.autocomplete && configured.dynamicAutocomplete && graph?.nodes?.some((node) => node.type === 'event_slash_autocomplete')) {
       const interactionState = { applicationId: interaction.application_id || '', acknowledged: false, deferred: false, pending: null };
       await dispatchGraphs('INTERACTION_CREATE', interaction, graph.id, interactionState);
@@ -677,6 +762,9 @@ async function dispatchGraphs(eventName, payload, onlyGraphId = null, interactio
   }));
   await trackGraphRun(run);
 }
+if (graphWebSockets) graphWebSockets.on('event', ({ eventName, payload }) => {
+  dispatchGraphs(eventName, payload).catch((error) => writeLog('ERROR', 'WebSocket graph event ' + eventName + ' failed: ' + formatError(error)));
+});
 async function trackGraphRun(run) {
   activeGraphRuns.add(run);
   try { return await run; }
@@ -685,6 +773,7 @@ async function trackGraphRun(run) {
 function graphContext(graph, eventPayload = null, interactionState = null) {
   return {
     rest: client.rest, client, resolveFunctionGraph, variablesState: variableState(graph), projectVariables, deploySlashCommands,
+    webSockets: graphWebSockets,
     ...(interactionState ? { interactionState } : {}),
     canDeploySlashCommands: () => {
       let permissions = 0n;
@@ -711,6 +800,7 @@ async function shutdown(signal) {
   if (gatewayLatencyVariable) projectVariableValues.set(gatewayLatencyVariable.id, 0);
   stopCronScheduler?.();
   stopCronScheduler = null;
+  graphWebSockets?.closeAll();
   graphRunAbortController.abort();
   try { client.destroy(); }
   catch (error) { writeLog('ERROR', 'Gateway shutdown error: ' + formatError(error)); process.exitCode = 1; }
