@@ -39,6 +39,10 @@ import node_event_invite_delete from './event_invite_delete.js';
 import node_event_bot_ready from './event_bot_ready.js';
 import node_event_bot_startup from './event_bot_startup.js';
 import node_event_cron from './event_cron.js';
+import node_event_websocket_open from './event_websocket_open.js';
+import node_event_websocket_message from './event_websocket_message.js';
+import node_event_websocket_close from './event_websocket_close.js';
+import node_event_websocket_error from './event_websocket_error.js';
 // Logic & Flow
 import node_logic_and from './logic_and.js';
 import node_logic_or from './logic_or.js';
@@ -103,6 +107,7 @@ import node_utility_wire_extender from './utility_wire_extender.js';
 // Discord Actions
 import node_action_send_message from './action_send_message.js';
 import node_action_edit_message from './action_edit_message.js';
+import node_action_edit_components from './action_edit_components.js';
 import node_action_reply_interaction from './action_reply_interaction.js';
 import node_action_respond_autocomplete from './action_respond_autocomplete.js';
 import node_action_show_modal from './action_show_modal.js';
@@ -114,6 +119,9 @@ import node_action_set_custom_status from './action_set_custom_status.js';
 import node_action_fetch_user from './action_fetch_user.js';
 import node_action_fetch_guild from './action_fetch_guild.js';
 import node_action_fetch_member from './action_fetch_member.js';
+import node_action_fetch_channel from './action_fetch_channel.js';
+import node_action_fetch_channel_messages from './action_fetch_channel_messages.js';
+import node_action_fetch_message from './action_fetch_message.js';
 import node_action_set_presence from './action_set_presence.js';
 import node_action_create_channel from './action_create_channel.js';
 import node_action_create_thread from './action_create_thread.js';
@@ -162,6 +170,7 @@ import node_data_to_iso_time from './data_to_iso_time.js';
 import node_data_permission_overwrites from './data_permission_overwrites.js';
 import node_format_text from './format_text.js';
 import node_build_embed from './build_embed.js';
+import node_build_components from './build_components.js';
 import node_build_modal from './build_modal.js';
 import node_data_get_modal_value from './data_get_modal_value.js';
 import node_modify_embed from './modify_embed.js';
@@ -177,6 +186,9 @@ import node_action_crypto_random from './action_crypto_random.js';
 import node_action_web_fetch from './action_web_fetch.js';
 import node_action_http_download from './action_http_download.js';
 import node_action_web_retry from './action_web_retry.js';
+import node_action_websocket_connect from './action_websocket_connect.js';
+import node_action_websocket_send from './action_websocket_send.js';
+import node_action_websocket_close from './action_websocket_close.js';
 //
 export const nodeDefinitions = [
   node_event_message_create,
@@ -218,6 +230,10 @@ export const nodeDefinitions = [
   node_event_invite_delete,
   node_event_bot_ready,
   node_event_bot_startup,
+  node_event_websocket_open,
+  node_event_websocket_message,
+  node_event_websocket_close,
+  node_event_websocket_error,
   node_event_cron,
   node_logic_and,
   node_logic_or,
@@ -275,6 +291,7 @@ export const nodeDefinitions = [
   node_utility_wire_extender,
   node_action_send_message,
   node_action_edit_message,
+  node_action_edit_components,
   node_action_reply_interaction,
   node_action_respond_autocomplete,
   node_action_show_modal,
@@ -286,6 +303,9 @@ export const nodeDefinitions = [
   node_action_fetch_user,
   node_action_fetch_guild,
   node_action_fetch_member,
+  node_action_fetch_channel,
+  node_action_fetch_channel_messages,
+  node_action_fetch_message,
   node_action_set_presence,
   node_action_create_channel,
   node_action_create_thread,
@@ -333,6 +353,7 @@ export const nodeDefinitions = [
   node_data_permission_overwrites,
   node_format_text,
   node_build_embed,
+  node_build_components,
   node_build_modal,
   node_data_get_modal_value,
   node_modify_embed,
@@ -345,5 +366,8 @@ export const nodeDefinitions = [
   node_action_crypto_random,
   node_action_web_fetch,
   node_action_http_download,
-  node_action_web_retry
+  node_action_web_retry,
+  node_action_websocket_connect,
+  node_action_websocket_send,
+  node_action_websocket_close
 ];
