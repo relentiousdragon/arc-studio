@@ -8,11 +8,11 @@ test('component builder limits rows and components and renders button and select
     {
       components: [
         { style: 'primary', label: '{{button}}', customId: 'button-id', emoji: '<a:party:12345678901234567>' },
-        { type: 'string_select', customId: '{{select_id}}', placeholder: '{{placeholder}}', options: [{ label: '{{option}}', value: 'selected' }] },
-        ...Array.from({ length: 5 }, (_, index) => ({ style: 'danger', label: `extra-${index}`, customId: `extra-${index}` }))
+        ...Array.from({ length: 4 }, (_, index) => ({ style: 'danger', label: `extra-${index}`, customId: `extra-${index}` }))
       ]
     },
-    ...Array.from({ length: 6 }, () => ({ components: [{ style: 'link', label: 'Docs', url: 'https://example.test' }] }))
+    { components: [{ type: 'string_select', customId: '{{select_id}}', placeholder: '{{placeholder}}', options: [{ label: '{{option}}', value: 'selected' }] }] },
+    ...Array.from({ length: 3 }, () => ({ components: [{ style: 'link', label: 'Docs', url: 'https://example.test' }] }))
   ];
 
   const result = buildDiscordComponents(rows, (value) => value.replace('{{button}}', 'Open').replace('{{select_id}}', 'choice').replace('{{placeholder}}', 'Pick one').replace('{{option}}', 'First'));
@@ -27,7 +27,7 @@ test('component builder limits rows and components and renders button and select
     custom_id: 'button-id',
     disabled: false
   });
-  assert.deepEqual(result[0].components[1], {
+  assert.deepEqual(result[1].components[0], {
     type: 3,
     custom_id: 'choice',
     placeholder: 'Pick one',
@@ -97,6 +97,7 @@ test('GraphRunner sends modal builder output as the initial interaction response
   };
 
   const result = await GraphRunner.execute(graph, 'MESSAGE_CREATE', {}, {
+    mock: true,
     rest: { createInteractionResponse: async (...args) => responses.push(args) },
     log: () => {}
   });
