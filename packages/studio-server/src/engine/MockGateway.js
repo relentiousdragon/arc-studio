@@ -127,7 +127,7 @@ export class MockGateway extends EventEmitter {
           ...record.payload
         };
       },
-      createInteractionResponse: async (interactionId, interactionToken, responseData) => {
+      createInteractionResponse: async (interactionId, interactionToken, responseData, { withResponse = false } = {}) => {
         const safeResponse = responseData && typeof responseData === 'object' ? structuredClone(responseData) : responseData;
         let responseFiles = safeResponse?.data?.files;
         if (typeof responseFiles === 'string') {
@@ -145,6 +145,11 @@ export class MockGateway extends EventEmitter {
           timestamp: new Date().toISOString()
         };
         outputSink.push(record);
+        if (withResponse && responseData?.type === 4) {
+          const messageId = `mock_${interactionId}`;
+          const message = { id: messageId, ...(safeResponse.data || {}) };
+          return { interaction: { id: String(interactionId), response_message_id: messageId }, resource: { type: 4, message } };
+        }
         return { success: true };
       },
       deferInteractionReply: (interactionId, interactionToken, options) => this.createMockREST(outputSink).createInteractionResponse(interactionId, interactionToken, {
@@ -160,7 +165,7 @@ export class MockGateway extends EventEmitter {
           payload: structuredClone(payload || {}),
           timestamp: new Date().toISOString()
         });
-        return { success: true };
+        return { id: `mock_${String(interactionToken).replace(/[^a-zA-Z0-9]/g, '').slice(-20)}`, ...(payload || {}) };
       },
       createGuildEmoji: async (guildId, data) => {
         const record = {
