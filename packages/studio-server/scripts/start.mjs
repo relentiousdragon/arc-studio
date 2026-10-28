@@ -2,56 +2,105 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { getAvailableMemoryBytes, getClientStartupAction, inspectClientBuild, MIN_CLIENT_BUILD_MEMORY_BYTES } from '../src/engine/clientStartup.js';
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDirectory, '../../..');
-const clientIndex = path.join(repositoryRoot, 'packages/studio-client/dist/index.html');
-const nightlyIcon = path.join(repositoryRoot, 'packages/studio-client/dist/nightly-icon.png');
-const clientBuildVersionFile = path.join(repositoryRoot, 'packages/studio-client/dist/.arc-studio-version');
-const serverOnly = process.argv.includes('--server-only');
+const clientDist = path.join(repositoryRoot, 'packages/studio-client/dist');
+const clientIndex = path.join(clientDist, 'index.html');
+const logoPaths = [path.join(clientDist, 'arc.png'), path.join(clientDist, 'nightly-icon.png')];
+const clientBuildVersionFile = path.join(clientDist, '.arc-studio-version');
+const serverOnly = process.argv.includes('--server-only') || process.env.ARC_SERVER_ONLY === '1';
 const desktopMode = process.env.ARC_DESKTOP_MODE === '1';
+const rootPackage = JSON.parse(fs.readFileSync(path.join(repositoryRoot, 'package.json'), 'utf8'));
+const minimumClientBuildVersion = rootPackage.version;
+let runServerOnly = serverOnly;
 //
-if (!serverOnly && !desktopMode) {
-  const { version } = JSON.parse(fs.readFileSync(path.join(repositoryRoot, 'package.json'), 'utf8'));
-  if (typeof version !== 'string' || !version.trim()) throw new Error('Could not determine the ARC Studio version for the web client build.');
-  let previousBuildVersion = '';
-  try { previousBuildVersion = fs.readFileSync(clientBuildVersionFile, 'utf8').trim(); }
-  catch (error) { if (error.code !== 'ENOENT') throw error; }
+function enableServerOnly(message) {
+  console.warn(`[ARC Studio] ${message}`);
+  console.warn('[ARC Studio] Starting in server-only mode. The workspace connection page will remain available, and the browser editor build will be retried at next startup.');
+  runServerOnly = true;
+}
 
-  const assetsMissing = !fs.existsSync(clientIndex) || !fs.existsSync(nightlyIcon);
-  if (assetsMissing || previousBuildVersion !== version) {
-    const reason = assetsMissing ? 'Web client assets are missing' : `Web client build is ${previousBuildVersion || 'unversioned'} and this checkout is ${version}`;
-    console.log(`[ARC Studio] ${reason}, building the web client before startup...`);
+function getBuildStatus() {
+  try {
+    return inspectClientBuild({
+      clientIndex,
+      logoPaths,
+      markerFile: clientBuildVersionFile,
+      minimumVersion: minimumClientBuildVersion
+    });
+  } catch (error) {
+    if (!['EACCES', 'EPERM'].includes(error.code)) throw error;
+    return { available: false, version: null, current: false, inspectionDenied: true };
+  }
+}
+
+if (!serverOnly && !desktopMode) {
+  if (typeof minimumClientBuildVersion !== 'string' || !minimumClientBuildVersion.trim()) {
+    throw new Error('Could not determine the ARC Studio version for the web client build.');
+  }
+  let buildStatus = getBuildStatus();
+  if (buildStatus.inspectionDenied) {
+    enableServerOnly('Startup could not inspect the existing browser client because access was denied.');
+  } else if (getClientStartupAction({ clientCurrent: buildStatus.current }) === 'serve') {
+    console.log(`[ARC Studio] Using the existing ARC Studio ${buildStatus.version} browser client.`);
+  } else {
+    let availableMemory = null;
+    let memoryWarning = '';
+    try {
+      availableMemory = getAvailableMemoryBytes();
+    } catch (error) {
+      if (!['EACCES', 'EPERM'].includes(error.code)) throw error;
+      memoryWarning = `Could not inspect container memory limits because access was denied. ${availableMemory === null ? 'The build will still be attempted.' : ''}`;
+    }
+    const minimumMemoryMB = Math.ceil(MIN_CLIENT_BUILD_MEMORY_BYTES / 1_000_000);
+    if (availableMemory === null) {
+      memoryWarning ||= 'Could not determine available memory from the host or container limits.';
+    } else if (availableMemory < MIN_CLIENT_BUILD_MEMORY_BYTES) {
+      const availableMB = Math.floor(availableMemory / 1_000_000);
+      memoryWarning = `Only ${availableMB} MB is available. At least ${minimumMemoryMB} MB is recommended for a client build.`;
+    }
+    if (memoryWarning) console.warn(`[ARC Studio] ${memoryWarning} Attempting the client build anyway.`);
+    else {
+      const availableMB = Math.floor(availableMemory / 1_000_000);
+      console.log(`[ARC Studio] Startup memory check passed (${availableMB} MB available, ${minimumMemoryMB} MB recommended).`);
+    }
+
+    console.log('[ARC Studio] Building the web client before startup...');
     const isWindows = process.platform === 'win32';
-    const result = spawnSync(isWindows ? 'npm.cmd' : 'npm', ['run', 'build'], {
+    const result = spawnSync(isWindows ? 'npm.cmd' : 'npm', ['run', 'build:client'], {
       cwd: repositoryRoot,
       stdio: 'inherit',
       shell: isWindows
     });
-
-    if (result.error) throw new Error(`Could not build the web client: ${result.error.message}`);
-    if (result.status !== 0) process.exit(result.status ?? 1);
-    if (!fs.existsSync(clientIndex) || !fs.existsSync(nightlyIcon)) throw new Error('Web client build did not produce the expected Studio assets.');
-
-    const markerTemporaryFile = `${clientBuildVersionFile}.${process.pid}.tmp`;
-    fs.writeFileSync(markerTemporaryFile, `${version}\n`, 'utf8');
-    fs.renameSync(markerTemporaryFile, clientBuildVersionFile);
+    if (result.error) {
+      enableServerOnly(`Could not build the browser editor: ${result.error.message}`);
+    } else if (result.status !== 0) {
+      const outcome = result.status === null ? `signal ${result.signal || 'unknown'}` : `status ${result.status}`;
+      enableServerOnly(`Browser editor build ended with ${outcome}.`);
+    } else {
+      buildStatus = getBuildStatus();
+      if (buildStatus.inspectionDenied) enableServerOnly('Browser editor assets could not be inspected because access was denied.');
+      else if (!buildStatus.current) enableServerOnly('Browser editor build completed without a current, verified client bundle.');
+    }
   }
 }
 
-if (!serverOnly && desktopMode && (!fs.existsSync(clientIndex) || !fs.existsSync(nightlyIcon))) {
+if (!serverOnly && desktopMode && (!fs.existsSync(clientIndex) || logoPaths.some((filename) => !fs.existsSync(filename)))) {
   console.log('[ARC Studio] Desktop web assets are missing, building them before startup...');
   const isWindows = process.platform === 'win32';
-  const result = spawnSync(isWindows ? 'npm.cmd' : 'npm', ['run', 'build'], {
+  const result = spawnSync(isWindows ? 'npm.cmd' : 'npm', ['run', 'build:client'], {
     cwd: repositoryRoot,
     stdio: 'inherit',
     shell: isWindows
   });
-
   if (result.error) throw new Error(`Could not build the web client: ${result.error.message}`);
   if (result.status !== 0) process.exit(result.status ?? 1);
-  if (!fs.existsSync(clientIndex) || !fs.existsSync(nightlyIcon)) throw new Error('Web client build did not produce the expected Studio assets.');
+  if (!fs.existsSync(clientIndex) || logoPaths.some((filename) => !fs.existsSync(filename))) {
+    throw new Error('Web client build did not produce the expected Studio assets.');
+  }
 }
 
-if (serverOnly) process.env.ARC_SERVER_ONLY = '1';
+if (runServerOnly) process.env.ARC_SERVER_ONLY = '1';
 await import('../src/index.js');
