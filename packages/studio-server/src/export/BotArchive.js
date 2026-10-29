@@ -546,6 +546,8 @@ function writeLog(level, message) {
   }
 }
 const retentionLabel = logRetention === 'forever' || Number(logRetention) === 0 ? 'forever' : logRetention + ' days';
+const loadedNodeDefinitions = Object.values(NodeDefinitions);
+const baseNodeCount = loadedNodeDefinitions.filter((definition) => !definition.pluginAdapter).length;
 console.log([
   '',
   '==============================================================================',
@@ -558,7 +560,7 @@ console.log([
   '==============================================================================',
   '  Project: ' + __ARC_PROJECT_NAME__,
   '  Made by: ' + __ARC_PROJECT_AUTHOR__,
-  '  Loaded ' + Object.keys(NodeDefinitions).length + ' Nodes',
+  '  Nodes: ' + loadedNodeDefinitions.length + ' (' + baseNodeCount + ' base)',
   '  Log files: ' + logDirectory,
   '  Log retention: ' + retentionLabel,
   '==============================================================================',
