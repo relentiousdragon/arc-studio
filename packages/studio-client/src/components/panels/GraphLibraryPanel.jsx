@@ -92,9 +92,8 @@ export function GraphLibraryPanel({
   const graphLastSeen = new Map(graphActivity.map((entry) => [entry.graphId, entry]));
   const searchNodes = search(nodeSearchIndex, definitions.filter((node) => !node.hidden));
   const nodeGroups = groupNodes(searchNodes);
-  const compatibleTypes = useMemo(() => new Set(definitions.map((definition) => definition.type)), [definitions]);
-  const compatiblePrefabs = nodePrefabs.filter((prefab) => compatibleTypes.has(prefab.node?.type));
-  const filteredPrefabs = search(prefabSearchIndex, compatiblePrefabs).filter((prefab) => compatibleTypes.has(prefab.node?.type));
+  const compatiblePrefabs = nodePrefabs;
+  const filteredPrefabs = search(prefabSearchIndex, compatiblePrefabs);
   const searchedAssets = search(embedSearchIndex, embedAssets);
   const filteredEmbeds = searchedAssets.filter((asset) => asset.kind !== 'components-v2');
   const filteredComponentsV2 = searchedAssets.filter((asset) => asset.kind === 'components-v2');
@@ -372,10 +371,11 @@ export function GraphLibraryPanel({
   const renderNodeEntry = (node, keyPrefix = '') => {
     const payload = nodeDragPayload(node);
     const selected = selectedLibraryNodeTypes.includes(node.type);
-    return <button key={`${keyPrefix}${node.type}`} className={`graph-library-entry node-library-entry ${selected ? 'is-multi-selected' : ''}`} aria-pressed={selected} draggable={!desktopMode} onPointerDown={(event) => beginPointerDrag(event, payload)} onClickCapture={suppressClickAfterDrag} onDragStart={(event) => startNodeDrag(event, payload)} onDragEnd={finishNodeDrag} onClick={(event) => {
+    return <button key={`${keyPrefix}${node.type}`} type="button" className={`graph-library-entry node-library-entry ${selected ? 'is-multi-selected' : ''} ${node.loadFailed ? 'is-node-load-failed' : ''}`} aria-pressed={selected} aria-disabled={Boolean(node.loadFailed)} disabled={Boolean(node.loadFailed)} draggable={!desktopMode && !node.loadFailed} onPointerDown={(event) => beginPointerDrag(event, payload)} onClickCapture={suppressClickAfterDrag} onDragStart={(event) => startNodeDrag(event, payload)} onDragEnd={finishNodeDrag} onClick={(event) => {
+      if (node.loadFailed) return;
       if (event.metaKey || event.ctrlKey) { setSelectedLibraryNodeTypes((current) => current.includes(node.type) ? current.filter((type) => type !== node.type) : [...current, node.type]); return; }
       setSelectedLibraryNodeTypes([]); recordUsage('nodes', node.type); onAddNode?.(node.type);
-    }} title={`${node.description || ''}${selected ? ' · Drag to add selected nodes' : ''}`} aria-label={node.pluginAdapter ? `${node.label}. Plugin node from ${node.pluginName || node.pluginId || 'an installed plugin'}` : undefined}><NodeTypeIcon type={node.type} color={node.color} size={14} /><span>{node.label}</span>{isNodeDefinitionNew(node, Date.now(), newNodesUserKey) && <i className="node-new-badge">NEW</i>}{node.pluginAdapter && <span className="node-plugin-origin library-plugin-origin" title={`Plugin node from ${node.pluginName || node.pluginId || 'an installed plugin'}`} aria-label={`Plugin node from ${node.pluginName || node.pluginId || 'an installed plugin'}`}><Puzzle size={12} /></span>}</button>;
+    }} title={node.loadFailed ? 'Failed to load this node' : `${node.description || ''}${selected ? ' · Drag to add selected nodes' : ''}`} aria-label={node.pluginAdapter ? `${node.label}. Plugin node from ${node.pluginName || node.pluginId || 'an installed plugin'}` : undefined}><NodeTypeIcon type={node.type} color={node.color} size={14} /><span>{node.label}</span>{isNodeDefinitionNew(node, Date.now(), newNodesUserKey) && <i className="node-new-badge">NEW</i>}{node.pluginAdapter && <span className="node-plugin-origin library-plugin-origin" title={`Plugin node from ${node.pluginName || node.pluginId || 'an installed plugin'}`} aria-label={`Plugin node from ${node.pluginName || node.pluginId || 'an installed plugin'}`}><Puzzle size={12} /></span>}</button>;
   };
 
   return <aside className="graph-library-panel" aria-label="Graph library" style={{ '--arc-sidebar-width': `${sidebarWidth}px` }} onDragOver={previewLibraryDrag} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setLibraryDragGhost(null); }} onDrop={ignoreLibraryDrop}>
@@ -445,8 +445,9 @@ export function GraphLibraryPanel({
         {filteredPrefabs.map((prefab) => {
           const definition = definitions.find((node) => node.type === prefab.node?.type);
           const pluginTooltip = `Plugin node from ${definition?.pluginName || definition?.pluginId || 'an installed plugin'}`;
+          const nodeLoadFailed = !definition || definition.loadFailed;
           return <div className={`graph-library-item ${contextMenu?.kind === 'prefab' && contextMenu.graph?.id === prefab.id ? 'is-context-menu-open' : ''}`} key={prefab.id} onContextMenu={(event) => openPrefabMenu(event, prefab)}>
-          <button className="graph-library-entry" draggable={!desktopMode} onPointerDown={(event) => beginPointerDrag(event, { type: 'prefab', prefabId: prefab.id, prefabNode: prefab.node })} onClickCapture={suppressClickAfterDrag} onDragStart={(event) => startNodeDrag(event, { type: 'prefab', prefabId: prefab.id, prefabNode: prefab.node })} onDragEnd={finishNodeDrag} onClick={() => onAddPrefab?.(prefab)} title="Drag to canvas or click to add" aria-label={definition?.pluginAdapter ? `${prefab.name || 'Node prefab'}. ${pluginTooltip}` : undefined}><NodeTypeIcon type={prefab.node?.type} color={definition?.color} size={14} /><span>{prefab.name || 'Node prefab'}</span>{definition?.pluginAdapter && <span className="node-plugin-origin library-plugin-origin" title={pluginTooltip} aria-label={pluginTooltip}><Puzzle size={12} /></span>}</button>
+          <button type="button" className={`graph-library-entry ${nodeLoadFailed ? 'is-node-load-failed' : ''}`} disabled={nodeLoadFailed} aria-disabled={nodeLoadFailed} draggable={!desktopMode && !nodeLoadFailed} onPointerDown={(event) => beginPointerDrag(event, { type: 'prefab', prefabId: prefab.id, prefabNode: prefab.node })} onClickCapture={suppressClickAfterDrag} onDragStart={(event) => startNodeDrag(event, { type: 'prefab', prefabId: prefab.id, prefabNode: prefab.node })} onDragEnd={finishNodeDrag} onClick={() => onAddPrefab?.(prefab)} title={nodeLoadFailed ? 'Failed to load this node' : 'Drag to canvas or click to add'} aria-label={definition?.pluginAdapter ? `${prefab.name || 'Node prefab'}. ${pluginTooltip}` : undefined}><NodeTypeIcon type={prefab.node?.type} color={definition?.color} size={14} /><span>{prefab.name || 'Node prefab'}</span>{definition?.pluginAdapter && <span className="node-plugin-origin library-plugin-origin" title={pluginTooltip} aria-label={pluginTooltip}><Puzzle size={12} /></span>}</button>
           <button className="graph-library-more" onClick={(event) => openPrefabMenu(event, prefab)} aria-label={`Actions for ${prefab.name || 'node prefab'}`}><MoreHorizontal size={14} /></button>
         </div>;
         })}
