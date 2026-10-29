@@ -1580,9 +1580,11 @@ server.listen(serverConfig.port, serverConfig.host, () => {
   console.log(`  ★ Chezcord:              v${serverConfig.chezcordVersion}`);
   console.log(`──────────────────────────────────────────────────────────────────────────────`);
   const bannerLabel = (label) => `  ➜ ${label.padEnd(24)} `;
+  const loadedNodeDefinitions = Object.values(NodeDefinitions);
+  const baseNodeCount = loadedNodeDefinitions.filter((definition) => !definition.pluginAdapter).length;
   console.log(`${bannerLabel(`${serverOnlyMode ? 'API / WebSocket' : 'Web Studio'}:`)}${localUrl}`);
   console.log(`${bannerLabel('WebSocket:')}${localUrl.replace(/^http/, 'ws')}/ws`);
-  console.log(`${bannerLabel('Loaded ' + Object.keys(NodeDefinitions).length + ' Nodes')}`);
+  console.log(`${bannerLabel('Nodes:')}${loadedNodeDefinitions.length} (${baseNodeCount} base)`);
   console.log(`${bannerLabel('Setup:')}${userStore.isSetupCompleted() ? 'Complete' : 'Required'}`);
   console.log(`${bannerLabel('Master Setup Key:')}Hidden`);
   console.log(`${bannerLabel('Project Log Retention:')}${retention}`);
