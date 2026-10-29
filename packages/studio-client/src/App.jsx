@@ -677,13 +677,16 @@ export function App() {
   const [networkOnline, setNetworkOnline] = useState(() => navigator.onLine !== false);
   const [appUpdate, setAppUpdate] = useState(null);
   const [serverUpdate, setServerUpdate] = useState(null);
-  const [stableUpdateReady, setStableUpdateReady] = useState(null);
   const [downloadedUpdateReady, setDownloadedUpdateReady] = useState(null);
   const [releaseNotesNotice, setReleaseNotesNotice] = useState(null);
   const [updateNotice, setUpdateNotice] = useState(null);
   const [updateInstallPromptOpen, setUpdateInstallPromptOpen] = useState(false);
+  const [installUpdateConfirmOpen, setInstallUpdateConfirmOpen] = useState(false);
   const [updateInstalling, setUpdateInstalling] = useState(false);
   const updateRef = useRef(null);
+  const stableAutoDownloadVersionRef = useRef('');
+  const startupStagedUpdateCheckedRef = useRef(false);
+  const autoInstallStagedUpdateOnLaunchRef = useRef(false);
   const [canResetPrimaryAdminWithMasterKey, setCanResetPrimaryAdminWithMasterKey] = useState(false);
   const [workspaceError, setWorkspaceError] = useState('');
   const [authToken, setAuthToken] = useState(() => getInitialAuthToken(desktopMode));
@@ -716,7 +719,6 @@ export function App() {
   const currentUpdateChannel = desktopMode
     ? desktopReleaseChannel
     : /-(?:alpha|beta|rc|nightly)(?:[.-]|$)/i.test(studioServerVersion || studioVersion) ? 'nightly' : 'stable';
-  const stagedUpdateInstallCheckedRef = useRef(false);
   const [isReady, setIsReady] = useState(false);
   const [theme, setTheme] = useState(getInitialTheme);
   const [hasThemeChoice, setHasThemeChoice] = useState(hasSavedThemeChoice);
@@ -1052,20 +1054,12 @@ export function App() {
   }, [currentUpdateChannel, desktopMode, networkOnline, settings.autoUpdateChecks, studioServerVersion, workspaceMode]);
 
   useEffect(() => {
-    if (!desktopMode || stagedUpdateInstallCheckedRef.current) return;
-    stagedUpdateInstallCheckedRef.current = true;
-    const invoke = window.__TAURI_INTERNALS__?.invoke;
-    if (typeof invoke !== 'function') return;
-    invoke('install_staged_update', { channel: desktopReleaseChannel }).catch((error) => console.warn('Could not apply the staged ARC Studio update:', error));
-  }, [desktopMode, desktopReleaseChannel]);
-
-  useEffect(() => {
     if (!desktopMode) return;
     window.__TAURI_INTERNALS__?.invoke?.('mark_update_healthy').catch((error) => console.warn('Could not confirm ARC Studio started after its update:', error));
   }, [desktopMode]);
 
   useEffect(() => {
-    if (!desktopMode || settings.autoUpdateChecks === false) {
+    if (!desktopMode) {
       setAppUpdate(null);
       return undefined;
     }
@@ -1075,12 +1069,20 @@ export function App() {
         const invoke = window.__TAURI_INTERNALS__?.invoke;
         if (typeof invoke !== 'function') return;
         if (!active) return;
-        if (!networkOnline) return;
-        if (desktopReleaseChannel === 'stable') {
-          const staged = await invoke('stage_stable_update');
-          if (!active) return;
+        const staged = await invoke('get_staged_update_status', { channel: desktopReleaseChannel });
+        if (!active) return;
+        if (!startupStagedUpdateCheckedRef.current) {
+          startupStagedUpdateCheckedRef.current = true;
+          autoInstallStagedUpdateOnLaunchRef.current = desktopReleaseChannel === 'stable' && Boolean(staged?.staged);
+        }
+        if (staged?.staged) {
           setAppUpdate(null);
-          setStableUpdateReady(staged?.staged ? { version: staged.version } : null);
+          setDownloadedUpdateReady({ version: staged.version });
+          return;
+        }
+        setDownloadedUpdateReady(null);
+        if (settings.autoUpdateChecks === false || !networkOnline) {
+          setAppUpdate(null);
           return;
         }
         const metadata = await invoke('check_channel_update', { channel: desktopReleaseChannel });
@@ -1092,7 +1094,6 @@ export function App() {
         if (previous && previous !== update) await previous.close().catch(() => {});
         if (!update) { setAppUpdate(null); return; }
         const version = String(update.version || '').replace(/^v/i, '');
-        setStableUpdateReady(null);
         setAppUpdate({
           native: true,
           version,
@@ -1119,10 +1120,12 @@ export function App() {
   useEffect(() => {
     const detected = appUpdate?.version
       ? { version: appUpdate.version, title: appUpdate.title, url: appUpdate.url, notes: appUpdate.notes, kind: 'install' }
-      : stableUpdateReady?.version
-        ? { version: stableUpdateReady.version, title: `ARC Studio ${stableUpdateReady.version}`, url: `https://github.com/relentiousdragon/arc-studio/releases/tag/v${encodeURIComponent(stableUpdateReady.version)}`, notes: '', kind: 'staged' }
-        : null;
+      : null;
     if (!desktopMode || !detected) return undefined;
+    if (desktopReleaseChannel === 'stable') {
+      setUpdateNotice(null);
+      return undefined;
+    }
 
     const noticeKey = `arc_seen_update_notice_${desktopReleaseChannel}_${detected.version}`;
     try {
@@ -1153,7 +1156,7 @@ export function App() {
       })
       .finally(() => window.clearTimeout(timeout));
     return () => { active = false; window.clearTimeout(timeout); controller.abort(); };
-  }, [appUpdate?.notes, appUpdate?.title, appUpdate?.url, appUpdate?.version, desktopMode, desktopReleaseChannel, stableUpdateReady?.version]);
+  }, [appUpdate?.notes, appUpdate?.title, appUpdate?.url, appUpdate?.version, desktopMode, desktopReleaseChannel]);
 
   useEffect(() => {
     if (!settings.uiSounds) return undefined;
@@ -6213,6 +6216,10 @@ export function App() {
   };
 
   const handleOpenStudioUpdate = useCallback((url) => {
+    if (downloadedUpdateReady?.version) {
+      setInstallUpdateConfirmOpen(true);
+      return;
+    }
     if (appUpdate?.native) {
       setUpdateInstallPromptOpen(true);
       return;
@@ -6221,12 +6228,14 @@ export function App() {
     const invoke = window.__TAURI_INTERNALS__?.invoke;
     if (desktopMode && typeof invoke === 'function') invoke('open_external_url', { url }).catch(() => {});
     else window.open(url, '_blank', 'noopener,noreferrer');
-  }, [appUpdate, desktopMode]);
+  }, [appUpdate, desktopMode, downloadedUpdateReady?.version]);
 
   const handleInstallStudioUpdate = useCallback(async () => {
     const update = updateRef.current;
     if (!update || updateInstalling) return;
     setUpdateInstalling(true);
+    setUpdateNotice(null);
+    setUpdateInstallPromptOpen(false);
     const updateVersion = update.version;
     let unlistenProgress;
     const publishProgress = (message, progress = null) => arcEvents.emit('toast:notify', {
@@ -6257,14 +6266,12 @@ export function App() {
       await invoke('install_channel_update', { rid: update.rid, channel: desktopReleaseChannel });
       updateRef.current = null;
       setAppUpdate(null);
-      setUpdateInstallPromptOpen(false);
-      setUpdateNotice(null);
       setDownloadedUpdateReady({ version: updateVersion });
       await update.close().catch(() => {});
       arcEvents.emit('toast:notify', {
         id: 'arc-studio-update-progress',
         title: 'ARC Studio update ready',
-        message: `Version ${updateVersion} is downloaded and verified. It will be installed the next time ARC Studio launches.`,
+        message: `Version ${updateVersion} is downloaded and verified. Choose Install in the top bar when you’re ready to restart ARC Studio.`,
         type: 'success',
         progress: 100,
         persistent: true,
@@ -6278,6 +6285,51 @@ export function App() {
       setUpdateInstalling(false);
     }
   }, [desktopReleaseChannel, updateInstalling]);
+
+  useEffect(() => {
+    if (!desktopMode || desktopReleaseChannel !== 'stable' || settings.autoUpdateChecks === false || !networkOnline || updateInstalling || downloadedUpdateReady?.version || !appUpdate?.native || !appUpdate.version) return;
+    if (stableAutoDownloadVersionRef.current === appUpdate.version) return;
+    stableAutoDownloadVersionRef.current = appUpdate.version;
+    void handleInstallStudioUpdate();
+  }, [appUpdate?.native, appUpdate?.version, desktopMode, desktopReleaseChannel, downloadedUpdateReady?.version, handleInstallStudioUpdate, networkOnline, settings.autoUpdateChecks, updateInstalling]);
+
+  const handleInstallStagedUpdate = useCallback(async () => {
+    if (!downloadedUpdateReady?.version || updateInstalling) return;
+    setUpdateInstalling(true);
+    setInstallUpdateConfirmOpen(false);
+    arcEvents.emit('toast:notify', {
+      id: 'arc-studio-update-progress',
+      title: 'Installing ARC Studio update',
+      message: `Preparing version ${downloadedUpdateReady.version}…`,
+      type: 'info',
+      loading: true,
+      persistent: true,
+      dismissible: false
+    });
+    try {
+      const invoke = window.__TAURI_INTERNALS__?.invoke;
+      if (typeof invoke !== 'function') throw new Error('The desktop update installer is unavailable. Restart ARC Studio and check for updates again.');
+      const installed = await invoke('install_staged_update', { channel: desktopReleaseChannel });
+      if (installed !== true) {
+        setDownloadedUpdateReady(null);
+        arcEvents.emit('toast:notify', { id: 'arc-studio-update-progress', title: 'Update no longer available', message: 'Check for updates again to download the latest version.', type: 'error', duration: 10000, dismissible: true });
+      }
+    } catch (error) {
+      const message = typeof error === 'string' ? error.trim() : typeof error?.message === 'string' ? error.message.trim() : '';
+      const accessHelp = /permission denied|operation not permitted|access denied/i.test(message)
+        ? ' Move ARC Studio.app out of Documents and the source repository, place it in ~/Applications or /Applications, then try again.'
+        : '';
+      arcEvents.emit('toast:notify', { id: 'arc-studio-update-progress', title: 'Update installation failed', message: `${message || 'ARC Studio could not install the staged update. Check the app location and try again.'}${accessHelp}`, type: 'error', duration: 15000, dismissible: true });
+    } finally {
+      setUpdateInstalling(false);
+    }
+  }, [desktopReleaseChannel, downloadedUpdateReady?.version, updateInstalling]);
+
+  useEffect(() => {
+    if (!autoInstallStagedUpdateOnLaunchRef.current || !downloadedUpdateReady?.version || updateInstalling) return;
+    autoInstallStagedUpdateOnLaunchRef.current = false;
+    void handleInstallStagedUpdate();
+  }, [downloadedUpdateReady?.version, handleInstallStagedUpdate, updateInstalling]);
 
   const handleSidebarResize = (sidebarId, width) => {
     const next = { ...sidebarWidths, [sidebarId]: Math.max(SIDEBAR_WIDTH_MIN, Math.min(SIDEBAR_WIDTH_MAX, Math.round(width))) };
@@ -6433,6 +6485,8 @@ export function App() {
         onLogout={handleLogout}
         onSwitchWorkspace={handleSwitchWorkspace}
         appUpdate={appUpdate}
+        downloadedUpdateReady={downloadedUpdateReady}
+        updateInstalling={updateInstalling}
         onOpenStudioUpdate={handleOpenStudioUpdate}
         onStartBot={handleStartBot}
         onStopBot={handleStopBot}
@@ -6814,7 +6868,6 @@ export function App() {
         onUpdateSettings={handleUpdateSettings}
         appUpdate={appUpdate}
         serverUpdate={serverUpdate}
-        stableUpdateReady={stableUpdateReady}
         downloadedUpdateReady={downloadedUpdateReady}
         updateInstalling={updateInstalling}
         releaseChannel={currentUpdateChannel}
@@ -7028,7 +7081,7 @@ export function App() {
         isOpen={Boolean(updateNotice)}
         onClose={() => setUpdateNotice(null)}
         title={updateNotice?.title || `ARC Studio ${updateNotice?.version || ''}`}
-        subtitle={updateNotice?.kind === 'staged' ? 'Update ready · release notes' : 'Update available · release notes'}
+        subtitle="Update available · release notes"
         icon={Sparkles}
         maxWidth="max-w-2xl"
         footer={<>
@@ -7038,22 +7091,31 @@ export function App() {
             : <Button onClick={() => setUpdateNotice(null)}>Got it</Button>}
         </>}
       >
-        {updateNotice?.kind === 'staged' && <p className="close-graph-copy">This update will be applied the next time you launch ARC Studio.</p>}
         <ReleaseNotes>{updateNotice?.notes}</ReleaseNotes>
       </Modal>
       <Modal
         isOpen={updateInstallPromptOpen}
         onClose={() => !updateInstalling && setUpdateInstallPromptOpen(false)}
         title={`Update ARC Studio to ${appUpdate?.version || 'the latest version'}?`}
-        subtitle={`Signed ${desktopReleaseChannel} update · ARC Studio will install it on next launch.`}
+        subtitle={`Signed ${desktopReleaseChannel} update · download it, then install when you’re ready.`}
         icon={Download}
         footer={<><Button variant="secondary" disabled={updateInstalling} onClick={() => setUpdateInstallPromptOpen(false)}>Later</Button><Button icon={Download} loading={updateInstalling} disabled={updateInstalling} onClick={handleInstallStudioUpdate}>Download update</Button></>}
       >
-        <p className="close-graph-copy">Your graphs and settings are saved in your workspace. The update will be downloaded and verified now, then installed the next time ARC Studio launches.</p>
+        <p className="close-graph-copy">Your graphs and settings are saved in your workspace. Download and verify the update now, then install it from the top bar when you’re ready to restart ARC Studio.</p>
         {appUpdate?.notes && <ReleaseNotes>{appUpdate.notes}</ReleaseNotes>}
       </Modal>
       <Modal
-        isOpen={Boolean(releaseNotesNotice) && !updateNotice && !appUpdate && !stableUpdateReady && !updateInstallPromptOpen}
+        isOpen={installUpdateConfirmOpen}
+        onClose={() => !updateInstalling && setInstallUpdateConfirmOpen(false)}
+        title={`Install ARC Studio ${downloadedUpdateReady?.version || 'update'}?`}
+        subtitle="ARC Studio will restart to finish installing."
+        icon={Download}
+        footer={<><Button variant="secondary" disabled={updateInstalling} onClick={() => setInstallUpdateConfirmOpen(false)}>Cancel</Button><Button icon={Download} loading={updateInstalling} disabled={updateInstalling} onClick={handleInstallStagedUpdate}>Install and restart</Button></>}
+      >
+        <p className="close-graph-copy">Any unsaved changes in the editor will be lost when ARC Studio closes. Save your open graphs before installing.</p>
+      </Modal>
+      <Modal
+        isOpen={Boolean(releaseNotesNotice) && !updateNotice && !appUpdate && !downloadedUpdateReady && !updateInstallPromptOpen}
         onClose={dismissReleaseNotes}
         title={releaseNotesNotice?.title || `What’s new in ARC Studio ${studioVersion}`}
         subtitle="Release notes"
@@ -7063,7 +7125,6 @@ export function App() {
       >
         <ReleaseNotes>{releaseNotesNotice?.notes}</ReleaseNotes>
       </Modal>
-      {desktopMode && stableUpdateReady && <div className="stable-update-ready-notice" role="status">ARC Studio update ready · it will be applied on next launch.</div>}
       <LazyMountedFeature Component={UserManagementModal} isOpen={!desktopMode && isUserMgmtOpen} loadingLabel="Opening Team access…" isDesktop={desktopMode} onClose={() => setIsUserMgmtOpen(false)} authToken={authToken} currentUsername={currentUser?.username} currentUserId={currentUser?.id} onCurrentUserChange={setCurrentUser} />
       </div>
       <ToastContainer />
