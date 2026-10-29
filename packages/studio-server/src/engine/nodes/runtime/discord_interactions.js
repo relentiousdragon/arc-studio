@@ -1,4 +1,5 @@
 import { validateDiscordModalPayload } from './builders.js';
+import { validateDiscordSemanticValue } from '../../DiscordValueValidation.js';
 import { findFocusedSlashOption, findSlashParameter, getFocusedSlashOptionPath } from '../../SlashCommandOptions.js';
 
 const INTERACTION_NODE_TYPES = new Set([
@@ -37,6 +38,7 @@ export async function executeDiscordInteractionNode(node, {
   buildEmbed,
   isInputConnected = () => false,
   rest,
+  simulation = false,
   log,
   state,
   eventPayload,
@@ -46,10 +48,13 @@ export async function executeDiscordInteractionNode(node, {
   if (!isDiscordInteractionNodeType(node?.type)) return false;
 
   if (state.pending) await state.pending;
+  const semanticInput = (pinId, fallback, semanticType, label, allowEmpty = false) => validateDiscordSemanticValue(
+    resolveInput(pinId, fallback), semanticType, label, { simulation, allowEmpty: allowEmpty || simulation }
+  );
 
   if (node.type === 'action_show_modal') {
-    const interactionId = String(resolveInput('interaction_id', node.data?.interaction_id || ''));
-    const interactionToken = String(resolveInput('interaction_token', node.data?.interaction_token || ''));
+    const interactionId = semanticInput('interaction_id', node.data?.interaction_id || '', 'interaction_id', 'Interaction ID');
+    const interactionToken = semanticInput('interaction_token', node.data?.interaction_token || '', 'interaction_token', 'Interaction token');
     const modal = resolveInput('modal', node.data?.modal || null);
     if (!interactionToken) throw new Error('Show Popup Modal needs the Interaction Token from its event node.');
     const modalErrors = validateDiscordModalPayload(modal);
@@ -67,8 +72,8 @@ export async function executeDiscordInteractionNode(node, {
 
   if (node.type === 'action_respond_autocomplete') {
     if (Number(eventPayload?.type) !== 4) throw new Error('Respond to Autocomplete can only run for an autocomplete interaction.');
-    const interactionId = String(resolveInput('interaction_id', eventPayload?.id || ''));
-    const interactionToken = String(resolveInput('interaction_token', eventPayload?.token || ''));
+    const interactionId = semanticInput('interaction_id', eventPayload?.id || '', 'interaction_id', 'Interaction ID');
+    const interactionToken = semanticInput('interaction_token', eventPayload?.token || '', 'interaction_token', 'Interaction token');
     const focused = findFocusedSlashOption(eventPayload?.data?.options || []);
     const slashCommandNode = nodes.find((candidate) => candidate.type === 'event_slash_command' && String(candidate.data?.commandName || '').toLowerCase() === String(eventPayload?.data?.name || '').toLowerCase());
     const focusedPath = getFocusedSlashOptionPath(eventPayload?.data?.options || []);
@@ -109,9 +114,9 @@ export async function executeDiscordInteractionNode(node, {
   }
 
   if (node.type === 'action_reply_interaction') {
-    const applicationId = String(resolveInput('application_id', node.data?.application_id || state.applicationId || ''));
-    const interactionId = String(resolveInput('interaction_id', node.data?.interaction_id || eventPayload?.id || state.interactionId || ''));
-    const interactionToken = String(resolveInput('interaction_token', node.data?.interaction_token || ''));
+    const applicationId = semanticInput('application_id', node.data?.application_id || state.applicationId || '', 'application_id', 'Application ID', true);
+    const interactionId = semanticInput('interaction_id', node.data?.interaction_id || eventPayload?.id || state.interactionId || '', 'interaction_id', 'Interaction ID', true);
+    const interactionToken = semanticInput('interaction_token', node.data?.interaction_token || '', 'interaction_token', 'Interaction token', true);
     const content = String(resolveInput('content', node.data?.content || '')).slice(0, 2000);
     const embed = resolveInput('embed', null) || (Array.isArray(node.data?.blocks) ? buildEmbed() : null);
     const components = resolveComponents();
@@ -161,8 +166,8 @@ export async function executeDiscordInteractionNode(node, {
   }
 
   if (node.type === 'action_defer_reply' || node.type === 'action_defer_update') {
-    const interactionId = String(resolveInput('interaction_id', node.data?.interaction_id || ''));
-    const interactionToken = String(resolveInput('interaction_token', node.data?.interaction_token || ''));
+    const interactionId = semanticInput('interaction_id', node.data?.interaction_id || '', 'interaction_id', 'Interaction ID');
+    const interactionToken = semanticInput('interaction_token', node.data?.interaction_token || '', 'interaction_token', 'Interaction token');
     const isUpdate = node.type === 'action_defer_update';
     const ephemeral = Boolean(resolveInput('ephemeral', node.data?.ephemeral || false));
     if (!interactionToken) throw new Error(`${isUpdate ? 'Defer Update' : 'Defer Reply'} needs an interaction token.`);
@@ -185,8 +190,8 @@ export async function executeDiscordInteractionNode(node, {
     return true;
   }
 
-  const applicationId = String(resolveInput('application_id', node.data?.application_id || state.applicationId || '')).trim();
-  const interactionToken = String(resolveInput('interaction_token', node.data?.interaction_token || '')).trim();
+  const applicationId = semanticInput('application_id', node.data?.application_id || state.applicationId || '', 'application_id', 'Application ID');
+  const interactionToken = semanticInput('interaction_token', node.data?.interaction_token || '', 'interaction_token', 'Interaction token');
   const content = String(resolveInput('content', node.data?.content || '')).slice(0, 2000);
   const embed = resolveInput('embed', null) || (Array.isArray(node.data?.blocks) ? buildEmbed() : null);
   const components = resolveComponents();
