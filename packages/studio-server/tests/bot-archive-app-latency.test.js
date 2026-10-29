@@ -100,13 +100,14 @@ test('standalone bot export includes modular node schemas and their runtime depe
   const entries = listZipEntries(archive);
   const graphRunner = readZipEntry(archive, 'src/engine/GraphRunner.js');
   const nodeRegistry = readZipEntry(archive, 'src/engine/NodeRegistry.js');
+  const nodeSchemaDefinitions = readZipEntry(archive, 'src/engine/NodeSchemaDefinitions.js');
   const nodeIndex = readZipEntry(archive, 'src/engine/nodes/index.js');
   const networkRuntime = readZipEntry(archive, 'src/engine/nodes/runtime/network.js');
   const dataRuntime = readZipEntry(archive, 'src/engine/nodes/runtime/data.js');
   const retrySchema = readZipEntry(archive, 'src/engine/nodes/web-network/action_web_retry.js');
 
   assert.match(graphRunner, /import\('\.\/nodes\/runtime\/network\.js'\)/);
-  assert.match(nodeRegistry, /nodes\/index\.js/);
+  assert.match(nodeSchemaDefinitions, /nodes\/index\.js/);
   assert.match(nodeIndex, /web-network\/action_web_retry\.js/);
   assert.match(networkRuntime, /SafeHttpRequest\.js/);
   assert.match(dataRuntime, /export function evaluateDataNode/);
