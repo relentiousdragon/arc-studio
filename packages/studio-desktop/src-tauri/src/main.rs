@@ -74,7 +74,6 @@ struct ChannelUpdateMetadata {
 #[serde(rename_all = "camelCase")]
 struct StagedUpdateStatus {
     version: String,
-    body: Option<String>,
     staged: bool,
 }
 
@@ -111,6 +110,7 @@ fn rollback_metadata_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Resul
     Ok(directory.join("rollback.json"))
 }
 
+#[cfg(not(target_os = "macos"))]
 fn update_install_unit() -> Result<(PathBuf, PathBuf, String), String> {
     let executable = std::env::current_exe().map_err(|error| format!("Could not locate the installed ARC Studio app: {error}"))?;
     #[cfg(target_os = "macos")]
@@ -177,6 +177,7 @@ fn cleanup_rollback_copy(metadata: &UpdateRollbackMetadata) {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn prepare_update_rollback<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
     let (source, launch_relative_path, unit_kind) = update_install_unit()?;
     if !source.exists() { return Err("The installed ARC Studio app could not be found for update recovery.".to_string()); }
@@ -200,6 +201,7 @@ fn prepare_update_rollback<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Resu
     Ok(metadata_path)
 }
 
+#[cfg(not(target_os = "macos"))]
 fn arm_update_rollback(metadata_path: &Path) -> Result<(), String> {
     let metadata: UpdateRollbackMetadata = serde_json::from_slice(&fs::read(metadata_path).map_err(|error| format!("Could not read update recovery details: {error}"))?)
         .map_err(|error| format!("Update recovery details are invalid: {error}"))?;
@@ -359,33 +361,6 @@ fn stage_update_package<R: tauri::Runtime>(app: &tauri::AppHandle<R>, channel: &
 }
 
 #[tauri::command]
-async fn stage_stable_update<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<Option<StagedUpdateStatus>, String> {
-    let endpoint = updater_endpoint("stable")?;
-    let updater = app.updater_builder()
-        .endpoints(vec![endpoint])
-        .map_err(|error| format!("Could not configure update check: {error}"))?
-        .build()
-        .map_err(|error| format!("Could not start update check: {error}"))?;
-    let Some(update) = updater.check().await.map_err(|error| format!("Update check failed: {error}"))? else { return Ok(None); };
-    let version = update.version.clone();
-    let body = update.body.clone();
-    let raw_json = update.raw_json.clone();
-    let (metadata_path, package_path) = staged_update_paths(&app)?;
-    let directory = metadata_path.parent().ok_or_else(|| "Could not prepare update storage.".to_string())?;
-    fs::create_dir_all(directory).map_err(|error| format!("Could not prepare update storage: {error}"))?;
-    if package_path.is_file() {
-        if let Ok(existing) = fs::read(&metadata_path).and_then(|bytes| serde_json::from_slice::<StagedUpdateMetadata>(&bytes).map_err(io::Error::other)) {
-            if existing.channel == "stable" && existing.version == version {
-                return Ok(Some(StagedUpdateStatus { version, body, staged: true }));
-            }
-        }
-    }
-    let bytes = update.download(|_, _| {}, || {}).await.map_err(|error| format!("Could not download ARC Studio update: {error}"))?;
-    stage_update_package(&app, "stable", &version, &raw_json, &bytes)?;
-    Ok(Some(StagedUpdateStatus { version, body, staged: true }))
-}
-
-#[tauri::command]
 fn install_staged_update<R: tauri::Runtime>(app: tauri::AppHandle<R>, channel: String) -> Result<bool, String> {
     let (metadata_path, package_path) = staged_update_paths(&app)?;
     if !metadata_path.is_file() || !package_path.is_file() { return Ok(false); }
@@ -414,12 +389,26 @@ fn install_staged_update<R: tauri::Runtime>(app: tauri::AppHandle<R>, channel: S
     }
     let bytes = fs::read(&package_path).map_err(|error| format!("Could not read staged update package: {error}"))?;
     update.verify(&bytes).map_err(|error| format!("The ARC Studio update signature could not be verified: {error}"))?;
-    let rollback_path = prepare_update_rollback(&app)?;
-    arm_update_rollback(&rollback_path)?;
+    #[cfg(not(target_os = "macos"))]
+    {
+        let rollback_path = prepare_update_rollback(&app)?;
+        arm_update_rollback(&rollback_path)?;
+    }
     update.install(&bytes).map_err(|error| format!("Could not install ARC Studio update: {error}"))?;
     let _ = fs::remove_file(metadata_path);
     let _ = fs::remove_file(package_path);
     app.restart();
+}
+
+#[tauri::command]
+fn get_staged_update_status<R: tauri::Runtime>(app: tauri::AppHandle<R>, channel: String) -> Result<Option<StagedUpdateStatus>, String> {
+    let _ = updater_endpoint(&channel)?;
+    let (metadata_path, package_path) = staged_update_paths(&app)?;
+    if !metadata_path.is_file() || !package_path.is_file() { return Ok(None); }
+    let metadata: StagedUpdateMetadata = serde_json::from_slice(&fs::read(&metadata_path).map_err(|error| format!("Could not read staged update details: {error}"))?)
+        .map_err(|error| format!("Staged update details are invalid: {error}"))?;
+    if metadata.channel != channel { return Ok(None); }
+    Ok(Some(StagedUpdateStatus { version: metadata.version, staged: true }))
 }
 
 #[tauri::command]
@@ -939,8 +928,8 @@ fn main() {
             open_external_url,
             check_channel_update,
             install_channel_update,
-            stage_stable_update,
             install_staged_update,
+            get_staged_update_status,
             mark_update_healthy,
             update_discord_presence,
             clear_discord_presence,
