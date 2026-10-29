@@ -4,6 +4,7 @@ import { getNodeArgumentPins, MAX_NODE_ARGUMENTS, NODE_SCHEMA_VERSION, resolveDy
 import {
   CLIENT_PROTOCOL_VERSION, NODE_REGISTRY_PROTOCOL_VERSION, SUPPORTED_NODE_REGISTRY_FEATURES, getNodeRegistryCompatibility, validateNodeRegistryPayload
 } from '../../../../studio-server/src/engine/NodeRegistryContract.js';
+import { NodeCategories as BundledNodeCategories, NodeDefinitions } from '../../../../studio-server/src/engine/NodeSchemaDefinitions.js';
 //
 export let NodeCategories = Object.freeze({});
 export { renderTextTemplate };
@@ -73,16 +74,16 @@ export function createDefaultNodeData(type) {
   };
   return { ...nodeDefaults, ...editorDefaults };
 }
-//
-export const BundledNodeTypes = new Set();
-export const BuiltInNodeDefinitions = [];
+const bundledNodeDefinitions = Object.values(NodeDefinitions).map((definition) => ({ ...definition }));
+export const BundledNodeTypes = new Set(bundledNodeDefinitions.map((definition) => definition.type));
+export const BuiltInNodeDefinitions = [...bundledNodeDefinitions];
+NodeCategories = Object.freeze({ ...BundledNodeCategories });
 
 export function setWorkspaceNodeDefinitions(definitions, categories = {}) {
   if (definitions === null) {
     adapterNodeTypes.clear();
-    BuiltInNodeDefinitions.splice(0, BuiltInNodeDefinitions.length);
-    BundledNodeTypes.clear();
-    NodeCategories = Object.freeze({});
+    BuiltInNodeDefinitions.splice(0, BuiltInNodeDefinitions.length, ...bundledNodeDefinitions);
+    NodeCategories = Object.freeze({ ...BundledNodeCategories });
     return;
   }
   if (!Array.isArray(definitions)) throw new TypeError('Workspace node definitions must be an array.');
@@ -95,18 +96,19 @@ export function setWorkspaceNodeDefinitions(definitions, categories = {}) {
       || !Array.isArray(definition.inputs) || !Array.isArray(definition.outputs)) {
       throw new TypeError('Workspace returned an invalid node definition.');
     }
-    const requiresGenericEditor = definition.pluginAdapter === true;
+    const bundledDefinition = bundledNodeDefinitions.find((candidate) => candidate.type === definition.type);
+    const schemaDiffersFromBundled = !bundledDefinition
+      || JSON.stringify(bundledDefinition.inputs) !== JSON.stringify(definition.inputs);
+    const requiresGenericEditor = definition.pluginAdapter === true || schemaDiffersFromBundled;
     return {
       ...definition,
-      description: definition.description || 'Description unavailable',
+      description: definition.description || bundledDefinition?.description || 'Description unavailable',
       requiresGenericEditor,
       editorOnlyInputs: requiresGenericEditor ? definition.inputs : []
     };
   });
   adapterNodeTypes.clear();
   BuiltInNodeDefinitions.splice(0, BuiltInNodeDefinitions.length, ...normalized);
-  BundledNodeTypes.clear();
-  for (const definition of normalized) if (!definition.pluginAdapter) BundledNodeTypes.add(definition.type);
   NodeCategories = Object.freeze({ ...categories });
 }
 
