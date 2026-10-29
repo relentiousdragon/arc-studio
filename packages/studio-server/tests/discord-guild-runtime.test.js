@@ -203,6 +203,7 @@ test('GraphRunner routes moderation errors through the failure execution output'
     ]
   };
   const result = await GraphRunner.execute(graph, 'MESSAGE_CREATE', {}, {
+    mock: true,
     rest: {
       createMessage: async (...args) => calls.push(args),
       banGuildMember: async () => assert.fail('Invalid member ID must not reach REST.')
