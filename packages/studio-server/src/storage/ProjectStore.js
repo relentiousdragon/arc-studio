@@ -8,7 +8,7 @@ import { compareArcStudioVersions, currentArcStudioVersion, projectVersionAge } 
 import { withIntegrity, verifyIntegrity } from './Integrity.js';
 
 const registryPath = path.join(dataDir, 'projects.json');
-const projectRoot = path.join(dataDir, 'projects');
+const projectRoot = path.resolve(process.env.ARC_PROJECTS_DIR?.trim() || path.join(dataDir, 'projects'));
 const projectFiles = ['graphs.json', 'graph-library.json', 'bot-config.json', 'statistics.json', 'embeds.json', 'project-variables.json'];
 const DEFAULT_MAX_PROJECTS = 10;
 const PROJECT_EXPORT_KDF = Object.freeze({ N: 32768, r: 8, p: 1 });
@@ -93,6 +93,30 @@ function writeStarterFiles(destination, starter) {
   }
 }
 
+function migrateLegacyProjectFiles(destination) {
+  for (const filename of projectFiles) {
+    const source = path.join(dataDir, filename);
+    if (!fs.existsSync(source)) continue;
+    const target = path.join(destination, filename);
+    if (fs.existsSync(target)) {
+      if (!fs.readFileSync(source).equals(fs.readFileSync(target))) {
+        throw new Error(`The old ${filename} and the project copy contain different data. The old file was kept at ${source}.`);
+      }
+    } else {
+      const temporary = path.join(destination, `.${filename}.legacy-migration.tmp`);
+      try {
+        fs.copyFileSync(source, temporary);
+        if (!fs.readFileSync(source).equals(fs.readFileSync(temporary))) throw new Error('The copied file did not match the original.');
+        fs.renameSync(temporary, target);
+      } catch (error) {
+        try { fs.rmSync(temporary, { force: true }); } catch {}
+        throw new Error(`Could not move legacy project data into Documents/ARC Studio: ${error.message}`);
+      }
+    }
+    fs.rmSync(source);
+  }
+}
+
 export class ProjectStore {
   constructor(options = {}) {
     this.projects = [];
@@ -139,6 +163,12 @@ export class ProjectStore {
       this.persist();
     }
     if (!this.projects.some((item) => item.id === this.activeProjectId)) this.activeProjectId = this.projects[0].id;
+    if (serverConfig.desktopMode && this.projects.length) {
+      const legacyProject = this.projects.find((project) => project.name === 'Default Project') || this.active();
+      const legacyProjectDirectory = this.directory(legacyProject.id);
+      fs.mkdirSync(legacyProjectDirectory, { recursive: true, mode: 0o700 });
+      migrateLegacyProjectFiles(legacyProjectDirectory);
+    }
     this.persist();
   }
 
