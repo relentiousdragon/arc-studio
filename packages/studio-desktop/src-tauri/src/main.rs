@@ -202,6 +202,16 @@ fn prepare_update_rollback<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Resu
 }
 
 #[cfg(not(target_os = "macos"))]
+fn discard_update_rollback(metadata_path: &Path) {
+    let Ok(bytes) = fs::read(metadata_path) else { return; };
+    let Ok(metadata) = serde_json::from_slice::<UpdateRollbackMetadata>(&bytes) else { return; };
+    cleanup_rollback_copy(&metadata);
+    let _ = fs::remove_file(&metadata.startup_marker);
+    let _ = fs::remove_file(&metadata.health_marker);
+    let _ = fs::remove_file(metadata_path);
+}
+
+#[cfg(not(target_os = "macos"))]
 fn arm_update_rollback(metadata_path: &Path) -> Result<(), String> {
     let metadata: UpdateRollbackMetadata = serde_json::from_slice(&fs::read(metadata_path).map_err(|error| format!("Could not read update recovery details: {error}"))?)
         .map_err(|error| format!("Update recovery details are invalid: {error}"))?;
@@ -213,7 +223,13 @@ fn arm_update_rollback(metadata_path: &Path) -> Result<(), String> {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000 | 0x00000008);
     }
-    command.spawn().map_err(|error| format!("Could not start the update recovery monitor: {error}"))?;
+    if let Err(error) = command.spawn() {
+        cleanup_rollback_copy(&metadata);
+        let _ = fs::remove_file(metadata.startup_marker);
+        let _ = fs::remove_file(metadata.health_marker);
+        let _ = fs::remove_file(metadata_path);
+        return Err(format!("Could not start the update recovery monitor: {error}"));
+    }
     Ok(())
 }
 
@@ -390,11 +406,23 @@ fn install_staged_update<R: tauri::Runtime>(app: tauri::AppHandle<R>, channel: S
     let bytes = fs::read(&package_path).map_err(|error| format!("Could not read staged update package: {error}"))?;
     update.verify(&bytes).map_err(|error| format!("The ARC Studio update signature could not be verified: {error}"))?;
     #[cfg(not(target_os = "macos"))]
-    {
-        let rollback_path = prepare_update_rollback(&app)?;
-        arm_update_rollback(&rollback_path)?;
+    let rollback_path = {
+        prepare_update_rollback(&app)?
+    };
+    if let Err(error) = update.install(&bytes) {
+        #[cfg(not(target_os = "macos"))]
+        discard_update_rollback(&rollback_path);
+        let message = error.to_string();
+        #[cfg(target_os = "macos")]
+        if matches!(&error, tauri_plugin_updater::Error::Io(io_error) if io_error.kind() == io::ErrorKind::PermissionDenied) {
+            return Err(format!("ARC_UPDATE_LOCATION_PERMISSION_REQUIRED:{message}"));
+        }
+        return Err(format!("Could not install ARC Studio update: {message}"));
     }
-    update.install(&bytes).map_err(|error| format!("Could not install ARC Studio update: {error}"))?;
+    #[cfg(not(target_os = "macos"))]
+    if let Err(error) = arm_update_rollback(&rollback_path) {
+        eprintln!("Could not start the update recovery monitor: {error}");
+    }
     let _ = fs::remove_file(metadata_path);
     let _ = fs::remove_file(package_path);
     app.restart();
@@ -882,6 +910,27 @@ fn open_external_url(url: String) -> Result<(), String> {
         .map_err(|error| format!("Could not open the external link: {error}"))
 }
 
+#[tauri::command]
+fn open_macos_files_folders_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let settings_urls = [
+            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_FilesAndFolders",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders",
+            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension",
+        ];
+        for settings_url in settings_urls {
+            match Command::new("open").arg(settings_url).status() {
+                Ok(status) if status.success() => return Ok(()),
+                _ => continue,
+            }
+        }
+        return Err("Could not open macOS Privacy & Security settings.".to_string());
+    }
+    #[cfg(not(target_os = "macos"))]
+    Err("Files and Folders settings are only available on macOS.".to_string())
+}
+
 fn clear_discord_presence_inner(presence: &DiscordPresence) {
     if let Ok(mut connection) = presence.client.lock() {
         if let Some(mut client) = connection.take() {
@@ -926,6 +975,7 @@ fn main() {
             open_project_window,
             reset_local_data,
             open_external_url,
+            open_macos_files_folders_settings,
             check_channel_update,
             install_channel_update,
             install_staged_update,
@@ -1304,6 +1354,120 @@ fn node_compatible_path(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+fn is_project_directory_name(name: &str) -> bool {
+    name.strip_prefix("project_")
+        .is_some_and(|uuid| uuid.len() == 36 && uuid.bytes().all(|byte| byte.is_ascii_hexdigit() || byte == b'-'))
+}
+
+fn copy_directory_tree(source: &Path, destination: &Path) -> io::Result<()> {
+    fs::create_dir_all(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let target = destination.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_directory_tree(&entry.path(), &target)?;
+        } else if file_type.is_file() {
+            fs::copy(entry.path(), &target)?;
+        } else {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "A project directory contains an unsupported file type."));
+        }
+    }
+    fs::set_permissions(destination, fs::metadata(source)?.permissions())?;
+    Ok(())
+}
+
+fn files_match(left: &Path, right: &Path) -> io::Result<bool> {
+    let left_metadata = fs::metadata(left)?;
+    let right_metadata = fs::metadata(right)?;
+    if left_metadata.len() != right_metadata.len() { return Ok(false); }
+    let mut left_file = fs::File::open(left)?;
+    let mut right_file = fs::File::open(right)?;
+    let mut left_buffer = [0_u8; 64 * 1024];
+    let mut right_buffer = [0_u8; 64 * 1024];
+    loop {
+        let left_read = left_file.read(&mut left_buffer)?;
+        let right_read = right_file.read(&mut right_buffer)?;
+        if left_read != right_read || left_buffer[..left_read] != right_buffer[..right_read] { return Ok(false); }
+        if left_read == 0 { return Ok(true); }
+    }
+}
+
+fn directories_match(left: &Path, right: &Path) -> io::Result<bool> {
+    let mut left_entries = fs::read_dir(left)?.collect::<Result<Vec<_>, _>>()?;
+    let mut right_entries = fs::read_dir(right)?.collect::<Result<Vec<_>, _>>()?;
+    left_entries.sort_by_key(|entry| entry.file_name());
+    right_entries.sort_by_key(|entry| entry.file_name());
+    if left_entries.len() != right_entries.len() { return Ok(false); }
+    for (left_entry, right_entry) in left_entries.iter().zip(right_entries.iter()) {
+        if left_entry.file_name() != right_entry.file_name() { return Ok(false); }
+        let left_type = left_entry.file_type()?;
+        let right_type = right_entry.file_type()?;
+        if left_type.is_dir() && right_type.is_dir() {
+            if !directories_match(&left_entry.path(), &right_entry.path())? { return Ok(false); }
+        } else if left_type.is_file() && right_type.is_file() {
+            if !files_match(&left_entry.path(), &right_entry.path())? { return Ok(false); }
+        } else {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn migrate_local_project_directories(source_root: &Path, documents_root: &Path) -> Result<(), String> {
+    fs::create_dir_all(documents_root).map_err(|error| format!("Could not access Documents/ARC Studio: {error}"))?;
+    let source_entries = match fs::read_dir(source_root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("Could not read the existing local projects: {error}")),
+    };
+    for entry in source_entries {
+        let entry = entry.map_err(|error| format!("Could not read an existing project folder: {error}"))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !is_project_directory_name(&name) { continue; }
+        let file_type = entry.file_type().map_err(|error| format!("Could not inspect project folder {name}: {error}"))?;
+        if !file_type.is_dir() { return Err(format!("The existing project path {name} is not a regular folder.")); }
+        let source = entry.path();
+        let destination = documents_root.join(&name);
+        if destination.exists() {
+            let matches = directories_match(&source, &destination).map_err(|error| format!("Could not compare the existing project copies for {name}: {error}"))?;
+            if !matches { return Err(format!("Both the app data folder and Documents/ARC Studio contain different data for {name}. Move one copy before starting ARC Studio.")); }
+            fs::remove_dir_all(&source).map_err(|error| format!("Could not remove the duplicate old project folder {name}: {error}"))?;
+            continue;
+        }
+        match fs::rename(&source, &destination) {
+            Ok(()) => continue,
+            Err(error) if matches!(error.raw_os_error(), Some(17 | 18)) => {},
+            Err(error) => return Err(format!("Could not move project {name} into Documents/ARC Studio: {error}")),
+        }
+        let temporary = documents_root.join(format!(".arc-migrating-{name}-{}", std::process::id()));
+        if temporary.exists() { fs::remove_dir_all(&temporary).map_err(|error| format!("Could not clear an interrupted project migration: {error}"))?; }
+        copy_directory_tree(&source, &temporary).map_err(|error| format!("Could not copy project {name} into Documents/ARC Studio: {error}"))?;
+        let matches = directories_match(&source, &temporary).map_err(|error| format!("Could not verify project {name} after copying: {error}"))?;
+        if !matches {
+            let _ = fs::remove_dir_all(&temporary);
+            return Err(format!("Project {name} did not verify after copying into Documents/ARC Studio. The original data was kept."));
+        }
+        fs::rename(&temporary, &destination).map_err(|error| {
+            let _ = fs::remove_dir_all(&temporary);
+            format!("Could not finish moving project {name} into Documents/ARC Studio: {error}")
+        })?;
+        fs::remove_dir_all(&source).map_err(|error| format!("Project {name} was copied successfully but its old copy could not be removed: {error}"))?;
+    }
+    if fs::read_dir(source_root).is_ok_and(|mut entries| entries.next().is_none()) {
+        let _ = fs::remove_dir(source_root);
+    }
+    Ok(())
+}
+
+fn local_documents_permission_error(message: String) -> String {
+    #[cfg(target_os = "macos")]
+    if message.to_lowercase().contains("permission denied") || message.to_lowercase().contains("operation not permitted") {
+        return format!("ARC_DOCUMENTS_PERMISSION_REQUIRED:{message}");
+    }
+    message
+}
+
 fn start_studio_server<R: tauri::Runtime>(
     app: &mut tauri::App<R>,
 ) -> Result<String, Box<dyn std::error::Error>> {
@@ -1327,6 +1491,11 @@ fn start_studio_server<R: tauri::Runtime>(
 
     let data_dir = node_compatible_path(&app.path().app_data_dir()?);
     let config_dir = node_compatible_path(&app.path().app_config_dir()?);
+    let documents_directory = app.path().document_dir()
+        .map_err(|error| io::Error::other(local_documents_permission_error(error.to_string())))?;
+    let documents_root = node_compatible_path(&documents_directory).join("ARC Studio");
+    migrate_local_project_directories(&data_dir.join("projects"), &documents_root)
+        .map_err(|message| io::Error::other(local_documents_permission_error(message)))?;
     let logs_dir = data_dir.join("logs");
     fs::create_dir_all(&data_dir)?;
     fs::create_dir_all(&config_dir)?;
@@ -1353,6 +1522,7 @@ fn start_studio_server<R: tauri::Runtime>(
         .current_dir(&app_root)
         .env("ARC_DESKTOP_MODE", "1")
         .env("ARC_DATA_DIR", &data_dir)
+        .env("ARC_PROJECTS_DIR", &documents_root)
         .env("ARC_LOG_DIR", &logs_dir)
         .env("ARC_ENV_FILE", config_dir.join("studio.env"))
         .env("ARC_BOT_TOKEN_ENCRYPTION_KEY", bot_token_key)
