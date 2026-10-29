@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dataDir } from '../storage.js';
 import { NodeDefinitions, registerAdapterNodeDefinitions } from './NodeRegistry.js';
+import { FUNCTION_ARGUMENT_VALUE_TYPES, functionArgumentPinId, functionInputPinType, getFunctionGraphArguments, getFunctionInputArguments } from './FunctionGraphContract.js';
 import { inspectAdapterBytes, runWasmAdapter } from './WasmAdapterRuntime.js';
 import { CryptoEngine } from '../security/CryptoEngine.js';
 import { serverConfig } from '../config.js';
@@ -736,14 +737,18 @@ function validatePack(pack, entry) {
       nodeIds.add(node.id);
       nodesById.set(node.id, node);
       if (node.type === 'function_input') {
-        const parameterId = node.data?.paramId;
-        if (typeof parameterId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(parameterId) || parameterIds.has(parameterId)) {
-          throw new Error(`Function ${functionId} contains an invalid or duplicate input ID.`);
+        for (const argument of getFunctionInputArguments(node)) {
+          if (typeof argument.paramId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(argument.paramId) || parameterIds.has(argument.paramId)) {
+            throw new Error(`Function ${functionId} contains an invalid or duplicate input ID.`);
+          }
+          parameterIds.add(argument.paramId);
+          if (!FUNCTION_ARGUMENT_VALUE_TYPES.includes(argument.valueType)) {
+            throw new Error(`Function ${functionId} contains an unsupported function value type.`);
+          }
         }
-        parameterIds.add(parameterId);
       }
       if (node.type === 'function_return') returnCount += 1;
-      if ((node.type === 'function_input' || node.type === 'function_return') && !['string', 'number', 'boolean'].includes(node.data?.valueType || 'number')) {
+      if (node.type === 'function_return' && !['string', 'number', 'boolean'].includes(node.data?.valueType || 'number')) {
         throw new Error(`Function ${functionId} contains an unsupported function value type.`);
       }
       if (node.type === 'function_call') {
@@ -765,7 +770,10 @@ function validatePack(pack, entry) {
       };
       const pinFor = (node, direction) => {
         const called = calledFunction(node);
-        if (node.type === 'function_input' && direction === 'outputs' && connection.sourcePinId === 'value') return { id: 'value', type: node.data?.valueType || 'number' };
+        if (node.type === 'function_input' && direction === 'outputs') {
+          const argument = getFunctionInputArguments(node).find((item) => item.legacy ? connection.sourcePinId === 'value' : functionArgumentPinId(item) === connection.sourcePinId);
+          if (argument) return { id: connection.sourcePinId, type: functionInputPinType(argument) };
+        }
         if (node.type === 'function_return' && direction === 'inputs' && connection.targetPinId === 'value') return { id: 'value', type: node.data?.valueType || 'number' };
         if (node.type === 'function_call' && called) {
           if (direction === 'outputs' && connection.sourcePinId === 'result') {
@@ -773,8 +781,8 @@ function validatePack(pack, entry) {
             return result ? { id: 'result', type: result.data?.valueType || 'number' } : null;
           }
           if (direction === 'inputs') {
-            const argument = called.graph.nodes.find((candidate) => `arg_${candidate.data?.paramId || candidate.id}` === connection.targetPinId);
-            if (argument?.type === 'function_input') return { id: connection.targetPinId, type: argument.data?.valueType || 'number' };
+            const argument = getFunctionGraphArguments(called.graph).find((candidate) => functionArgumentPinId(candidate) === connection.targetPinId);
+            if (argument) return { id: connection.targetPinId, type: functionInputPinType(argument) };
           }
         }
         const definition = NodeDefinitions[node.type];
