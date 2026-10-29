@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readdir } from 'node:fs/promises';
 import test, { beforeEach } from 'node:test';
 import { BuiltInNodeDefinitions, BundledNodeTypes, createDefaultNodeData, getAvailableNodeDefinitions, getNodeRegistryDefinitions, isNodeTypeSupported, registerPluginNodeDefinitions, setWorkspaceNodeDefinitions } from '../../studio-client/src/components/nodes/nodeDefinitions.js';
+import { getNodeRegistryRequiredFeatures, NODE_REGISTRY_PROTOCOL_VERSION } from '../src/engine/NodeRegistryContract.js';
 import { NodeDefinitions, PinTypes } from '../src/engine/NodeRegistry.js';
 beforeEach(() => setWorkspaceNodeDefinitions(Object.values(NodeDefinitions)));
 //
@@ -166,11 +167,19 @@ test('the bundled editor follows workspace schemas and safely falls back for new
     }]);
     assert.equal(BuiltInNodeDefinitions.find((definition) => definition.type === serverPluginDefinition.type).label, 'Server Plugin Node');
 
-    assert.equal(getNodeRegistryDefinitions({ schemaVersion: 1, definitions: { action_send_message: NodeDefinitions.action_send_message } }).length, 1);
-    assert.equal(getNodeRegistryDefinitions({ schemaVersion: 2, definitions: NodeDefinitions }), null);
+    const registry = {
+      registryProtocolVersion: NODE_REGISTRY_PROTOCOL_VERSION,
+      schemaVersion: 1,
+      categories: {},
+      definitions: { action_send_message: NodeDefinitions.action_send_message },
+      requiredFeatures: getNodeRegistryRequiredFeatures([NodeDefinitions.action_send_message]),
+      registryRevision: 'a'.repeat(64)
+    };
+    assert.equal(getNodeRegistryDefinitions(registry).length, 1);
+    assert.equal(getNodeRegistryDefinitions({ ...registry, schemaVersion: 2 }).length, 1);
     assert.throws(() => getNodeRegistryDefinitions({
       definitions: [{ type: 'invalid', inputs: [{ id: 1, label: 'Bad pin', type: 'string' }], outputs: [] }]
-    }), /invalid node registry/i);
+    }), /incompatible node registry/i);
   } finally {
     setWorkspaceNodeDefinitions(null);
   }
