@@ -557,6 +557,12 @@ body.is-resizing-sidebar, body.is-resizing-sidebar * { cursor: ew-resize !import
 .canvas-collaborator-cursor:hover, .canvas-collaborator-offscreen:hover { opacity: .68; }
 .canvas-collaborator-cursor > svg { margin: -2px 0 0 -2px; fill: color-mix(in srgb, var(--collaborator-color) 26%, transparent); }
 .canvas-collaborator-cursor > span { margin: 12px 0 0 -1px; padding: 2px 6px; border-radius: 4px; color: #101318; background: var(--collaborator-color); font: 600 calc(10px * var(--arc-font-scale, 1))/1.4 Inter, system-ui, sans-serif; white-space: nowrap; }
+.canvas-collaborator-cursor > .canvas-chat-typing-indicator { grid-column: 2; display: flex; width: max-content; align-items: center; gap: 3px; margin: 1px 0 0 -1px; padding: 5px 7px; border: 1px solid color-mix(in srgb, var(--collaborator-color) 48%, var(--line)); border-radius: 10px; color: var(--collaborator-color); background: color-mix(in srgb, var(--panel-raised) 94%, var(--collaborator-color) 6%); }
+.canvas-chat-typing-indicator i { width: 4px; height: 4px; border-radius: 50%; background: currentColor; animation: canvas-chat-typing 900ms ease-in-out infinite; }
+.canvas-chat-typing-indicator i:nth-child(2) { animation-delay: 120ms; }
+.canvas-chat-typing-indicator i:nth-child(3) { animation-delay: 240ms; }
+@keyframes canvas-chat-typing { 0%, 60%, 100% { opacity: .42; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
+@media (prefers-reduced-motion: reduce) { .canvas-chat-typing-indicator i { animation: none; opacity: .8; } }
 .canvas-collaborator-cursor > small { grid-column: 2; margin: -2px 0 0 -1px; padding: 1px 5px; border-radius: 0 0 4px 4px; color: var(--text); background: color-mix(in srgb, var(--collaborator-color) 26%, var(--panel-raised)); font-size: calc((9px) * var(--arc-font-scale, 1)); white-space: nowrap; }
 .canvas-collaborator-cursor.is-text { cursor: text; }
 .canvas-collaborator-cursor.is-cut { cursor: crosshair; }
@@ -787,6 +793,10 @@ body.is-resizing-sidebar .slash-command-studio { transition: none !important; }
 .node-attachment-item span { flex: 1; overflow: hidden; color: var(--text-secondary); font-size: calc((8px) * var(--arc-font-scale, 1)); text-overflow: ellipsis; white-space: nowrap; }
 .node-attachment-item button { display: grid; width: 20px; height: 20px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 4px; color: var(--muted); background: transparent; cursor: pointer; }
 .node-attachment-item button:hover { color: var(--danger); background: var(--panel-hover); }
+.node-attachment-item .node-attachment-open-image { width: 28px; height: 28px; overflow: hidden; border: 1px solid var(--line-soft); border-radius: 4px; color: var(--muted); background: var(--chrome); }
+.node-attachment-open-image img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.node-attachment-item .node-attachment-open-image:hover { border-color: var(--accent); color: var(--text); background: var(--chrome); }
+.node-attachment-item .node-attachment-remove:hover { color: var(--danger); background: var(--panel-hover); }
 .node-attachment-picker .node-attachment-error { color: var(--danger); }
 .node-attachment-url-form { display: flex; flex-direction: column; gap: 5px; padding: 6px; border: 1px solid var(--line); border-radius: 5px; background: var(--panel); }
 .node-attachment-url-form input { width: 100%; min-width: 0; padding: 6px 7px; border: 1px solid var(--line); border-radius: 4px; color: var(--text); background: var(--field); font: calc(8px * var(--arc-font-scale, 1)) "DM Mono", ui-monospace, monospace; }
@@ -3068,7 +3078,7 @@ body.is-resizing-sidebar .popup-modal-studio { transition: none !important; }
 .discord-gallery-lightbox-close { position: absolute; top: 18px; right: 18px; }
 .discord-gallery-lightbox-close:hover, .discord-gallery-lightbox-nav:hover { background: rgba(75, 77, 84, .94); }
 .discord-gallery-lightbox-content { display: grid; max-width: 100%; max-height: 100%; justify-items: center; gap: 12px; margin: 0; grid-column: 2; }
-.discord-gallery-lightbox-image-frame { display: grid; max-width: 100%; max-height: calc(100vh - 150px); place-items: center; overflow: hidden; border-radius: 5px; cursor: zoom-in; }
+.discord-gallery-lightbox-image-frame { display: grid; max-width: 100%; max-height: calc(100vh - 150px); place-items: center; overflow: hidden; padding: 0; border: 0; border-radius: 5px; background: transparent; cursor: zoom-in; }
 .discord-gallery-lightbox-image-frame.is-zoomed { cursor: zoom-out; }
 .discord-gallery-lightbox-image-frame.is-zoomed { position: fixed; z-index: 2; inset: 0; width: 100vw; width: 100dvw; height: 100vh; height: 100dvh; max-width: none; max-height: none; border-radius: 0; background: rgba(8, 9, 12, .96); }
 .discord-gallery-lightbox-image-frame:focus-visible { outline: 2px solid #b78aff; outline-offset: 3px; }
