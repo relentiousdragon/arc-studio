@@ -52,6 +52,7 @@ export const NodeDefinitions = Object.fromEntries(nodeDefinitions.map((definitio
 }]));
 const builtInNodeTypes = new Set(Object.keys(NodeDefinitions));
 let registryPayloadCache = null;
+let failedNodeTypes = [];
 
 export function assertValidNodeDefinitions(definitions = NodeDefinitions) {
   const issues = validateNodeDefinitions(definitions);
@@ -69,10 +70,19 @@ export function getNodeRegistryPayload() {
     schemaVersion: NODE_SCHEMA_VERSION,
     categories: NodeCategories,
     definitions: NodeDefinitions,
+    failedNodeTypes,
     requiredFeatures: getNodeRegistryRequiredFeatures(Object.values(NodeDefinitions))
   };
   registryPayloadCache = Object.freeze({ ...registry, registryRevision: createHash('sha256').update(stableJson(registry)).digest('hex') });
   return registryPayloadCache;
+}
+
+export function registerFailedNodeTypes(types = []) {
+  const nextTypes = [...new Set((Array.isArray(types) ? types : [])
+    .filter((type) => typeof type === 'string' && type.trim() && !NodeDefinitions[type]))].sort();
+  if (nextTypes.length === failedNodeTypes.length && nextTypes.every((type, index) => type === failedNodeTypes[index])) return;
+  failedNodeTypes = nextTypes;
+  registryPayloadCache = null;
 }
 
 const adapterNodeTypes = new Set();
