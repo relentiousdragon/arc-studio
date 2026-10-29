@@ -3,7 +3,7 @@ import test from 'node:test';
 import { executeDiscordInteractionNode, isDiscordInteractionNodeType } from '../src/engine/nodes/runtime/discord_interactions.js';
 import { executeDiscordMessageNode, isDiscordMessageNodeType } from '../src/engine/nodes/runtime/discord_messages.js';
 //
-function createMessageHarness(type, data = {}, rest = {}) {
+function createMessageHarness(type, data = {}, rest = {}, options = {}) {
   const outputs = new Map();
   const logs = [];
   return {
@@ -15,6 +15,7 @@ function createMessageHarness(type, data = {}, rest = {}) {
       resolveFiles: (files) => files,
       buildEmbed: () => data.builtEmbed,
       rest,
+      simulation: options.simulation !== false,
       setOutput: (pinId, value) => outputs.set(pinId, value),
       log: (message) => logs.push(message)
     })
@@ -42,6 +43,7 @@ function createInteractionHarness(type, data = {}, options = {}) {
       resolveFiles: (files) => files,
       buildEmbed: () => data.builtEmbed,
       rest: options.rest || {},
+      simulation: options.simulation !== false,
       log: (message) => logs.push(message),
       state,
       eventPayload,
@@ -115,6 +117,15 @@ test('message runtime edits messages while preserving empty content and missing-
   assert.equal(isDiscordMessageNodeType('action_reply_interaction'), false);
 });
 
+test('message actions reject invalid channel IDs resolved from their inputs', async () => {
+  const harness = createMessageHarness('action_send_message', {
+    channel_id: 'not-a-discord-id',
+    content: 'Hello'
+  }, { createMessage: async () => assert.fail('Invalid channel IDs must not reach REST.') }, { simulation: false });
+
+  await assert.rejects(harness.execute(), /Channel ID must be a valid positive Discord snowflake ID/);
+});
+
 test('interaction reply creates one initial response with ephemeral flags and resolved payload', async () => {
   const calls = [];
   const harness = createInteractionHarness('action_reply_interaction', {
@@ -142,7 +153,7 @@ test('interaction reply creates one initial response with ephemeral flags and re
       files: [{ name: 'file.txt' }],
       flags: 64
     }
-  }]]);
+  }, { withResponse: true }]]);
   assert.equal(harness.state.acknowledged, true);
   assert.equal(harness.state.pending, null);
 
@@ -190,7 +201,7 @@ test('defer reply and update retain acknowledgement state and reply after defer 
 
 test('interaction modal validates initial response state and resets acknowledgement on REST failure', async () => {
   const call = [];
-  const modal = { custom_id: 'form', title: 'Form', components: [{ type: 18, component: { custom_id: 'field' } }] };
+  const modal = { custom_id: 'form', title: 'Form', components: [{ type: 18, label: 'Field', component: { type: 4, custom_id: 'field' } }] };
   const harness = createInteractionHarness('action_show_modal', {
     interaction_id: 'interaction-3',
     interaction_token: 'token-3',
@@ -232,7 +243,7 @@ test('autocomplete filters and converts choice values for the focused option', a
     },
     nodes: [{
       type: 'event_slash_command',
-      data: { commandName: 'fruit', options: [{ name: 'fruit', autocomplete: true, dynamicAutocomplete: true }] }
+      data: { commandName: 'fruit', options: [{ name: 'fruit', type: 3, autocomplete: true, dynamicAutocomplete: true }] }
     }],
     rest: { createInteractionResponse: async (...args) => calls.push(args) }
   });
@@ -272,4 +283,22 @@ test('interaction edit updates the original response and supports missing creden
   const missing = createInteractionHarness('action_edit_interaction_reply');
   await missing.execute();
   assert.deepEqual(missing.logs, ['[Edit Interaction Reply] Error: Missing Application ID']);
+});
+
+test('interaction actions validate resolved IDs and token values outside simulation', async () => {
+  const invalidId = createInteractionHarness('action_reply_interaction', {
+    application_id: '123456789012345678',
+    interaction_id: 'interaction-id',
+    interaction_token: 'valid-token',
+    content: 'Hello'
+  }, { simulation: false });
+  await assert.rejects(invalidId.execute(), /Interaction ID must be a valid positive Discord snowflake ID/);
+
+  const invalidToken = createInteractionHarness('action_reply_interaction', {
+    application_id: '123456789012345678',
+    interaction_id: '123456789012345678',
+    interaction_token: 'token with spaces',
+    content: 'Hello'
+  }, { simulation: false });
+  await assert.rejects(invalidToken.execute(), /Interaction token must be a valid Discord interaction token/);
 });
