@@ -682,6 +682,7 @@ export function App() {
   const [updateNotice, setUpdateNotice] = useState(null);
   const [updateInstallPromptOpen, setUpdateInstallPromptOpen] = useState(false);
   const [installUpdateConfirmOpen, setInstallUpdateConfirmOpen] = useState(false);
+  const [updatePermissionHelpOpen, setUpdatePermissionHelpOpen] = useState(false);
   const [updateInstalling, setUpdateInstalling] = useState(false);
   const updateRef = useRef(null);
   const stableAutoDownloadVersionRef = useRef('');
@@ -6316,6 +6317,11 @@ export function App() {
       }
     } catch (error) {
       const message = typeof error === 'string' ? error.trim() : typeof error?.message === 'string' ? error.message.trim() : '';
+      if (message.startsWith('ARC_UPDATE_LOCATION_PERMISSION_REQUIRED:')) {
+        setUpdatePermissionHelpOpen(true);
+        arcEvents.emit('toast:notify', { id: 'arc-studio-update-progress', title: 'Update needs folder access', message: 'macOS did not allow ARC Studio to replace the app in its current location.', type: 'error', duration: 10000, dismissible: true });
+        return;
+      }
       const accessHelp = /permission denied|operation not permitted|access denied/i.test(message)
         ? ' Move ARC Studio.app out of Documents and the source repository, place it in ~/Applications or /Applications, then try again.'
         : '';
@@ -7113,6 +7119,20 @@ export function App() {
         footer={<><Button variant="secondary" disabled={updateInstalling} onClick={() => setInstallUpdateConfirmOpen(false)}>Cancel</Button><Button icon={Download} loading={updateInstalling} disabled={updateInstalling} onClick={handleInstallStagedUpdate}>Install and restart</Button></>}
       >
         <p className="close-graph-copy">Any unsaved changes in the editor will be lost when ARC Studio closes. Save your open graphs before installing.</p>
+      </Modal>
+      <Modal
+        isOpen={updatePermissionHelpOpen}
+        onClose={() => setUpdatePermissionHelpOpen(false)}
+        title="ARC Studio needs folder access"
+        subtitle="The update could not replace the app in its current location."
+        icon={AlertCircle}
+        footer={<><Button variant="secondary" onClick={() => setUpdatePermissionHelpOpen(false)}>OK</Button><Button icon={SlidersHorizontal} onClick={() => {
+          const invoke = window.__TAURI_INTERNALS__?.invoke;
+          invoke?.('open_macos_files_folders_settings').catch((error) => arcEvents.emit('toast:notify', { title: 'Could not open System Settings', message: String(error?.message || error), type: 'error', duration: 8000 }));
+          setUpdatePermissionHelpOpen(false);
+        }}>Open System Settings</Button></>}
+      >
+        <p className="close-graph-copy">Allow ARC Studio to access its current folder in System Settings under Privacy &amp; Security, then try the update again. If ARC Studio is in a system owned Applications folder, move it to your user Applications folder or approve the macOS administrator prompt.</p>
       </Modal>
       <Modal
         isOpen={Boolean(releaseNotesNotice) && !updateNotice && !appUpdate && !downloadedUpdateReady && !updateInstallPromptOpen}
