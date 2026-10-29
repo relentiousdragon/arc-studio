@@ -5,7 +5,7 @@ import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dataDir } from '../storage.js';
-import { NodeDefinitions, registerAdapterNodeDefinitions } from './NodeRegistry.js';
+import { NodeDefinitions, registerAdapterNodeDefinitions, registerFailedNodeTypes } from './NodeRegistry.js';
 import { FUNCTION_ARGUMENT_VALUE_TYPES, functionArgumentPinId, functionInputPinType, getFunctionGraphArguments, getFunctionInputArguments } from './FunctionGraphContract.js';
 import { inspectAdapterBytes, runWasmAdapter } from './WasmAdapterRuntime.js';
 import { CryptoEngine } from '../security/CryptoEngine.js';
@@ -520,13 +520,17 @@ function validateAdapterManifest(manifest) {
 
 function registerInstalledAdapters() {
   const definitions = [];
+  const failedNodeTypes = new Set();
+  const markFailed = (nodes = []) => {
+    for (const node of nodes) if (typeof node?.type === 'string' && node.type.trim()) failedNodeTypes.add(node.type);
+  };
   for (const plugin of Object.values(readInstalled())) {
     if (plugin.kind === 'host-adapter' && LOCAL_HOST_ADAPTERS.has(plugin.id)) {
       const bundled = LOCAL_HOST_ADAPTERS.get(plugin.id);
       try {
         assertArcStudioCompatible(plugin.name || plugin.id, plugin.minArcStudioVersion || bundled.minArcStudioVersion);
         definitions.push(...bundled.nodes);
-      } catch { /* */ }
+      } catch { markFailed(plugin.nodes || bundled.nodes); }
       continue;
     }
     if (plugin.kind === 'host-adapter') {
@@ -535,8 +539,8 @@ function registerInstalledAdapters() {
         if (adapter) {
           assertArcStudioCompatible(adapter.name, adapter.minArcStudioVersion);
           definitions.push(...adapter.nodes);
-        }
-      } catch { /* */ }
+        } else markFailed(plugin.nodes);
+      } catch { markFailed(plugin.nodes); }
       continue;
     }
     if (plugin.kind !== 'wasm-adapter') continue;
@@ -546,9 +550,10 @@ function registerInstalledAdapters() {
       const validated = validateAdapterManifest(manifest);
       assertArcStudioCompatible(validated.name, validated.minArcStudioVersion);
       definitions.push(...validated.nodes);
-    } catch { /* */ }
+    } catch { markFailed(plugin.nodes); }
   }
   registerAdapterNodeDefinitions(definitions);
+  registerFailedNodeTypes([...failedNodeTypes]);
 }
 
 registerInstalledAdapters();
