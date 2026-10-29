@@ -1131,7 +1131,7 @@ export function NodeCanvas({
           { id: 'exec', label: 'Exec', type: 'exec' },
           ...getFunctionInputArguments(node).map((argument) => ({
             id: functionArgumentPinId(argument), label: argument.name, type: functionInputPinType(argument),
-            ...(argument.valueType === 'channel_id' || argument.valueType === 'interaction_token' ? { semanticType: argument.valueType } : {})
+            ...(argument.valueType.endsWith('_id') || argument.valueType === 'interaction_token' ? { semanticType: argument.valueType } : {})
           }))
         ] : [
           { id: 'exec', label: 'Exec', type: 'exec' },
@@ -1157,7 +1157,7 @@ export function NodeCanvas({
         ...definition,
         inputs: [
           { id: 'exec', label: 'Exec', type: 'exec' },
-          ...params.map((param) => ({ id: functionArgumentPinId(param), label: `${param.name || 'Input'}${param.optional ? ' (optional)' : ''}`, type: functionInputPinType(param), defaultValue: param.defaultValue ?? defaultForType(functionInputPinType(param)), ...(param.valueType === 'channel_id' || param.valueType === 'interaction_token' ? { semanticType: param.valueType } : {}) }))
+          ...params.map((param) => ({ id: functionArgumentPinId(param), label: `${param.name || 'Input'}${param.optional ? ' (optional)' : ''}`, type: functionInputPinType(param), defaultValue: param.defaultValue ?? defaultForType(functionInputPinType(param)), ...(param.valueType.endsWith('_id') || param.valueType === 'interaction_token' ? { semanticType: param.valueType } : {}) }))
         ],
         outputs: [
           { id: 'exec', label: 'Exec', type: 'exec' },
