@@ -13,8 +13,9 @@ export function CommandPalette({ isOpen, graphs = [], definitions = [], plugins 
     const nodeItems = definitions.filter((node) => !node.hidden).map((node) => ({
       id: `add:${node.type}`, kind: 'add', group: node.pluginAdapter ? 'Plugin nodes' : 'Nodes', label: node.label,
       detail: `${node.category || 'Node'}${node.pluginName ? ` · ${node.pluginName}` : ''}`,
+      disabled: Boolean(node.loadFailed),
       searchFields: [node.label, node.description, node.category, node.pluginName, node.type.replaceAll('_', ' '), ...(node.inputs || []).map((pin) => pin.label), ...(node.outputs || []).map((pin) => pin.label)],
-      icon: node, onSelect: () => onAddNode?.(node.type)
+      icon: node, onSelect: () => { if (!node.loadFailed) onAddNode?.(node.type); }
     }));
     const graphItems = graphs.map((graph) => ({
       id: `graph:${graph.id}`, kind: 'graph', group: 'Graphs', label: graph.name || 'Untitled graph',
@@ -26,6 +27,7 @@ export function CommandPalette({ isOpen, graphs = [], definitions = [], plugins 
       return {
         id: `node:${graph.id}:${node.id}`, kind: 'instance', group: 'Nodes in graphs', label: node.label || definition?.label || node.type,
         detail: `${graph.name || 'Untitled graph'} · ${definition?.label || node.type}`,
+        disabled: !definition || Boolean(definition.loadFailed),
         searchFields: [node.label, node.type.replaceAll('_', ' '), definition?.label, definition?.description, graph.name, ...(definition?.inputs || []).map((pin) => pin.label), ...(definition?.outputs || []).map((pin) => pin.label)],
         graphId: graph.id, nodeId: node.id, icon: definition || null, onSelect: () => onGoToNode?.(graph.id, node.id)
       };
@@ -85,7 +87,7 @@ export function CommandPalette({ isOpen, graphs = [], definitions = [], plugins 
       if (event.key === 'Escape') { event.preventDefault(); onClose?.(); }
       if (event.key === 'ArrowDown') { event.preventDefault(); setActiveIndex((value) => Math.min(value + 1, items.length - 1)); }
       if (event.key === 'ArrowUp') { event.preventDefault(); setActiveIndex((value) => Math.max(value - 1, 0)); }
-      if (event.key === 'Enter' && items[activeIndex]) { event.preventDefault(); items[activeIndex].onSelect?.(); onClose?.(); }
+      if (event.key === 'Enter' && items[activeIndex] && !items[activeIndex].disabled) { event.preventDefault(); items[activeIndex].onSelect?.(); onClose?.(); }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
@@ -104,7 +106,7 @@ export function CommandPalette({ isOpen, graphs = [], definitions = [], plugins 
           {group.items.map((item) => {
             index += 1;
             const itemIndex = index;
-            return <button key={item.id} type="button" role="option" aria-selected={activeIndex === itemIndex} className={`command-palette-result ${activeIndex === itemIndex ? 'is-active' : ''}`} onMouseEnter={() => setActiveIndex(itemIndex)} onClick={() => { item.onSelect?.(); onClose?.(); }}>
+            return <button key={item.id} type="button" role="option" aria-selected={activeIndex === itemIndex} className={`command-palette-result ${activeIndex === itemIndex ? 'is-active' : ''} ${item.disabled ? 'is-node-load-failed' : ''}`} disabled={Boolean(item.disabled)} title={item.disabled ? 'Failed to load this node' : undefined} onMouseEnter={() => setActiveIndex(itemIndex)} onClick={() => { item.onSelect?.(); onClose?.(); }}>
               <span className={`command-palette-item-icon ${item.kind === 'add' ? 'is-node' : ''}`}>
                 {item.icon ? <NodeTypeIcon type={item.icon.type} color={item.icon.color} size={15} /> : item.kind === 'plugin' ? <Puzzle size={15} /> : <Workflow size={15} />}
               </span>
