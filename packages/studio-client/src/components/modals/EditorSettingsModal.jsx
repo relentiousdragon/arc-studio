@@ -256,8 +256,7 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
       {!networkOnline && <small className="settings-shortcut-hint">Live collaboration pauses while this device is offline. The workspace keeps the last graph state it received.</small>}
       {externalWorkspace && canManageClientAccess && <>
         <div className="settings-section-heading"><span>Client access</span></div>
-        <Toggle label="Allow unknown clients" description="Allows other compatible clients to connect. The minimum protocol version and account authentication are still required." checked={allowUnknownClients} disabled={clientAccessLoading || clientAccessSaving || !networkOnline} onChange={saveClientAccess} />
-        <div className="client-access-security-note" role="note">Browser origin checks block cross site browser access.</div>
+        <Toggle label="Allow unknown clients" description="Allows other compatible clients to connect." checked={allowUnknownClients} disabled={clientAccessLoading || clientAccessSaving || !networkOnline} onChange={saveClientAccess} />
         {clientAccessMessage && <small className="settings-shortcut-hint" role="status">{clientAccessMessage}</small>}
       </>}
       <div className="settings-section-heading"><span>Automatic snapshots</span></div>
