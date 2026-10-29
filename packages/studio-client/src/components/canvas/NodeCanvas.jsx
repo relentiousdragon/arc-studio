@@ -17,6 +17,7 @@ const NODE_WIDTH = 248;
 const EMPTY_PIN_SET = new Set();
 const EMPTY_TEMPLATE_PREVIEW_VALUES = Object.freeze({});
 const EMPTY_REMOTE_NODE_STATE = Object.freeze({});
+const warnedFailedNodeTypes = new Set();
 const COLLABORATOR_COLORS = ['#63b3ed', '#f687b3', '#68d391', '#f6ad55', '#b794f4', '#4fd1c5', '#fc8181', '#90cdf4', '#fbd38d', '#9ae6b4'];
 const LARGE_GRAPH_NODE_LIMIT = 48;
 const LARGE_GRAPH_WIRE_LIMIT = 64;
@@ -265,7 +266,7 @@ function getWireCutSegments(pathElement, event) {
 export function NodeCanvas({
   nodes: suppliedNodes = [], connections: suppliedConnections = [], graphId = '', projectId = '', focusRequest = null, followRequest = null, onFollowComplete, activePulseNodeIds = [], debugStep = null, onDebugAction, settings = {}, isLocked = false, canvasLocked = isLocked, canWriteGraphs = true, desktopMode = false, shortcutPlatform = 'windows', authToken = '', graphName = 'Untitled graph',
   tagGroups = [], notes = [], arrows = [], transientArrows = [], currentUser = null, projectOwnerId = '', noteEditLocks = {}, collaborationOnline = false, collaborationReady = false, collaborationMotionSupported = false, collaborationClientId = '', onRequestNoteEditLock, onReleaseNoteEditLock, onNotesChange, onArrowsChange, onCanvasArrowAction, onTagGroupsChange, onRequestCreateTagGroup, onRequestEditTagGroup, onRenameNode,
-  graphVariables = [], functionGraphs = [], callableGraphs = functionGraphs, appEmojis = [], nodeDefinitions = BuiltInNodeDefinitions, onNodesChange, onConnectionsChange, onOpenPalette, onViewportCenterChange, onSelectedNodeChange, onSelectedNodeCountChange, onOpenLibrary, onOpenVariables,
+  graphVariables = [], functionGraphs = [], callableGraphs = functionGraphs, appEmojis = [], nodeDefinitions = BuiltInNodeDefinitions, nodeDefinitionsReady = false, onNodesChange, onConnectionsChange, onOpenPalette, onViewportCenterChange, onSelectedNodeChange, onSelectedNodeCountChange, onOpenLibrary, onOpenVariables,
   onHistoryGroupStart, onHistoryGroupEnd, onNodeDrop, onSaveNodePrefab, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph, remoteActions = [], onCollaborationAction,
   graphChatEnabled = false, graphChatBubbles = [], onSendGraphChat, onMoveGraphChatBubble
 }) {
@@ -953,6 +954,15 @@ export function NodeCanvas({
   }, [nodes, selectedNodeId, selectedNodeIds]);
 
   const definitionsByType = useMemo(() => new Map(nodeDefinitions.map((definition) => [definition.type, definition])), [nodeDefinitions]);
+  useEffect(() => {
+    if (!nodeDefinitionsReady) return;
+    for (const type of new Set(nodes.map((node) => node.type))) {
+      if ((!definitionsByType.has(type) || definitionsByType.get(type)?.loadFailed) && !warnedFailedNodeTypes.has(type)) {
+        warnedFailedNodeTypes.add(type);
+        console.warn(`Failed to load node "${type}".`);
+      }
+    }
+  }, [definitionsByType, nodeDefinitionsReady, nodes]);
   const modalFieldOptions = useMemo(() => nodes.flatMap((modalNode) => {
     if (modalNode.type !== 'build_modal') return [];
     const modal = modalNode.data?.modal || {};
@@ -3493,16 +3503,18 @@ const previewOutput = (node, outputId, seen = new Set()) => {
           const remotePosition = remoteNodePositionById.get(node.id);
           const localPosition = localNodePositionById?.get(node.id);
           const displayPosition = localPosition || remotePosition || node;
+          const nodeLoadFailed = nodeDefinitionsReady && (!definition || definition.loadFailed);
           return (
             <div
-              className={`node-position ${shakingNodeId === node.id ? 'is-shaking' : ''} ${isSelected ? 'is-selected' : ''} ${isFindMatch ? 'is-canvas-find-match' : ''} ${isFindCurrent ? 'is-canvas-find-current' : ''} ${remoteOwner ? 'is-collaborator-active' : ''} ${remoteVisual.dragging ? 'is-collaborator-dragging' : ''} ${remotePosition ? 'is-remote-moving' : ''} ${remoteSelection ? 'is-collaborator-selected' : ''}`}
+              className={`node-position ${shakingNodeId === node.id ? 'is-shaking' : ''} ${isSelected ? 'is-selected' : ''} ${isFindMatch ? 'is-canvas-find-match' : ''} ${isFindCurrent ? 'is-canvas-find-current' : ''} ${remoteOwner ? 'is-collaborator-active' : ''} ${remoteVisual.dragging ? 'is-collaborator-dragging' : ''} ${remotePosition ? 'is-remote-moving' : ''} ${remoteSelection ? 'is-collaborator-selected' : ''} ${nodeLoadFailed ? 'is-node-load-failed' : ''}`}
               key={node.id}
               style={{ transform: `translate3d(${displayPosition.x}px, ${displayPosition.y}px, 0)`, zIndex: isSelected ? 16 : isWireRelated ? 14 : undefined, '--collaborator-color': remoteOwner?.color }}
-              onPointerDown={(event) => beginNodeDrag(event, node)}
+              onPointerDown={nodeLoadFailed ? undefined : (event) => beginNodeDrag(event, node)}
             >
               <CanvasNode
                 node={node}
                 definition={definition}
+                loadFailed={nodeLoadFailed}
                 authToken={authToken}
                 connectedInputIds={connectedInputIds.get(node.id) || EMPTY_PIN_SET}
                 componentsV2SourceConnected={Boolean(connectionByNodePin.incoming.get(node.id)?.get('components') && nodeById.get(connectionByNodePin.incoming.get(node.id).get('components').sourceNodeId)?.type === 'build_components')}
