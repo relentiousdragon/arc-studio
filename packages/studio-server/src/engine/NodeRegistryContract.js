@@ -151,6 +151,12 @@ export function validateNodeRegistryPayload(registry, supportedFeatures = null) 
     addIssue(issues, 'registryProtocolVersion', `unsupported registry protocol ${String(registry.registryProtocolVersion)}`);
   }
   if (!Number.isInteger(registry.schemaVersion) || registry.schemaVersion < 1) addIssue(issues, 'schemaVersion', 'expected a positive integer');
+  if (registry.failedNodeTypes !== undefined && (!Array.isArray(registry.failedNodeTypes)
+    || registry.failedNodeTypes.length > 500
+    || registry.failedNodeTypes.some((type) => typeof type !== 'string' || !type.trim() || type.length > 128)
+    || new Set(registry.failedNodeTypes).size !== registry.failedNodeTypes.length)) {
+    addIssue(issues, 'failedNodeTypes', 'expected a unique list of at most 500 non empty node type IDs');
+  }
   if (!registry.categories || typeof registry.categories !== 'object' || Array.isArray(registry.categories)) addIssue(issues, 'categories', 'expected a category map');
   else if (Object.values(registry.categories).some((category) => typeof category !== 'string' || !category.trim())) addIssue(issues, 'categories', 'category values must be non empty strings');
   const definitions = Array.isArray(registry.definitions)
