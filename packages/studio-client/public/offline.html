@@ -20,7 +20,8 @@
       :root[data-theme="light"] { color-scheme: light; --page: #f1f3f5; --panel: #fff; --line: #dce1e7; --text: #252b33; --muted: #68727e; }
       * { box-sizing: border-box; }
       html, body { width: 100%; min-width: 320px; min-height: 100%; margin: 0; }
-      body { display: grid; min-height: 100vh; place-items: center; padding: 32px; color: var(--text); background: var(--page); }
+      body { display: grid; min-height: 100vh; place-items: center; padding: 32px; color: var(--text); background-color: var(--page); background-image: radial-gradient(circle, color-mix(in srgb, var(--muted) 31%, transparent) 1px, transparent 1.1px); background-size: 32px 32px; }
+      :root[data-theme="light"] body { background-image: radial-gradient(circle, color-mix(in srgb, var(--muted) 48%, transparent) 1px, transparent 1.1px); }
       main { display: flex; width: min(760px, 100%); min-height: 260px; align-items: center; gap: clamp(30px, 7vw, 72px); padding: clamp(32px, 7vw, 64px); border: 1px solid var(--line); border-radius: 18px; background: var(--panel); box-shadow: 0 28px 90px rgb(0 0 0 / 14%); }
       .brand { display: grid; flex: 0 0 130px; justify-items: center; gap: 14px; }
       .brand img { display: block; width: 88px; height: 88px; object-fit: contain; }
