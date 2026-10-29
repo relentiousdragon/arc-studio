@@ -169,6 +169,7 @@ test('GraphRunner routes selected If and Switch branches and preserves loop outp
     ]
   };
   const result = await GraphRunner.execute(graph, 'MESSAGE_CREATE', {}, {
+    mock: true,
     rest: { createMessage: async (_channelId, payload) => executed.push(payload.content) },
     log: () => {}
   });
@@ -188,6 +189,7 @@ test('GraphRunner routes selected If and Switch branches and preserves loop outp
     ]
   };
   const ifResult = await GraphRunner.execute(ifGraph, 'MESSAGE_CREATE', {}, {
+    mock: true,
     rest: { createMessage: async (_channelId, payload) => executed.push(payload.content) },
     log: () => {}
   });
@@ -217,6 +219,7 @@ test('GraphRunner waits for both parallel branches before continuing through the
     ]
   };
   const result = await GraphRunner.execute(graph, 'MESSAGE_CREATE', {}, {
+    mock: true,
     rest: {
       createMessage: async (_channelId, payload) => {
         calls.push(payload.content);
