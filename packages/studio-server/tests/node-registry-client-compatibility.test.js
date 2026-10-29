@@ -1,19 +1,37 @@
 import assert from 'node:assert/strict';
 import { readdir } from 'node:fs/promises';
-import test from 'node:test';
+import test, { beforeEach } from 'node:test';
 import { BuiltInNodeDefinitions, BundledNodeTypes, createDefaultNodeData, getAvailableNodeDefinitions, getNodeRegistryDefinitions, isNodeTypeSupported, registerPluginNodeDefinitions, setWorkspaceNodeDefinitions } from '../../studio-client/src/components/nodes/nodeDefinitions.js';
 import { NodeDefinitions, PinTypes } from '../src/engine/NodeRegistry.js';
+beforeEach(() => setWorkspaceNodeDefinitions(Object.values(NodeDefinitions)));
 //
 test('each built-in schema is defined once in its own module and indexed', async () => {
   const directory = new URL('../src/engine/nodes/', import.meta.url);
-  const files = (await readdir(directory)).filter((filename) => filename.endsWith('.js') && filename !== 'index.js').sort();
-  const definitionTypes = Object.keys(NodeDefinitions).sort();
-  assert.deepEqual(files.map((filename) => filename.slice(0, -3)), definitionTypes);
+  const categoryFolder = (category) => String(category || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const files = [];
+  const collectSchemaFiles = async (prefix = '') => {
+    for (const entry of await readdir(new URL(prefix, directory), { withFileTypes: true })) {
+      const relativePath = `${prefix}${entry.name}`;
+      if (entry.isDirectory()) {
+        if (relativePath !== 'runtime') await collectSchemaFiles(`${relativePath}/`);
+      } else if (entry.name.endsWith('.js') && relativePath !== 'index.js') {
+        files.push(relativePath);
+      }
+    }
+  };
+  await collectSchemaFiles();
+  files.sort();
+  const definitions = Object.values(NodeDefinitions);
+  const expectedFiles = definitions.map((definition) => `${categoryFolder(definition.category)}/${definition.type}.js`).sort();
+  assert.deepEqual(files, expectedFiles);
 
-  for (const filename of files) {
-    const type = filename.slice(0, -3);
+  for (const definition of definitions) {
+    const { type, category } = definition;
+    const filename = `${categoryFolder(category)}/${type}.js`;
     const module = await import(new URL(filename, directory));
-    assert.deepEqual(module.default, NodeDefinitions[type], `${filename} must match its registry entry`);
+    const registryEntry = structuredClone(NodeDefinitions[type]);
+    for (const direction of ['inputs', 'outputs']) registryEntry[direction] = registryEntry[direction].map(({ semanticType, ...pin }) => pin);
+    assert.deepEqual(module.default, registryEntry, `${filename} must match its registry entry apart from derived pin semantics`);
     for (const direction of ['inputs', 'outputs']) {
       const pins = module.default[direction];
       assert.ok(Array.isArray(pins), `${type}.${direction} must be an array`);
@@ -55,9 +73,11 @@ test('declarative editor controls have valid metadata and supply node defaults',
   assert.deepEqual(createDefaultNodeData('data_regex'), { mode: 'test', text: '', pattern: '', flags: '', replacement: '' });
   assert.deepEqual(createDefaultNodeData('data_array_get'), { index: 0 });
   assert.deepEqual(createDefaultNodeData('repeat_while'), { condition: true, interval_ms: 500 });
-  const { paramId, ...functionInputData } = createDefaultNodeData('function_input');
-  assert.match(paramId, /^param_\d+_[a-z0-9]+$/);
-  assert.deepEqual(functionInputData, { name: 'Input', valueType: 'number', optional: false, defaultValue: 0 });
+  const functionInputData = createDefaultNodeData('function_input');
+  assert.match(functionInputData.arguments[0].paramId, /^param_\d+_[a-z0-9]+$/);
+  assert.deepEqual(functionInputData.arguments.map(({ name, valueType, optional, defaultValue }) => ({ name, valueType, optional, defaultValue })), [
+    { name: 'Input', valueType: 'string', optional: false, defaultValue: '' }
+  ]);
   assert.deepEqual(createDefaultNodeData('function_return'), { valueType: 'number' });
   assert.deepEqual(createDefaultNodeData('function_math'), { operation: 'add' });
   assert.deepEqual(createDefaultNodeData('build_embed'), { blocks: [], components: [] });
