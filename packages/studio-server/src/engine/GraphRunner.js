@@ -927,8 +927,10 @@ export class GraphRunner {
     }
     const eventDefinition = NodeDefinitions[eventNodeType];
     for (const pin of eventDefinition?.outputs || []) {
-      if (pin.type === 'exec' || !pin.eventPath) continue;
-      let value = String(pin.eventPath).split('.').reduce((current, key) => current?.[key], eventPayload);
+      if (pin.type === 'exec' || pin.eventPath == null) continue;
+      let value = pin.eventPath === '$'
+        ? eventPayload
+        : String(pin.eventPath).split('.').reduce((current, key) => current?.[key], eventPayload);
       if (pin.type === 'string' && value && typeof value === 'object') {
         try { value = JSON.stringify(value); } catch { value = ''; }
       }
@@ -1175,6 +1177,7 @@ export class GraphRunner {
             buildEmbed: () => buildEmbedFromNode(targetNode),
             isInputConnected: (pinId) => Boolean(findInputConnection(targetNode.id, pinId)),
             rest: context.rest,
+            simulation: Boolean(context.simulation || context.mock),
             setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value),
             log
           });
@@ -1229,6 +1232,7 @@ export class GraphRunner {
             buildEmbed: () => buildEmbedFromNode(targetNode),
             isInputConnected: (pinId) => Boolean(findInputConnection(targetNode.id, pinId)),
             rest: context.rest,
+            simulation: Boolean(context.simulation || context.mock),
             log,
             state: interactionState,
             eventPayload,
@@ -1314,9 +1318,9 @@ function evaluateFunctionGraph(graph, argumentValues, context, callStack) {
     const key = `${node.id}:${pinId}`;
     if (cache.has(key)) return cache.get(key);
     let result;
-    if (node.type === 'function_input' && pinId === 'value') {
-      const parameterId = node.data?.paramId || node.id;
-      result = argumentValues.has(parameterId) ? argumentValues.get(parameterId) : node.data?.defaultValue ?? defaultValueForType(node.data?.valueType);
+    if (node.type === 'function_input') {
+      const argument = getFunctionInputArguments(node).find((item) => item.legacy ? pinId === 'value' : functionArgumentPinId(item) === pinId);
+      if (argument) result = argumentValues.has(argument.paramId) ? argumentValues.get(argument.paramId) : argument.defaultValue;
     } else if (node.type === 'variable_get') {
       const wire = inputWire(node.id, 'variable');
       const connected = wire ? resolveOutput(findNode(wire.sourceNodeId), wire.sourcePinId) : null;
