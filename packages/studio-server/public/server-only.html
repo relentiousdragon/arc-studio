@@ -13,7 +13,8 @@
       :root[data-channel="nightly"][data-theme="light"] { --accent: #8245c3; --accent-soft: rgb(130 69 195 / 9%); --glow: rgb(130 69 195 / 12%); }
       * { box-sizing: border-box; }
       html, body { width: 100%; min-width: 320px; min-height: 100%; margin: 0; }
-      body { min-height: 100vh; color: var(--text); background: radial-gradient(ellipse at 17% 42%, var(--glow), transparent 39%), var(--page); }
+      body { min-height: 100vh; color: var(--text); background-color: var(--page); background-image: radial-gradient(circle, color-mix(in srgb, var(--muted) 31%, transparent) 1px, transparent 1.1px), radial-gradient(ellipse at 17% 42%, var(--glow), transparent 39%); background-position: 0 0, center; background-size: 32px 32px, auto; background-repeat: repeat, no-repeat; }
+      :root[data-theme="light"] body { background-image: radial-gradient(circle, color-mix(in srgb, var(--muted) 48%, transparent) 1px, transparent 1.1px), radial-gradient(ellipse at 17% 42%, var(--glow), transparent 39%); }
       a { color: inherit; }
       .shell { display: flex; min-height: 100vh; flex-direction: column; padding: 28px clamp(22px, 5vw, 76px) 20px; }
       header { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
