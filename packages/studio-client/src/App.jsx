@@ -668,10 +668,11 @@ export function App() {
   });
   const externalWorkspaceName = remoteWorkspaceName || 'Private Workspace';
   const [supportedWorkspaceNodeTypes, setSupportedWorkspaceNodeTypes] = useState(null);
+  const [failedWorkspaceNodeTypes, setFailedWorkspaceNodeTypes] = useState(() => new Set());
   const [workspaceCompatibilityNotice, setWorkspaceCompatibilityNotice] = useState('');
   const [pluginDefinitionsRevision, setPluginDefinitionsRevision] = useState(0);
   const nodeRegistryRevisionRef = useRef('');
-  const availableNodeDefinitions = useMemo(() => getAvailableNodeDefinitions(BuiltInNodeDefinitions, supportedWorkspaceNodeTypes), [pluginDefinitionsRevision, supportedWorkspaceNodeTypes]);
+  const availableNodeDefinitions = useMemo(() => getAvailableNodeDefinitions(BuiltInNodeDefinitions, supportedWorkspaceNodeTypes, failedWorkspaceNodeTypes), [failedWorkspaceNodeTypes, pluginDefinitionsRevision, supportedWorkspaceNodeTypes]);
   const [workspaceRevision, setWorkspaceRevision] = useState(0);
   const [networkOnline, setNetworkOnline] = useState(() => navigator.onLine !== false);
   const [appUpdate, setAppUpdate] = useState(null);
@@ -1848,6 +1849,7 @@ export function App() {
               const definitions = getNodeRegistryDefinitions(registry);
               if (definitions) {
                 setWorkspaceNodeDefinitions(definitions, registry.categories);
+                setFailedWorkspaceNodeTypes(new Set(Array.isArray(registry.failedNodeTypes) ? registry.failedNodeTypes : []));
                 nodeRegistryRevisionRef.current = registry.registryRevision;
                 registerPluginNodeDefinitions(installedPluginsRef.current);
                 serverNodeTypes = definitions.map((definition) => definition.type);
@@ -1866,6 +1868,7 @@ export function App() {
         }
         if (!hasWorkspaceSchemas) {
           setWorkspaceNodeDefinitions(null);
+          setFailedWorkspaceNodeTypes(new Set());
           nodeRegistryRevisionRef.current = '';
           registerPluginNodeDefinitions([]);
           setPluginDefinitionsRevision((revision) => revision + 1);
@@ -1883,10 +1886,12 @@ export function App() {
         } else if (!authToken) {
           setWorkspaceNodeDefinitions(null);
           setSupportedWorkspaceNodeTypes(new Set());
+          setFailedWorkspaceNodeTypes(new Set());
           setWorkspaceCompatibilityNotice('');
         } else {
           setWorkspaceNodeDefinitions(null);
           setSupportedWorkspaceNodeTypes(null);
+          setFailedWorkspaceNodeTypes(new Set());
           setWorkspaceCompatibilityNotice(desktopMode && workspaceMode === 'remote'
             ? `Connected to workspace version ${serverVersion || 'unknown'}. ${registryLoadIssue || 'Its node registry is unavailable.'}`
             : registryLoadIssue);
@@ -2119,6 +2124,7 @@ export function App() {
           if (!definitions || typeof registry.registryRevision !== 'string') throw new Error('The workspace returned an invalid node catalog.');
           const installed = Array.isArray(pluginsData.plugins) ? pluginsData.plugins : [];
           setWorkspaceNodeDefinitions(definitions, registry.categories);
+          setFailedWorkspaceNodeTypes(new Set(Array.isArray(registry.failedNodeTypes) ? registry.failedNodeTypes : []));
           installedPluginsRef.current = installed;
           setInstalledPlugins(installed);
           registerPluginNodeDefinitions(installed);
@@ -2134,6 +2140,7 @@ export function App() {
       if (!active) return;
       setWorkspaceNodeDefinitions(null);
       setSupportedWorkspaceNodeTypes(new Set());
+      setFailedWorkspaceNodeTypes(new Set());
       installedPluginsRef.current = [];
       setInstalledPlugins([]);
       registerPluginNodeDefinitions([]);
@@ -4239,7 +4246,7 @@ export function App() {
   const makeNode = useCallback((type, position = null, data = null, label = null) => {
     const definition = BuiltInNodeDefinitions.find((item) => item.type === type);
     if (!definition) return null;
-    if (!isNodeTypeSupported(type, supportedWorkspaceNodeTypes)) return null;
+    if (!isNodeTypeSupported(type, supportedWorkspaceNodeTypes, failedWorkspaceNodeTypes)) return null;
     const nodeData = data ? structuredClone(data) : createDefaultNodeData(type);
     if (type === 'function_input' && !Array.isArray(nodeData.arguments)) nodeData.arguments = createDefaultNodeData(type).arguments;
     if (['variable_get', 'variable_set'].includes(type) && !availableVariables.some((variable) => variable.id === nodeData.variableId)) nodeData.variableId = '';
@@ -4252,7 +4259,7 @@ export function App() {
       y: position?.y ?? 150 + Math.random() * 24,
       data: nodeData
     };
-  }, [availableVariables, supportedWorkspaceNodeTypes]);
+  }, [availableVariables, failedWorkspaceNodeTypes, supportedWorkspaceNodeTypes]);
 
   const appendNodeToGraph = useCallback((graph, node) => {
     if (!graph || !node) return;
@@ -4270,7 +4277,7 @@ export function App() {
   }, [activeNodes, activeTabId, handleNodesChange, recordHistory]);
 
   const handlePlaceNode = useCallback((type, position = null) => {
-    if (!isNodeTypeSupported(type, supportedWorkspaceNodeTypes)) return;
+    if (!isNodeTypeSupported(type, supportedWorkspaceNodeTypes, failedWorkspaceNodeTypes)) return;
     const targetGraph = activeGraph || handleAddBlankGraph();
     if (!targetGraph) return;
     if (type === 'function_input' && (targetGraph.graphType !== 'function' || (targetGraph.nodes || []).some((item) => item.type === 'function_input'))) {
@@ -4281,7 +4288,7 @@ export function App() {
     const node = makeNode(type, nodeTopLeftAtCenter(type, center));
     appendNodeToGraph(targetGraph, node);
     setPaletteNodePosition(null);
-  }, [activeGraph, appendNodeToGraph, handleAddBlankGraph, makeNode, paletteNodePosition, supportedWorkspaceNodeTypes]);
+  }, [activeGraph, appendNodeToGraph, failedWorkspaceNodeTypes, handleAddBlankGraph, makeNode, paletteNodePosition, supportedWorkspaceNodeTypes]);
 
   const openPaletteAt = useCallback((position = null) => {
     const validPosition = Number.isFinite(position?.x) && Number.isFinite(position?.y) ? position : null;
@@ -4293,7 +4300,7 @@ export function App() {
     const requestedTypes = payload?.type === 'multi-node'
       ? payload.nodeTypes || []
       : [payload?.type === 'graph-call' ? 'function_call' : payload?.type === 'prefab' ? nodePrefabs.find((item) => item.id === payload.prefabId)?.node?.type : payload?.type === 'embed-asset' ? 'build_embed' : payload?.type === 'variable-get' ? 'variable_get' : payload?.nodeType].filter(Boolean);
-    if (requestedTypes.length && !requestedTypes.some((type) => isNodeTypeSupported(type, supportedWorkspaceNodeTypes))) return;
+    if (requestedTypes.length && !requestedTypes.some((type) => isNodeTypeSupported(type, supportedWorkspaceNodeTypes, failedWorkspaceNodeTypes))) return;
     const targetGraph = activeGraph || handleAddBlankGraph();
     if (!targetGraph) return;
     if (requestedTypes.includes('function_input') && (targetGraph.graphType !== 'function' || (targetGraph.nodes || []).some((item) => item.type === 'function_input') || requestedTypes.filter((type) => type === 'function_input').length > 1)) {
@@ -5801,6 +5808,7 @@ export function App() {
     window.clearTimeout(collaborationActionTimerRef.current);
     collaborationActionTimerRef.current = null;
     setWorkspaceMode(mode);
+    setFailedWorkspaceNodeTypes(new Set());
     nodeRegistryRevisionRef.current = '';
     installedPluginsRef.current = [];
     setInstalledPlugins([]);
@@ -5863,6 +5871,7 @@ export function App() {
       let supportedNodeTypes = null;
       if (desktopMode) {
         setWorkspaceNodeDefinitions(null);
+        setFailedWorkspaceNodeTypes(new Set());
         nodeRegistryRevisionRef.current = '';
         setPluginDefinitionsRevision((revision) => revision + 1);
         const serverVersion = String(status.version || '').trim();
@@ -6290,16 +6299,20 @@ export function App() {
       const definitions = getNodeRegistryDefinitions(registry);
       if (definitions) {
         setWorkspaceNodeDefinitions(definitions, registry.categories);
+        setFailedWorkspaceNodeTypes(new Set(Array.isArray(registry.failedNodeTypes) ? registry.failedNodeTypes : []));
+        setSupportedWorkspaceNodeTypes(new Set(definitions.map((definition) => definition.type)));
         nodeRegistryRevisionRef.current = registry.registryRevision;
         registerPluginNodeDefinitions(installed);
       }
       else {
         setWorkspaceNodeDefinitions(null);
+        setFailedWorkspaceNodeTypes(new Set());
         nodeRegistryRevisionRef.current = '';
         registerPluginNodeDefinitions(installed);
       }
     } else if (registryResponse.status === 404) {
       setWorkspaceNodeDefinitions(null);
+      setFailedWorkspaceNodeTypes(new Set());
       nodeRegistryRevisionRef.current = '';
       registerPluginNodeDefinitions(installed);
     } else {
@@ -6594,6 +6607,7 @@ export function App() {
             callableGraphs={callableGraphs}
             appEmojis={appEmojis}
             nodeDefinitions={availableNodeDefinitions}
+            nodeDefinitionsReady={supportedWorkspaceNodeTypes !== null || failedWorkspaceNodeTypes.size > 0}
             settings={settings}
             isLocked={isLocked || !canWriteGraphs}
             canvasLocked={isLocked}
