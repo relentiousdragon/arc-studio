@@ -132,6 +132,8 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
       .replace('__ARC_PROJECT_AUTHOR__', JSON.stringify(projectAuthor))
       .replace('__ARC_STATISTICS_SETTINGS__', JSON.stringify(statisticsSettings)) },
     { name: 'src/engine/GraphRunner.js', data: readText('src/engine/GraphRunner.js') },
+    { name: 'src/engine/FunctionGraphContract.js', data: readText('src/engine/FunctionGraphContract.js') },
+    { name: 'src/engine/DiscordValueValidation.js', data: readText('src/engine/DiscordValueValidation.js') },
     { name: 'src/engine/DynamicNodePins.js', data: readText('src/engine/DynamicNodePins.js') },
     { name: 'src/engine/SlashCommandOptions.js', data: readText('src/engine/SlashCommandOptions.js') },
     { name: 'src/engine/TemplateExpressions.js', data: readText('src/engine/TemplateExpressions.js') },
@@ -139,6 +141,8 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
     { name: 'src/engine/CronSchedule.js', data: readText('src/engine/CronSchedule.js') },
     { name: 'src/engine/PluginStore.js', data: pluginStoreSource },
     { name: 'src/engine/NodeRegistry.js', data: readText('src/engine/NodeRegistry.js') },
+    { name: 'src/engine/NodeRegistryContract.js', data: readText('src/engine/NodeRegistryContract.js') },
+    { name: 'src/storage/Integrity.js', data: readText('src/storage/Integrity.js') },
     { name: 'LICENSE', data: readText('LICENSE', repoRoot) }
   ];
   if (requiredRuntimeModules.has('network.js')) {
@@ -148,9 +152,13 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
     entries.push({ name: 'src/security/CryptoEngine.js', data: standaloneCryptoSource() });
   }
   const nodeSourceRoot = path.resolve(serverRoot, 'src/engine/nodes');
+  const schemaCategoryFolder = (category) => String(category || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
   const usedBuiltInSchemaFiles = new Set([...usedTypes]
     .filter((type) => NodeDefinitions[type] && !NodeDefinitions[type].pluginAdapter && path.posix.basename(type) === type)
-    .map((type) => `${type}.js`));
+    .map((type) => `${schemaCategoryFolder(NodeDefinitions[type].category)}/${type}.js`));
   const schemaImports = [...usedBuiltInSchemaFiles].sort().map((file, index) => `import node${index} from './${file}';`).join('\n');
   const schemaNames = [...usedBuiltInSchemaFiles].sort().map((_file, index) => `node${index}`).join(', ');
   entries.push({ name: 'src/engine/nodes/index.js', data: `${schemaImports}\nexport const nodeDefinitions = [${schemaNames}];\n` });
