@@ -558,6 +558,7 @@ console.log([
   '==============================================================================',
   '  Project: ' + __ARC_PROJECT_NAME__,
   '  Made by: ' + __ARC_PROJECT_AUTHOR__,
+  '  Loaded ' + Object.keys(NodeDefinitions).length + ' Nodes',
   '  Log files: ' + logDirectory,
   '  Log retention: ' + retentionLabel,
   '==============================================================================',
