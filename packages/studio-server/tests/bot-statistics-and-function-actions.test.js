@@ -106,7 +106,7 @@ test('restoreBuiltInProjectVariable restores deleted system variable or reports 
   }
 });
 
-test('function graphs can execute Discord actions and return values via exec flow', async () => {
+test('one function input can drive Discord actions without a return node', async () => {
   const sentMessages = [];
   const mockRest = {
     createMessage: async (channelId, payload) => {
@@ -121,32 +121,23 @@ test('function graphs can execute Discord actions and return values via exec flo
     graphType: 'function',
     nodes: [
       {
-        id: 'func_in_channel',
+        id: 'func_input',
         type: 'function_input',
-        data: { paramId: 'channel_id', name: 'channel_id', valueType: 'string', defaultValue: '' }
-      },
-      {
-        id: 'func_in_text',
-        type: 'function_input',
-        data: { paramId: 'alert_text', name: 'alert_text', valueType: 'string', defaultValue: '' }
+        data: { arguments: [
+          { paramId: 'channel_id', name: 'channel_id', valueType: 'channel_id', defaultValue: '' },
+          { paramId: 'alert_text', name: 'alert_text', valueType: 'string', defaultValue: '' }
+        ] }
       },
       {
         id: 'func_action_send',
         type: 'action_send_message',
         data: { content: 'Default alert' }
       },
-      {
-        id: 'func_return',
-        type: 'function_return',
-        data: { valueType: 'string' }
-      }
     ],
     connections: [
-      { sourceNodeId: 'func_in_channel', sourcePinId: 'exec', targetNodeId: 'func_action_send', targetPinId: 'exec' },
-      { sourceNodeId: 'func_in_channel', sourcePinId: 'value', targetNodeId: 'func_action_send', targetPinId: 'channel_id' },
-      { sourceNodeId: 'func_in_text', sourcePinId: 'value', targetNodeId: 'func_action_send', targetPinId: 'content' },
-      { sourceNodeId: 'func_action_send', sourcePinId: 'exec', targetNodeId: 'func_return', targetPinId: 'exec' },
-      { sourceNodeId: 'func_in_text', sourcePinId: 'value', targetNodeId: 'func_return', targetPinId: 'value' }
+      { sourceNodeId: 'func_input', sourcePinId: 'exec', targetNodeId: 'func_action_send', targetPinId: 'exec' },
+      { sourceNodeId: 'func_input', sourcePinId: 'arg_channel_id', targetNodeId: 'func_action_send', targetPinId: 'channel_id' },
+      { sourceNodeId: 'func_input', sourcePinId: 'arg_alert_text', targetNodeId: 'func_action_send', targetPinId: 'content' }
     ]
   };
 
@@ -171,15 +162,16 @@ test('function graphs can execute Discord actions and return values via exec flo
   };
 
   const result = await GraphRunner.execute(mainGraph, 'MESSAGE_CREATE', {
-    channel_id: 'chan_999',
+    channel_id: '123456789012345678',
     content: 'Emergency system alert'
   }, {
     rest: mockRest,
+    mock: true,
     resolveFunctionGraph: (id) => id === 'func_send_alert' ? functionGraph : null
   });
 
   assert.equal(result.error, null);
   assert.equal(sentMessages.length, 1);
-  assert.equal(sentMessages[0].channelId, 'chan_999');
+  assert.equal(sentMessages[0].channelId, '123456789012345678');
   assert.equal(sentMessages[0].payload.content, 'Emergency system alert');
 });
