@@ -515,6 +515,8 @@ export function SplashScreen({
     && (resetPassRequested || Boolean(ownerResetPromptForUsername && ownerResetPromptForUsername === username.trim().toLowerCase()));
   const remotePending = desktopMode && workspaceChoice === 'remote' && (showWorkspaceUrl || workspaceMode !== 'remote' || remoteUrl.trim().replace(/\/$/, '') !== remoteWorkspaceUrl.trim().replace(/\/$/, ''));
   const startupError = desktopMode && workspaceMode === 'local' ? desktopConfig.startupError : null;
+  const documentsPermissionRequired = String(startupError || '').startsWith('ARC_DOCUMENTS_PERMISSION_REQUIRED:');
+  const startupErrorMessage = documentsPermissionRequired ? String(startupError).slice('ARC_DOCUMENTS_PERMISSION_REQUIRED:'.length) : startupError;
   const desktopServerError = desktopMode && /\b500\b/.test(`${workspaceError} ${startupError || ''}`);
   const unsupportedNodeCompatibilityError = desktopMode && isUnsupportedNodeCompatibilityError(connectError || workspaceError);
   const activeWorkspaceName = desktopMode && workspaceMode === 'local' ? 'Local Workspace' : 'Private Workspace';
@@ -575,7 +577,12 @@ export function SplashScreen({
 
           {!needsProjectOnboarding && !remotePending && needsSetup && !setupCredential && !(desktopMode && workspaceMode === 'local') && <div className="setup-progress" aria-label={`Step ${setupStep} of 2`}><span className={setupStep >= 1 ? 'is-current' : ''} /><span className={setupStep >= 2 ? 'is-current' : ''} /></div>}
 
-          {!needsProjectOnboarding && !remotePending && startupError && <div className="auth-startup-error" role="alert"><strong>Local workspace unavailable</strong><span>{startupError}</span></div>}
+          {!needsProjectOnboarding && !remotePending && startupError && <div className="auth-startup-error" role="alert"><strong>{documentsPermissionRequired ? 'ARC Studio needs Documents access' : 'Local workspace unavailable'}</strong><span>{documentsPermissionRequired ? 'Allow ARC Studio to access Documents/ARC Studio in Privacy & Security, then restart the app.' : startupErrorMessage}</span>
+            {documentsPermissionRequired && <button className="auth-retry" type="button" onClick={() => {
+              const invoke = window.__TAURI_INTERNALS__?.invoke;
+              invoke?.('open_macos_files_folders_settings').catch((error) => arcEvents.emit('toast:notify', { title: 'Could not open System Settings', message: String(error?.message || error), type: 'error', duration: 8000 }));
+            }}>Open Files &amp; Folders Settings <ArrowRight size={14} /></button>}
+          </div>}
           {passwordChangeSession ? (
             <form className="auth-form" noValidate onSubmit={handleRequiredPasswordChange}>
               <label className="field-label" htmlFor="required-new-password">New password</label>
