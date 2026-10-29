@@ -141,6 +141,7 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
     { name: 'src/engine/CronSchedule.js', data: readText('src/engine/CronSchedule.js') },
     { name: 'src/engine/PluginStore.js', data: pluginStoreSource },
     { name: 'src/engine/NodeRegistry.js', data: readText('src/engine/NodeRegistry.js') },
+    { name: 'src/engine/NodeSchemaDefinitions.js', data: readText('src/engine/NodeSchemaDefinitions.js') },
     { name: 'src/engine/NodeRegistryContract.js', data: readText('src/engine/NodeRegistryContract.js') },
     { name: 'src/storage/Integrity.js', data: readText('src/storage/Integrity.js') },
     { name: 'LICENSE', data: readText('LICENSE', repoRoot) }
