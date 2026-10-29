@@ -127,13 +127,13 @@ function numericNodeInputValue(value, { min = -Infinity, max = Infinity, fallbac
 }
 
 function CanvasNodeView({
-  node, definition, authToken = '', connectedInputIds = new Set(), graphVariables = [], templatePreviewValues = {}, callableGraphs = [], selected = false, illuminated = false, isLocked = false, findOptions = null, isFindCurrent = false,
+  node, definition, loadFailed = false, authToken = '', connectedInputIds = new Set(), graphVariables = [], templatePreviewValues = {}, callableGraphs = [], selected = false, illuminated = false, isLocked = false, findOptions = null, isFindCurrent = false,
   snappedPin = null, appEmojis = [], modalFieldOptions = [], componentsV2SourceConnected = false, onSelect, onDelete, onNodeDataChange, onPinStartConnect, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph
 }) {
   const nodeDef = definition || { label: node.label || node.type, color: '#778196', category: 'Node', inputs: [], outputs: [] };
   const execFirst = (pins = []) => [...pins].sort((left, right) => Number(right.type === 'exec') - Number(left.type === 'exec'));
-  const inputs = execFirst(nodeDef.inputs);
-  const outputs = execFirst(nodeDef.outputs);
+  const inputs = loadFailed ? [] : execFirst(nodeDef.inputs);
+  const outputs = loadFailed ? [] : execFirst(nodeDef.outputs);
   const rows = Math.max(inputs.length, outputs.length);
   const update = (key, value, label) => onNodeDataChange?.(node.id, typeof key === 'object' ? key : { [key]: value }, label);
   const selectedVariable = resolveVariableReference(graphVariables, node.data?.variableId, node.data?.scope || 'graph');
@@ -185,7 +185,7 @@ function CanvasNodeView({
 
   return (
     <article
-      className={`canvas-node ${selected ? 'is-selected' : ''} ${illuminated ? 'is-illuminated' : ''} ${isLocked ? 'is-locked' : ''}`}
+      className={`canvas-node ${selected ? 'is-selected' : ''} ${illuminated ? 'is-illuminated' : ''} ${isLocked ? 'is-locked' : ''} ${loadFailed ? 'is-load-failed' : ''}`}
       data-node-card-id={node.id}
       tabIndex={-1}
       style={{ '--node-accent': nodeDef.color, '--node-rows': rows }}
@@ -193,11 +193,12 @@ function CanvasNodeView({
       onClick={(event) => { event.stopPropagation(); onSelect?.(node.id, event); }}
       onDoubleClick={(event) => {
         event.stopPropagation();
-        if (node.type !== 'function_call' || event.target.closest('button, input, textarea, select, [role="combobox"], .node-pin-row')) return;
+        if (loadFailed || node.type !== 'function_call' || event.target.closest('button, input, textarea, select, [role="combobox"], .node-pin-row')) return;
         const target = callableGraphs.find((graph) => graph.id === node.data?.graphId && graph.graphType === 'function');
         if (target) onOpenFunctionGraph?.(target);
       }}
-      data-tooltip={node.type === 'function_call' && callableGraphs.some((graph) => graph.id === node.data?.graphId && graph.graphType === 'function') ? 'Double-click to open this function graph' : undefined}
+      data-tooltip={loadFailed ? 'Failed to load this node' : node.type === 'function_call' && callableGraphs.some((graph) => graph.id === node.data?.graphId && graph.graphType === 'function') ? 'Double-click to open this function graph' : undefined}
+      aria-disabled={loadFailed || undefined}
       aria-label={`${node.label || nodeDef.label} node`}
     >
       <header className="node-header">
@@ -210,8 +211,8 @@ function CanvasNodeView({
         <div className="node-pin-column node-pin-inputs">{inputs.map((pin, index) => renderPin(pin, 'input', index))}</div>
         <div className="node-pin-column node-pin-outputs">{outputs.map((pin, index) => renderPin(pin, 'output', index))}</div>
       </div>
-      {!nodeDef.requiresGenericEditor && renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues, componentsV2SourceConnected)}
-      {(nodeDef.requiresGenericEditor || nodeDef.editorOnlyInputs?.length > 0) && <div className="node-config node-config-stack node-schema-fallback">
+      {!loadFailed && !nodeDef.requiresGenericEditor && renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues, componentsV2SourceConnected)}
+      {!loadFailed && (nodeDef.requiresGenericEditor || nodeDef.editorOnlyInputs?.length > 0) && <div className="node-config node-config-stack node-schema-fallback">
         {nodeDef.requiresGenericEditor && <span className="node-config-hint">This workspace schema differs from this client’s editor. These values are used by the workspace server.</span>}
         {nodeDef.editorOnlyInputs.filter((pin) => pin.type !== 'exec' && !connectedInputIds.has(pin.id)).map((pin) => {
           const value = node.data?.[pin.id] ?? pin.defaultValue;
@@ -221,7 +222,7 @@ function CanvasNodeView({
           return <FallbackField key={pin.id} label={pin.label}><input value={typeof value === 'string' || typeof value === 'number' ? value : JSON.stringify(value ?? '')} onChange={(event) => update(pin.id, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label={pin.label} /></FallbackField>;
         })}
       </div>}
-      {!['build_embed', 'format_text'].includes(node.type) && nodeDef.inputs
+      {!loadFailed && !['build_embed', 'format_text'].includes(node.type) && nodeDef.inputs
         .filter((pin) => ['string', 'number', 'arg'].includes(pin.type) && !pin.id.startsWith('arg_') && !pin.id.startsWith('slot_') && !connectedInputIds.has(pin.id) && typeof node.data?.[pin.id] === 'string' && getTextTemplateSlots(node.data[pin.id]).length)
         .map((pin) => <TemplateVariableHints key={`template-hints-${pin.id}`} value={node.data[pin.id]} graphVariables={graphVariables} inputSlots={getNodeTemplateInputPins(node, nodeDef.inputs, graphVariables).filter((slot) => getTextTemplateSlots(node.data[pin.id]).some((name) => slot.id === `slot_${name}`))} connectedInputIds={connectedInputIds} templatePreviewValues={templatePreviewValues} />)}
     </article>
