@@ -1254,12 +1254,8 @@ export function EmbedStudioView({
       return <div className={`discord-v2-container${block.spoiler && !spoilerRevealed ? ' is-spoiler-hidden' : ''}${block.spoiler && spoilerRevealed ? ' is-spoiler-revealed' : ''}`} data-preview-container-id={block.id} style={{ '--discord-v2-accent': block.accentColor || '#5865F2' }} key={key} onClick={(event) => {
         if (!block.spoiler || event.shiftKey) return;
         event.stopPropagation();
-        setRevealedContainerSpoilers((current) => {
-          const next = new Set(current);
-          if (next.has(block.id)) next.delete(block.id);
-          else next.add(block.id);
-          return next;
-        });
+        if (!spoilerRevealed) setRevealedContainerSpoilers((current) => new Set(current).add(block.id));
+        else focusV2Block(block.id);
       }} onContextMenu={(event) => openV2ContainerContextMenu(event, block.id)}><PreviewRemoveButton label="container" onClick={() => removePreviewBlock('components-v2', block.id)} />{(block.children || []).length ? block.children.map((child, index) => {
       const issue = getV2Issue(child.id);
       return <div className={`studio-preview-nested-block ${previewBlockClass(child.id, 'components-v2')}`} key={child.id || `${key}_${index}`} data-preview-block-id={child.id} data-preview-validation-target={child.id} data-preview-scope="components-v2" data-preview-parent-container-id={block.id} draggable onClick={(event) => { event.stopPropagation(); focusV2Block(child.id); }} onDragStart={(event) => startPreviewMove(event, 'components-v2', child.id)} onDragEnd={endPreviewMove}>{renderV2Block(child, `${key}_${index}`)}<PreviewRemoveButton label={child.type.replaceAll('_', ' ')} warning={issue} onWarningClick={() => focusV2Issue(issue)} onClick={() => removePreviewBlock('components-v2', child.id)} /></div>;
