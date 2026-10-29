@@ -1001,6 +1001,8 @@ function readFileAsDataUrl(file) {
 
 function AttachmentPicker({ files = [], authToken = '', onChange }) {
   const [error, setError] = React.useState('');
+  const [imagePreview, setImagePreview] = React.useState(null);
+  const [imageZoomed, setImageZoomed] = React.useState(false);
   const [urlEntryOpen, setUrlEntryOpen] = React.useState(false);
   const [url, setUrl] = React.useState('');
   const [filename, setFilename] = React.useState('');
@@ -1008,6 +1010,16 @@ function AttachmentPicker({ files = [], authToken = '', onChange }) {
   const [contextMenu, setContextMenu] = React.useState(null);
   const contextMenuRef = React.useRef(null);
   const fileInputRef = React.useRef(null);
+  React.useEffect(() => {
+    if (!imagePreview) return undefined;
+    const closeOnEscape = (event) => { if (event.key === 'Escape') { setImagePreview(null); setImageZoomed(false); } };
+    document.addEventListener('keydown', closeOnEscape);
+    const removePageBlurListener = onPageBlur(() => { setImagePreview(null); setImageZoomed(false); });
+    return () => {
+      document.removeEventListener('keydown', closeOnEscape);
+      removePageBlurListener();
+    };
+  }, [imagePreview]);
   const onFiles = async (event) => {
     const selected = Array.from(event.target.files || []);
     event.target.value = '';
@@ -1083,11 +1095,20 @@ function AttachmentPicker({ files = [], authToken = '', onChange }) {
     } catch (downloadError) { setError(downloadError.message || 'Could not download this attachment.'); }
     finally { setUrlLoading(false); }
   };
-  return <div className="node-attachment-picker" onPointerDown={(event) => event.stopPropagation()}>
+  return <>
+    <div className="node-attachment-picker" onPointerDown={(event) => event.stopPropagation()}>
     <div className="node-attachment-heading"><span>Attachments</span><span>{files.length} / 10 · 20 MiB each</span></div>
     <button className="node-attachment-choose" type="button" onClick={() => fileInputRef.current?.click()} onContextMenu={openContextMenu}>Choose files</button>
     <input ref={fileInputRef} className="node-attachment-file-input" type="file" multiple onChange={onFiles} />
-    {files.length > 0 && <div className="node-attachment-list">{files.map((file, index) => <div className="node-attachment-item" key={`${file.filename}-${index}`}><span title={file.url || undefined}>{file.filename}{file.url ? ' · URL' : ''}</span><button type="button" onClick={() => remove(index)} aria-label={`Remove ${file.filename}`}><X size={12} /></button></div>)}</div>}
+    {files.length > 0 && <div className="node-attachment-list">{files.map((file, index) => {
+      const image = String(file.contentType || '').toLowerCase().startsWith('image/') || /^data:image\//i.test(String(file.data || '')) || /\.(apng|avif|bmp|gif|jpe?g|png|svg|webp)$/i.test(String(file.filename || file.name || ''));
+      const source = typeof file.data === 'string' && file.data.startsWith('data:image/') ? file.data : '';
+      return <div className="node-attachment-item" key={`${file.filename}-${index}`}>
+        {image && source && <button className="node-attachment-open-image" type="button" aria-label={`Preview ${file.filename}`} title="Open image preview" onClick={() => { setImagePreview({ filename: file.filename, source }); setImageZoomed(false); }}><img src={source} alt="" /></button>}
+        <span title={file.url || undefined}>{file.filename}{file.url ? ' · URL' : ''}</span>
+        <button className="node-attachment-remove" type="button" onClick={() => remove(index)} aria-label={`Remove ${file.filename}`} title={`Remove ${file.filename}`}><X size={12} /></button>
+      </div>;
+    })}</div>}
     {urlEntryOpen && <form className="node-attachment-url-form" onSubmit={addUrl}>
       <input type="url" value={url} onChange={(event) => { setUrl(event.target.value); setError(''); }} onPointerDown={(event) => event.stopPropagation()} placeholder="https://example.com/image.png" aria-label="Attachment URL" autoCapitalize="none" autoCorrect="off" spellCheck="false" required disabled={urlLoading} />
       <input value={filename} onChange={(event) => setFilename(event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Filename (optional)" aria-label="Attachment filename" maxLength={100} autoCapitalize="none" autoCorrect="off" spellCheck="false" disabled={urlLoading} />
@@ -1098,5 +1119,16 @@ function AttachmentPicker({ files = [], authToken = '', onChange }) {
     {contextMenu && createPortal(<div ref={contextMenuRef} className="canvas-context-menu attachment-context-menu" role="menu" style={{ left: contextMenu.left, top: contextMenu.top }} onPointerDown={(event) => event.stopPropagation()}>
       <button role="menuitem" onClick={() => { setUrlEntryOpen(true); setContextMenu(null); setError(''); }}><span>Use URL</span></button>
     </div>, document.body)}
-  </div>;
+    </div>
+    {imagePreview && createPortal(<div className={`discord-gallery-lightbox${imageZoomed ? ' is-image-zoomed' : ''}`} role="dialog" aria-modal="true" aria-label={`Image preview: ${imagePreview.filename}`} onClick={(event) => { if (event.target === event.currentTarget) { setImagePreview(null); setImageZoomed(false); } }}>
+      <button type="button" className="discord-gallery-lightbox-close" aria-label="Close image viewer" title="Close image viewer" onClick={() => { setImagePreview(null); setImageZoomed(false); }}><X size={20} /></button>
+      <figure className="discord-gallery-lightbox-content">
+        <button className={`discord-gallery-lightbox-image-frame${imageZoomed ? ' is-zoomed' : ''}`} type="button" aria-label={imageZoomed ? 'Zoom out' : 'Zoom in'} aria-pressed={imageZoomed} title="Click to zoom in or out" onClick={() => setImageZoomed((value) => !value)}>
+          <img className={`discord-gallery-lightbox-image${imageZoomed ? ' is-zoomed' : ''}`} src={imagePreview.source} alt={imagePreview.filename} />
+        </button>
+        <figcaption>{imagePreview.filename}</figcaption>
+        <small>Click the image to zoom</small>
+      </figure>
+    </div>, document.body)}
+  </>;
 }
