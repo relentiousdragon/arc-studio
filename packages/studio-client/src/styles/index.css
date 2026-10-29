@@ -308,7 +308,6 @@ button:disabled { cursor: not-allowed !important; opacity: .48; }
 .settings-about-credit span { color: var(--muted); }
 .settings-update-explainer { display: grid !important; justify-content: initial !important; align-items: start !important; gap: 5px !important; padding: 9px 10px !important; border: 1px solid var(--line-soft); background: var(--panel-raised); line-height: 1.5; }
 .settings-update-explainer span { font-size: calc((9px) * var(--arc-font-scale, 1)); }
-.stable-update-ready-notice { position: fixed; z-index: 80; bottom: 12px; left: 12px; max-width: min(460px, calc(100vw - 24px)); padding: 8px 11px; border: 1px solid var(--line-soft); border-radius: 6px; color: var(--text-secondary); background: var(--chrome); box-shadow: 0 5px 20px rgb(0 0 0 / 20%); font-size: calc((10px) * var(--arc-font-scale, 1)); pointer-events: none; }
 .settings-about-section .settings-about-credit-name { color: var(--accent); }
 .settings-about-license { display: flex; align-items: center; gap: 8px; margin-top: 1px; padding: 9px; border: 1px solid var(--line-soft); border-radius: 6px; color: var(--accent); background: var(--panel); }
 .settings-about-license > div { display: grid; gap: 2px; }
