@@ -1,7 +1,7 @@
-import { nodeDefinitions } from './nodes/index.js';
 import { NODE_SCHEMA_VERSION } from './DynamicNodePins.js';
 import { createHash } from 'node:crypto';
 import { stableJson } from '../storage/Integrity.js';
+import { NodeCategories, NodeDefinitions } from './NodeSchemaDefinitions.js';
 import {
   CLIENT_PROTOCOL_VERSION, NODE_REGISTRY_PROTOCOL_VERSION, getNodeRegistryRequiredFeatures, validateNodeDefinitions
 } from './NodeRegistryContract.js';
@@ -9,17 +9,7 @@ import {
 export { NODE_SCHEMA_VERSION };
 export { CLIENT_PROTOCOL_VERSION, NODE_REGISTRY_PROTOCOL_VERSION };
 
-export const NodeCategories = Object.freeze({
-  EVENTS: 'Events',
-  ACTIONS: 'Discord Actions',
-  LOGIC: 'Logic & Flow',
-  VARIABLES: 'Variables',
-  VALUES: 'Values & Data',
-  FUNCTIONS: 'Functions',
-  CRYPTO: 'Cryptography & Security',
-  MATH: 'Math',
-  NETWORK: 'Web & Network'
-});
+export { NodeCategories, NodeDefinitions };
 
 export const PinTypes = Object.freeze({
   EXEC: 'exec',
@@ -34,22 +24,6 @@ export const PinTypes = Object.freeze({
   ANY: 'any'
 });
 
-const SEMANTIC_STRING_PIN_TYPES = Object.freeze({
-  application_id: 'application_id', channel_id: 'channel_id', thread_id: 'thread_id', parent_id: 'channel_id',
-  guild_id: 'guild_id', server_id: 'guild_id', user_id: 'user_id', author_id: 'user_id', member_id: 'user_id',
-  role_id: 'role_id', message_id: 'message_id', referenced_message_id: 'message_id', interaction_id: 'interaction_id',
-  interaction_token: 'interaction_token'
-});
-
-export const NodeDefinitions = Object.fromEntries(nodeDefinitions.map((definition) => [definition.type, {
-  ...definition,
-  inputs: (definition.inputs || []).map((pin) => pin.type === 'string' && SEMANTIC_STRING_PIN_TYPES[pin.id]
-    ? { ...pin, semanticType: SEMANTIC_STRING_PIN_TYPES[pin.id] }
-    : pin),
-  outputs: (definition.outputs || []).map((pin) => pin.type === 'string' && SEMANTIC_STRING_PIN_TYPES[pin.id]
-    ? { ...pin, semanticType: SEMANTIC_STRING_PIN_TYPES[pin.id] }
-    : pin)
-}]));
 const builtInNodeTypes = new Set(Object.keys(NodeDefinitions));
 let registryPayloadCache = null;
 let failedNodeTypes = [];
