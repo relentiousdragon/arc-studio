@@ -74,7 +74,7 @@ export function resolveDynamicNodePins(definition, node, connections = []) {
       id: functionArgumentPinId(argument),
       label: argument.name,
       type: functionInputPinType(argument),
-      ...(argument.valueType === 'channel_id' || argument.valueType === 'interaction_token' ? { semanticType: argument.valueType } : {})
+      ...(argument.valueType.endsWith('_id') || argument.valueType === 'interaction_token' ? { semanticType: argument.valueType } : {})
     }));
     return { outputs: [...(definition.outputs || []).filter((pin) => pin.id === 'exec'), ...outputs] };
   }
