@@ -22,6 +22,18 @@ function formatCompactLastSeen(value) {
   return new Date(timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 const createEditorId = (prefix) => `${prefix}_${globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}_${Math.random().toString(36).slice(2)}`}`;
+const getLocalCollaboratorColor = (id) => {
+  const colors = ['#63b3ed', '#f687b3', '#68d391', '#f6ad55', '#b794f4', '#4fd1c5', '#fc8181', '#90cdf4', '#fbd38d', '#9ae6b4'];
+  let hash = 0;
+  for (const character of String(id || '')) hash = (hash * 31 + character.charCodeAt(0)) | 0;
+  return colors[(hash >>> 0) % colors.length];
+};
+function getNextProjectGraphName(graphs) {
+  const existingNames = new Set(graphs.map((graph) => String(graph.name || '').trim().toLowerCase()));
+  let number = 1;
+  while (existingNames.has(`graph ${number}`)) number += 1;
+  return `Graph ${number}`;
+}
 const SplashScreen = lazyNamed(() => import('./components/splash/SplashScreen.jsx'), 'SplashScreen');
 const NodePalette = lazyNamed(() => import('./components/palette/NodePalette.jsx'), 'NodePalette');
 const CommandPalette = lazyNamed(() => import('./components/palette/CommandPalette.jsx'), 'CommandPalette');
@@ -50,6 +62,7 @@ import { SelectionContextMenu } from './components/ui/SelectionContextMenu.jsx';
 import { SidebarResizeHandle } from './components/ui/SidebarResizeHandle.jsx';
 import { ReleaseNotes } from './components/ui/ReleaseNotes.jsx';
 import { arcEvents } from './core/ArcEvents.js';
+import { listen as listenTauriEvent } from '@tauri-apps/api/event';
 import { apiUrl, normalizeWorkspaceUrl, studioWebSocketUrl } from './core/api.js';
 import { probeInternetConnectivity } from './core/networkConnectivity.js';
 import { xhrJson } from './core/xhrJson.js';
@@ -58,12 +71,16 @@ import { getArcUiScale } from './core/uiScale.js';
 import { isProjectVariableUpdateForActiveProject } from './core/projectVariables.js';
 import studioPackage from '../package.json';
 import { classifyArcUpdate, compareArcVersions } from './core/appUpdates.js';
-import { DEFAULT_SHORTCUTS, formatShortcut, shortcutMatches } from './core/shortcuts.js';
+import { flattenSlashParameters, isValidSlashName, slashOptionPinId, validateSlashCommandOptions } from '../../studio-server/src/engine/SlashCommandOptions.js';
+import { DEFAULT_SHORTCUTS, formatShortcut, getDefaultShortcut, shortcutMatches } from './core/shortcuts.js';
 import { playUiSound, unlockUiSounds } from './core/uiSounds.js';
-import { BuiltInNodeDefinitions, BundledNodeTypes, createDefaultNodeData, getArrayCreatePins, getAvailableNodeDefinitions, getMathListPins, getNodeArgumentPins, getNodeRegistryDefinitions, getNodeTemplateInputPins, getPermissionOverwritePins, getSwitchCasePins, getTextTemplateSlots, isNodeTypeSupported, registerPluginNodeDefinitions, renderTextTemplate, setWorkspaceNodeDefinitions } from './components/nodes/nodeDefinitions.js';
+import { BuiltInNodeDefinitions, BundledNodeTypes, NODE_SCHEMA_VERSION, CLIENT_PROTOCOL_VERSION, NODE_REGISTRY_PROTOCOL_VERSION, SUPPORTED_NODE_REGISTRY_FEATURES, getNodeRegistryCompatibility, createDefaultNodeData, getAvailableNodeDefinitions, getNodeArgumentPins, getNodeRegistryDefinitions, getNodeTemplateInputPins, getTextTemplateSlots, isNodeTypeSupported, registerPluginNodeDefinitions, renderTextTemplate, resolveDynamicNodePins, setWorkspaceNodeDefinitions } from './components/nodes/nodeDefinitions.js';
 import { createEmbedBlock, embedBlockPins, getEmbedBlocks } from './components/nodes/EmbedNodeBuilder.jsx';
 import { createDefaultModal } from './components/nodes/ModalNodeBuilder.jsx';
 import { evaluateMathNode } from '../../studio-server/src/engine/MathOperations.js';
+import { FUNCTION_ARGUMENT_VALUE_TYPES, functionArgumentPinId, functionInputPinType, getFunctionGraphArguments, getFunctionInputArguments, migrateFunctionGraphEntry } from '../../studio-server/src/engine/FunctionGraphContract.js';
+import { validateDiscordSemanticValue } from '../../studio-server/src/engine/DiscordValueValidation.js';
+import { hasImportableTextContent } from '../../studio-server/src/storage/ImportContentReview.js';
 //
 const LEGACY_EMBED_PIN_FIELDS = {
   title: ['title', 'value'], description: ['description', 'value'], url: ['url', 'url'], color: ['color', 'value'],
@@ -153,6 +170,63 @@ function collectTemplateValuePaths(value, root, depth = 0, output = [], seen = n
   }
   seen.delete(value);
   return output;
+}
+
+function slashAttachmentVariables(nodes = [], existingVariables = []) {
+  const usedNames = new Set(existingVariables.map((variable) => String(variable?.name || '').toLowerCase()).filter(Boolean));
+  return nodes.filter((node) => node?.type === 'event_slash_command').flatMap((node) => {
+    const commandName = String(node.data?.commandName || 'command').replace(/[^A-Za-z0-9_-]/g, '_');
+    return flattenSlashParameters(node.data?.options).filter(({ option, path }) => Number(option?.type) === 11 && path.every(isValidSlashName)).map(({ option, path }) => ({
+      option,
+      path,
+      baseName: `${commandName}_${path.join('_')}`.slice(0, 64)
+    })).map(({ option, path, baseName }) => {
+      let name = baseName;
+      let suffix = 2;
+      while (usedNames.has(name.toLowerCase())) {
+        const marker = `_${suffix++}`;
+        name = `${baseName.slice(0, 64 - marker.length)}${marker}`;
+      }
+      usedNames.add(name.toLowerCase());
+      return {
+        id: `slash_attachment_${node.id}_${path.join('.')}`,
+        name,
+        type: 'attachment',
+        initialValue: { id: '', filename: '', url: '', content_type: '', size: 0 },
+        persist: false,
+        readOnly: true,
+        sourceNodeId: node.id,
+        sourceOptionName: option.name,
+        sourceOptionPinId: slashOptionPinId(path)
+      };
+    });
+  });
+}
+
+function addSlashOptionEditorIds(options = [], nodeId, path = []) {
+  return (Array.isArray(options) ? options : []).map((option, index) => {
+    const segment = String(option?.name || index);
+    const optionPath = [...path, segment];
+    return {
+      ...option,
+      id: option.id || `option:${nodeId}:${optionPath.join('.')}`,
+      choices: (Array.isArray(option.choices) ? option.choices : []).map((choice, choiceIndex) => ({ ...choice, id: choice.id || `choice:${nodeId}:${optionPath.join('.')}:${choiceIndex}` })),
+      ...([1, 2].includes(Number(option.type)) ? { options: addSlashOptionEditorIds(option.options, nodeId, optionPath) } : {})
+    };
+  });
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map((item) => item === undefined ? 'null' : stableJson(item)).join(',')}]`;
+  if (value && typeof value === 'object') return `{${Object.keys(value).sort().filter((key) => value[key] !== undefined).map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  return JSON.stringify(value);
+}
+
+async function sha256Hex(value) {
+  if (!globalThis.crypto?.subtle) throw new Error('SHA-256 integrity checks are unavailable in this browser.');
+  const bytes = new TextEncoder().encode(value);
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 function getNodeOutputSample(source, pinId, variables, graphNodes) {
@@ -333,7 +407,7 @@ function collaborativeAttachments(attachments = []) {
 }
 
 function collaborativeEmbedDraft(studio) {
-  return { name: studio.name, content: studio.content || '', blocks: studio.blocks || [], components: studio.components || [], attachments: collaborativeAttachments(studio.attachments || []) };
+  return { name: studio.name, content: studio.content || '', blocks: studio.blocks || [], components: studio.components || [], componentsV2Layout: studio.componentsV2Layout || [], componentsV2Enabled: Boolean(studio.componentsV2Enabled), attachments: collaborativeAttachments(studio.attachments || []) };
 }
 
 function getTextEdit(base, next) {
@@ -478,13 +552,42 @@ function nodeTopLeftAtCenter(type, center) {
   return { x: (center?.x || 0) - 124, y: (center?.y || 0) - (76 + rows * 23) / 2 };
 }
 
+const CANONICAL_UUID = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
+
+function projectIdFromRouteSegment(segment) {
+  const value = String(segment || '');
+  if (/^project_/i.test(value)) return value;
+  return CANONICAL_UUID.test(value) ? `project_${value.toLowerCase()}` : value;
+}
+
+function projectIdToRouteSegment(projectId) {
+  const match = String(projectId || '').match(/^project_([a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12})$/i);
+  return match ? match[1].toLowerCase() : String(projectId || '');
+}
+
+function graphIdFromRouteSegment(segment) {
+  const value = String(segment || '');
+  if (CANONICAL_UUID.test(value)) return `graph_${value.toLowerCase()}`;
+  const imported = value.match(/^import_([a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12})$/i);
+  if (imported) return `graph_import_${imported[1].toLowerCase()}`;
+  return value;
+}
+
+function graphIdToRouteSegment(graphId) {
+  const value = String(graphId || '');
+  const imported = value.match(/^graph_import_([a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12})$/i);
+  if (imported) return `import_${imported[1].toLowerCase()}`;
+  const match = value.match(/^graph_([a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12})$/i);
+  return match ? match[1].toLowerCase() : value;
+}
+
 function readBrowserStudioRoute() {
   const match = window.location.pathname.match(/^\/projects\/([^/]+)(?:\/graphs\/([^/]+))?\/?$/);
   const params = new URLSearchParams(window.location.search);
   try {
     return {
-      projectId: match ? decodeURIComponent(match[1]) : '',
-      graphId: match?.[2] ? decodeURIComponent(match[2]) : '',
+      projectId: match ? projectIdFromRouteSegment(decodeURIComponent(match[1])) : '',
+      graphId: match?.[2] ? graphIdFromRouteSegment(decodeURIComponent(match[2])) : '',
       nodeId: params.get('node') || '',
       panel: params.get('panel') || '',
       librarySection: params.get('library') || '',
@@ -502,7 +605,8 @@ function readBrowserStudioRoute() {
         tab: params.get('studioTab') || '',
         assetId: params.get('studioAsset') || '',
         blockId: params.get('studioBlock') || '',
-        blockKey: params.get('studioBlockField') || ''
+        blockKey: params.get('studioBlockField') || '',
+        blockCollection: params.get('studioBlockCollection') || ''
       }
     };
   } catch { return { projectId: '', graphId: '', nodeId: '', panel: '', librarySection: '', variableScope: '', emptyWorkspace: false, studio: { kind: '' } }; }
@@ -522,7 +626,8 @@ function writeStudioRouteParams(params, route) {
     studioTab: route.tab,
     studioAsset: route.assetId,
     studioBlock: route.blockId,
-    studioBlockField: route.blockKey
+    studioBlockField: route.blockKey,
+    studioBlockCollection: route.blockCollection
   };
   for (const [key, value] of Object.entries(fields)) {
     if (value !== undefined && value !== null && String(value) !== '') params.set(key, String(value));
@@ -545,6 +650,7 @@ export function App() {
     try { return desktopMode && localStorage.getItem('arc_workspace_mode') === 'remote' ? 'remote' : 'local'; }
     catch { return 'local'; }
   });
+  const externalCollaborativeWorkspace = !desktopMode || workspaceMode === 'remote';
   const [workspaceSwitchOpen, setWorkspaceSwitchOpen] = useState(false);
   const localSessionRef = useRef(null);
   if (desktopMode && !localSessionRef.current) {
@@ -560,15 +666,18 @@ export function App() {
     try { return desktopMode ? (localStorage.getItem('arc_remote_workspace_name') || '').slice(0, 35) : ''; }
     catch { return ''; }
   });
+  const externalWorkspaceName = remoteWorkspaceName || 'Private Workspace';
   const [supportedWorkspaceNodeTypes, setSupportedWorkspaceNodeTypes] = useState(null);
   const [workspaceCompatibilityNotice, setWorkspaceCompatibilityNotice] = useState('');
   const [pluginDefinitionsRevision, setPluginDefinitionsRevision] = useState(0);
+  const nodeRegistryRevisionRef = useRef('');
   const availableNodeDefinitions = useMemo(() => getAvailableNodeDefinitions(BuiltInNodeDefinitions, supportedWorkspaceNodeTypes), [pluginDefinitionsRevision, supportedWorkspaceNodeTypes]);
   const [workspaceRevision, setWorkspaceRevision] = useState(0);
   const [networkOnline, setNetworkOnline] = useState(() => navigator.onLine !== false);
   const [appUpdate, setAppUpdate] = useState(null);
   const [serverUpdate, setServerUpdate] = useState(null);
   const [stableUpdateReady, setStableUpdateReady] = useState(null);
+  const [downloadedUpdateReady, setDownloadedUpdateReady] = useState(null);
   const [releaseNotesNotice, setReleaseNotesNotice] = useState(null);
   const [updateNotice, setUpdateNotice] = useState(null);
   const [updateInstallPromptOpen, setUpdateInstallPromptOpen] = useState(false);
@@ -683,6 +792,10 @@ export function App() {
   const [desktopFileImportBusy, setDesktopFileImportBusy] = useState(false);
   const desktopGraphImportHandlerRef = useRef(null);
   const [projectImportTrusted, setProjectImportTrusted] = useState(false);
+  const [projectImportEncrypted, setProjectImportEncrypted] = useState(false);
+  const [projectImportPassword, setProjectImportPassword] = useState('');
+  const [projectImportSharingWarning, setProjectImportSharingWarning] = useState(null);
+  const [projectImportSharingApproved, setProjectImportSharingApproved] = useState(false);
   const [projectImportError, setProjectImportError] = useState('');
   const [projectImportCompatibility, setProjectImportCompatibility] = useState(null);
   const [projectImportOldVersionApproved, setProjectImportOldVersionApproved] = useState(false);
@@ -774,6 +887,8 @@ export function App() {
   const collaborationMotionSendIntervalRef = useRef(16);
   const pendingCollaborationActionRef = useRef(new Map());
   const latestRemoteCollaborationRevisionRef = useRef(new Map());
+  const pendingCanvasArrowActionsRef = useRef(new Map());
+  const pendingGraphChatMovesRef = useRef(new Map());
   const localCanvasMotionRoomRef = useRef('');
   const collaborationPresenceRef = useRef({ projectId: '', graphId: '' });
   const errorPulseUntilRef = useRef(new Map());
@@ -802,7 +917,7 @@ export function App() {
     const normalizedPath = String(path).replace(/\\/g, '/');
     const name = normalizedPath.split('/').pop() || 'project.arcproject';
     const lowerName = name.toLowerCase();
-    if (lowerName.endsWith('.arc.json')) {
+    if (lowerName.endsWith('.arcgraph') || lowerName.endsWith('.arc.json')) {
       const invoke = window.__TAURI_INTERNALS__?.invoke;
       if (typeof invoke !== 'function') {
         arcEvents.emit('toast:notify', { title: 'Open failed', message: 'ARC Studio could not read this graph file.', type: 'error' });
@@ -816,10 +931,12 @@ export function App() {
       return;
     }
     if (!lowerName.endsWith('.arcproject')) {
-      arcEvents.emit('toast:notify', { title: 'Unsupported file', message: 'Choose an .arc.json graph or .arcproject file.', type: 'error' });
+      arcEvents.emit('toast:notify', { title: 'Unsupported file', message: 'Choose an .arcgraph file or .arcproject file.', type: 'error' });
       return;
     }
     projectImportPathRef.current = path;
+    setProjectImportSharingWarning(null);
+    setProjectImportSharingApproved(false);
     setProjectImportFile({ name, path, text: async () => {
       const invoke = window.__TAURI_INTERNALS__?.invoke;
       if (typeof invoke !== 'function') throw new Error('ARC Studio could not open this project file.');
@@ -830,6 +947,24 @@ export function App() {
     setProjectImportCompatibility(null);
     setProjectImportOldVersionApproved(false);
   }, [desktopFileImportBusy, desktopMode, openedProjectFiles, projectImportFile]);
+  useEffect(() => {
+    let active = true;
+    setProjectImportEncrypted(false);
+    setProjectImportPassword('');
+    setProjectImportSharingWarning(null);
+    setProjectImportSharingApproved(false);
+    if (!projectImportFile?.text) return undefined;
+    Promise.resolve(projectImportFile.text()).then((text) => {
+      const parsed = JSON.parse(text);
+      if (!active) return;
+      const encrypted = parsed?.format === 'arc-project-encrypted';
+      setProjectImportEncrypted(encrypted);
+      if (!encrypted && externalCollaborativeWorkspace && hasImportableTextContent(parsed)) {
+        setProjectImportSharingWarning({ workspaceName: externalWorkspaceName });
+      }
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [externalCollaborativeWorkspace, externalWorkspaceName, projectImportFile]);
   useEffect(() => {
     let active = true;
     let probeInFlight = false;
@@ -1058,9 +1193,43 @@ export function App() {
     catch { return []; }
   });
   const [embedAssets, setEmbedAssets] = useState([]);
-  const [embedStudio, setEmbedStudio] = useState(null);
-  const embedStudioRef = useRef(embedStudio);
-  embedStudioRef.current = embedStudio;
+  const [embedStudio, setEmbedStudioState] = useState(null);
+  const embedStudioRef = useRef(null);
+  const embedStudioHistoryRef = useRef(new Map());
+  const snapshotEmbedStudio = (studio) => structuredClone({
+    name: studio?.name || '',
+    content: studio?.content || '',
+    blocks: studio?.blocks || [],
+    components: studio?.components || [],
+    componentsV2Layout: studio?.componentsV2Layout || [],
+    componentsV2Enabled: Boolean(studio?.componentsV2Enabled),
+    attachments: studio?.attachments || []
+  });
+  const recordEmbedStudioHistory = (studio) => {
+    if (!studio?.collabId) return;
+    let history = embedStudioHistoryRef.current.get(studio.collabId);
+    if (!history) {
+      history = { past: [], future: [], lastAt: 0 };
+      embedStudioHistoryRef.current.set(studio.collabId, history);
+    }
+    const now = Date.now();
+    if (now - history.lastAt > 500) {
+      history.past.push(snapshotEmbedStudio(studio));
+      if (history.past.length > 100) history.past.shift();
+    }
+    history.future = [];
+    history.lastAt = now;
+    setHistoryRevision((revision) => revision + 1);
+  };
+  const setEmbedStudio = useCallback((update) => {
+    const current = embedStudioRef.current;
+    const next = typeof update === 'function' ? update(current) : update;
+    if (next?.collabId && next.collabId !== current?.collabId) {
+      embedStudioHistoryRef.current.set(next.collabId, { past: [], future: [], lastAt: 0 });
+    }
+    embedStudioRef.current = next;
+    setEmbedStudioState(next);
+  }, []);
   const saveEmbedShortcutRef = useRef(null);
   const collaborativeEmbedBaseRef = useRef(new Map());
   const [discordTextStudio, setDiscordTextStudio] = useState(null);
@@ -1148,20 +1317,55 @@ export function App() {
     const socket = wsRef.current;
     if (localDesktopWorkspace || !activeProjectId || !activeTabId || !liveGraphReadyRef.current.has(`${activeProjectId}:${activeTabId}`)
       || !socket || socket.readyState !== WebSocket.OPEN) return false;
-    socket.send(JSON.stringify({ type: 'GRAPH_CHAT_SEND', projectId: activeProjectId, graphId: activeTabId, payload: { content, position } }));
+    const now = Date.now();
+    const clientActionId = globalThis.crypto?.randomUUID?.() || `chat-${now}-${Math.random().toString(36).slice(2)}`;
+    const cleanContent = Array.from(String(content || '').trim()).slice(0, 280).join('');
+    if (!cleanContent || !Number.isFinite(position?.x) || !Number.isFinite(position?.y)) return false;
+    const length = Array.from(cleanContent).length;
+    const stayMs = Math.min(20_000, 5_000 + Math.ceil((length / 280) * 15_000));
+    const fadeMs = Math.min(2_000, 500 + Math.ceil((length / 280) * 1_500));
+    setGraphChatBubbles((previous) => [...previous.filter((bubble) => bubble.expiresAt > now), {
+      id: `local:${clientActionId}`, clientActionId, projectId: activeProjectId, graphId: activeTabId,
+      userId: currentUser?.id || '', username: currentUser?.username || 'You', color: getLocalCollaboratorColor(currentUser?.id),
+      content: cleanContent, x: position.x, y: position.y, createdAt: now, stayMs, fadeMs, expiresAt: now + stayMs + fadeMs
+    }]);
+    socket.send(JSON.stringify({ type: 'GRAPH_CHAT_SEND', projectId: activeProjectId, graphId: activeTabId, payload: { content: cleanContent, position, clientActionId } }));
     return true;
-  }, [activeProjectId, activeTabId, localDesktopWorkspace]);
+  }, [activeProjectId, activeTabId, currentUser, localDesktopWorkspace]);
   const sendCanvasArrowAction = useCallback((operation, payload) => {
     const socket = wsRef.current;
     if (!activeProjectId || !activeTabId || !liveGraphReadyRef.current.has(`${activeProjectId}:${activeTabId}`)
       || !socket || socket.readyState !== WebSocket.OPEN) return false;
-    socket.send(JSON.stringify({ type: 'CANVAS_ARROW_ACTION', projectId: activeProjectId, graphId: activeTabId, payload: { operation, ...payload } }));
+    let actionPayload = { operation, ...payload };
+    if (operation === 'create') {
+      actionPayload.clientActionId ||= globalThis.crypto?.randomUUID?.() || `arrow-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    } else if (operation === 'move') {
+      const clientActionId = globalThis.crypto?.randomUUID?.() || `arrow-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      actionPayload.clientActionId = clientActionId;
+      if (payload?.id) pendingCanvasArrowActionsRef.current.set(payload.id, clientActionId);
+      setTransientCanvasArrows((previous) => previous.map((arrow) => arrow.id === payload?.id
+        ? { ...arrow, start: payload.start, end: payload.end, clientActionId } : arrow));
+    } else if (operation === 'move-many' && Array.isArray(payload?.arrows)) {
+      actionPayload.arrows = payload.arrows.map((move) => {
+        const clientActionId = globalThis.crypto?.randomUUID?.() || `arrow-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        if (move?.id) pendingCanvasArrowActionsRef.current.set(move.id, clientActionId);
+        return { ...move, clientActionId };
+      });
+      const moves = new Map(actionPayload.arrows.map((move) => [move.id, move]));
+      setTransientCanvasArrows((previous) => previous.map((arrow) => moves.has(arrow.id)
+        ? { ...arrow, ...moves.get(arrow.id) } : arrow));
+    }
+    socket.send(JSON.stringify({ type: 'CANVAS_ARROW_ACTION', projectId: activeProjectId, graphId: activeTabId, payload: actionPayload }));
     return true;
   }, [activeProjectId, activeTabId]);
   const moveGraphChatBubble = useCallback((id, position) => {
     const socket = wsRef.current;
     if (localDesktopWorkspace || !id || !activeProjectId || !activeTabId || !socket || socket.readyState !== WebSocket.OPEN) return;
-    socket.send(JSON.stringify({ type: 'GRAPH_CHAT_MOVE', projectId: activeProjectId, graphId: activeTabId, payload: { id, position } }));
+    const clientActionId = globalThis.crypto?.randomUUID?.() || `chat-move-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    pendingGraphChatMovesRef.current.set(id, clientActionId);
+    setGraphChatBubbles((previous) => previous.map((bubble) => bubble.id === id
+      ? { ...bubble, x: position.x, y: position.y, clientActionId } : bubble));
+    socket.send(JSON.stringify({ type: 'GRAPH_CHAT_MOVE', projectId: activeProjectId, graphId: activeTabId, payload: { id, position, clientActionId } }));
   }, [activeProjectId, activeTabId, localDesktopWorkspace]);
   const requestNoteEditLock = useCallback((noteId) => {
     const socket = wsRef.current;
@@ -1212,7 +1416,7 @@ export function App() {
     const savedVariables = Array.isArray(activeGraph?.variables) ? activeGraph.variables : [];
     const graphNodes = activeGraph?.nodes || [];
     const graphConnections = activeGraph?.connections || [];
-    const validVariableName = (name) => /^(?=.{1,64}$)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(name) || /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name);
+    const validVariableName = (name) => /^(?=.{1,64}$)[A-Za-z0-9]+(?:_+[A-Za-z0-9]+|-[A-Za-z0-9]+)*$/.test(name);
     const defaultValue = (type) => type === 'number' ? 0 : type === 'boolean' ? false : type === 'array' ? [] : type === 'object' ? {} : '';
     const resolveVariableType = (variableNode, seen = new Set()) => {
       if (!variableNode || seen.has(variableNode.id)) return null;
@@ -1258,7 +1462,8 @@ export function App() {
       return [{ id: `nodevar_${node.id}`, name, type, initialValue: wire ? defaultValue(type) : node.data?.value ?? defaultValue(type), persist: node.data?.persist !== false, nodeOwned: true, sourceNodeId: node.id }];
     });
     const existingIds = new Set(savedVariables.map((item) => item.id));
-    return [...savedVariables, ...createdVariables.filter((variable) => !existingIds.has(variable.id))];
+    const graphVariables = [...savedVariables, ...createdVariables.filter((variable) => !existingIds.has(variable.id))];
+    return [...graphVariables, ...slashAttachmentVariables(graphNodes, graphVariables)];
   }, [activeGraph]);
   const availableVariables = useMemo(() => [
     ...graphVariables.map((variable) => ({ ...variable, scope: 'graph' })),
@@ -1323,9 +1528,13 @@ export function App() {
     return () => window.removeEventListener('beforeunload', warnBeforeLeaving);
   }, [desktopMode, graphTabStatuses]);
   const historyAvailability = useMemo(() => {
+    if (embedStudioOpenForActiveGraph) {
+      const studioHistory = embedStudioHistoryRef.current.get(embedStudio?.collabId);
+      return { canUndo: Boolean(studioHistory?.past.length), canRedo: Boolean(studioHistory?.future.length) };
+    }
     const history = historyRef.current.get(activeTabId);
     return { canUndo: Boolean(history?.past.length), canRedo: Boolean(history?.future.length) };
-  }, [activeTabId, historyRevision]);
+  }, [activeTabId, embedStudio?.collabId, embedStudioOpenForActiveGraph, historyRevision]);
 
   useEffect(() => {
     if (!desktopMode) return undefined;
@@ -1613,51 +1822,73 @@ export function App() {
         if (cancelled) return;
         if (typeof system.isSetupCompleted !== 'boolean') throw new Error('Workspace returned an invalid status response.');
         const serverVersion = String(system.version || '').trim();
+        const requiredClientVersion = String(system.minimumClientVersion || serverVersion).trim();
+        setMinimumRequiredClientVersion(requiredClientVersion);
+        const minimumVersionOrder = compareArcVersions(studioPackage.version, requiredClientVersion);
+        if (minimumVersionOrder === null || minimumVersionOrder < 0) throw new Error(`Update ARC Studio to ${requiredClientVersion || 'the required version'} or newer to connect.`);
+        const systemRegistryCompatibility = getNodeRegistryCompatibility({
+          nodeRegistryProtocolVersion: system.nodeRegistryProtocolVersion,
+          nodeRegistryFeatures: SUPPORTED_NODE_REGISTRY_FEATURES
+        }, system.nodeRegistryRequiredFeatures);
+        if (!systemRegistryCompatibility.compatible) {
+          const unsupported = systemRegistryCompatibility.unsupportedFeatures.length
+            ? ` Unsupported features: ${systemRegistryCompatibility.unsupportedFeatures.join(', ')}.`
+            : '';
+          throw new Error(`This workspace requires node registry protocol ${system.nodeRegistryProtocolVersion ?? 'unknown'}, which this client cannot use.${unsupported} Update ARC Studio to a compatible build.`);
+        }
         const versionOrder = compareArcVersions(serverVersion, studioPackage.version);
         let serverNodeTypes = Array.isArray(system.supportedNodeTypes) ? system.supportedNodeTypes : null;
         let hasWorkspaceSchemas = false;
         let registryLoadIssue = '';
-        try {
-          const registryResponse = await fetch(apiUrl('/api/nodes/registry'), { signal: controller.signal, cache: 'no-store' });
-          if (registryResponse.ok) {
-            const registry = await registryResponse.json();
-            const definitions = getNodeRegistryDefinitions(registry);
-            if (definitions) {
-              setWorkspaceNodeDefinitions(definitions);
-              registerPluginNodeDefinitions(installedPluginsRef.current);
-              serverNodeTypes = definitions.map((definition) => definition.type);
-              setPluginDefinitionsRevision((revision) => revision + 1);
-              hasWorkspaceSchemas = true;
+        if (authToken) {
+          try {
+            const registryResponse = await fetch(apiUrl('/api/nodes/registry'), { signal: controller.signal, cache: 'no-cache', headers: { 'x-arc-token': authToken } });
+            if (registryResponse.ok) {
+              const registry = await registryResponse.json();
+              const definitions = getNodeRegistryDefinitions(registry);
+              if (definitions) {
+                setWorkspaceNodeDefinitions(definitions, registry.categories);
+                nodeRegistryRevisionRef.current = registry.registryRevision;
+                registerPluginNodeDefinitions(installedPluginsRef.current);
+                serverNodeTypes = definitions.map((definition) => definition.type);
+                setPluginDefinitionsRevision((revision) => revision + 1);
+                hasWorkspaceSchemas = true;
+              } else {
+                registryLoadIssue = 'Workspace node schemas are unavailable or use an unsupported schema version.';
+              }
             } else {
-              registryLoadIssue = 'Workspace node schemas are unavailable or use an unsupported schema version.';
+              registryLoadIssue = `Workspace node schemas returned HTTP ${registryResponse.status}.`;
             }
-          } else {
-            registryLoadIssue = `Workspace node schemas returned HTTP ${registryResponse.status}.`;
+          } catch (error) {
+            if (error.name === 'AbortError' && cancelled) return;
+            registryLoadIssue = `Workspace node schemas could not be loaded${error?.message ? `: ${error.message}` : '.'}`;
           }
-        } catch (error) {
-          if (error.name === 'AbortError' && cancelled) return;
-          registryLoadIssue = `Workspace node schemas could not be loaded${error?.message ? `: ${error.message}` : '.'}`;
         }
         if (!hasWorkspaceSchemas) {
           setWorkspaceNodeDefinitions(null);
-          registerPluginNodeDefinitions(installedPluginsRef.current);
+          nodeRegistryRevisionRef.current = '';
+          registerPluginNodeDefinitions([]);
           setPluginDefinitionsRevision((revision) => revision + 1);
         }
-        if (serverNodeTypes?.length && serverNodeTypes.every((type) => typeof type === 'string')) {
+        if (authToken && serverNodeTypes?.length && serverNodeTypes.every((type) => typeof type === 'string')) {
           const serverNodeTypeSet = new Set(serverNodeTypes);
           setSupportedWorkspaceNodeTypes(serverNodeTypeSet);
           const workspaceOnlyNodeCount = hasWorkspaceSchemas ? [...serverNodeTypeSet].filter((type) => !BundledNodeTypes.has(type)).length : 0;
           setWorkspaceCompatibilityNotice(workspaceOnlyNodeCount
             ? `${workspaceOnlyNodeCount} workspace node type${workspaceOnlyNodeCount === 1 ? '' : 's'} use server-provided schemas and generic editors. Node behavior runs on the workspace server.`
-            : registryLoadIssue ? `${registryLoadIssue} The bundled node schemas will be used.`
+            : registryLoadIssue ? registryLoadIssue
             : versionOrder === null ? 'Connected using workspace-provided node support metadata.'
               : versionOrder < 0 ? `Connected to older workspace version ${serverVersion}. Node behavior runs on the workspace server.`
                 : versionOrder > 0 ? `Connected to newer workspace version ${serverVersion}. Some editor-specific controls may not be available.` : '');
+        } else if (!authToken) {
+          setWorkspaceNodeDefinitions(null);
+          setSupportedWorkspaceNodeTypes(new Set());
+          setWorkspaceCompatibilityNotice('');
         } else {
           setWorkspaceNodeDefinitions(null);
           setSupportedWorkspaceNodeTypes(null);
           setWorkspaceCompatibilityNotice(desktopMode && workspaceMode === 'remote'
-            ? `Connected to workspace version ${serverVersion || 'unknown'}. ${registryLoadIssue || 'Its node registry is unavailable.'} This client will use its bundled node schemas.`
+            ? `Connected to workspace version ${serverVersion || 'unknown'}. ${registryLoadIssue || 'Its node registry is unavailable.'}`
             : registryLoadIssue);
         }
         if (typeof system.version === 'string' && system.version.trim()) setStudioServerVersion(system.version.trim());
@@ -1690,6 +1921,7 @@ export function App() {
           return;
         }
         setNeedsSetup(false);
+        let validSession = false;
         if (authToken) {
           try {
             const res = await fetch(apiUrl('/api/auth/me'), { headers: { 'x-arc-token': authToken }, signal: controller.signal });
@@ -1702,6 +1934,7 @@ export function App() {
               throw new Error(res.status === 401 ? 'Session invalid' : `Workspace returned HTTP ${res.status}.`);
             }
             const data = await res.json();
+            validSession = true;
             if (!cancelled) setCurrentUser(data.user);
           } catch (error) {
             if (!cancelled && error.message === 'Session invalid') {
@@ -1714,6 +1947,7 @@ export function App() {
             }
           }
         }
+        if (validSession && !hasWorkspaceSchemas) throw new Error(`Could not load authoritative node schemas from this workspace. ${registryLoadIssue || 'Reconnect after updating the server.'}`);
         if (!cancelled) setIsReady(true);
       })
       .catch((error) => {
@@ -1864,6 +2098,50 @@ export function App() {
     let heartbeatTimer;
     let socket;
     let reconnectAttempts = 0;
+    let registryRefreshPromise = null;
+    let registryRefreshRequestVersion = 0;
+
+    const refreshNodeRegistry = (expectedRevision = '') => {
+      if (expectedRevision && expectedRevision === nodeRegistryRevisionRef.current && !registryRefreshPromise) return Promise.resolve();
+      registryRefreshRequestVersion += 1;
+      if (registryRefreshPromise) return registryRefreshPromise;
+      registryRefreshPromise = (async () => {
+        let completedRequestVersion = 0;
+        do {
+          completedRequestVersion = registryRefreshRequestVersion;
+          const [pluginsResponse, registryResponse] = await Promise.all([
+            fetch(apiUrl('/api/plugins/installed'), { headers: { 'x-arc-token': authToken } }),
+            fetch(apiUrl('/api/nodes/registry'), { headers: { 'x-arc-token': authToken }, cache: 'no-cache' })
+          ]);
+          if (!pluginsResponse.ok || !registryResponse.ok) throw new Error('Could not refresh the workspace node catalog.');
+          const [pluginsData, registry] = await Promise.all([pluginsResponse.json(), registryResponse.json()]);
+          const definitions = getNodeRegistryDefinitions(registry);
+          if (!definitions || typeof registry.registryRevision !== 'string') throw new Error('The workspace returned an invalid node catalog.');
+          const installed = Array.isArray(pluginsData.plugins) ? pluginsData.plugins : [];
+          setWorkspaceNodeDefinitions(definitions, registry.categories);
+          installedPluginsRef.current = installed;
+          setInstalledPlugins(installed);
+          registerPluginNodeDefinitions(installed);
+          setSupportedWorkspaceNodeTypes(new Set(definitions.map((definition) => definition.type)));
+          nodeRegistryRevisionRef.current = registry.registryRevision;
+          setPluginDefinitionsRevision((revision) => revision + 1);
+        } while (completedRequestVersion !== registryRefreshRequestVersion);
+      })().finally(() => { registryRefreshPromise = null; });
+      return registryRefreshPromise;
+    };
+
+    const handleRegistryRefreshFailure = (error, currentSocket) => {
+      if (!active) return;
+      setWorkspaceNodeDefinitions(null);
+      setSupportedWorkspaceNodeTypes(new Set());
+      installedPluginsRef.current = [];
+      setInstalledPlugins([]);
+      registerPluginNodeDefinitions([]);
+      setPluginDefinitionsRevision((revision) => revision + 1);
+      setCollaborationSocketStatus('reconnecting');
+      arcEvents.emit('toast:notify', { title: 'Node catalog refresh failed', message: error?.message || 'Reconnect to load the latest node catalog.', type: 'error', duration: 9000 });
+      if (currentSocket?.readyState === WebSocket.OPEN) currentSocket.close(4000, 'Node catalog refresh failed.');
+    };
 
     const scheduleReconnect = () => {
       if (!active || reconnectTimer) return;
@@ -1930,7 +2208,18 @@ export function App() {
       currentSocket.onopen = () => {
         if (currentSocket.readyState === WebSocket.OPEN) {
           collaborationPresenceRef.current = { projectId: '', graphId: '' };
-          currentSocket.send(JSON.stringify({ type: 'AUTH', token: authToken, clientVersion: studioPackage.version }));
+          currentSocket.send(JSON.stringify({
+            type: 'AUTH', protocolVersion: CLIENT_PROTOCOL_VERSION, token: authToken, clientVersion: studioPackage.version,
+            nodeSchemaVersion: NODE_SCHEMA_VERSION,
+            nodeRegistryProtocolVersion: NODE_REGISTRY_PROTOCOL_VERSION,
+            nodeRegistryFeatures: SUPPORTED_NODE_REGISTRY_FEATURES,
+            clientIdentity: {
+              product: 'arc-studio', protocolVersion: CLIENT_PROTOCOL_VERSION, version: studioPackage.version,
+              nodeSchemaVersion: NODE_SCHEMA_VERSION,
+              nodeRegistryProtocolVersion: NODE_REGISTRY_PROTOCOL_VERSION,
+              nodeRegistryFeatures: SUPPORTED_NODE_REGISTRY_FEATURES
+            }
+          }));
           heartbeatTimer = window.setInterval(() => {
             if (currentSocket.readyState !== WebSocket.OPEN) return;
             if (document.visibilityState !== 'visible') { pendingPing = null; return; }
@@ -1972,6 +2261,38 @@ export function App() {
       currentSocket.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
+          if (msg.type === 'PROBLEM') {
+            const problem = msg.payload || {};
+            if (problem.code === 'CLIENT_VERSION_BLOCKED') {
+              setMinimumRequiredClientVersion(String(problem.minimumVersion || 'a newer ARC Studio version'));
+              setCollaborationSocketStatus('incompatible');
+              arcEvents.emit('toast:notify', { title: problem.title || 'ARC Studio update required', message: problem.detail || `This workspace requires version ${problem.minimumVersion || 'newer'} or newer.`, type: 'error', duration: 15000 });
+            } else if (problem.code === 'NODE_REGISTRY_INCOMPATIBLE') {
+              setCollaborationSocketStatus('incompatible');
+              arcEvents.emit('toast:notify', { title: problem.title || 'Node registry update required', message: problem.detail || 'Update ARC Studio to a compatible build.', type: 'error', duration: 15000 });
+            } else if (problem.code === 'CLIENT_PROTOCOL_INCOMPATIBLE') {
+              setCollaborationSocketStatus('incompatible');
+              arcEvents.emit('toast:notify', { title: problem.title || 'Client protocol update required', message: problem.detail || 'Update ARC Studio to a compatible build.', type: 'error', duration: 15000 });
+            } else if (problem.code === 'CLIENT_NOT_ALLOWED') {
+              setCollaborationSocketStatus('blocked');
+              arcEvents.emit('toast:notify', { title: problem.title || 'Client not allowed', message: problem.detail || 'The workspace owner has disabled unknown clients.', type: 'error', duration: 15000 });
+            } else if (problem.code === 'COLLABORATOR_LIMIT_REACHED') {
+              setCollaborationSocketStatus('blocked');
+              arcEvents.emit('toast:notify', { title: problem.title || 'Workspace is full', message: problem.detail || 'The workspace has reached its real-time collaborator limit.', type: 'error', duration: 15000 });
+            } else {
+              arcEvents.emit('toast:notify', { title: problem.title || 'Workspace request failed', message: problem.detail || 'The workspace could not complete the request.', type: 'error', duration: 7000 });
+              return;
+            }
+            active = false;
+            window.clearTimeout(reconnectTimer);
+            reconnectTimer = null;
+            currentSocket.close(1008, 'Workspace protocol problem.');
+            return;
+          }
+          if (msg.type === 'NODE_REGISTRY_UPDATED') {
+            void refreshNodeRegistry(String(msg.payload?.registryRevision || '')).catch((error) => handleRegistryRefreshFailure(error, currentSocket));
+            return;
+          }
           if (msg.type === 'CLIENT_VERSION_BLOCKED') {
             setMinimumRequiredClientVersion(String(msg.payload?.minimumVersion || 'a newer ARC Studio version'));
             setCollaborationSocketStatus('incompatible');
@@ -1985,6 +2306,22 @@ export function App() {
             window.clearTimeout(reconnectTimer);
             reconnectTimer = null;
             currentSocket.close(1008, 'Client update required.');
+          } else if (msg.type === 'NODE_SCHEMA_BLOCKED') {
+            const requiredVersion = String(msg.payload?.minimumVersion || 'a newer ARC Studio version');
+            setMinimumRequiredClientVersion(requiredVersion);
+            setCollaborationSocketStatus('incompatible');
+            arcEvents.emit('toast:notify', { title: 'ARC Studio update required', message: `This workspace requires node schema ${msg.payload?.requiredSchemaVersion || 'a newer version'}. Update ARC Studio to a compatible build.`, type: 'error', duration: 15000 });
+            active = false;
+            window.clearTimeout(reconnectTimer);
+            reconnectTimer = null;
+            currentSocket.close(1008, 'Client schema update required.');
+          } else if (msg.type === 'CLIENT_NOT_ALLOWED') {
+            setCollaborationSocketStatus('blocked');
+            arcEvents.emit('toast:notify', { title: 'Client not allowed', message: msg.payload?.message || 'The workspace owner has disabled unknown clients.', type: 'error', duration: 15000 });
+            active = false;
+            window.clearTimeout(reconnectTimer);
+            reconnectTimer = null;
+            currentSocket.close(1008, 'Client not allowed.');
           } else if (msg.type === 'PONG') {
             lastPongAt = Date.now();
             if (document.visibilityState !== 'visible') { pendingPing = null; return; }
@@ -2031,9 +2368,20 @@ export function App() {
             return;
           }
           if (msg.type === 'INIT_STATE') {
+            if (typeof msg.payload.collaboratorColor === 'string') {
+              setCurrentUser((current) => current ? { ...current, color: msg.payload.collaboratorColor } : current);
+            }
+            const announcedRegistryRevision = String(msg.payload.nodeRegistryRevision || '');
+            const registryNeedsRefresh = Boolean(announcedRegistryRevision && announcedRegistryRevision !== nodeRegistryRevisionRef.current);
+            if (!registryNeedsRefresh && announcedRegistryRevision) nodeRegistryRevisionRef.current = announcedRegistryRevision;
             setMinimumRequiredClientVersion('');
             if (!desktopMode && typeof msg.payload.version === 'string' && msg.payload.version.trim()) setStudioVersion(msg.payload.version.trim());
-            setCollaborationSocketStatus('connected');
+            if (registryNeedsRefresh) {
+              setCollaborationSocketStatus('reconnecting');
+              void refreshNodeRegistry(announcedRegistryRevision)
+                .then(() => { if (active && currentSocket.readyState === WebSocket.OPEN) setCollaborationSocketStatus('connected'); })
+                .catch((error) => handleRegistryRefreshFailure(error, currentSocket));
+            } else setCollaborationSocketStatus('connected');
             reconnectAttempts = 0;
             setTransientCanvasMotionSupported(msg.payload.collaborationFeatures?.transientCanvasMotion === true);
             setProjectLastSeen(msg.payload.projectLastSeen && typeof msg.payload.projectLastSeen === 'object' ? msg.payload.projectLastSeen : {});
@@ -2070,7 +2418,7 @@ export function App() {
               setDefaultGraphId(msg.payload.graphLibrary.defaultGraphId ?? '');
             }
             if (Array.isArray(msg.payload.graphs)) {
-              const graphs = msg.payload.graphs;
+              const graphs = msg.payload.graphs.map(migrateFunctionGraphEntry);
               const bases = new Map(graphs.map((graph) => [graph.id, reconnectGraphBaseRef.current.get(graph.id) || snapshotGraph(graph)]));
               liveGraphBaseRef.current = bases;
               liveGraphRevisionRef.current.clear();
@@ -2130,7 +2478,7 @@ export function App() {
             setActiveProjectId(nextProjectId);
             setNeedsProjectOnboarding(nextProjects.length === 0 || nextProjects.some((project) => project.id === nextProjectId && project.pendingStarterChoice));
             setProjectVariables(Array.isArray(payload.projectVariables) ? payload.projectVariables : []);
-            const projectGraphs = Array.isArray(payload.graphs) ? payload.graphs : [];
+            const projectGraphs = (Array.isArray(payload.graphs) ? payload.graphs : []).map(migrateFunctionGraphEntry);
             reconnectGraphBaseRef.current.clear();
             liveGraphBaseRef.current = new Map(projectGraphs.map((graph) => [graph.id, snapshotGraph(graph)]));
             liveGraphRevisionRef.current.clear();
@@ -2154,7 +2502,7 @@ export function App() {
             historyRef.current.clear();
             graphsHydratedRef.current = true;
             if (localDesktopWorkspace) {
-              const graphs = Array.isArray(payload.graphs) ? payload.graphs : [];
+              const graphs = (Array.isArray(payload.graphs) ? payload.graphs : []).map(migrateFunctionGraphEntry);
               const byId = new Map(graphs.map((graph) => [graph.id, graph]));
               let ids = [];
               try { ids = JSON.parse(safeStorageGet(`arc_project_${nextProjectId}_arc_open_graph_ids`, '[]')); } catch {}
@@ -2213,7 +2561,7 @@ export function App() {
             liveGraphReadyRef.current.add(`${payload.projectId}:${payload.graphId}`);
             setLiveSyncRevision((revision) => revision + 1);
             if (!payload.graph?.id) return;
-            const incoming = payload.graph;
+            const incoming = scrubStoredSecretDrafts(payload.graph, payload.graph);
             if (payload.graphId !== incoming.id) return;
             if (Array.isArray(incoming.arrows)) {
               const lockedArrowIds = new Set(incoming.arrows.filter((arrow) => arrow?.locked).map((arrow) => arrow.id));
@@ -2229,30 +2577,32 @@ export function App() {
             if (Array.isArray(incoming.nodes) || Array.isArray(incoming.notes)) {
               const nodePositions = new Map((incoming.nodes || []).map((node) => [node.id, node]));
               const notePositions = new Map((incoming.notes || []).map((note) => [note.id, note]));
+              const graphUpdatedAt = Number(payload.updatedAt) || 0;
               setRemoteCollaborationActions((previous) => previous.map((peer) => {
                 if (peer.projectId !== payload.projectId || peer.graphId !== payload.graphId || !peer.action
                   || (payload.sourceUserId || payload.user?.id) !== peer.userId) return peer;
+                const stateSupersedesPreview = graphUpdatedAt > 0 && graphUpdatedAt >= (Number(peer.updatedAt) || 0);
                 let action = peer.action;
                 if (Array.isArray(action.nodePositions)) {
                   const remaining = action.nodePositions.filter((position) => {
                     const synced = nodePositions.get(position.id);
-                    return !synced || synced.x !== position.x || synced.y !== position.y;
+                    return !synced || (!stateSupersedesPreview && (synced.x !== position.x || synced.y !== position.y));
                   });
                   action = { ...action, nodePositions: remaining };
                 }
                 if (Array.isArray(action.notePositions)) {
                   const remaining = action.notePositions.filter((position) => {
                     const synced = notePositions.get(position.id);
-                    return !synced || synced.x !== position.x || synced.y !== position.y;
+                    return !synced || (!stateSupersedesPreview && (synced.x !== position.x || synced.y !== position.y));
                   });
                   action = { ...action, notePositions: remaining };
                 }
                 return action === peer.action ? peer : { ...peer, action };
               }));
             }
-            const base = reconnectBase || liveGraphBaseRef.current.get(incoming.id) || savedGraphsRef.current.find((item) => item.id === incoming.id) || incoming;
-            const local = tabsRef.current.find((item) => item.id === incoming.id);
-            const mergeBase = isOwnUpdate ? pending.graph : base;
+            const base = scrubStoredSecretDrafts(reconnectBase || liveGraphBaseRef.current.get(incoming.id) || savedGraphsRef.current.find((item) => item.id === incoming.id) || incoming, incoming);
+            const local = scrubStoredSecretDrafts(tabsRef.current.find((item) => item.id === incoming.id), incoming);
+            const mergeBase = scrubStoredSecretDrafts(isOwnUpdate ? pending.graph : base, incoming);
             const merged = mergeGraphState(mergeBase, local || mergeBase, incoming);
             if (reconnectBase && local?.isDirty && !sameGraphContent(local, reconnectBase)
               && !sameGraphContent(incoming, reconnectBase) && !sameGraphContent(local, incoming)) {
@@ -2271,11 +2621,7 @@ export function App() {
               if (!current || current.graphId !== incoming.id) return current;
               const incomingNode = incoming.nodes?.find((node) => node.id === current.nodeId && node.type === 'event_slash_command');
               if (!incomingNode || !Array.isArray(incomingNode.data?.options)) return current;
-              const remoteOptions = incomingNode.data.options.map((option, index) => ({
-                ...option,
-                id: option.id || `option:${current.nodeId}:${index}`,
-                choices: (Array.isArray(option.choices) ? option.choices : []).map((choice, choiceIndex) => ({ ...choice, id: choice.id || `choice:${current.nodeId}:${index}:${choiceIndex}` }))
-              }));
+              const remoteOptions = addSlashOptionEditorIds(incomingNode.data.options, current.nodeId);
               const baseOptions = slashCommandBaseRef.current.get(current.collabId) || current.options;
               const mergedOptions = mergeCollaborativeValue(baseOptions, current.options, remoteOptions);
               slashCommandBaseRef.current.set(current.collabId, remoteOptions);
@@ -2289,6 +2635,25 @@ export function App() {
               const saved = savedGraphsRef.current.find((item) => item.id === incoming.id);
               return { ...merged, isDirty: saved ? !sameGraphContent(merged, saved) : true };
             }));
+          } else if (msg.type === 'GRAPH_AUTOSAVE_FAILED' && msg.payload?.graphId) {
+            const payload = msg.payload;
+            if (payload.projectId !== activeProjectIdRef.current) return;
+            arcEvents.emit('toast:notify', { title: 'Workspace save delayed', message: payload.message || 'The workspace will retry saving this graph.', type: 'warning', id: `graph-autosave-${payload.graphId}` });
+          } else if (msg.type === 'GRAPH_AUTOSAVED' && msg.payload?.graphId) {
+            const payload = msg.payload;
+            if (payload.projectId !== activeProjectIdRef.current) return;
+            const graphId = payload.graphId;
+            if (Number(payload.revision) !== liveGraphRevisionRef.current.get(graphId)) return;
+            const persistedGraph = liveGraphBaseRef.current.get(graphId);
+            if (!persistedGraph) return;
+            const savedGraph = snapshotGraph(persistedGraph);
+            setSavedGraphs((current) => [savedGraph, ...current.filter((graph) => graph.id !== graphId)]);
+            setTabs((current) => current.map((tab) => {
+              if (tab.id !== graphId || !sameGraphContent(tab, savedGraph)) return tab;
+              remoteGraphConflictsRef.current.delete(graphId);
+              return { ...savedGraph, isDirty: false };
+            }));
+            setSaveFeedback({ graphId, savedAt: Number(payload.savedAt) || Date.now() });
           } else if (msg.type === 'GRAPH_STATE_ACK' && msg.payload?.graphId) {
             const pending = pendingLiveGraphRef.current.get(msg.payload.graphId);
             if (pending?.syncId === msg.payload.syncId && pending?.clientId === collaborationClientIdRef.current) {
@@ -2304,6 +2669,9 @@ export function App() {
             if (graphId) {
               pendingLiveGraphRef.current.delete(graphId);
               if (pending) lastLiveGraphSentRef.current.set(graphId, pending.serialized);
+              setTabs((current) => current.map((tab) => tab.id === graphId
+                ? scrubRejectedSecretDrafts(tab)
+                : tab));
               setLiveSyncRevision((revision) => revision + 1);
             }
             if (!graphId || !rejectedLiveGraphToastRef.current.has(graphId)) {
@@ -2350,6 +2718,11 @@ export function App() {
             const incoming = msg.payload.graph;
             if (deletedGraphsRef.current.has(`${activeProjectIdRef.current}:${incoming.id}`)) return;
             const isOwnSave = msg.payload.saveClientId === graphSaveClientIdRef.current;
+            const localTabBeforeSave = tabsRef.current.find((tab) => tab.id === incoming.id);
+            if (!isOwnSave && !localTabBeforeSave?.isDirty) {
+              historyRef.current.delete(incoming.id);
+              setHistoryRevision((revision) => revision + 1);
+            }
             liveGraphBaseRef.current.set(incoming.id, snapshotGraph(incoming));
             liveGraphRevisionRef.current.delete(incoming.id);
             setSavedGraphs((current) => [incoming, ...current.filter((graph) => graph.id !== incoming.id)]);
@@ -2450,34 +2823,65 @@ export function App() {
             if (!effectiveGraphIds.includes(activeTabIdRef.current)) setActiveTabId(nextTabs[0]?.id || null);
           } else if (msg.type === 'PROJECT_LAST_SEEN_UPDATED') {
             if (msg.payload && typeof msg.payload === 'object') setProjectLastSeen(msg.payload);
+          } else if (msg.type === 'BOT_EXPORT_PROGRESS') {
+            const progress = msg.payload;
+            if (!progress || progress.projectId !== activeProjectIdRef.current || !progress.exportId) return;
+            const toastId = `bot-export:${progress.projectId}:${progress.exportId}`;
+            const running = progress.status === 'running';
+            setExportInProgress(running);
+            arcEvents.emit('toast:notify', {
+              id: toastId,
+              title: running ? 'Exporting bot' : progress.status === 'complete' ? 'Bot export ready' : 'Bot export failed',
+              message: progress.message || (running ? 'Preparing bot export' : 'Could not create bot export.'),
+              type: running ? 'info' : progress.status === 'complete' ? 'success' : 'error',
+              progress: Number.isFinite(progress.progress) ? progress.progress : null,
+              persistent: running,
+              dismissible: !running,
+              duration: running ? undefined : 5000
+            });
           } else if (msg.type === 'GRAPH_CHAT_BUBBLE') {
             const bubble = msg.payload;
             if (!bubble?.id || bubble.projectId !== activeProjectIdRef.current || bubble.graphId !== activeTabIdRef.current
               || typeof bubble.content !== 'string' || !Number.isFinite(bubble.x) || !Number.isFinite(bubble.y)
               || !Number.isFinite(bubble.expiresAt) || bubble.expiresAt <= Date.now()) return;
-            setGraphChatBubbles((previous) => [...previous.filter((item) => item.id !== bubble.id && item.expiresAt > Date.now()), bubble]);
+            const pendingMoveId = pendingGraphChatMovesRef.current.get(bubble.id);
+            if (pendingMoveId && bubble.clientActionId !== pendingMoveId) return;
+            if (pendingMoveId) pendingGraphChatMovesRef.current.delete(bubble.id);
+            setGraphChatBubbles((previous) => [...previous.filter((item) => item.id !== bubble.id
+              && (!bubble.clientActionId || item.clientActionId !== bubble.clientActionId) && item.expiresAt > Date.now()), bubble]);
           } else if (msg.type === 'GRAPH_CHAT_EXPIRED') {
             const expired = msg.payload;
             if (expired?.projectId === activeProjectIdRef.current && expired?.graphId === activeTabIdRef.current && expired?.id) {
+              pendingGraphChatMovesRef.current.delete(expired.id);
               setGraphChatBubbles((previous) => previous.filter((item) => item.id !== expired.id));
             }
           } else if (msg.type === 'GRAPH_CHAT_REJECTED') {
+            if (msg.payload?.clientActionId) setGraphChatBubbles((previous) => previous.filter((bubble) => bubble.clientActionId !== msg.payload.clientActionId));
             arcEvents.emit('toast:notify', { title: 'Canvas message not sent', message: msg.payload?.message || 'Please try again in a moment.', type: 'warning' });
           } else if (msg.type === 'CANVAS_ARROWS_SYNC') {
             const arrows = Array.isArray(msg.payload?.arrows) ? msg.payload.arrows.filter((arrow) => arrow?.projectId === activeProjectIdRef.current
               && arrow?.graphId === activeTabIdRef.current && Number.isFinite(arrow.expiresAt) && arrow.expiresAt > Date.now()) : [];
-            setTransientCanvasArrows(arrows);
+            setTransientCanvasArrows((previous) => {
+              const pending = new Map(previous.filter((arrow) => pendingCanvasArrowActionsRef.current.has(arrow.id)).map((arrow) => [arrow.id, arrow]));
+              return arrows.map((arrow) => pending.get(arrow.id) || arrow).concat([...pending.values()].filter((arrow) => !arrows.some((item) => item.id === arrow.id)));
+            });
           } else if (msg.type === 'CANVAS_ARROW_UPDATED') {
             const arrow = msg.payload;
             if (!arrow?.id || arrow.projectId !== activeProjectIdRef.current || arrow.graphId !== activeTabIdRef.current
               || !Number.isFinite(arrow.expiresAt) || arrow.expiresAt <= Date.now()) return;
+            const pendingActionId = pendingCanvasArrowActionsRef.current.get(arrow.id);
+            if (pendingActionId && arrow.clientActionId !== pendingActionId) return;
+            if (pendingActionId) pendingCanvasArrowActionsRef.current.delete(arrow.id);
             setTransientCanvasArrows((previous) => [...previous.filter((item) => item.id !== arrow.id && item.expiresAt > Date.now()), arrow]);
           } else if (msg.type === 'CANVAS_ARROW_EXPIRED' || msg.type === 'CANVAS_ARROW_DELETED') {
             const payload = msg.payload || {};
             if (payload.projectId === activeProjectIdRef.current && payload.graphId === activeTabIdRef.current && payload.id) {
+              pendingCanvasArrowActionsRef.current.delete(payload.id);
               setTransientCanvasArrows((previous) => previous.filter((arrow) => arrow.id !== payload.id));
             }
           } else if (msg.type === 'CANVAS_ARROW_REJECTED') {
+            if (msg.payload?.id) pendingCanvasArrowActionsRef.current.delete(msg.payload.id);
+            if (msg.payload?.clientActionId) setTransientCanvasArrows((previous) => previous.filter((arrow) => arrow.clientActionId !== msg.payload.clientActionId));
             arcEvents.emit('toast:notify', { title: 'Arrow change not shared', message: msg.payload?.message || 'This arrow could not be changed.', type: 'warning' });
           } else if (msg.type === 'COLLAB_ACTION_UPDATED') {
             const action = msg.payload;
@@ -2492,7 +2896,7 @@ export function App() {
               if (action.action.studioType === 'embed') {
                 setEmbedStudio((current) => {
                   if (current?.collabId !== action.action.studioId) return current;
-                  const localDraft = { name: current.name, content: current.content || '', blocks: current.blocks || [], components: current.components || [], attachments: collaborativeAttachments(current.attachments || []) };
+                  const localDraft = { name: current.name, content: current.content || '', blocks: current.blocks || [], components: current.components || [], componentsV2Layout: current.componentsV2Layout || [], componentsV2Enabled: Boolean(current.componentsV2Enabled), attachments: collaborativeAttachments(current.attachments || []) };
                   const baseDraft = collaborativeEmbedBaseRef.current.get(current.collabId) || localDraft;
                   const merged = mergeCollaborativeValue(baseDraft, localDraft, action.action.draft);
                   collaborativeEmbedBaseRef.current.set(current.collabId, action.action.draft);
@@ -2750,7 +3154,7 @@ export function App() {
     if (liveGraphSendTimersRef.current.has(graphKey)) return undefined;
     const timer = window.setTimeout(() => {
       liveGraphSendTimersRef.current.delete(graphKey);
-      if (activeProjectIdRef.current !== activeProjectId || activeTabIdRef.current !== graph.id) return;
+      if (activeProjectIdRef.current !== activeProjectId) return;
       const latestGraph = tabsRef.current.find((tab) => tab.id === graph.id);
       const latestSocket = wsRef.current;
       if (!latestGraph?.isDirty || !latestSocket || latestSocket !== socket || latestSocket.readyState !== WebSocket.OPEN
@@ -2759,7 +3163,7 @@ export function App() {
       if ([...pendingCollaborationActionRef.current.values()].some((entry) => entry.projectId === activeProjectId && entry.graphId === graph.id
         && (Array.isArray(entry.action.nodePositions) || Array.isArray(entry.action.notePositions)))) return;
       if (pendingLiveGraphRef.current.has(graph.id)) return;
-      const graphState = snapshotGraph(latestGraph);
+      const graphState = snapshotGraph(latestGraph, { includeSecretDrafts: true });
       const serialized = JSON.stringify(graphState);
       if (lastLiveGraphSentRef.current.get(graph.id) === serialized) return;
       const syncId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -3105,7 +3509,7 @@ export function App() {
   }, [activeProjectId, authToken, graphLookup, notifyGraphCheckIssues]);
 
   useEffect(() => {
-    if (!authToken || !networkOnline || remoteWorkspaceBlocked || settings.autoSave === false) return undefined;
+    if (!authToken || !localDesktopWorkspace || settings.autoSave === false) return undefined;
     const intervalSeconds = Math.max(5, Math.min(300, Number(settings.autoSaveIntervalSeconds) || 30));
     const timer = window.setInterval(async () => {
       for (const graph of tabsRef.current) {
@@ -3126,7 +3530,7 @@ export function App() {
       }
     }, intervalSeconds * 1000);
     return () => window.clearInterval(timer);
-  }, [authToken, networkOnline, remoteWorkspaceBlocked, saveGraphWithProgress, settings.autoSave, settings.autoSaveIntervalSeconds]);
+  }, [authToken, localDesktopWorkspace, saveGraphWithProgress, settings.autoSave, settings.autoSaveIntervalSeconds]);
 
   const recoveryWorkspace = workspaceMode === 'remote' ? (() => { try { const url = new URL(remoteWorkspaceUrl); return `${url.origin}${url.pathname}`; } catch { return 'remote'; } })() : (desktopMode ? 'desktop-local' : window.location.origin);
   const recoveryStorageKey = `arc_graph_recovery:${workspaceMode}:${recoveryWorkspace}:${currentUser?.id || 'guest'}:${activeProjectId || 'default'}`;
@@ -3139,6 +3543,7 @@ export function App() {
     try { stored = JSON.parse(safeStorageGet(recoveryStorageKey, '[]')); } catch {}
     const savedById = new Map(savedGraphs.map((graph) => [graph.id, graph]));
     const recoverable = (Array.isArray(stored) ? stored : []).filter((entry) => entry?.graph?.id
+      && (localDesktopWorkspace || entry.localOnly === true)
       && (!savedById.has(entry.graph.id) || !sameGraphContent(entry.graph, savedById.get(entry.graph.id))))
       .slice(0, MAX_OPEN_GRAPH_TABS);
     recoveryDraftsRef.current = recoverable;
@@ -3157,7 +3562,7 @@ export function App() {
       });
     }
     setRecoveryLoadedKey(recoveryStorageKey);
-  }, [authToken, activeProjectId, activeTabId, recoveryLoadedKey, recoveryStorageKey, savedGraphs]);
+  }, [authToken, activeProjectId, activeTabId, localDesktopWorkspace, recoveryLoadedKey, recoveryStorageKey, savedGraphs]);
 
   useEffect(() => {
     if (!authToken || !activeProjectId || recoveryLoadedKey !== recoveryStorageKey) return;
@@ -3165,10 +3570,13 @@ export function App() {
     for (const graph of tabs) {
       if (!graph?.id) continue;
       const saved = savedGraphs.find((item) => item.id === graph.id);
-      if (graph.isDirty || !saved) entries.set(graph.id, { graph: snapshotGraph(graph), savedAt: Date.now(), ...(graph.localRecoveryOnly ? { localOnly: true } : {}) });
+      if (graph.localRecoveryOnly || localDesktopWorkspace && (graph.isDirty || !saved)) {
+        entries.set(graph.id, { graph: snapshotGraph(graph), savedAt: Date.now(), ...(graph.localRecoveryOnly ? { localOnly: true } : {}) });
+      }
       else if (sameGraphContent(graph, saved)) entries.delete(graph.id);
     }
     const next = [...entries.values()].filter((entry) => {
+      if (!localDesktopWorkspace && entry.localOnly !== true) return false;
       const saved = savedGraphs.find((graph) => graph.id === entry.graph.id);
       return !saved || !sameGraphContent(saved, entry.graph);
     }).slice(0, MAX_OPEN_GRAPH_TABS);
@@ -3177,7 +3585,7 @@ export function App() {
       if (next.length) safeStorageSet(recoveryStorageKey, JSON.stringify(next));
       else safeStorageRemove(recoveryStorageKey);
     } catch {}
-  }, [authToken, activeProjectId, recoveryLoadedKey, recoveryStorageKey, savedGraphs, tabs]);
+  }, [authToken, activeProjectId, localDesktopWorkspace, recoveryLoadedKey, recoveryStorageKey, savedGraphs, tabs]);
 
   const handleSaveGraph = useCallback(async () => {
     if (!activeTabId || !authToken) return;
@@ -3270,16 +3678,24 @@ export function App() {
     handleNodesChange(nodes);
   }, [activeNodes, handleNodesChange, localDesktopWorkspace]);
 
-  const handleExportGraph = useCallback(() => {
+  const handleExportGraph = useCallback(async () => {
     const graph = tabs.find((tab) => tab.id === activeTabId);
     if (!graph) return;
     const exportData = { ...graph };
     delete exportData.isDirty;
-    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+    let blob;
+    try {
+      const payload = { format: 'arc-graph', version: 1, graph: exportData };
+      payload.integrity = { algorithm: 'sha256', digest: await sha256Hex(stableJson(payload)) };
+      blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/vnd.arc-studio.graph+json' });
+    } catch (error) {
+      arcEvents.emit('toast:notify', { title: 'Graph export failed', message: error.message || 'Could not calculate the file integrity check.', type: 'error' });
+      return;
+    }
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = `${(graph.name || 'graph').replace(/[^a-z0-9]/gi, '_').toLowerCase()}.arc.json`;
+    anchor.download = `${(graph.name || 'graph').replace(/[^a-z0-9]/gi, '_').toLowerCase()}.arcgraph`;
     anchor.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }, [activeTabId, tabs]);
@@ -3320,7 +3736,7 @@ export function App() {
     const graph = {
       id,
       ...(selectedSource?.graphType ? { graphType: selectedSource.graphType } : {}),
-      name: blank ? `Graph ${tabs.length + 1}` : sourceGraph ? `${sourceGraph.name || 'Template'} copy` : `Graph ${tabs.length + 1}`,
+      name: sourceGraph ? `${sourceGraph.name || 'Template'} copy` : getNextProjectGraphName([...savedGraphs, ...tabs]),
       variables: structuredClone(selectedSource?.variables || []),
       nodes: clonedNodes.map((node) => ({ ...node, id: nodeIds.get(node.id) })),
       connections: structuredClone(selectedSource?.connections || []).map((connection) => ({ ...connection, id: createEditorId('connection'), sourceNodeId: nodeIds.get(connection.sourceNodeId) || connection.sourceNodeId, targetNodeId: nodeIds.get(connection.targetNodeId) || connection.targetNodeId })),
@@ -3330,7 +3746,7 @@ export function App() {
     setActiveTabId(id);
     rememberUserGraph(id);
     return graph;
-  }, [defaultGraphId, graphTemplates, rememberUserGraph, savedGraphs, tabs.length]);
+  }, [defaultGraphId, graphTemplates, rememberUserGraph, savedGraphs, tabs]);
 
   const handleAddBlankGraph = useCallback(() => handleAddTab(null, { blank: true }), [handleAddTab]);
 
@@ -3346,16 +3762,18 @@ export function App() {
       name: `Function ${functionGraphs.length + 1}`,
       variables: [],
       nodes: [
-        { id: `${graphId}_input_a`, type: 'function_input', label: 'Function Input', x: 72, y: 92, data: { paramId: 'param_a', name: 'A', valueType: 'number', optional: false, defaultValue: 0 } },
-        { id: `${graphId}_input_b`, type: 'function_input', label: 'Function Input', x: 72, y: 250, data: { paramId: 'param_b', name: 'B', valueType: 'number', optional: false, defaultValue: 0 } },
+        { id: `${graphId}_input`, type: 'function_input', label: 'Function Input', x: 72, y: 145, data: { arguments: [
+          { paramId: 'param_a', name: 'A', valueType: 'number', optional: false, defaultValue: 0 },
+          { paramId: 'param_b', name: 'B', valueType: 'number', optional: false, defaultValue: 0 }
+        ] } },
         { id: `${graphId}_add`, type: 'math_add', label: 'Add', x: 390, y: 145, data: {} },
         { id: `${graphId}_scale`, type: 'math_multiply', label: 'Multiply', x: 690, y: 145, data: {} },
         { id: `${graphId}_factor`, type: 'value_number', label: 'Number', x: 390, y: 330, data: { value: 2 } },
         { id: `${graphId}_return`, type: 'function_return', label: 'Return Value', x: 1000, y: 145, data: { valueType: 'number' } }
       ],
       connections: [
-        { id: `${graphId}_wire_a`, sourceNodeId: `${graphId}_input_a`, sourcePinId: 'value', targetNodeId: `${graphId}_add`, targetPinId: 'a' },
-        { id: `${graphId}_wire_b`, sourceNodeId: `${graphId}_input_b`, sourcePinId: 'value', targetNodeId: `${graphId}_add`, targetPinId: 'b' },
+        { id: `${graphId}_wire_a`, sourceNodeId: `${graphId}_input`, sourcePinId: 'arg_param_a', targetNodeId: `${graphId}_add`, targetPinId: 'a' },
+        { id: `${graphId}_wire_b`, sourceNodeId: `${graphId}_input`, sourcePinId: 'arg_param_b', targetNodeId: `${graphId}_add`, targetPinId: 'b' },
         { id: `${graphId}_wire_sum`, sourceNodeId: `${graphId}_add`, sourcePinId: 'result', targetNodeId: `${graphId}_scale`, targetPinId: 'a' },
         { id: `${graphId}_wire_factor`, sourceNodeId: `${graphId}_factor`, sourcePinId: 'value', targetNodeId: `${graphId}_scale`, targetPinId: 'b' },
         { id: `${graphId}_wire_result`, sourceNodeId: `${graphId}_scale`, sourcePinId: 'result', targetNodeId: `${graphId}_return`, targetPinId: 'value' }
@@ -3509,10 +3927,27 @@ export function App() {
     if (!authToken || !file) return;
     try {
       const parsed = JSON.parse(await file.text());
+      let integrityWarning = '';
+      if (parsed?.format === 'arc-graph') {
+        if (!parsed.integrity) integrityWarning = 'This graph has no integrity record. It may be an older export.';
+        else {
+          const { integrity, ...content } = parsed;
+          const expected = await sha256Hex(stableJson(content));
+          if (integrity.algorithm !== 'sha256' || integrity.digest !== expected) {
+            arcEvents.emit('toast:notify', { title: 'Graph file may be corrupted', message: 'The SHA-256 integrity check failed. The file was not imported.', type: 'warning', duration: 7000 });
+            return;
+          }
+        }
+      } else if (/\.arcgraph$/i.test(file.name || '')) integrityWarning = 'This graph has no integrity record. It may be an older export.';
       const graph = parsed?.graph || parsed;
-      if (!graph || !Array.isArray(graph.nodes) || !Array.isArray(graph.connections)) throw new Error('Choose an ARC Studio graph JSON file.');
-      if (!graph.name) graph.name = file.name.replace(/\.arc\.json$|\.json$/i, '').replace(/[_-]+/g, ' ') || 'Imported graph';
-      const body = JSON.stringify({ graph });
+      if (!graph || !Array.isArray(graph.nodes) || !Array.isArray(graph.connections)) throw new Error('Choose a valid ARC Studio graph file.');
+      if (!graph.name) graph.name = file.name.replace(/\.arcgraph$|\.arc\.json$|\.json$/i, '').replace(/[_-]+/g, ' ') || 'Imported graph';
+      let confirmCollaborativeText = false;
+      if (externalCollaborativeWorkspace && hasImportableTextContent(graph)) {
+        confirmCollaborativeText = window.confirm(`This graph contains text or request fields. Importing it into “${externalWorkspaceName}” makes this content visible to members with graph read permission and editable by members with graph write permission. Continue?`);
+        if (!confirmCollaborativeText) return;
+      }
+      const body = JSON.stringify({ graph, confirmCollaborativeText });
       const hasAttachments = (graph.nodes || []).some((node) => (node.data?.attachments || []).some((attachment) => typeof attachment.data === 'string' && attachment.data.startsWith('data:')));
       if (hasAttachments) setGraphUploadProgress({ graphId: graph.id || 'import', graphName: graph.name || 'Graph', percent: 0 });
       let data;
@@ -3530,11 +3965,14 @@ export function App() {
       }
       setSavedGraphs((previous) => [data.graph, ...previous.filter((item) => item.id !== data.graph.id)]);
       handleOpenGraph(data.graph);
-      arcEvents.emit('toast:notify', { title: 'Graph imported', message: `${data.graph.name} added to the Library.`, type: 'success' });
+      arcEvents.emit('toast:notify', integrityWarning
+        ? { title: 'Graph imported with a warning', message: integrityWarning, type: 'warning', duration: 7000 }
+        : { title: 'Graph imported', message: `${data.graph.name} added to the Library.`, type: 'success' });
     } catch (error) {
-      arcEvents.emit('toast:notify', { title: 'Import failed', message: error.message || 'Could not read this graph file.', type: 'error' });
+      const corrupted = /integrity|corrupt/i.test(error.message || '');
+      arcEvents.emit('toast:notify', { title: corrupted ? 'Graph file may be corrupted' : 'Import failed', message: error.message || 'Could not read this graph file.', type: corrupted ? 'warning' : 'error' });
     }
-  }, [authToken, handleOpenGraph]);
+  }, [authToken, externalCollaborativeWorkspace, externalWorkspaceName, handleOpenGraph]);
   desktopGraphImportHandlerRef.current = handleImportGraph;
 
   const handleDeleteSavedGraphs = useCallback(async (graphs) => {
@@ -3591,7 +4029,7 @@ export function App() {
     if (!authToken || exportInFlightRef.current) return;
     const exportProjectId = typeof projectId === 'string' ? projectId : activeProjectId;
     if (!skipReview) {
-      const exportGraphs = [...new Map([...savedGraphs, ...(exportProjectId === activeProjectId ? tabs : [])].map((graph) => [graph.id, graph])).values()];
+      const exportGraphs = [...new Map(savedGraphs.map((graph) => [graph.id, graph])).values()];
       const issues = exportGraphs.flatMap((graph) => {
         const report = validateGraph(graph, graphLookup, botProfile?.intentSummary, projectVariables);
         return [
@@ -3608,7 +4046,7 @@ export function App() {
       for (const intent of disabledIntents) issues.push({ kind: 'warning', message: `${intent.replaceAll('_', ' ')} is required by the exported graphs but is currently disabled in the Discord Developer Portal.` });
       const permissions = new Set();
       for (const graph of exportGraphs) for (const node of graph.nodes || []) {
-        if (['action_send_message', 'action_edit_message'].includes(node.type)) {
+        if (['action_send_message', 'action_edit_message', 'action_edit_components'].includes(node.type)) {
           permissions.add('View Channels');
           permissions.add('Send Messages');
           if (node.type === 'action_send_message' && (String(node.data?.thread_id || '').trim() || graph.connections?.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'thread_id'))) permissions.add('Send Messages in Threads');
@@ -3667,7 +4105,7 @@ export function App() {
         showBotTokenOption: canIncludeBotToken,
         hasBotToken,
         isActiveProject: exportProjectId === activeProjectId,
-        included: ['graphs.json and project-variables.json', 'src/index.js, src/env.js, and src/engine/{GraphRunner,NodeRegistry,MathOperations,CronSchedule,SafeHttpRequest,PluginStore}.js', 'src/security/CryptoEngine.js', 'Chezcord source and package metadata under chezcord/', 'package.json, README.md, .env, .env.example, and LICENSE']
+        included: ['graphs.json and project-variables.json', 'integrity.json with SHA-256 file hashes', 'src/index.js, src/env.js, and src/engine/{GraphRunner,NodeRegistry,MathOperations,CronSchedule,SafeHttpRequest,PluginStore}.js', 'src/security/CryptoEngine.js', 'Chezcord source and package metadata under chezcord/', 'package.json, README.md, .env, .env.example, and LICENSE']
       };
       setExportReviewSections({});
       setExportReview({
@@ -3681,23 +4119,22 @@ export function App() {
     }
     exportInFlightRef.current = true;
     setExportInProgress(true);
-    const toastId = 'bot-export-progress';
+    const exportId = globalThis.crypto?.randomUUID?.() || `export_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const toastId = `bot-export:${exportProjectId}:${exportId}`;
     const reportProgress = (percent, detail) => arcEvents.emit('toast:notify', {
       id: toastId,
       title: 'Exporting bot',
       message: detail,
       type: 'info',
       persistent: true,
+      dismissible: false,
       progress: Math.max(0, Math.min(100, Math.round(percent)))
     });
     try {
       reportProgress(2, 'Preparing graph data');
-      const graphs = exportProjectId === activeProjectId
-        ? tabs.map((graph) => exportGraphPayload(graph))
-        : [];
       const body = JSON.stringify({
         projectId: exportProjectId,
-        graphs,
+        exportId,
         includeCryptoSecret: exportOptions.includeCryptoSecret === true,
         includeBotToken: exportOptions.includeBotToken === true
       });
@@ -3707,14 +4144,6 @@ export function App() {
         request.setRequestHeader('Content-Type', 'application/json');
         request.setRequestHeader('x-arc-token', authToken);
         request.responseType = 'blob';
-        request.upload.addEventListener('progress', (event) => {
-          if (event.lengthComputable) reportProgress(8 + (event.loaded / event.total) * 22, 'Uploading graph data');
-        });
-        request.upload.addEventListener('load', () => reportProgress(35, 'Building the bot archive'));
-        request.addEventListener('progress', (event) => {
-          if (event.lengthComputable && event.total > 0) reportProgress(40 + (event.loaded / event.total) * 59, 'Downloading the archive');
-          else reportProgress(40, 'Downloading the archive');
-        });
         request.addEventListener('load', async () => {
           if (request.status >= 200 && request.status < 300) return resolve(request.response);
           let message = 'Could not export bot.';
@@ -3734,9 +4163,9 @@ export function App() {
       anchor.download = 'arc-bot-export.zip';
       anchor.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-      arcEvents.emit('toast:notify', { id: toastId, title: 'Bot exported', message: 'Standalone Discord bot bundle is ready.', type: 'success' });
     } catch (error) {
-      arcEvents.emit('toast:notify', { id: toastId, title: 'Export failed', message: error.message, type: 'error' });
+      const alreadyRunning = /already running for this project/i.test(error.message || '');
+      arcEvents.emit('toast:notify', { id: toastId, title: alreadyRunning ? 'Bot export in progress' : 'Export failed', message: alreadyRunning ? 'A collaborator is already building this project export.' : error.message, type: alreadyRunning ? 'info' : 'error', persistent: false, dismissible: true, duration: 5000 });
     } finally {
       exportInFlightRef.current = false;
       setExportInProgress(false);
@@ -3753,6 +4182,19 @@ export function App() {
   }, [activeTabId]);
 
   const handleUndo = useCallback(() => {
+    if (embedStudioOpenForActiveGraph) {
+      const history = embedStudioHistoryRef.current.get(embedStudio?.collabId);
+      const previous = history?.past.pop();
+      const current = embedStudioRef.current;
+      if (!history || !previous || !current) return;
+      history.future.push(snapshotEmbedStudio(current));
+      history.lastAt = 0;
+      const restored = { ...current, ...previous, isDirty: true };
+      setEmbedStudio(restored);
+      sendCollaborationAction({ kind: 'studio-draft', studioId: current.collabId, studioType: 'embed', draft: collaborativeEmbedDraft(restored) });
+      setHistoryRevision((revision) => revision + 1);
+      return;
+    }
     const history = historyRef.current.get(activeTabId);
     const previous = history?.past.pop();
     if (!history || !previous || !activeGraph) return;
@@ -3760,9 +4202,22 @@ export function App() {
     history.lastAt = 0;
     applyHistorySnapshot(previous, activeTabId);
     setHistoryRevision((revision) => revision + 1);
-  }, [activeGraph, activeTabId, applyHistorySnapshot]);
+  }, [activeGraph, activeTabId, applyHistorySnapshot, embedStudio?.collabId, embedStudioOpenForActiveGraph, sendCollaborationAction, setEmbedStudio]);
 
   const handleRedo = useCallback(() => {
+    if (embedStudioOpenForActiveGraph) {
+      const history = embedStudioHistoryRef.current.get(embedStudio?.collabId);
+      const next = history?.future.pop();
+      const current = embedStudioRef.current;
+      if (!history || !next || !current) return;
+      history.past.push(snapshotEmbedStudio(current));
+      history.lastAt = 0;
+      const restored = { ...current, ...next, isDirty: true };
+      setEmbedStudio(restored);
+      sendCollaborationAction({ kind: 'studio-draft', studioId: current.collabId, studioType: 'embed', draft: collaborativeEmbedDraft(restored) });
+      setHistoryRevision((revision) => revision + 1);
+      return;
+    }
     const history = historyRef.current.get(activeTabId);
     const next = history?.future.pop();
     if (!history || !next || !activeGraph) return;
@@ -3770,7 +4225,7 @@ export function App() {
     history.lastAt = 0;
     applyHistorySnapshot(next, activeTabId);
     setHistoryRevision((revision) => revision + 1);
-  }, [activeGraph, activeTabId, applyHistorySnapshot]);
+  }, [activeGraph, activeTabId, applyHistorySnapshot, embedStudio?.collabId, embedStudioOpenForActiveGraph, sendCollaborationAction, setEmbedStudio]);
 
   const handleValidateGraph = useCallback(() => {
     if (!activeGraph) return;
@@ -3786,7 +4241,7 @@ export function App() {
     if (!definition) return null;
     if (!isNodeTypeSupported(type, supportedWorkspaceNodeTypes)) return null;
     const nodeData = data ? structuredClone(data) : createDefaultNodeData(type);
-    if (type === 'function_input' && data) nodeData.paramId = `param_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
+    if (type === 'function_input' && !Array.isArray(nodeData.arguments)) nodeData.arguments = createDefaultNodeData(type).arguments;
     if (['variable_get', 'variable_set'].includes(type) && !availableVariables.some((variable) => variable.id === nodeData.variableId)) nodeData.variableId = '';
     return {
       id: `node_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
@@ -3818,6 +4273,10 @@ export function App() {
     if (!isNodeTypeSupported(type, supportedWorkspaceNodeTypes)) return;
     const targetGraph = activeGraph || handleAddBlankGraph();
     if (!targetGraph) return;
+    if (type === 'function_input' && (targetGraph.graphType !== 'function' || (targetGraph.nodes || []).some((item) => item.type === 'function_input'))) {
+      arcEvents.emit('toast:notify', { title: 'Function Input unavailable', message: 'A function graph has one Function Input node. Add arguments to that node.', type: 'warning' });
+      return;
+    }
     const center = position || paletteNodePosition || viewportCenterRef.current;
     const node = makeNode(type, nodeTopLeftAtCenter(type, center));
     appendNodeToGraph(targetGraph, node);
@@ -3837,6 +4296,10 @@ export function App() {
     if (requestedTypes.length && !requestedTypes.some((type) => isNodeTypeSupported(type, supportedWorkspaceNodeTypes))) return;
     const targetGraph = activeGraph || handleAddBlankGraph();
     if (!targetGraph) return;
+    if (requestedTypes.includes('function_input') && (targetGraph.graphType !== 'function' || (targetGraph.nodes || []).some((item) => item.type === 'function_input') || requestedTypes.filter((type) => type === 'function_input').length > 1)) {
+      arcEvents.emit('toast:notify', { title: 'Function Input unavailable', message: 'A function graph has one Function Input node. Add arguments to that node.', type: 'warning' });
+      return;
+    }
     const placement = position || nodeTopLeftAtCenter(
       payload?.type === 'graph-call' ? 'function_call' : payload?.type === 'prefab' ? nodePrefabs.find((item) => item.id === payload.prefabId)?.node?.type : payload?.type === 'embed-asset' ? 'build_embed' : payload?.nodeType,
       viewportCenterRef.current
@@ -3905,7 +4368,7 @@ export function App() {
       kind: 'embed-text', nodeId: embedStudio.nodeId || '', mode: embedStudio.mode,
       assetId: embedStudio.mode === 'asset' ? embedStudio.id : '',
       tab: embedStudio.route?.tab,
-      blockId: parentBlockContext.blockId, blockKey: parentBlockContext.blockKey,
+      blockId: parentBlockContext.blockId, blockKey: parentBlockContext.blockKey, blockCollection: parentBlockContext.blockCollection,
       label: String(label || ''), maxLength: Number(maxLength) || 0
     } : parentBlockContext && node?.id ? {
       kind: 'node-embed-text', nodeId: node.id, blockId: parentBlockContext.blockId,
@@ -4006,11 +4469,7 @@ export function App() {
     if (!node?.id || node.type !== 'event_slash_command' || !activeGraph || !activeProjectId) return;
     studioFocusReturnRef.current = { graphId: activeGraph.id, nodeId: node.id };
     const collabId = `arguments:${activeProjectId}:${activeGraph.id}:${node.id}`;
-    const options = structuredClone(Array.isArray(node.data?.options) ? node.data.options : []).map((option, index) => ({
-      ...option,
-      id: option.id || `option:${node.id}:${index}`,
-      choices: (Array.isArray(option.choices) ? option.choices : []).map((choice, choiceIndex) => ({ ...choice, id: choice.id || `choice:${node.id}:${index}:${choiceIndex}` }))
-    }));
+    const options = addSlashOptionEditorIds(structuredClone(Array.isArray(node.data?.options) ? node.data.options : []), node.id);
     slashCommandBaseRef.current.set(collabId, options);
     setSlashCommandStudio({
       projectId: activeProjectId,
@@ -4071,15 +4530,26 @@ export function App() {
     setModalStudio(null);
   }, [activeProjectId, activeTabId, modalStudio, recordHistory, tabs]);
 
-  const updateEmbedStudioBlockValue = useCallback((blockId, fieldKey, value) => {
-    setEmbedStudio((current) => {
-      if (!current) return current;
-      const blocks = (current.blocks || []).map((block) => block.id === blockId ? { ...block, [fieldKey]: value } : block);
-      const next = { ...current, blocks, isDirty: true };
-      sendCollaborationAction({ kind: 'studio-draft', studioId: current.collabId, studioType: 'embed', draft: collaborativeEmbedDraft(next) });
-      return next;
+  const updateEmbedStudioBlockValue = useCallback((blockId, fieldKey, value, blockCollection = 'blocks') => {
+    const current = embedStudioRef.current;
+    if (!current) return;
+    recordEmbedStudioHistory(current);
+    const patchNodes = (nodes) => (nodes || []).map((block) => {
+      if (block.id === blockId) {
+        const path = String(fieldKey || '').split('.');
+        const updated = { ...block };
+        let target = updated;
+        for (const key of path.slice(0, -1)) { target[key] = Array.isArray(target[key]) ? [...target[key]] : { ...(target[key] || {}) }; target = target[key]; }
+        target[path.at(-1)] = value;
+        return updated;
+      }
+      return Array.isArray(block.children) ? { ...block, children: patchNodes(block.children) } : block;
     });
-  }, [sendCollaborationAction]);
+    const collection = blockCollection === 'componentsV2Layout' ? 'componentsV2Layout' : 'blocks';
+    const next = { ...current, [collection]: patchNodes(current[collection] || []), isDirty: true };
+    setEmbedStudio(next);
+    sendCollaborationAction({ kind: 'studio-draft', studioId: current.collabId, studioType: 'embed', draft: collaborativeEmbedDraft(next) });
+  }, [sendCollaborationAction, setEmbedStudio]);
 
   const applyDiscordTextStudio = useCallback((value) => {
     if (!discordTextStudio) return false;
@@ -4109,7 +4579,8 @@ export function App() {
 
   const openEmbedStudioForNode = useCallback((node, routeOverride = null) => {
     if (node?.id && activeTabId) studioFocusReturnRef.current = { graphId: activeTabId, nodeId: node.id };
-    const isMessageComponentsNode = ['action_send_message', 'action_reply_interaction', 'action_edit_message', 'action_edit_interaction_reply'].includes(node.type);
+    const isComponentsBuilderNode = node.type === 'build_components';
+    const isMessageComponentsNode = isComponentsBuilderNode || ['action_send_message', 'action_reply_interaction', 'action_edit_message', 'action_edit_components', 'action_edit_interaction_reply'].includes(node.type);
 
     const embedWire = activeConnections.find((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'embed');
     const embedSourceNode = embedWire ? activeNodes.find((n) => n.id === embedWire.sourceNodeId) : null;
@@ -4175,6 +4646,9 @@ export function App() {
       : Array.isArray(node.data?.components)
         ? structuredClone(node.data.components)
         : [];
+    const initialComponentsV2Layout = structuredClone(
+      (isComponentsBuilderNode ? node.data?.componentsV2 : compSourceNode?.data?.componentsV2) || node.data?.componentsV2Layout || []
+    );
 
     const contentWire = activeConnections.find((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'content');
     const contentSourceNode = contentWire ? activeNodes.find((n) => n.id === contentWire.sourceNodeId) : null;
@@ -4221,6 +4695,11 @@ export function App() {
       connectedComponentsNodeId: compSourceNode?.id || null,
       isEmbedWired: Boolean(embedWire),
       isComponentsWired: Boolean(componentsWire),
+      isComponentsBuilderNode,
+      componentsV2Layout: initialComponentsV2Layout,
+      componentsV2Enabled: isComponentsBuilderNode || compSourceNode?.type === 'build_components' || Boolean(node.data?.componentsV2Enabled),
+      canEnableComponentsV2: !isComponentsBuilderNode && !node.data?.componentsV2Enabled && !contentWire && !embedWire && !componentsWire && !String(node.data?.content || '').trim() && initialBlocks.length === 0,
+      componentsV2DisabledReason: contentWire || String(node.data?.content || '').trim() ? 'Clear the message content field and disconnect its wire first.' : embedWire || initialBlocks.length ? 'Remove the embed content and disconnect its wire first.' : componentsWire ? 'Disconnect the existing Components input first.' : '',
       isContentWired: Boolean(contentWire),
       embedSourceLabel: sourceDescription(embedWire, embedSourceNode),
       componentsSourceLabel: sourceDescription(componentsWire, compSourceNode),
@@ -4238,26 +4717,51 @@ export function App() {
     setEmbedStudio(studio);
   }, [activeConnections, activeNodes, activeProjectId, activeTabId, availableVariables]);
 
-  const updateEmbedStudioDraft = useCallback((patch) => {
-    setEmbedStudio((current) => {
-      if (!current) return current;
-      const next = { ...current, ...patch, isDirty: true };
-      sendCollaborationAction({
-        kind: 'studio-draft', studioId: current.collabId, studioType: 'embed',
-        draft: collaborativeEmbedDraft(next)
-      });
-      return next;
+  const updateEmbedStudioDraft = useCallback((patchOrUpdater) => {
+    const current = embedStudioRef.current;
+    if (!current) return;
+    const patch = typeof patchOrUpdater === 'function' ? patchOrUpdater(current) : patchOrUpdater;
+    if (!patch || typeof patch !== 'object') return;
+    recordEmbedStudioHistory(current);
+    const next = { ...current, ...patch, isDirty: true };
+    setEmbedStudio(next);
+    sendCollaborationAction({
+      kind: 'studio-draft', studioId: current.collabId, studioType: 'embed',
+      draft: collaborativeEmbedDraft(next)
     });
-  }, [sendCollaborationAction]);
+  }, [sendCollaborationAction, setEmbedStudio]);
 
   const openEmbedAsset = useCallback((asset, routeOverride = null) => {
-    const studio = { graphId: activeTabId, projectId: activeProjectId, collabId: `embed:${activeProjectId}:${activeTabId}:asset:${asset.id}`, mode: 'asset', route: routeOverride || { kind: 'embed', mode: 'asset', assetId: asset.id, tab: 'embed' }, id: asset.id, nodeId: null, name: asset.name || 'Untitled embed', blocks: structuredClone(asset.blocks || []), components: structuredClone(asset.components || []), attachments: structuredClone(asset.attachments || []), isDirty: false };
+    const isComponentsV2Asset = asset.kind === 'components-v2';
+    const studio = { graphId: activeTabId, projectId: activeProjectId, collabId: `embed:${activeProjectId}:${activeTabId}:asset:${asset.id}`, mode: 'asset', route: routeOverride || { kind: isComponentsV2Asset ? 'components' : 'embed', mode: 'asset', assetId: asset.id, tab: isComponentsV2Asset ? 'components' : 'embed' }, id: asset.id, kind: asset.kind || 'embed', name: asset.name || 'Untitled embed', blocks: structuredClone(asset.blocks || []), components: structuredClone(asset.components || []), componentsV2Layout: structuredClone(asset.componentsV2Layout || []), componentsV2Enabled: isComponentsV2Asset, attachments: structuredClone(asset.attachments || []), isDirty: false };
     collaborativeEmbedBaseRef.current.set(studio.collabId, collaborativeEmbedDraft(studio));
     setEmbedStudio(studio);
   }, [activeProjectId, activeTabId]);
 
   const createEmbedAsset = useCallback((routeOverride = null) => {
     const studio = { graphId: activeTabId, projectId: activeProjectId, collabId: `embed:${activeProjectId}:${activeTabId}:new`, mode: 'new', route: routeOverride || { kind: 'embed', mode: 'new', tab: 'embed' }, id: null, nodeId: null, name: 'Untitled embed', blocks: [], components: [], attachments: [], isDirty: false };
+    collaborativeEmbedBaseRef.current.set(studio.collabId, collaborativeEmbedDraft(studio));
+    setEmbedStudio(studio);
+  }, [activeProjectId, activeTabId]);
+
+  const createComponentsV2Asset = useCallback(() => {
+    const studio = {
+      graphId: activeTabId,
+      projectId: activeProjectId,
+      collabId: `embed:${activeProjectId}:${activeTabId}:new:components-v2`,
+      mode: 'new',
+      route: { kind: 'components', mode: 'new', tab: 'components' },
+      id: null,
+      nodeId: null,
+      kind: 'components-v2',
+      name: 'Untitled Components V2',
+      blocks: [],
+      components: [],
+      componentsV2Layout: [],
+      componentsV2Enabled: true,
+      attachments: [],
+      isDirty: false
+    };
     collaborativeEmbedBaseRef.current.set(studio.collabId, collaborativeEmbedDraft(studio));
     setEmbedStudio(studio);
   }, [activeProjectId, activeTabId]);
@@ -4274,19 +4778,34 @@ export function App() {
     return data.embed;
   }, [authToken, embedAssets]);
 
+  const persistComponentsV2Asset = useCallback(async (studio) => {
+    if (!authToken) throw new Error('Sign in before saving Components V2 to this workspace.');
+    const name = String(studio?.name || '').trim() || 'Untitled Components V2';
+    const id = studio?.id || `components_v2_asset_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const asset = { id, name, kind: 'components-v2', blocks: [], components: [], componentsV2Layout: structuredClone(studio?.componentsV2Layout || []), attachments: structuredClone(studio?.attachments || []), updatedAt: new Date().toISOString() };
+    const response = await fetch(apiUrl('/api/embeds'), { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken }, body: JSON.stringify(asset) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Could not save Components V2 to the library.');
+    setEmbedAssets(data.embeds || [data.embed, ...embedAssets.filter((item) => item.id !== data.embed?.id)]);
+    return data.embed;
+  }, [authToken, embedAssets]);
+
   const handleSaveEmbedStudio = useCallback(async () => {
     if (!embedStudio) return;
     if (['node', 'components-node'].includes(embedStudio.mode)) {
       const nextNodes = activeNodes.map((node) => {
         if (node.id === embedStudio.nodeId) {
+          const isComponentsBuilderNode = node.type === 'build_components';
           return {
             ...node,
             data: {
               ...node.data,
               ...(embedStudio.attachments ? { attachments: structuredClone(embedStudio.attachments) } : {}),
+              ...(isComponentsBuilderNode ? { componentsV2: structuredClone(embedStudio.componentsV2Layout || []) } : {}),
+              ...(!isComponentsBuilderNode && embedStudio.componentsV2Enabled ? { componentsV2Enabled: true, componentsV2Layout: structuredClone(embedStudio.componentsV2Layout || []) } : {}),
               ...(embedStudio.mode === 'node' ? { blocks: structuredClone(embedStudio.blocks), embedName: embedStudio.name.trim() || 'Untitled embed' } : {}),
               ...(!embedStudio.isContentWired && ['action_send_message', 'action_reply_interaction', 'action_edit_message', 'action_edit_interaction_reply'].includes(node.type) ? { content: String(embedStudio.content || '') } : {}),
-              components: structuredClone(embedStudio.components || [])
+              ...(!isComponentsBuilderNode ? { components: structuredClone(embedStudio.components || []) } : {})
             }
           };
         }
@@ -4305,7 +4824,7 @@ export function App() {
             ...node,
             data: {
               ...node.data,
-              components: structuredClone(embedStudio.components || [])
+              ...(node.type === 'build_components' ? { componentsV2: structuredClone(embedStudio.componentsV2Layout || []) } : { components: structuredClone(embedStudio.components || []) })
             }
           };
         }
@@ -4330,11 +4849,13 @@ export function App() {
       }
       handleNodesChange(nextNodes);
     } else {
-      try { await persistEmbedAsset(embedStudio); }
-      catch (error) { arcEvents.emit('toast:notify', { title: 'Embed not saved', message: error.message, type: 'error' }); return; }
+      try {
+        if (embedStudio.kind === 'components-v2') await persistComponentsV2Asset(embedStudio);
+        else await persistEmbedAsset(embedStudio);
+      } catch (error) { arcEvents.emit('toast:notify', { title: embedStudio.kind === 'components-v2' ? 'Components V2 not saved' : 'Embed not saved', message: error.message, type: 'error' }); return; }
     }
     setEmbedStudio(null);
-  }, [activeConnections, activeNodes, embedStudio, handleConnectionsChange, handleNodesChange, persistEmbedAsset]);
+  }, [activeConnections, activeNodes, embedStudio, handleConnectionsChange, handleNodesChange, persistComponentsV2Asset, persistEmbedAsset]);
 
   const handleSaveEmbedAsAsset = useCallback(async () => {
     if (!embedStudio) return;
@@ -4345,17 +4866,33 @@ export function App() {
     } catch (error) { arcEvents.emit('toast:notify', { title: 'Embed not saved', message: error.message, type: 'error' }); }
   }, [embedStudio, persistEmbedAsset]);
 
+  const handleSaveComponentsV2AsAsset = useCallback(async () => {
+    if (!embedStudio?.componentsV2Enabled) return;
+    const proposedName = window.prompt('Name this Components V2 layout for the library:', String(embedStudio.name || 'Untitled Components V2'));
+    if (proposedName === null) return;
+    const name = proposedName.trim();
+    if (!name) {
+      arcEvents.emit('toast:notify', { title: 'Components V2 not saved', message: 'Enter a name before saving this layout to the library.', type: 'warning' });
+      return;
+    }
+    try {
+      const asset = await persistComponentsV2Asset({ ...embedStudio, id: null, name });
+      arcEvents.emit('toast:notify', { title: 'Components V2 saved', message: `${asset.name} added to Components V2 in the library.`, type: 'success' });
+    } catch (error) { arcEvents.emit('toast:notify', { title: 'Components V2 not saved', message: error.message, type: 'error' }); }
+  }, [embedStudio, persistComponentsV2Asset]);
+
   const handleSaveEmbedShortcut = useCallback(async () => {
     const studio = embedStudioRef.current;
     if (!studio) return false;
     if (studio.mode === 'asset' && studio.id) {
       try {
-        const asset = await persistEmbedAsset(studio);
+        const isComponentsV2Asset = studio.kind === 'components-v2';
+        const asset = isComponentsV2Asset ? await persistComponentsV2Asset(studio) : await persistEmbedAsset(studio);
         setEmbedStudio((current) => current?.collabId === studio.collabId ? { ...current, ...asset, mode: 'asset', isDirty: false } : current);
-        arcEvents.emit('toast:notify', { title: 'Embed saved', message: `${asset.name} updated in the library.`, type: 'success' });
+        arcEvents.emit('toast:notify', { title: isComponentsV2Asset ? 'Components V2 saved' : 'Embed saved', message: `${asset.name} updated in the library.`, type: 'success' });
         return true;
       } catch (error) {
-        arcEvents.emit('toast:notify', { title: 'Embed not saved', message: error.message, type: 'error' });
+        arcEvents.emit('toast:notify', { title: studio.kind === 'components-v2' ? 'Components V2 not saved' : 'Embed not saved', message: error.message, type: 'error' });
         return false;
       }
     }
@@ -4384,7 +4921,7 @@ export function App() {
       setEmbedStudio((current) => current?.collabId === studio.collabId ? { ...current, ...asset, mode: 'asset', isDirty: false } : current);
     }
     return true;
-  }, [handleSaveEmbedStudio, persistEmbedAsset, persistGraph]);
+  }, [handleSaveEmbedStudio, persistComponentsV2Asset, persistEmbedAsset, persistGraph]);
   saveEmbedShortcutRef.current = handleSaveEmbedShortcut;
 
   const handleSaveTextStudio = useCallback(() => {
@@ -4637,12 +5174,28 @@ export function App() {
       let response = await fetch(apiUrl(`/api/projects/${encodeURIComponent(project.id)}/export`), { headers: { 'x-arc-token': authToken } });
       if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Could not export the project.'); }
       let bundle = await response.json();
+      let includeSecrets = false;
       if (bundle.sensitiveData?.omittedFields > 0 && window.confirm(`This project contains ${bundle.sensitiveData.omittedFields} sensitive field(s). Eligible secrets are omitted by default. Include them in the exported file?\n\nDiscord bot tokens are always removed from .arcproject files.`)) {
+        includeSecrets = true;
         response = await fetch(apiUrl(`/api/projects/${encodeURIComponent(project.id)}/export?includeSecrets=1`), { headers: { 'x-arc-token': authToken } });
         if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Could not export the project.'); }
         bundle = await response.json();
       }
       const filename = `${String(project.name || 'project').replace(/[\\/:*?"<>|]/g, '_')}.arcproject`;
+      if (window.confirm('Encrypt this project file with a password?')) {
+        const password = window.prompt('Choose an export password with at least 12 characters. You will need it to import this file.');
+        if (password === null) return;
+        if (password.length < 12 || password.length > 1024) throw new Error('Use an export password between 12 and 1,024 characters.');
+        const confirmation = window.prompt('Enter the export password again to confirm it.');
+        if (confirmation === null) return;
+        if (password !== confirmation) throw new Error('The export passwords do not match.');
+        response = await fetch(apiUrl(`/api/projects/${encodeURIComponent(project.id)}/export/encrypted`), {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
+          body: JSON.stringify({ password, includeSecrets })
+        });
+        if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Could not encrypt the project export.'); }
+        bundle = await response.json();
+      }
       const contents = JSON.stringify(bundle, null, 2);
       if (desktopMode) {
         const invoke = window.__TAURI_INTERNALS__?.invoke;
@@ -4651,7 +5204,7 @@ export function App() {
         const revealed = receipt?.revealed === true;
         arcEvents.emit('toast:notify', {
           title: 'Project exported',
-          message: revealed ? `Saved ${filename} to Downloads and opened its location.` : `Saved ${filename} to Downloads.`,
+          message: `${revealed ? `Saved ${filename} to Downloads and opened its location.` : `Saved ${filename} to Downloads.`}${bundle.format === 'arc-project-encrypted' ? ' Password protected.' : ''}`,
           type: 'success'
         });
         if (typeof receipt?.path === 'string') console.info(`ARC Studio project export saved to ${receipt.path}`);
@@ -4663,23 +5216,28 @@ export function App() {
         link.download = filename;
         link.click();
         window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-        arcEvents.emit('toast:notify', { title: 'Project exported', message: `${filename} was downloaded.`, type: 'success' });
+        arcEvents.emit('toast:notify', { title: 'Project exported', message: `${filename} was downloaded.${bundle.format === 'arc-project-encrypted' ? ' Password protected.' : ''}`, type: 'success' });
       }
     } catch (error) { arcEvents.emit('toast:notify', { title: 'Project export failed', message: error.message || 'Could not export the project.', type: 'error' }); }
     finally { setProjectBusy(false); }
   };
 
   const handleImportProject = async () => {
-    if (!projectImportFile || !projectImportTrusted || projectBusy || projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && !projectImportOldVersionApproved) return;
+    if (!projectImportFile || !projectImportTrusted || projectBusy || projectImportSharingWarning && !projectImportSharingApproved || projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && !projectImportOldVersionApproved) return;
     setProjectBusy(true);
     setProjectImportError('');
     try {
       const bundle = JSON.parse(await projectImportFile.text());
       const response = await fetch(apiUrl('/api/projects/import'), {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
-        body: JSON.stringify({ bundle, trusted: true, allowOldVersion: projectImportOldVersionApproved })
+        body: JSON.stringify({ bundle, trusted: true, allowOldVersion: projectImportOldVersionApproved, password: projectImportPassword, confirmCollaborativeText: projectImportSharingApproved })
       });
       const data = await response.json();
+      if (response.status === 409 && data.code === 'IMPORT_SHARED_CONTENT_CONFIRMATION_REQUIRED') {
+        setProjectImportSharingWarning({ workspaceName: String(data.workspaceName || externalWorkspaceName).trim() || externalWorkspaceName });
+        setProjectImportSharingApproved(false);
+        return;
+      }
       if (response.status === 409 && ['PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED', 'PROJECT_REQUIRES_NEWER_ARC'].includes(data.code)) {
         setProjectImportCompatibility(data);
         setProjectImportOldVersionApproved(false);
@@ -4693,10 +5251,18 @@ export function App() {
       projectImportPathRef.current = null;
       setProjectImportFile(null);
       setProjectImportTrusted(false);
+      setProjectImportPassword('');
+      setProjectImportSharingWarning(null);
+      setProjectImportSharingApproved(false);
       setProjectImportCompatibility(null);
       setProjectImportOldVersionApproved(false);
-      arcEvents.emit('toast:notify', { title: 'Project imported', message: imported?.name || 'Project added to your workspace', type: 'success' });
-    } catch (error) { setProjectImportError(error.message); }
+      arcEvents.emit('toast:notify', data.integrityWarning
+        ? { title: 'Project imported with a warning', message: 'This older file has no integrity record and could not be checked.', type: 'warning', duration: 7000 }
+        : { title: 'Project imported', message: imported?.name || 'Project added to your workspace', type: 'success' });
+    } catch (error) {
+      setProjectImportError(error.message);
+      if (/integrity|corrupt/i.test(error.message || '')) arcEvents.emit('toast:notify', { title: 'Project file may be corrupted', message: error.message, type: 'warning', duration: 7000 });
+    }
     finally { setProjectBusy(false); }
   };
 
@@ -4710,6 +5276,9 @@ export function App() {
     }
     setProjectImportFile(null);
     setProjectImportTrusted(false);
+    setProjectImportPassword('');
+    setProjectImportSharingWarning(null);
+    setProjectImportSharingApproved(false);
     setProjectImportError('');
     setProjectImportCompatibility(null);
     setProjectImportOldVersionApproved(false);
@@ -4735,7 +5304,7 @@ export function App() {
       switch (event.detail) {
         case 'file.new-graph': handleAddTab(); break;
         case 'file.new-blank-graph': handleAddBlankGraph(); break;
-        case 'file.open-graph': openFilePicker('.arc.json,application/json', (file) => handleImportGraph(file)); break;
+        case 'file.open-graph': openFilePicker('.arcgraph,application/vnd.arc-studio.graph+json', (file) => handleImportGraph(file)); break;
         case 'file.open-project': openFilePicker('.arcproject,.arcproject.json,application/json', (file) => {
           setProjectImportFile(file);
           setProjectImportTrusted(false);
@@ -4812,11 +5381,12 @@ export function App() {
       }
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Could not open project.');
+      const projectGraphs = (data.graphs || []).map(migrateFunctionGraphEntry);
       setProjects(data.projects || []);
       setMaxProjects(localDesktopWorkspace ? null : data.maxProjects === undefined ? maxProjects : data.maxProjects);
       setNeedsProjectOnboarding(!(data.projects || []).length);
       setActiveProjectId(data.activeProjectId || projectId);
-      setSavedGraphs(data.graphs || []);
+      setSavedGraphs(projectGraphs);
       setGraphTemplates(data.graphLibrary?.templates || []);
       setGraphSnapshots(data.graphLibrary?.snapshots || []);
       setDefaultGraphId(data.graphLibrary?.defaultGraphId ?? '');
@@ -4836,8 +5406,7 @@ export function App() {
         const storedIds = safeStorageGet(`arc_project_${projectId}_arc_open_graph_ids`, null);
         let openIds = [];
         try { openIds = storedIds ? JSON.parse(storedIds) : []; } catch {}
-        const graphs = data.graphs || [];
-        const graphById = new Map(graphs.map((graph) => [graph.id, graph]));
+        const graphById = new Map(projectGraphs.map((graph) => [graph.id, graph]));
         const opened = (Array.isArray(openIds) ? openIds.map((id) => graphById.get(id)).filter(Boolean) : []).slice(0, MAX_OPEN_GRAPH_TABS);
         setTabs(opened);
         const preferred = safeStorageGet(`arc_project_${projectId}_arc_active_graph_id`, '');
@@ -4923,7 +5492,7 @@ export function App() {
 
     const matchesStudioRoute = (candidate) => {
       if (!candidate || candidate.kind !== studioRoute.kind) return false;
-      for (const key of ['nodeId', 'fieldKey', 'scope', 'variableId', 'mode', 'assetId', 'blockId', 'blockKey', 'tab']) {
+      for (const key of ['nodeId', 'fieldKey', 'scope', 'variableId', 'mode', 'assetId', 'blockId', 'blockKey', 'blockCollection', 'tab']) {
         if (studioRoute[key] && candidate[key] !== studioRoute[key]) return false;
       }
       return true;
@@ -5003,12 +5572,21 @@ export function App() {
         else { finishRestore('The selected embed node is no longer available.'); return; }
         return;
       }
-      const block = embedStudio.blocks?.find((item) => item.id === studioRoute.blockId);
+      const isComponentsV2Text = studioRoute.blockCollection === 'componentsV2Layout';
+      let block = null;
+      const findBlock = (nodes) => {
+        for (const item of nodes || []) {
+          if (item.id === studioRoute.blockId) { block = item; return true; }
+          if (findBlock(item.children)) return true;
+        }
+        return false;
+      };
+      findBlock(isComponentsV2Text ? embedStudio.componentsV2Layout : embedStudio.blocks);
       if (!block || !studioRoute.blockKey) { finishRestore('The selected embed text field is no longer available.'); return; }
-      const value = block[studioRoute.blockKey] ?? '';
+      const value = String(studioRoute.blockKey).split('.').reduce((current, key) => current?.[key], block) ?? '';
       openDiscordTextStudio(null, null, studioRoute.label || studioRoute.blockKey, value, studioRoute.maxLength || undefined,
-        (next) => updateEmbedStudioBlockValue(studioRoute.blockId, studioRoute.blockKey, next),
-        embedStudio.collabId, { blockId: studioRoute.blockId, blockKey: studioRoute.blockKey }, studioRoute);
+        (next) => updateEmbedStudioBlockValue(studioRoute.blockId, studioRoute.blockKey, next, studioRoute.blockCollection),
+        embedStudio.collabId, { blockId: studioRoute.blockId, blockKey: studioRoute.blockKey, blockCollection: studioRoute.blockCollection }, studioRoute);
       finishRestore();
       return;
     }
@@ -5025,8 +5603,8 @@ export function App() {
       browserInitialRouteSettledRef.current = true;
     }
     const graphId = activeTabId && tabs.some((tab) => tab.id === activeTabId) ? activeTabId : '';
-    const segments = ['/projects', encodeURIComponent(activeProjectId)];
-    if (graphId) segments.push('graphs', encodeURIComponent(graphId));
+    const segments = ['/projects', encodeURIComponent(projectIdToRouteSegment(activeProjectId))];
+    if (graphId) segments.push('graphs', encodeURIComponent(graphIdToRouteSegment(graphId)));
     const url = new URL(window.location.href);
     url.pathname = segments.join('/');
     url.search = '';
@@ -5107,7 +5685,7 @@ export function App() {
       if (projectDelete.id === activeProjectId) {
         setActiveProjectId(data.activeProjectId || '');
         setNeedsProjectOnboarding(!(data.projects || []).length);
-        setSavedGraphs(data.graphs || []);
+        setSavedGraphs((data.graphs || []).map(migrateFunctionGraphEntry));
         setGraphTemplates(data.graphLibrary?.templates || []);
         setGraphSnapshots(data.graphLibrary?.snapshots || []);
         setDefaultGraphId(data.graphLibrary?.defaultGraphId ?? '');
@@ -5176,13 +5754,14 @@ export function App() {
     setProjects(data.projects || []);
     setMaxProjects(localDesktopWorkspace ? null : data.maxProjects === undefined ? maxProjects : data.maxProjects);
     setActiveProjectId(data.activeProjectId || projectId);
-    setSavedGraphs(data.graphs || []);
+    const initialGraphs = (data.graphs || []).map(migrateFunctionGraphEntry);
+    setSavedGraphs(initialGraphs);
     setGraphTemplates(data.graphLibrary?.templates || []);
     setGraphSnapshots(data.graphLibrary?.snapshots || []);
     setDefaultGraphId(data.graphLibrary?.defaultGraphId ?? '');
     setEmbedAssets(data.embeds || []);
     setBotProfile(data.botProfile || null);
-    const initialTabs = data.graphs || [];
+    const initialTabs = initialGraphs;
     setTabs(initialTabs);
     setActiveTabId(initialTabs[0]?.id || null);
     setNeedsProjectOnboarding(false);
@@ -5222,6 +5801,7 @@ export function App() {
     window.clearTimeout(collaborationActionTimerRef.current);
     collaborationActionTimerRef.current = null;
     setWorkspaceMode(mode);
+    nodeRegistryRevisionRef.current = '';
     installedPluginsRef.current = [];
     setInstalledPlugins([]);
     registerPluginNodeDefinitions([]);
@@ -5267,40 +5847,32 @@ export function App() {
       try { status = await response.json(); }
       catch { throw new Error('This server did not return a valid ARC Studio response.'); }
       if (typeof status.isSetupCompleted !== 'boolean') throw new Error('This server is not an ARC Studio workspace.');
+      const requiredClientVersion = String(status.minimumClientVersion || status.version || '').trim();
+      const minimumVersionOrder = compareArcVersions(studioPackage.version, requiredClientVersion);
+      if (minimumVersionOrder === null || minimumVersionOrder < 0) throw new Error(`Update ARC Studio to ${requiredClientVersion || 'the required version'} or newer before connecting.`);
+      const registryCompatibility = getNodeRegistryCompatibility({
+        nodeRegistryProtocolVersion: status.nodeRegistryProtocolVersion,
+        nodeRegistryFeatures: SUPPORTED_NODE_REGISTRY_FEATURES
+      }, status.nodeRegistryRequiredFeatures);
+      if (!registryCompatibility.compatible) {
+        const unsupported = registryCompatibility.unsupportedFeatures.length ? ` Unsupported features: ${registryCompatibility.unsupportedFeatures.join(', ')}.` : '';
+        throw new Error(`This workspace requires node registry protocol ${status.nodeRegistryProtocolVersion ?? 'unknown'}, which this client cannot use.${unsupported} Update ARC Studio before connecting.`);
+      }
+      setMinimumRequiredClientVersion(requiredClientVersion);
       let compatibilityNotice = '';
       let supportedNodeTypes = null;
       if (desktopMode) {
         setWorkspaceNodeDefinitions(null);
+        nodeRegistryRevisionRef.current = '';
         setPluginDefinitionsRevision((revision) => revision + 1);
         const serverVersion = String(status.version || '').trim();
         const versionOrder = compareArcVersions(serverVersion, studioPackage.version);
         let serverNodeTypes = Array.isArray(status.supportedNodeTypes) ? status.supportedNodeTypes : null;
-        let registryLoaded = false;
-        try {
-          const registryResponse = await fetch(`${url}/api/nodes/registry`, { signal: controller.signal, cache: 'no-store' });
-          if (registryResponse.ok) {
-            const registry = await registryResponse.json();
-            const definitions = getNodeRegistryDefinitions(registry);
-            if (definitions) {
-              const workspaceOnlyTypes = definitions.filter((definition) => !BundledNodeTypes.has(definition.type));
-              setWorkspaceNodeDefinitions(definitions);
-              registerPluginNodeDefinitions(installedPluginsRef.current);
-              setPluginDefinitionsRevision((revision) => revision + 1);
-              serverNodeTypes = definitions.map((definition) => definition.type);
-              registryLoaded = true;
-              if (workspaceOnlyTypes.length) compatibilityNotice = `${workspaceOnlyTypes.length} workspace node type${workspaceOnlyTypes.length === 1 ? '' : 's'} use server-provided schemas and generic editors. Node behavior runs on the workspace server.`;
-            }
-          }
-        } catch (error) {
-          compatibilityNotice = `Could not load this workspace's node schemas${error?.message ? `: ${error.message}` : '.'} The bundled node catalog will be used.`;
-        }
-        if (!registryLoaded && !compatibilityNotice) compatibilityNotice = 'This workspace does not provide node schemas. The bundled node catalog will be used.';
         if (Array.isArray(serverNodeTypes) && serverNodeTypes.length && serverNodeTypes.every((type) => typeof type === 'string')) {
           supportedNodeTypes = new Set(serverNodeTypes);
         }
-        if (!compatibilityNotice && versionOrder === null) compatibilityNotice = 'Connected to a workspace with an unrecognized version. Compatibility is based on the available node schema.';
-        else if (!compatibilityNotice && versionOrder < 0) compatibilityNotice = `Connected to older workspace version ${serverVersion}. Node behavior runs on the workspace server.`;
-        else if (!compatibilityNotice && versionOrder > 0) compatibilityNotice = `Connected to newer workspace version ${serverVersion}. Some editor-specific controls may not be available.`;
+        if (versionOrder < 0) compatibilityNotice = `Connected to older workspace version ${serverVersion}. Node behavior runs on the workspace server.`;
+        else if (versionOrder > 0) compatibilityNotice = `Connected to newer workspace version ${serverVersion}. The server provides node schemas and runtime behavior.`;
       }
       const name = (typeof status.workspaceName === 'string' && status.workspaceName.trim() ? status.workspaceName.trim() : new URL(url).host).slice(0, 35);
       setRemoteWorkspaceName(name);
@@ -5446,7 +6018,9 @@ export function App() {
       const target = event.target;
       const command = event.metaKey || event.ctrlKey;
       const key = event.key.toLowerCase();
-      const shortcuts = { ...DEFAULT_SHORTCUTS, ...(desktopMode ? settings.shortcuts || {} : {}) };
+      const configuredShortcuts = desktopMode ? settings.shortcuts || {} : {};
+      const shortcuts = { ...DEFAULT_SHORTCUTS, redo: getDefaultShortcut('redo', shortcutPlatform), ...configuredShortcuts };
+      if (!configuredShortcuts.redo || configuredShortcuts.redo === DEFAULT_SHORTCUTS.redo) shortcuts.redo = getDefaultShortcut('redo', shortcutPlatform);
       if (shortcutMatches(event, shortcuts.closeTab)) {
         event.preventDefault();
         event.stopPropagation();
@@ -5505,6 +6079,12 @@ export function App() {
         return;
       }
       const isTextEditingTarget = target instanceof HTMLElement && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName));
+      if (!isTextEditingTarget && shortcutMatches(event, shortcuts.exportBot)) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleExportBot();
+        return;
+      }
       if (!desktopMode && command && !event.altKey && key === 'r') {
         event.preventDefault();
         event.stopPropagation();
@@ -5607,7 +6187,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [activeNodes, activeTabId, botStatus, closeGraphDialog, desktopMode, discordTextStudioOpenForActiveGraph, embedStudio, embedStudioOpenForActiveGraph, handleAddBlankGraph, handleAddTab, handleAutoLayout, handleCloseTab, handleSaveEmbedShortcut, handleSaveGraph, handleSaveTextStudio, handleRedo, handleStartBot, handleStopBot, handleUndo, isBotSidebarOpen, isLibraryOpen, isPluginStoreOpen, isProjectsOpen, isVariablesOpen, isLocked, localDesktopWorkspace, openNodeRename, openPaletteAt, rememberUserGraph, remoteWorkspaceBlocked, savedGraphs, selectedCanvasNodeCount, selectedCanvasNodeId, settings.shortcuts, shortcutPlatform, tabs]);
+  }, [activeNodes, activeTabId, botStatus, closeGraphDialog, desktopMode, discordTextStudioOpenForActiveGraph, embedStudio, embedStudioOpenForActiveGraph, handleAddBlankGraph, handleAddTab, handleAutoLayout, handleCloseTab, handleExportBot, handleSaveEmbedShortcut, handleSaveGraph, handleSaveTextStudio, handleRedo, handleStartBot, handleStopBot, handleUndo, isBotSidebarOpen, isLibraryOpen, isPluginStoreOpen, isProjectsOpen, isVariablesOpen, isLocked, localDesktopWorkspace, openNodeRename, openPaletteAt, rememberUserGraph, remoteWorkspaceBlocked, savedGraphs, selectedCanvasNodeCount, selectedCanvasNodeId, settings.shortcuts, shortcutPlatform, tabs]);
 
   const handleToggleLock = () => {
     setIsLocked((locked) => {
@@ -5638,6 +6218,8 @@ export function App() {
     const update = updateRef.current;
     if (!update || updateInstalling) return;
     setUpdateInstalling(true);
+    const updateVersion = update.version;
+    let unlistenProgress;
     const publishProgress = (message, progress = null) => arcEvents.emit('toast:notify', {
       id: 'arc-studio-update-progress',
       title: 'Updating ARC Studio',
@@ -5645,23 +6227,45 @@ export function App() {
       type: 'info',
       loading: progress === null,
       progress,
-      persistent: true
+      persistent: true,
+      dismissible: false
     });
-    publishProgress(`Downloading and verifying version ${update.version}…`);
     try {
       const invoke = window.__TAURI_INTERNALS__?.invoke;
       if (typeof invoke !== 'function' || !Number.isInteger(update.rid)) throw new Error('The selected update is no longer available. Check for updates again.');
-      publishProgress('Downloading and verifying update…');
+      unlistenProgress = await listenTauriEvent('arc-studio-update-download-progress', (event) => {
+        const payload = event.payload || {};
+        const progress = Number.isInteger(payload.percent) ? Math.max(0, Math.min(99, payload.percent)) : null;
+        const downloaded = Number(payload.downloadedBytes) || 0;
+        const total = Number(payload.totalBytes);
+        const formatBytes = (value) => value >= 1024 ** 3 ? `${(value / 1024 ** 3).toFixed(1)} GB` : value >= 1024 ** 2 ? `${(value / 1024 ** 2).toFixed(1)} MB` : `${Math.max(0, Math.round(value / 1024))} KB`;
+        const message = progress === null
+          ? `Downloading update · ${formatBytes(downloaded)}${Number.isFinite(total) && total > 0 ? ` of ${formatBytes(total)}` : ''}`
+          : `Downloading update · ${progress}%`;
+        publishProgress(message, progress);
+      });
+      publishProgress(`Downloading version ${updateVersion}…`);
       await invoke('install_channel_update', { rid: update.rid, channel: desktopReleaseChannel });
       updateRef.current = null;
       setAppUpdate(null);
       setUpdateInstallPromptOpen(false);
       setUpdateNotice(null);
+      setDownloadedUpdateReady({ version: updateVersion });
       await update.close().catch(() => {});
+      arcEvents.emit('toast:notify', {
+        id: 'arc-studio-update-progress',
+        title: 'ARC Studio update ready',
+        message: `Version ${updateVersion} is downloaded and verified. It will be installed the next time ARC Studio launches.`,
+        type: 'success',
+        progress: 100,
+        persistent: true,
+        dismissible: true
+      });
     } catch (error) {
       const message = typeof error === 'string' ? error.trim() : typeof error?.message === 'string' ? error.message.trim() : '';
-      arcEvents.emit('toast:notify', { id: 'arc-studio-update-progress', title: 'Update failed', message: message || 'ARC Studio could not install the update.', type: 'error', duration: 10000 });
+      arcEvents.emit('toast:notify', { id: 'arc-studio-update-progress', title: 'Update failed', message: message || 'ARC Studio could not download and verify the update.', type: 'error', duration: 10000, dismissible: true });
     } finally {
+      unlistenProgress?.();
       setUpdateInstalling(false);
     }
   }, [desktopReleaseChannel, updateInstalling]);
@@ -5679,22 +6283,24 @@ export function App() {
     const installed = Array.isArray(pluginsData.plugins) ? pluginsData.plugins : [];
     const registryResponse = await fetch(apiUrl('/api/nodes/registry'), {
       headers: { 'x-arc-token': authToken },
-      cache: 'no-store'
+      cache: 'no-cache'
     });
     if (registryResponse.ok) {
       const registry = await registryResponse.json();
       const definitions = getNodeRegistryDefinitions(registry);
       if (definitions) {
-        setWorkspaceNodeDefinitions(definitions);
+        setWorkspaceNodeDefinitions(definitions, registry.categories);
+        nodeRegistryRevisionRef.current = registry.registryRevision;
         registerPluginNodeDefinitions(installed);
       }
-      else if (registry?.schemaVersion === 1) throw new Error('Workspace returned an invalid node registry after the plugin change.');
       else {
         setWorkspaceNodeDefinitions(null);
+        nodeRegistryRevisionRef.current = '';
         registerPluginNodeDefinitions(installed);
       }
     } else if (registryResponse.status === 404) {
       setWorkspaceNodeDefinitions(null);
+      nodeRegistryRevisionRef.current = '';
       registerPluginNodeDefinitions(installed);
     } else {
       throw new Error(`Could not refresh workspace node schemas after the plugin change. Workspace returned HTTP ${registryResponse.status}.`);
@@ -5706,7 +6312,7 @@ export function App() {
     const response = await fetch(apiUrl('/api/graphs'), { headers: { 'x-arc-token': authToken } });
     const data = await response.json();
     if (response.ok) {
-      const graphs = Array.isArray(data.graphs) ? data.graphs : [];
+      const graphs = (Array.isArray(data.graphs) ? data.graphs : []).map(migrateFunctionGraphEntry);
       const graphById = new Map(graphs.map((graph) => [graph.id, graph]));
       setSavedGraphs(graphs);
       setTabs((previous) => previous.map((tab) => {
@@ -5864,7 +6470,13 @@ export function App() {
             wiredFields={embedStudio.wiredFields || {}}
             hasParentNode={Boolean(embedStudio.nodeId)}
             components={embedStudio.components || []}
+            componentsV2Layout={embedStudio.componentsV2Layout || []}
+            componentsV2Enabled={Boolean(embedStudio.componentsV2Enabled)}
+            canEnableComponentsV2={Boolean(embedStudio.canEnableComponentsV2)}
+            componentsV2DisabledReason={embedStudio.componentsV2DisabledReason || ''}
+            isComponentsBuilderNode={Boolean(embedStudio.isComponentsBuilderNode)}
             componentsOnly={embedStudio.mode === 'components-node'}
+            assetNameEditable={embedStudio.mode === 'asset' && embedStudio.kind === 'components-v2'}
             initialTab={embedStudio.route?.tab}
             isEmbedWired={Boolean(embedStudio.isEmbedWired)}
             isComponentsWired={Boolean(embedStudio.isComponentsWired)}
@@ -5882,17 +6494,21 @@ export function App() {
             theme={theme}
             collaborators={studioCollaborators}
             onNameChange={(name) => updateEmbedStudioDraft({ name })}
-            onBlocksChange={(blocks) => updateEmbedStudioDraft({ blocks })}
+            onBlocksChange={(blocksOrUpdater) => updateEmbedStudioDraft(typeof blocksOrUpdater === 'function' ? (current) => ({ blocks: blocksOrUpdater(current.blocks || []) }) : { blocks: blocksOrUpdater })}
             attachments={embedStudio.attachments || []}
             onAttachmentsChange={(attachments) => updateEmbedStudioDraft({ attachments })}
             onOpenTextStudio={(label, value, maxLength, applyValue, parentBlockContext) => openDiscordTextStudio(null, null, label, value, maxLength, applyValue, embedStudio.collabId, parentBlockContext)}
             onActiveTabChange={(tab) => setEmbedStudio((current) => current ? { ...current, route: { ...current.route, tab } } : current)}
             onContentChange={(content) => updateEmbedStudioDraft({ content })}
-            onComponentsChange={(components) => updateEmbedStudioDraft({ components })}
+            onComponentsChange={(componentsOrUpdater) => updateEmbedStudioDraft(typeof componentsOrUpdater === 'function' ? (current) => ({ components: componentsOrUpdater(current.components || []) }) : { components: componentsOrUpdater })}
+            onComponentsV2LayoutChange={(layoutOrUpdater) => updateEmbedStudioDraft(typeof layoutOrUpdater === 'function' ? (current) => ({ componentsV2Layout: layoutOrUpdater(current.componentsV2Layout || []) }) : { componentsV2Layout: layoutOrUpdater })}
+            onEnableComponentsV2={() => updateEmbedStudioDraft({ componentsV2Enabled: true })}
             onSave={handleSaveEmbedStudio}
             onSaveAs={handleSaveEmbedAsAsset}
+            onSaveComponentsV2As={handleSaveComponentsV2AsAsset}
             onClose={() => setEmbedStudio(null)}
-            saveLabel={['node', 'components-node'].includes(embedStudio.mode) ? 'Apply to node' : 'Save embed'}
+            saveLabel={['node', 'components-node'].includes(embedStudio.mode) ? 'Apply to node' : embedStudio.kind === 'components-v2' ? 'Save Components' : 'Save embed'}
+            saveAsLabel={embedStudio.componentsV2Enabled ? 'Save Components to Library' : 'Save to library'}
             showSave={embedStudio.mode !== 'new'}
           />}
 
@@ -6035,14 +6651,14 @@ export function App() {
                 ? <button type="button" className="canvas-context-validation" onClick={handleValidateGraph} aria-label={`Open graph review with ${graphValidation.errors.length ? `${graphValidation.errors.length} issues` : `${graphValidation.warnings.length} warnings`}`}>{graphValidation.errors.length ? `${graphValidation.errors.length} issues` : 'Review'}</button>
                 : 'Ready'}</>
               : 'Open a graph to run checks.'}
-            {(!desktopMode || !localDesktopWorkspace) && collaborationSocketStatus !== 'connected' && <span className="collaboration-connection is-reconnecting" role="status" aria-live="polite">{collaborationSocketStatus === 'incompatible' ? `Update ARC Studio to ${minimumRequiredClientVersion} or newer to connect.` : collaborationSocketStatus === 'connecting' ? 'Connecting…' : 'Reconnecting…'}</span>}
+            {(!desktopMode || !localDesktopWorkspace) && collaborationSocketStatus !== 'connected' && <span className={`collaboration-connection is-reconnecting ${collaborationSocketStatus === 'blocked' ? 'is-blocked' : ''}`} role="status" aria-live="polite">{collaborationSocketStatus === 'incompatible' ? `Update ARC Studio to ${minimumRequiredClientVersion} or newer to connect.` : collaborationSocketStatus === 'blocked' ? 'This client is not allowed by the workspace owner.' : collaborationSocketStatus === 'connecting' ? 'Connecting…' : 'Reconnecting…'}</span>}
             {activeGraph && (!desktopMode || !localDesktopWorkspace) && collaborationSocketStatus === 'connected' && collaborationConnectionFlaky && <span className="collaboration-connection is-flaky" role="status" aria-live="polite">Flaky connection</span>}
             {activeGraph && collaborators.length > 0 && <span className="canvas-collaborators" title={collaborators.slice(0, 8).map((person) => person.username).concat(collaborators.length > 8 ? [`…and ${collaborators.length - 8} more`] : []).join('\n')}><span className="context-separator">·</span> {collaborators.slice(0, 2).map((person) => person.username).join(', ')}{collaborators.length > 2 ? ` …and ${collaborators.length - 2} more` : ''}</span>}
           </div>
           {isLocked && <div className="canvas-lock-state"><LockKeyhole size={13} /> Locked</div>}
           </>}
 
-          {isLibraryOpen && <Suspense fallback={<LazyFeatureLoading label="Opening Library…" kind="sidebar" isDesktop={desktopMode} width={sidebarWidths.library} />}><GraphLibraryPanel definitions={availableNodeDefinitions} newNodesUserKey={newNodesUserKey} graphActivity={projectCollaboration.projectId === activeProjectId ? projectCollaboration.graphActivity || [] : []} sidebarWidth={sidebarWidths.library} onSidebarResize={(width) => handleSidebarResize('library', width)} activeSection={librarySection} onActiveSectionChange={setLibrarySection} usageScope={activeProjectId} desktopMode={desktopMode} canImportGraph={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onImportGraph={handleImportGraph} graphs={savedGraphs} templates={graphTemplates} snapshots={graphSnapshots} nodePrefabs={nodePrefabs} embedAssets={embedAssets} graphVariables={availableVariables} defaultGraphId={defaultGraphId} activeGraph={activeGraph} openGraphIds={tabs.map((tab) => tab.id)} activeTabId={activeTabId} onClose={() => setIsLibraryOpen(false)} onOpenGraph={handleOpenGraph} onUseTemplate={(template) => handleAddTab(template)} onCreateFunction={handleAddFunctionGraph} onDeleteGraph={handleDeleteSavedGraph} onDeleteGraphs={handleDeleteSavedGraphs} onDuplicateGraph={handleDuplicateGraph} onRenameGraph={handleRenameGraph} onSaveTemplate={handleSaveGraphTemplate} onDeleteTemplate={handleDeleteGraphTemplate} onSetDefault={handleSetDefaultGraph} onExportBot={handleExportBot} exportInProgress={exportInProgress} onAddNode={handlePlaceNode} onAddPrefab={(prefab) => handleDropNode({ type: 'prefab', prefabId: prefab.id })} onDeletePrefab={handleDeleteNodePrefab} onCreateEmbed={createEmbedAsset} onOpenEmbed={openEmbedAsset} onDeleteEmbed={handleDeleteEmbedAsset} onManageVariables={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(true); }} onCreateSnapshot={async (graph, name) => {
+          {isLibraryOpen && <Suspense fallback={<LazyFeatureLoading label="Opening Library…" kind="sidebar" isDesktop={desktopMode} width={sidebarWidths.library} />}><GraphLibraryPanel definitions={availableNodeDefinitions} newNodesUserKey={newNodesUserKey} graphActivity={projectCollaboration.projectId === activeProjectId ? projectCollaboration.graphActivity || [] : []} sidebarWidth={sidebarWidths.library} onSidebarResize={(width) => handleSidebarResize('library', width)} activeSection={librarySection} onActiveSectionChange={setLibrarySection} usageScope={activeProjectId} desktopMode={desktopMode} canImportGraph={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onImportGraph={handleImportGraph} graphs={savedGraphs} templates={graphTemplates} snapshots={graphSnapshots} nodePrefabs={nodePrefabs} embedAssets={embedAssets} graphVariables={availableVariables} defaultGraphId={defaultGraphId} activeGraph={activeGraph} openGraphIds={tabs.map((tab) => tab.id)} activeTabId={activeTabId} onClose={() => setIsLibraryOpen(false)} onOpenGraph={handleOpenGraph} onUseTemplate={(template) => handleAddTab(template)} onCreateFunction={handleAddFunctionGraph} onDeleteGraph={handleDeleteSavedGraph} onDeleteGraphs={handleDeleteSavedGraphs} onDuplicateGraph={handleDuplicateGraph} onRenameGraph={handleRenameGraph} onSaveTemplate={handleSaveGraphTemplate} onDeleteTemplate={handleDeleteGraphTemplate} onSetDefault={handleSetDefaultGraph} onExportBot={handleExportBot} exportInProgress={exportInProgress} onAddNode={handlePlaceNode} onAddPrefab={(prefab) => handleDropNode({ type: 'prefab', prefabId: prefab.id })} onDeletePrefab={handleDeleteNodePrefab} onCreateEmbed={createEmbedAsset} onCreateComponentsV2={createComponentsV2Asset} onOpenEmbed={openEmbedAsset} onDeleteEmbed={handleDeleteEmbedAsset} onManageVariables={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(true); }} onCreateSnapshot={async (graph, name) => {
             await ensureWorkspaceGraphsSaved();
             const response = await fetch(apiUrl(`/api/graphs/${encodeURIComponent(graph.id)}/snapshots`), { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken }, body: JSON.stringify({ graph, name }) });
             const data = await response.json();
@@ -6104,7 +6720,7 @@ export function App() {
               {projectError && <p className="field-error">{projectError}</p>}
               <Button type="submit" icon={Plus} onContextMenu={(event) => openProjectMenu(event, null)} disabled={projectBusy || maxProjects !== null && projects.length >= maxProjects} loading={projectBusy}>Create project</Button>
               <button className="project-import-button" type="button" disabled={projectBusy || maxProjects !== null && projects.length >= maxProjects} onClick={() => { document.getElementById('project-import-file')?.click(); }}><FileUp size={14} />Import project file</button>
-              <input id="project-import-file" type="file" accept=".arcproject,.arcproject.json" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) { setProjectImportFile(file); setProjectImportTrusted(false); setProjectImportError(''); setProjectImportCompatibility(null); setProjectImportOldVersionApproved(false); } event.target.value = ''; }} />
+              <input id="project-import-file" type="file" accept=".arcproject,.arcproject.json" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) { setProjectImportFile(file); setProjectImportTrusted(false); setProjectImportError(''); setProjectImportSharingWarning(null); setProjectImportSharingApproved(false); setProjectImportCompatibility(null); setProjectImportOldVersionApproved(false); } event.target.value = ''; }} />
               {!localDesktopWorkspace && currentUser?.role === 'admin' && <label className="project-limit-control"><span>Project limit</span><div><input aria-label="Maximum projects" type="number" min="1" step="1" value={maxProjects ?? ''} placeholder="Unlimited" onChange={(event) => { const next = event.target.value; if (next === '') setMaxProjects(null); else if (/^\d+$/.test(next)) setMaxProjects(Number(next)); }} onBlur={(event) => handleSetProjectLimit(event.target.value === '' ? 'unlimited' : Number(event.target.value))} /><button type="button" onClick={() => handleSetProjectLimit('unlimited')}>Unlimited</button></div></label>}
             </form>
           </aside>}
@@ -6185,6 +6801,8 @@ export function App() {
         appUpdate={appUpdate}
         serverUpdate={serverUpdate}
         stableUpdateReady={stableUpdateReady}
+        downloadedUpdateReady={downloadedUpdateReady}
+        updateInstalling={updateInstalling}
         releaseChannel={currentUpdateChannel}
         networkOnline={networkOnline}
         onOpenStudioUpdate={handleOpenStudioUpdate}
@@ -6193,6 +6811,8 @@ export function App() {
         onResetLocalData={handleResetLocalData}
         desktopMode={desktopMode}
         localWorkspace={workspaceMode === 'local'}
+        externalWorkspace={!desktopMode || workspaceMode === 'remote'}
+        canManageClientAccess={currentUser?.isPrimaryAdmin === true}
         canResetLocalWorkspace={desktopMode && workspaceMode === 'local' && currentUser?.isPrimaryAdmin === true}
         platform={shortcutPlatform}
         themeChoice={hasThemeChoice ? theme : 'system'}
@@ -6222,13 +6842,14 @@ export function App() {
             ['Toggle Library', formatShortcut((desktopMode ? settings.shortcuts?.toggleLibrary : null) || DEFAULT_SHORTCUTS.toggleLibrary, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')],
             ['Open node search', formatShortcut((desktopMode ? settings.shortcuts?.openSearch : null) || DEFAULT_SHORTCUTS.openSearch, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')],
             ['Open emoji picker in a text field', formatShortcut((desktopMode ? settings.shortcuts?.emojiPicker : null) || DEFAULT_SHORTCUTS.emojiPicker, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')],
+            ['Export bot', formatShortcut((desktopMode ? settings.shortcuts?.exportBot : null) || DEFAULT_SHORTCUTS.exportBot, shortcutPlatform)],
             ['Toggle server console', formatShortcut((desktopMode ? settings.shortcuts?.toggleConsole : null) || DEFAULT_SHORTCUTS.toggleConsole, shortcutPlatform)],
             ['Connect / disconnect gateway', formatShortcut((desktopMode ? settings.shortcuts?.connectGateway : null) || DEFAULT_SHORTCUTS.connectGateway, shortcutPlatform)],
             ['Rename selected node', formatShortcut((desktopMode ? settings.shortcuts?.renameNode : null) || DEFAULT_SHORTCUTS.renameNode, shortcutPlatform)],
             ['Reload ARC Studio', formatShortcut((desktopMode ? settings.shortcuts?.reloadStudio : null) || DEFAULT_SHORTCUTS.reloadStudio, shortcutPlatform)],
             ['Save graph', formatShortcut((desktopMode ? settings.shortcuts?.saveGraph : null) || DEFAULT_SHORTCUTS.saveGraph, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')],
             ['Undo', formatShortcut((desktopMode ? settings.shortcuts?.undo : null) || DEFAULT_SHORTCUTS.undo, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')],
-            ['Redo', formatShortcut((desktopMode ? settings.shortcuts?.redo : null) || DEFAULT_SHORTCUTS.redo, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')],
+            ['Redo', formatShortcut((desktopMode && settings.shortcuts?.redo && settings.shortcuts.redo !== DEFAULT_SHORTCUTS.redo ? settings.shortcuts.redo : getDefaultShortcut('redo', shortcutPlatform)), shortcutPlatform)],
             ['Copy / paste selected node', `${shortcutModifier} + C / V`],
             ['Increase / decrease UI scale', `${shortcutModifier} + + / −`],
             ['Pan canvas', 'Space + drag']
@@ -6362,9 +6983,22 @@ export function App() {
         title="Import project file?"
         subtitle={projectImportFile?.name || ''}
         icon={ShieldCheck}
-        footer={<><Button variant="secondary" disabled={projectBusy} onClick={cancelProjectImport}>Cancel</Button><Button icon={FileUp} loading={projectBusy} disabled={!projectImportTrusted || projectBusy || projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' || projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && !projectImportOldVersionApproved} onClick={handleImportProject}>{projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' ? 'Newer ARC Studio required' : projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' ? 'Import older project' : 'Trust and import'}</Button></>}
+        footer={<><Button variant="secondary" disabled={projectBusy} onClick={cancelProjectImport}>Cancel</Button><Button icon={FileUp} loading={projectBusy} disabled={!projectImportTrusted || projectBusy || projectImportSharingWarning && !projectImportSharingApproved || projectImportEncrypted && projectImportPassword.length < 12 || projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' || projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && !projectImportOldVersionApproved} onClick={handleImportProject}>{projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' ? 'Newer ARC Studio required' : projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' ? 'Import older project' : projectImportSharingWarning && projectImportSharingApproved ? 'Import project' : 'Trust and import'}</Button></>}
       >
-        <div className="project-import-warning"><strong>Only import a project from someone you trust.</strong><p>Project files contain graphs, settings, and assets. Importing adds the project to this workspace and marks it trusted here.</p><label><input type="checkbox" checked={projectImportTrusted} onChange={(event) => setProjectImportTrusted(event.target.checked)} /><span>I trust the source of this project file.</span></label>{projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && <div className="project-import-compatibility-warning" role="alert"><strong>Older project version</strong><p>{projectImportCompatibility.unknownProjectVersion ? 'This file does not record an ARC Studio version.' : `Created with ARC Studio ${projectImportCompatibility.projectVersion}; this is at least 10 releases older than ${projectImportCompatibility.currentVersion}.`} Its graphs or settings may behave differently. Review it before using it.</p><label><input type="checkbox" checked={projectImportOldVersionApproved} onChange={(event) => setProjectImportOldVersionApproved(event.target.checked)} /><span>I understand and want to import this older project.</span></label></div>}{projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' && <div className="project-import-compatibility-warning" role="alert"><strong>Update ARC Studio to import this project</strong><p>Created with ARC Studio {projectImportCompatibility.projectVersion}. This workspace runs {projectImportCompatibility.currentVersion || 'an older version'}; open it with ARC Studio {projectImportCompatibility.projectVersion} or newer.</p></div>}{projectImportError && <p className="field-error" role="alert">{projectImportError}</p>}</div>
+        <div className="project-import-warning">
+          <strong>Only import a project from someone you trust.</strong>
+          <p>Project files contain graphs, settings, and assets. Importing adds the project to this workspace and marks it trusted here.</p>
+          {projectImportSharingWarning && <div className="project-import-compatibility-warning" role="alert">
+            <strong>Workspace members may access imported text</strong>
+            <p>This project contains text or request fields. Importing it into “{projectImportSharingWarning.workspaceName}” makes that content visible to members with graph read permission and editable by members with graph write permission.</p>
+            <label><input type="checkbox" checked={projectImportSharingApproved} onChange={(event) => setProjectImportSharingApproved(event.target.checked)} /><span>I understand who can access this content.</span></label>
+          </div>}
+          {projectImportEncrypted && <label className="project-import-password"><span>Export password</span><input type="password" autoComplete="current-password" value={projectImportPassword} onChange={(event) => setProjectImportPassword(event.target.value)} placeholder="Enter the password used to encrypt this file" /></label>}
+          <label><input type="checkbox" checked={projectImportTrusted} onChange={(event) => setProjectImportTrusted(event.target.checked)} /><span>I trust the source of this project file.</span></label>
+          {projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && <div className="project-import-compatibility-warning" role="alert"><strong>Older project version</strong><p>{projectImportCompatibility.unknownProjectVersion ? 'This file does not record an ARC Studio version.' : `Created with ARC Studio ${projectImportCompatibility.projectVersion}; this is at least 10 releases older than ${projectImportCompatibility.currentVersion}.`} Its graphs or settings may behave differently. Review it before using it.</p><label><input type="checkbox" checked={projectImportOldVersionApproved} onChange={(event) => setProjectImportOldVersionApproved(event.target.checked)} /><span>I understand and want to import this older project.</span></label></div>}
+          {projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' && <div className="project-import-compatibility-warning" role="alert"><strong>Update ARC Studio to import this project</strong><p>Created with ARC Studio {projectImportCompatibility.projectVersion}. This workspace runs {projectImportCompatibility.currentVersion || 'an older version'}; open it with ARC Studio {projectImportCompatibility.projectVersion} or newer.</p></div>}
+          {projectImportError && <p className="field-error" role="alert">{projectImportError}</p>}
+        </div>
       </Modal>
       <Modal isOpen={projectTemplateDialog} onClose={() => { if (!projectBusy) { setProjectTemplateDialog(false); setProjectError(''); } }} title="Create from template" subtitle="Pick a starter project and give it a name." footer={<><Button variant="secondary" disabled={projectBusy} onClick={() => setProjectTemplateDialog(false)}>Cancel</Button><Button icon={Plus} loading={projectBusy} disabled={!newProjectName.trim() || projectBusy} onClick={handleCreateProjectFromTemplate}>Create project</Button></>}>
         <div className="project-template-dialog-form">
@@ -6386,7 +7020,7 @@ export function App() {
         footer={<>
           <a className="studio-button studio-button-secondary" href={updateNotice?.url} target="_blank" rel="noreferrer">View release</a>
           {updateNotice?.kind === 'install'
-            ? <><Button variant="secondary" onClick={() => setUpdateNotice(null)}>Later</Button><Button icon={Download} loading={updateInstalling} onClick={handleInstallStudioUpdate}>Install update</Button></>
+            ? <><Button variant="secondary" disabled={updateInstalling} onClick={() => setUpdateNotice(null)}>Later</Button><Button icon={Download} loading={updateInstalling} disabled={updateInstalling} onClick={handleInstallStudioUpdate}>Download update</Button></>
             : <Button onClick={() => setUpdateNotice(null)}>Got it</Button>}
         </>}
       >
@@ -6397,11 +7031,11 @@ export function App() {
         isOpen={updateInstallPromptOpen}
         onClose={() => !updateInstalling && setUpdateInstallPromptOpen(false)}
         title={`Update ARC Studio to ${appUpdate?.version || 'the latest version'}?`}
-        subtitle={`Signed ${desktopReleaseChannel} update · ARC Studio will restart after installation.`}
+        subtitle={`Signed ${desktopReleaseChannel} update · ARC Studio will install it on next launch.`}
         icon={Download}
-        footer={<><Button variant="secondary" disabled={updateInstalling} onClick={() => setUpdateInstallPromptOpen(false)}>Later</Button><Button icon={Download} loading={updateInstalling} onClick={handleInstallStudioUpdate}>Download and install</Button></>}
+        footer={<><Button variant="secondary" disabled={updateInstalling} onClick={() => setUpdateInstallPromptOpen(false)}>Later</Button><Button icon={Download} loading={updateInstalling} disabled={updateInstalling} onClick={handleInstallStudioUpdate}>Download update</Button></>}
       >
-        <p className="close-graph-copy">Your graphs and settings are saved in your workspace. The update will be verified before it is installed.</p>
+        <p className="close-graph-copy">Your graphs and settings are saved in your workspace. The update will be downloaded and verified now, then installed the next time ARC Studio launches.</p>
         {appUpdate?.notes && <ReleaseNotes>{appUpdate.notes}</ReleaseNotes>}
       </Modal>
       <Modal
@@ -6425,16 +7059,53 @@ export function App() {
   );
 }
 
-function snapshotGraph(graph) {
+function snapshotGraph(graph, { includeSecretDrafts = false } = {}) {
   const savedData = { ...graph };
   delete savedData.isDirty;
   delete savedData.localRecoveryOnly;
+  if (!includeSecretDrafts && Array.isArray(savedData.variables)) {
+    savedData.variables = savedData.variables.map((variable) => {
+      if (!variable?.secret) return variable;
+      const safe = { ...variable, initialValue: '••••••' };
+      delete safe.secretValue;
+      return safe;
+    });
+  }
   return JSON.parse(JSON.stringify(savedData));
 }
 
 function mergeGraphState(base, local, remote) {
   const merged = mergeCollaborativeValue(base, local, remote);
   return { ...merged, id: remote.id, isDirty: Boolean(local?.isDirty) };
+}
+
+function scrubStoredSecretDrafts(graph, authoritativeGraph) {
+  if (!graph || !Array.isArray(graph.variables) || !Array.isArray(authoritativeGraph?.variables)) return graph;
+  const storedSecretIds = new Set(authoritativeGraph.variables.filter((variable) => variable?.secret && variable?.secretStored).map((variable) => variable.id));
+  if (!storedSecretIds.size) return graph;
+  let changed = false;
+  const variables = graph.variables.map((variable) => {
+    if (!storedSecretIds.has(variable?.id)) return variable;
+    if (variable.initialValue === '••••••' && variable.secretStored && !Object.hasOwn(variable, 'secretValue')) return variable;
+    changed = true;
+    const safe = { ...variable, secret: true, secretStored: true, initialValue: '••••••' };
+    delete safe.secretValue;
+    return safe;
+  });
+  return changed ? { ...graph, variables } : graph;
+}
+
+function scrubRejectedSecretDrafts(graph) {
+  if (!graph || !Array.isArray(graph.variables)) return graph;
+  let changed = false;
+  const variables = graph.variables.map((variable) => {
+    if (!variable?.secret) return variable;
+    changed = true;
+    const safe = { ...variable, initialValue: '••••••' };
+    delete safe.secretValue;
+    return safe;
+  });
+  return changed ? { ...graph, variables } : graph;
 }
 
 function mergeCollaborativeValue(base, local, remote) {
@@ -6460,6 +7131,9 @@ function mergeCollaborativeValue(base, local, remote) {
       if (value !== undefined) result.push(value);
     }
     return result;
+  }
+  if ([base, local, remote].every((value) => Array.isArray(value) && value.length === base.length)) {
+    return base.map((item, index) => mergeCollaborativeValue(item, local[index], remote[index]));
   }
   return cloneCollaborationValue(remote);
 }
@@ -6496,17 +7170,31 @@ function escapeRegExp(value = '') {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function semanticStringPin(pinId) {
+function semanticStringPin(pinId, pin = null) {
+  const declared = String(pin?.semanticType || '').toLowerCase();
+  if (declared) {
+    const declaredId = declared.endsWith('_id') ? declared.slice(0, -3) : declared;
+    const labels = {
+      channel: ['channel-id', 'a channel ID'], parent: ['channel-id', 'a channel ID'], thread: ['channel-id', 'a thread ID'],
+      guild: ['guild-id', 'a server ID'], server: ['guild-id', 'a server ID'], user: ['user-id', 'a user ID'],
+      author: ['user-id', 'a user ID'], member: ['user-id', 'a user ID'], role: ['role-id', 'a role ID'],
+      message: ['message-id', 'a message ID'], interaction: ['interaction-id', 'an interaction ID'],
+      application: ['application-id', 'an application ID'], interaction_token: ['interaction-token', 'an interaction token'],
+      component_custom: ['component-custom-id', 'a component Custom ID']
+    };
+    const match = labels[declaredId] || labels[declared];
+    if (match) return { key: match[0], label: match[1], explicit: true };
+  }
   const id = String(pinId || '').toLowerCase();
-  if (id === 'custom_id' || id === 'component_id') return { key: 'component-custom-id', label: 'a component Custom ID' };
-  if (['channel_id', 'parent_id'].includes(id)) return { key: 'channel-id', label: 'a channel ID' };
-  if (['guild_id', 'server_id'].includes(id)) return { key: 'guild-id', label: 'a server ID' };
-  if (['user_id', 'author_id', 'member_id', 'reply_author_id'].includes(id)) return { key: 'user-id', label: 'a user ID' };
-  if (id === 'role_id') return { key: 'role-id', label: 'a role ID' };
-  if (id === 'message_id' || id === 'referenced_message_id') return { key: 'message-id', label: 'a message ID' };
-  if (id === 'interaction_id') return { key: 'interaction-id', label: 'an interaction ID' };
-  if (id === 'interaction_token') return { key: 'interaction-token', label: 'an interaction token' };
-  if (id === 'application_id') return { key: 'application-id', label: 'an application ID' };
+  if (id === 'custom_id' || id === 'component_id') return { key: 'component-custom-id', label: 'a component Custom ID', explicit: false };
+  if (['channel_id', 'parent_id', 'thread_id'].includes(id)) return { key: 'channel-id', label: 'a channel ID', explicit: false };
+  if (['guild_id', 'server_id'].includes(id)) return { key: 'guild-id', label: 'a server ID', explicit: false };
+  if (['user_id', 'author_id', 'member_id', 'reply_author_id'].includes(id)) return { key: 'user-id', label: 'a user ID', explicit: false };
+  if (id === 'role_id') return { key: 'role-id', label: 'a role ID', explicit: false };
+  if (id === 'message_id' || id === 'referenced_message_id') return { key: 'message-id', label: 'a message ID', explicit: false };
+  if (id === 'interaction_id') return { key: 'interaction-id', label: 'an interaction ID', explicit: false };
+  if (id === 'interaction_token') return { key: 'interaction-token', label: 'an interaction token', explicit: false };
+  if (id === 'application_id') return { key: 'application-id', label: 'an application ID', explicit: false };
   return null;
 }
 
@@ -6519,19 +7207,22 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
   const nodeIds = new Set(nodes.map((node) => node.id));
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const isFunction = graph.graphType === 'function' || nodes.some((node) => node.type === 'function_input' || node.type === 'function_return');
+  const functionInputs = nodes.filter((node) => node.type === 'function_input');
+  const functionArguments = getFunctionGraphArguments(graph);
   const declaredGraphVariables = Array.isArray(graph.variables) ? graph.variables : [];
   const nodeCreatedVariables = nodes.filter((node) => node.type === 'variable_create').flatMap((node) => {
     const name = String(node.data?.name || '').trim();
-    if (!/^(?=.{1,64}$)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(name) && !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name)) return [];
+    if (!/^(?=.{1,64}$)[A-Za-z0-9]+(?:_+[A-Za-z0-9]+|-[A-Za-z0-9]+)*$/.test(name)) return [];
     const type = ['string', 'number', 'boolean', 'array', 'object'].includes(node.data?.valueType) ? node.data.valueType : 'string';
     return [{ id: `nodevar_${node.id}`, name, type, initialValue: node.data?.value ?? (type === 'number' ? 0 : type === 'boolean' ? false : type === 'array' ? [] : type === 'object' ? {} : ''), persist: node.data?.persist !== false, nodeOwned: true, sourceNodeId: node.id }];
   });
   const graphVariables = [...declaredGraphVariables, ...nodeCreatedVariables.filter((variable) => !declaredGraphVariables.some((item) => item.id === variable.id))];
+  graphVariables.push(...slashAttachmentVariables(nodes, graphVariables));
   const variableById = new Map([...graphVariables, ...projectVariables].map((variable) => [variable.id, variable]));
   const variableNames = new Map();
   for (const variable of graphVariables) {
     const name = String(variable?.name || '');
-    if (!/^(?=.{1,64}$)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(name) && !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name)) errors.push(`Variable “${name || 'unnamed'}” must use 1–64 letters or numbers, with single hyphens between them.`);
+    if (!/^(?=.{1,64}$)[A-Za-z0-9]+(?:_+[A-Za-z0-9]+|-[A-Za-z0-9]+)*$/.test(name)) errors.push(`Variable “${name || 'unnamed'}” must start and end with a letter or number, with letters, numbers, hyphens, or underscores inside.`);
     const normalizedName = name.toLowerCase();
     if (normalizedName && variableNames.has(normalizedName)) errors.push(`Variable name “${name}” is used more than once.`);
     else if (normalizedName) variableNames.set(normalizedName, variable.id);
@@ -6561,7 +7252,10 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
     const nextSeen = new Set(seen).add(key);
     if (source.type === 'variable_get' && pinId === 'value') return initialVariableValue(variableById.get(source.data?.variableId));
     if (source.type === 'variable_create' && pinId === 'value') return initialVariableValue(variableById.get(`nodevar_${source.id}`));
-    if (source.type === 'function_input' && pinId === 'value') return source.data?.defaultValue ?? '';
+    if (source.type === 'function_input') {
+      const argument = getFunctionInputArguments(source).find((item) => item.legacy ? pinId === 'value' : functionArgumentPinId(item) === pinId);
+      if (argument) return argument.defaultValue ?? '';
+    }
     if (['value_text', 'value_number', 'value_boolean'].includes(source.type) && pinId === 'value') {
       const fallback = source.data?.value ?? (source.type === 'value_text' ? 'Hello World' : source.type === 'value_boolean');
       const wire = findInputWire(source.id, 'value');
@@ -6585,7 +7279,58 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
     const value = resolveKnownStringOutput(wire.sourceNodeId, wire.sourcePinId);
     return value === undefined ? undefined : String(value ?? '');
   };
+  const validateComponentsV2Layout = (layout, label) => {
+    const issues = [];
+    let componentCount = 0;
+    let textLength = 0;
+    const visit = (items, parent = 'message') => {
+      for (const [index, item] of (Array.isArray(items) ? items : []).entries()) {
+        componentCount += 1;
+        const location = `${parent} block ${index + 1}`;
+        if (item?.type === 'text_display') {
+          const text = String(item.content || '');
+          textLength += text.length;
+          if (!text.trim()) issues.push(`${location} needs text.`);
+          if (text.length > 4000) issues.push(`${location} exceeds 4,000 characters.`);
+        } else if (item?.type === 'section') {
+          const texts = Array.isArray(item.texts) ? item.texts : [];
+          componentCount += texts.length + (item.accessory ? 1 : 0);
+          textLength += texts.reduce((total, text) => total + String(text || '').length, 0);
+          if (texts.length < 1 || texts.length > 3 || texts.some((text) => !String(text || '').trim())) issues.push(`${location} needs 1 to 3 nonempty text blocks.`);
+          if (!['button', 'thumbnail'].includes(item.accessory?.type)) issues.push(`${location} needs a button or thumbnail accessory.`);
+          if (item.accessory?.type === 'thumbnail' && !String(item.accessory.url || '').trim()) issues.push(`${location} thumbnail needs an image URL.`);
+          if (item.accessory?.type === 'thumbnail' && String(item.accessory.description || '').length > 1024) issues.push(`${location} thumbnail alt text exceeds 1,024 characters.`);
+          if (item.accessory?.type === 'thumbnail' && String(item.accessory.url || '').length > 2048) issues.push(`${location} thumbnail URL exceeds 2,048 characters.`);
+          if (item.accessory?.type === 'button' && item.accessory.style === 'link' && !/^https?:\/\//i.test(String(item.accessory.url || ''))) issues.push(`${location} link button needs an HTTP or HTTPS URL.`);
+          if (item.accessory?.type === 'button' && item.accessory.style !== 'link' && !String(item.accessory.customId || '').trim()) issues.push(`${location} button needs a custom ID.`);
+          if (item.accessory?.type === 'button' && String(item.accessory.label || '').length > 80) issues.push(`${location} button label exceeds 80 characters.`);
+        } else if (item?.type === 'media_gallery') {
+          if (!Array.isArray(item.items) || item.items.length < 1 || item.items.length > 10 || item.items.some((media) => !String(media.url || '').trim())) issues.push(`${location} needs 1 to 10 media URLs.`);
+          if ((item.items || []).some((media) => String(media.description || '').length > 1024)) issues.push(`${location} media descriptions must be 1,024 characters or fewer.`);
+          if ((item.items || []).some((media) => String(media.url || '').length > 2048)) issues.push(`${location} media URLs must be 2,048 characters or fewer.`);
+        } else if (item?.type === 'file') {
+          if (!/^attachment:\/\/[^\s?#]{1,100}$/i.test(String(item.url || ''))) issues.push(`${location} needs an attachment URL.`);
+          if (String(item.url || '').length > 2048) issues.push(`${location} attachment URL exceeds 2,048 characters.`);
+        } else if (item?.type === 'action_row') {
+          const controls = Array.isArray(item.components) ? item.components : [];
+          componentCount += controls.length;
+          const hasSelect = controls.some((control) => ['string_select', 'user_select', 'role_select', 'mentionable_select', 'channel_select'].includes(control.type));
+          if (!controls.length || controls.length > 5 || hasSelect && controls.length !== 1) issues.push(`${location} must contain up to 5 buttons or one select menu.`);
+          if (controls.some((control) => ['string_select', 'user_select', 'role_select', 'mentionable_select', 'channel_select'].includes(control.type) ? !String(control.customId || '').trim() : !String(control.label || '').trim() || (control.style === 'link' ? !/^https?:\/\//i.test(String(control.url || '')) : !String(control.customId || '').trim()))) issues.push(`${location} controls need valid labels, custom IDs, or link URLs.`);
+        } else if (item?.type === 'container') {
+          if (!Array.isArray(item.children) || !item.children.length || item.children.length > 10) issues.push(`${location} needs 1 to 10 child blocks.`);
+          visit(item.children, location);
+        } else if (item?.type !== 'separator') issues.push(`${location} has an unsupported block type.`);
+      }
+    };
+    if (!Array.isArray(layout) || !layout.length) issues.push('Add at least one Components V2 block.');
+    visit(layout);
+    if (componentCount > 40) issues.push('Components V2 messages support up to 40 components.');
+    if (textLength > 4000) issues.push('Text Display content across the message exceeds 4,000 characters.');
+    for (const issue of [...new Set(issues)]) errors.push(`${label}: ${issue}`);
+  };
   const definitions = new Map(BuiltInNodeDefinitions.map((definition) => [definition.type, definition]));
+  const isEventTrigger = (node) => String(node?.type || '').startsWith('event_') || Boolean(definitions.get(node?.type)?.gatewayEvent);
   const execEdges = connections.filter((wire) => {
     const source = nodeById.get(wire.sourceNodeId);
     const target = nodeById.get(wire.targetNodeId);
@@ -6615,7 +7360,7 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
     const reachableFromEvents = walkExec(eventNodes.map((node) => node.id));
     for (const node of nodes) {
       const definition = definitions.get(node.type);
-      if (definition?.inputs?.some((pin) => pin.type === 'exec') && !String(node.type).startsWith('event_') && !reachableFromEvents.has(node.id)) {
+      if (definition?.inputs?.some((pin) => pin.type === 'exec') && !isEventTrigger(node) && !reachableFromEvents.has(node.id)) {
         warnings.push(`${node.label || definition.label || node.type}: unreachable from every event node.`);
       }
     }
@@ -6698,22 +7443,38 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
         warnings.push(`${node.label || 'Parallel'}: both concurrent branches may acknowledge the same interaction. Acknowledge once, then edit the deferred response after Join.`);
       }
     }
+  } else {
+    const entryNode = functionInputs[0];
+    const reachableFromEntry = entryNode ? walkExec([entryNode.id]) : new Set();
+    for (const node of nodes) {
+      if (String(node.type).startsWith('action_') && !reachableFromEntry.has(node.id)) {
+        warnings.push(`${node.label || definitions.get(node.type)?.label || node.type}: unreachable from the Function Input execution entry.`);
+      }
+    }
   }
   if (nodeIds.size !== nodes.length) errors.push('Node IDs must be unique.');
-  if (isFunction && !nodes.some((node) => node.type === 'function_return')) errors.push('Add a Return Value node to provide this function’s result.');
+  const hasActionNode = nodes.some((node) => String(node.type).startsWith('action_'));
+  if (isFunction && !functionInputs.length) errors.push('Add one Function Input node to provide this function’s entry point.');
+  if (isFunction && functionInputs.length > 1) errors.push('A function graph can have only one Function Input node. Add arguments to that node instead.');
+  const hasFunctionEffect = nodes.some((node) => String(node.type).startsWith('action_'))
+    || nodes.some((node) => node.type === 'function_call' && functionGraphHasEffects(graphLookup?.get(node.data?.graphId), graphLookup));
+  if (isFunction && !nodes.some((node) => node.type === 'function_return') && !hasFunctionEffect) errors.push('Add a Return Value node or a Discord action to give this function a result or an effect.');
   if (isFunction) {
     const inputNames = new Set();
-    for (const parameter of nodes.filter((node) => node.type === 'function_input')) {
-      const name = String(parameter.data?.name || '').trim();
+    const inputIds = new Set();
+    for (const parameter of functionArguments) {
+      const name = String(parameter.name || '').trim();
       if (!name) errors.push(`${parameter.label || 'Function Input'}: give this input a name.`);
       else if (inputNames.has(name.toLowerCase())) errors.push(`Function input “${name}” is duplicated. Input names must be unique.`);
       inputNames.add(name.toLowerCase());
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(parameter.paramId) || inputIds.has(parameter.paramId)) errors.push(`Function input “${name || 'Input'}” has an invalid or duplicate argument ID.`);
+      inputIds.add(parameter.paramId);
+      if (!FUNCTION_ARGUMENT_VALUE_TYPES.includes(parameter.valueType)) errors.push(`Function input “${name || 'Input'}” has an unsupported value type.`);
     }
   }
-  if (isFunction && nodes.some((node) => String(node.type).startsWith('event_'))) errors.push('Function graphs cannot contain event trigger nodes.');
+  if (isFunction && nodes.some(isEventTrigger)) errors.push('Function graphs cannot contain event trigger nodes.');
     if (graphLookup && hasFunctionCycle(graph, graphLookup)) errors.push('Graphs cannot call themselves, directly or indirectly.');
-  const hasEventNode = nodes.some((node) => String(node.type).startsWith('event_'));
-  const hasActionNode = nodes.some((node) => String(node.type).startsWith('action_'));
+  const hasEventNode = nodes.some(isEventTrigger);
   if (!isFunction && !hasEventNode && hasActionNode) warnings.push('This graph has Discord actions but no event node to run them.');
   if (!isFunction && hasEventNode && !hasActionNode) warnings.push('This graph has no action nodes.');
   const privilegedEventIntents = new Set(nodes.flatMap((node) => definitions.get(node.type)?.gatewayIntents || []).filter((intent) => ['GUILD_MEMBERS', 'GUILD_PRESENCES', 'MESSAGE_CONTENT'].includes(intent)));
@@ -6764,9 +7525,10 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
         && (candidate.nodes || []).some((item) => item.type === 'event_slash_command' && String(item.data?.commandName || '').toLowerCase() === normalizedName));
       if (name && (duplicateInGraph || conflictingGraph)) errors.push(`Slash command /${name} is defined more than once. Names must be unique.`);
       if (name) slashCommandNames.add(normalizedName);
-      for (const option of Array.isArray(node.data?.options) ? node.data.options : []) {
+      for (const issue of validateSlashCommandOptions(node.data?.options || [], normalizedName)) errors.push(`${node.label || 'Slash Command'}: ${issue}`);
+      for (const { option, path } of flattenSlashParameters(node.data?.options)) {
         if (option.autocomplete && option.dynamicAutocomplete && (!nodes.some((item) => item.type === 'event_slash_autocomplete') || !nodes.some((item) => item.type === 'action_respond_autocomplete'))) {
-          warnings.push(`/${normalizedName} · ${option.name}: add On Command Autocomplete and Respond to Autocomplete to provide graph-generated suggestions.`);
+          warnings.push(`/${normalizedName} · ${path.join(' / ')}: add On Command Autocomplete and Respond to Autocomplete to provide graph-generated suggestions.`);
         }
       }
     }
@@ -6777,34 +7539,43 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
     }
     if (['variable_get', 'variable_set'].includes(node.type) && !variableById.has(node.data?.variableId)
       && !connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'variable')) errors.push(`${node.label || node.type}: select a graph variable or connect a Variable socket.`);
+    if (node.type === 'variable_set' && variableById.get(node.data?.variableId)?.readOnly) errors.push(`${node.label || 'Set Variable'}: attachment variables are read only.`);
     if (node.type === 'variable_create' && !String(node.data?.name || '').trim()) errors.push(`${node.label || 'Create Variable'}: enter a variable name.`);
     if (node.type === 'function_call') {
       const called = graphLookup?.get(node.data?.graphId);
       if (!called) errors.push(`${node.label || 'Call Graph'}: select a saved graph.`);
       else {
-        if (!called.nodes?.some((item) => item.type === 'function_return')) warnings.push(`${node.label || 'Call Graph'}: the target graph has no Return Value, so this node produces no result.`);
-        for (const parameter of called.nodes?.filter((item) => item.type === 'function_input' && item.data?.optional === false) || []) {
-          const parameterId = parameter.data?.paramId || parameter.id;
-          const connected = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === `arg_${parameterId}`);
-          if (!connected) errors.push(`${node.label || 'Call Graph'}: connect the required “${parameter.data?.name || 'Input'}” input.`);
+        if (!called.nodes?.some((item) => item.type === 'function_return') && !functionGraphHasEffects(called, graphLookup)) warnings.push(`${node.label || 'Call Graph'}: the target graph has no Return Value, so this node produces no result.`);
+        for (const parameter of getFunctionGraphArguments(called).filter((item) => item.optional === false)) {
+          const connected = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === functionArgumentPinId(parameter));
+          if (!connected) errors.push(`${node.label || 'Call Graph'}: connect the required “${parameter.name || 'Input'}” input.`);
         }
       }
     }
     if (['math_divide', 'math_modulo'].includes(node.type) && !connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'b') && Number(node.data?.b ?? 0) === 0) {
       warnings.push(`${node.label || 'Math node'}: B is zero, so the result will be 0 until a non-zero value is connected.`);
     }
-    if (['action_send_message', 'action_edit_message'].includes(node.type)) {
-      const isEdit = node.type === 'action_edit_message';
+    if (['action_send_message', 'action_edit_message', 'action_edit_components'].includes(node.type)) {
+      const isEdit = ['action_edit_message', 'action_edit_components'].includes(node.type);
+      const componentsOnly = node.type === 'action_edit_components';
       const label = node.label || (isEdit ? 'Edit Message' : 'Send Message');
       const hasChannel = Boolean(String(node.data?.channel_id ?? '').trim()) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'channel_id');
       const hasThread = !isEdit && (Boolean(String(node.data?.thread_id ?? '').trim()) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'thread_id'));
       const hasMessageId = Boolean(String(node.data?.message_id ?? '').trim()) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'message_id');
       const hasContent = Boolean(String(node.data?.content ?? '').trim()) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'content');
       const hasEmbed = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'embed') || hasConfiguredEmbed(node);
-      const hasComponents = (Array.isArray(node.data?.components) && node.data.components.some((row) => row.components?.length)) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'components');
+      const componentsWire = findInputWire(node.id, 'components');
+      const componentsSource = componentsWire && nodeById.get(componentsWire.sourceNodeId);
+      const componentsV2 = Boolean(node.data?.componentsV2Enabled || componentsSource?.type === 'build_components');
+      const hasComponents = (Array.isArray(node.data?.components) && node.data.components.some((row) => row.components?.length)) || componentsWire || componentsV2 && Array.isArray(node.data?.componentsV2Layout) && node.data.componentsV2Layout.length > 0;
       if (!hasChannel && !hasThread) errors.push(`${label}: connect a channel ID or thread ID.`);
       if (isEdit && !hasMessageId) errors.push(`${label}: connect a message ID.`);
       if (!hasContent && !hasEmbed && !hasComponents && !isEdit) errors.push(`${label}: add message content, an embed, or components.`);
+      if (componentsOnly && !hasComponents) errors.push(`${label}: add components or connect a Components Builder.`);
+      if (componentsV2) {
+        if (hasContent || hasEmbed) errors.push(`${label}: Components V2 cannot be combined with message content or embeds.`);
+        if (node.data?.componentsV2Enabled) validateComponentsV2Layout(node.data?.componentsV2Layout, label);
+      }
       const content = resolveKnownStringInput(node, 'content', node.data?.content || '');
       if (content !== undefined && content.length > 2000) errors.push(`${label}: content exceeds 2,000 characters after text variables are applied.`);
     }
@@ -6832,10 +7603,27 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
       if (!hasInteractionId && !hasUpstreamDefer(node.id)) warnings.push(`${label}: connect an Interaction ID.`);
       const hasContent = Boolean(String(node.data?.content ?? '').trim()) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'content');
       const hasEmbed = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'embed') || hasConfiguredEmbed(node);
-      const hasComponents = (Array.isArray(node.data?.components) && node.data.components.some((row) => row.components?.length)) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'components');
+      const componentsWire = findInputWire(node.id, 'components');
+      const componentsSource = componentsWire && nodeById.get(componentsWire.sourceNodeId);
+      const componentsV2 = Boolean(node.data?.componentsV2Enabled || componentsSource?.type === 'build_components');
+      const hasComponents = (Array.isArray(node.data?.components) && node.data.components.some((row) => row.components?.length)) || componentsWire || componentsV2 && Array.isArray(node.data?.componentsV2Layout) && node.data.componentsV2Layout.length > 0;
       if (!hasContent && !hasEmbed && !hasComponents) errors.push(`${label}: add reply content, an embed, or components.`);
+      if (componentsV2) {
+        if (hasContent || hasEmbed) errors.push(`${label}: Components V2 cannot be combined with message content or embeds.`);
+        if (node.data?.componentsV2Enabled) validateComponentsV2Layout(node.data?.componentsV2Layout, label);
+      }
       const content = resolveKnownStringInput(node, 'content', node.data?.content || '');
       if (content !== undefined && content.length > 2000) errors.push(`${label}: content exceeds 2,000 characters after text variables are applied.`);
+    }
+    if (node.type === 'action_edit_interaction_reply') {
+      const label = node.label || definitions.get(node.type)?.label || 'Edit Interaction Reply';
+      const componentsWire = findInputWire(node.id, 'components');
+      const componentsSource = componentsWire && nodeById.get(componentsWire.sourceNodeId);
+      const componentsV2 = Boolean(node.data?.componentsV2Enabled || componentsSource?.type === 'build_components');
+      const hasContent = Boolean(String(node.data?.content ?? '').trim()) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'content');
+      const hasEmbed = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'embed') || hasConfiguredEmbed(node);
+      if (componentsV2 && (hasContent || hasEmbed)) errors.push(`${label}: Components V2 cannot be combined with message content or embeds.`);
+      if (componentsV2 && node.data?.componentsV2Enabled) validateComponentsV2Layout(node.data?.componentsV2Layout, label);
     }
     if ((String(node.type).startsWith('action_') || node.type === 'variable_set') && !connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'exec')) {
       warnings.push(`${node.label || node.type}: no execution input is connected.`);
@@ -6880,6 +7668,7 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
       }
       if (totalIsKnown && total > 6000) errors.push(`${label}: combined text exceeds 6,000 characters after text variables are applied.`);
     }
+    if (node.type === 'build_components') validateComponentsV2Layout(node.data?.componentsV2, node.label || 'Component Builder');
   }
   for (const wire of connections) {
     const source = nodeById.get(wire.sourceNodeId);
@@ -6900,12 +7689,25 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
     }
     else if (sourcePin.type !== targetPin.type && sourcePin.type !== 'any' && targetPin.type !== 'any' && sourcePin.type !== 'arg' && targetPin.type !== 'arg') errors.push('A connection joins incompatible pin types.');
     else if (sourcePin.type === 'string' && targetPin.type === 'string') {
-      const sourceMeaning = semanticStringPin(wire.sourcePinId);
-      const targetMeaning = semanticStringPin(wire.targetPinId);
+      const sourceMeaning = semanticStringPin(wire.sourcePinId, sourcePin);
+      const targetMeaning = semanticStringPin(wire.targetPinId, targetPin);
       if (sourceMeaning && targetMeaning && sourceMeaning.key !== targetMeaning.key) {
         const targetLabel = target.label || definitions.get(target.type)?.label || target.type;
         const sourceLabel = source.label || definitions.get(source.type)?.label || source.type;
-        warnings.push(`${targetLabel}: ${sourceMeaning.label[0].toUpperCase()}${sourceMeaning.label.slice(1)} from ${sourceLabel} is connected to a socket expecting ${targetMeaning.label}. Check that this connection is intentional.`);
+        const message = `${targetLabel}: ${sourceMeaning.label[0].toUpperCase()}${sourceMeaning.label.slice(1)} from ${sourceLabel} cannot connect to a socket expecting ${targetMeaning.label}.`;
+        if (sourceMeaning.explicit && targetMeaning.explicit) errors.push(message);
+        else warnings.push(`${message} Check that this connection is intentional.`);
+      }
+    }
+    if (targetPin?.semanticType && ['application_id', 'channel_id', 'guild_id', 'interaction_id', 'interaction_token', 'message_id', 'role_id', 'thread_id', 'user_id'].includes(targetPin.semanticType)) {
+      const knownValue = resolveKnownStringOutput(source.id, wire.sourcePinId);
+      if (knownValue !== undefined && String(knownValue ?? '').trim()) {
+        try {
+          validateDiscordSemanticValue(knownValue, targetPin.semanticType, targetPin.semanticType.replaceAll('_', ' '));
+        } catch (error) {
+          const targetLabel = target.label || definitions.get(target.type)?.label || target.type;
+          errors.push(`${targetLabel}: ${error.message}`);
+        }
       }
     }
   }
@@ -6963,6 +7765,16 @@ function isPureFunctionNode(type) {
   return !String(type).startsWith('event_');
 }
 
+function functionGraphHasEffects(graph, graphLookup, visited = new Set()) {
+  if (!graph || visited.has(graph.id)) return false;
+  visited.add(graph.id);
+  for (const node of graph.nodes || []) {
+    if (String(node.type).startsWith('action_')) return true;
+    if (node.type === 'function_call' && functionGraphHasEffects(graphLookup?.get(node.data?.graphId), graphLookup, visited)) return true;
+  }
+  return false;
+}
+
 function hasFunctionCycle(graph, graphLookup, active = new Set(), visited = new Set()) {
   if (active.has(graph.id)) return true;
   if (visited.has(graph.id)) return false;
@@ -6980,7 +7792,14 @@ function hasFunctionCycle(graph, graphLookup, active = new Set(), visited = new 
 function graphPin(node, direction, pinId, variables, graphLookup = null, connections = []) {
   const definition = BuiltInNodeDefinitions.find((item) => item.type === node.type);
   if (!definition) return null;
-  const variablePinType = (variable) => ['array', 'object'].includes(variable?.type) ? 'object' : variable?.type || 'string';
+  const dynamicPins = resolveDynamicNodePins(definition, node, connections);
+  const resolvedDynamicPin = dynamicPins?.[direction]?.find((pin) => pin.id === pinId);
+  if (resolvedDynamicPin) return resolvedDynamicPin;
+  if (node.type === 'event_slash_command' && direction === 'outputs' && pinId.startsWith('option_')) {
+    const option = flattenSlashParameters(node.data?.options).find((item) => item.pinId === pinId)?.option;
+    if (option) return { id: pinId, type: ({ 4: 'number', 10: 'number', 5: 'boolean', 11: 'object' })[Number(option.type)] || 'string' };
+  }
+  const variablePinType = (variable) => ['array', 'object', 'attachment'].includes(variable?.type) ? 'object' : variable?.type || 'string';
   const resolveReferencedVariable = (target, seen = new Set()) => {
     if (!target || seen.has(target.id)) return null;
     const nextSeen = new Set(seen).add(target.id);
@@ -7011,41 +7830,20 @@ function graphPin(node, direction, pinId, variables, graphLookup = null, connect
     const variable = variables.get(`nodevar_${node.id}`);
     if (direction === 'outputs' && pinId === 'value') return { id: 'value', type: variable ? variablePinType(variable) : 'arg' };
   }
-  if (node.type === 'function_input' && direction === 'outputs' && pinId === 'value') return { id: 'value', type: node.data?.valueType || 'number' };
+  if (node.type === 'function_input' && direction === 'outputs') {
+    const argument = getFunctionInputArguments(node).find((item) => item.legacy ? pinId === 'value' : functionArgumentPinId(item) === pinId);
+    if (argument) return { id: pinId, type: functionInputPinType(argument), semanticType: argument.valueType.endsWith('_id') || argument.valueType === 'interaction_token' ? argument.valueType : undefined };
+  }
   if (node.type === 'function_return' && direction === 'inputs' && pinId === 'value') return { id: 'value', type: node.data?.valueType || 'number' };
   if (node.type === 'function_call') {
     const called = graphLookup?.get(node.data?.graphId);
     if (direction === 'inputs') {
-      const parameter = called?.nodes?.find((item) => item.type === 'function_input' && `arg_${item.data?.paramId || item.id}` === pinId);
-      if (parameter) return { id: pinId, type: parameter.data?.valueType || 'number' };
+      const parameter = getFunctionGraphArguments(called).find((item) => functionArgumentPinId(item) === pinId);
+      if (parameter) return { id: pinId, type: functionInputPinType(parameter), semanticType: parameter.valueType.endsWith('_id') || parameter.valueType === 'interaction_token' ? parameter.valueType : undefined };
     } else if (direction === 'outputs' && pinId === 'result') {
       const returned = called?.nodes?.find((item) => item.type === 'function_return');
       return returned ? { id: 'result', type: returned.data?.valueType || 'number' } : null;
     }
-  }
-  if (node.type === 'event_slash_command' && direction === 'outputs') {
-    const option = (Array.isArray(node.data?.options) ? node.data.options : []).find((item) =>
-      `option_${item.name}` === pinId && /^[a-z0-9_-]{1,32}$/.test(String(item.name || ''))
-    );
-    if (option) return { id: pinId, type: ({ 4: 'number', 10: 'number', 5: 'boolean' })[Number(option.type)] || 'string' };
-  }
-  if (['data_string_split', 'data_parse_prefix_command'].includes(node.type) && direction === 'outputs') {
-    const pinPrefix = node.type === 'data_string_split' ? 'part_' : 'argument_';
-    const pinMatch = new RegExp(`^${pinPrefix}(\\d+)$`).exec(pinId);
-    if (pinMatch) {
-      const highestConnectedPart = connections.reduce((highest, wire) => {
-        if (wire.sourceNodeId !== node.id) return highest;
-        const match = new RegExp(`^${pinPrefix}(\\d+)$`).exec(wire.sourcePinId);
-        return Math.max(highest, Number(match?.[1]) || 0);
-      }, 0);
-      if (Number(pinMatch[1]) <= Math.min(50, Math.max(1, highestConnectedPart + 1))) return { id: pinId, type: 'string' };
-    }
-  }
-  if (node.type === 'data_permission_overwrites' && direction === 'inputs') return getPermissionOverwritePins(node, connections).find((pin) => pin.id === pinId) || null;
-  if (node.type === 'data_array_create' && direction === 'inputs') return getArrayCreatePins(node, connections).find((pin) => pin.id === pinId) || null;
-  if (['math_sum', 'math_average'].includes(node.type) && direction === 'inputs') return getMathListPins(node, connections).find((pin) => pin.id === pinId) || null;
-  if (node.type === 'branch_switch' && (direction === 'inputs' ? /^case_\d+$/.test(pinId) : /^case_\d+_exec$/.test(pinId))) {
-    return getSwitchCasePins(node, connections, direction).find((pin) => pin.id === pinId) || null;
   }
   if (direction === 'inputs') {
     const execPin = definition.inputs?.find((pin) => pin.type === 'exec');
