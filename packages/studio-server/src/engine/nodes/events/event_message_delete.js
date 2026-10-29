@@ -1,14 +1,13 @@
 export default {
-  "description": "A message is edited",
-  "type": "event_message_update",
+  "description": "A message is deleted",
+  "type": "event_message_delete",
   "category": "Events",
-  "label": "On Message Updated",
+  "label": "On Message Deleted",
   "color": "#5865F2",
-  "gatewayEvent": "MESSAGE_UPDATE",
+  "gatewayEvent": "MESSAGE_DELETE",
   "gatewayIntents": [
     "GUILD_MESSAGES",
-    "DIRECT_MESSAGES",
-    "MESSAGE_CONTENT"
+    "DIRECT_MESSAGES"
   ],
   "inputs": [],
   "outputs": [
@@ -16,6 +15,12 @@ export default {
       "id": "exec",
       "label": "Exec",
       "type": "exec"
+    },
+    {
+      "id": "message",
+      "label": "Deleted Message Payload",
+      "type": "object",
+      "eventPath": "$"
     },
     {
       "id": "message_id",
@@ -34,24 +39,6 @@ export default {
       "label": "Server ID",
       "type": "string",
       "eventPath": "guild_id"
-    },
-    {
-      "id": "author_id",
-      "label": "Author ID",
-      "type": "string",
-      "eventPath": "author.id"
-    },
-    {
-      "id": "content",
-      "label": "Content",
-      "type": "string",
-      "eventPath": "content"
-    },
-    {
-      "id": "edited_timestamp",
-      "label": "Edited At",
-      "type": "string",
-      "eventPath": "edited_timestamp"
     }
   ]
 };

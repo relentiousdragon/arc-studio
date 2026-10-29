@@ -20,6 +20,12 @@ export default {
       "type": "exec"
     },
     {
+      "id": "message",
+      "label": "Message Object",
+      "type": "object",
+      "eventPath": "$"
+    },
+    {
       "id": "message_id",
       "label": "Message ID",
       "type": "string",

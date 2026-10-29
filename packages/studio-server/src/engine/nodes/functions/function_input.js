@@ -1,5 +1,5 @@
 export default {
-  "description": "Defines a typed argument for a reusable function graph",
+  "description": "Function graph entry point with multiple typed arguments and an execution output",
   "type": "function_input",
   "dynamicPins": { "kind": "function-input-arguments", "version": 1 },
   "category": "Functions",
