@@ -169,6 +169,7 @@ function RemoteCollaborationCursor({ peer }) {
   return <div ref={elementRef} className={`canvas-collaborator-cursor is-${idle ? 'idle' : peer.action.mode || peer.action.kind}`} style={{ '--collaborator-color': idle ? '#858c98' : peer.color }}>
     {peer.action.mode === 'text' ? <Type size={16} strokeWidth={2.4} /> : peer.action.mode === 'cut' ? <Scissors size={16} strokeWidth={2.4} /> : ['node-drag', 'note-drag', 'library-drag', 'pan'].includes(peer.action.kind) || peer.action.mode === 'pan' ? <Hand size={17} strokeWidth={2.4} /> : <MousePointer2 size={17} strokeWidth={2.4} />}
     <span>{peer.username}</span>
+    {peer.action.mode === 'chat-typing' && <span className="canvas-chat-typing-indicator" title="Typing" aria-label="Typing"><i /><i /><i /></span>}
     {peer.action.kind === 'wire-drag' && <small>Connecting</small>}
     {peer.action.kind === 'arrow-drag' && <small>Drawing arrow</small>}
     {peer.action.kind === 'node-drag' && <small>Moving {peer.action.nodeIds?.length > 1 ? `${peer.action.nodeIds.length} nodes` : 'node'}</small>}
@@ -456,6 +457,8 @@ export function NodeCanvas({
   const [graphChatAnchor, setGraphChatAnchor] = useState(null);
   const graphChatComposerRef = useRef(null);
   const graphChatInputRef = useRef(null);
+  const graphChatTypingRef = useRef(false);
+  const graphChatTypingTimerRef = useRef(null);
   const [noteLockClock, setNoteLockClock] = useState(Date.now());
   const focusedNoteRef = useRef(null);
   const noteEditHistoryRef = useRef(null);
@@ -536,18 +539,23 @@ export function NodeCanvas({
     setGraphChatComposerOpen(false);
     setGraphChatDraft('');
     setGraphChatAnchor(null);
+    graphChatTypingRef.current = false;
+    window.clearTimeout(graphChatTypingTimerRef.current);
+    graphChatTypingTimerRef.current = null;
   }, [graphChatEnabled, collaborationReady, graphId, projectId]);
   useEffect(() => {
     if (!graphChatComposerOpen) return undefined;
     const frame = window.requestAnimationFrame(() => graphChatInputRef.current?.focus());
     const closeOnOutsidePointer = (event) => {
       if (graphChatComposerRef.current?.contains(event.target)) return;
+      clearGraphChatTyping();
       setGraphChatComposerOpen(false);
       setGraphChatDraft('');
       setGraphChatAnchor(null);
     };
     document.addEventListener('pointerdown', closeOnOutsidePointer, true);
     const removePageBlurListener = onPageBlur(() => {
+      clearGraphChatTyping();
       setGraphChatComposerOpen(false);
       setGraphChatDraft('');
       setGraphChatAnchor(null);
@@ -556,6 +564,7 @@ export function NodeCanvas({
       window.cancelAnimationFrame(frame);
       document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
       removePageBlurListener();
+      window.clearTimeout(graphChatTypingTimerRef.current);
     };
   }, [graphChatComposerOpen]);
 
@@ -670,6 +679,26 @@ export function NodeCanvas({
       collaborationCursorRef.current = cursor;
     }
     if (cursor) onCollaborationAction?.({ kind: 'cursor', cursor, mode, selectedNodeIds }, true);
+  };
+  const updateGraphChatTyping = (value) => {
+    window.clearTimeout(graphChatTypingTimerRef.current);
+    graphChatTypingTimerRef.current = null;
+    const typing = Boolean(String(value || '').trim());
+    graphChatTypingRef.current = typing;
+    reportGraphChatCursorMode(typing ? 'chat-typing' : 'move');
+    if (typing) {
+      graphChatTypingTimerRef.current = window.setTimeout(() => {
+        graphChatTypingTimerRef.current = null;
+        graphChatTypingRef.current = false;
+        reportGraphChatCursorMode('move');
+      }, 5000);
+    }
+  };
+  const clearGraphChatTyping = () => {
+    window.clearTimeout(graphChatTypingTimerRef.current);
+    graphChatTypingTimerRef.current = null;
+    graphChatTypingRef.current = false;
+    reportGraphChatCursorMode('move');
   };
   const spaceDownRef = useRef(false);
   const altDownRef = useRef(false);
@@ -1936,7 +1965,7 @@ export function NodeCanvas({
         const target = event.target instanceof Element ? event.target : null;
         const isTextField = Boolean(target?.closest('input, textarea, [contenteditable="true"], .cm-content'));
         const isWire = Boolean(target?.closest('.wire-group, .wire-visible, .wire-hit-area'));
-        const mode = isTextField ? 'text' : isWire ? 'cut' : isPanning ? 'pan' : 'move';
+        const mode = graphChatTypingRef.current ? 'chat-typing' : isTextField ? 'text' : isWire ? 'cut' : isPanning ? 'pan' : 'move';
         onCollaborationAction?.({ kind: 'cursor', cursor, mode, selectedNodeIds });
       }
     }
@@ -3640,6 +3669,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
             const content = graphChatDraft.trim();
             if (!content || !graphChatAnchor) return;
             if (onSendGraphChat?.(content, graphChatAnchor) === false) return;
+            clearGraphChatTyping();
             setGraphChatComposerOpen(false);
             setGraphChatDraft('');
             setGraphChatAnchor(null);
@@ -3652,10 +3682,10 @@ const previewOutput = (node, outputId, seen = new Set()) => {
             value={graphChatDraft}
             maxLength={280}
             rows={1}
-            onFocus={() => reportGraphChatCursorMode('text')}
-            onBlur={() => reportGraphChatCursorMode('move')}
+            onFocus={() => reportGraphChatCursorMode('move')}
+            onBlur={clearGraphChatTyping}
             onChange={(event) => {
-              reportGraphChatCursorMode('text');
+              updateGraphChatTyping(event.target.value);
               setGraphChatDraft(event.target.value);
               event.currentTarget.style.height = '42px';
               event.currentTarget.style.height = `${Math.min(120, Math.max(42, event.currentTarget.scrollHeight))}px`;
@@ -3664,6 +3694,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
               event.stopPropagation();
               if (event.key === 'Escape' || (event.key === 'Backspace' && !graphChatDraft)) {
                 event.preventDefault();
+                clearGraphChatTyping();
                 setGraphChatComposerOpen(false);
                 setGraphChatDraft('');
                 setGraphChatAnchor(null);
