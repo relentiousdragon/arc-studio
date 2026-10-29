@@ -1,3 +1,5 @@
+import { validateDiscordSemanticValue } from '../../DiscordValueValidation.js';
+
 const MESSAGE_NODE_TYPES = new Set(['action_send_message', 'action_edit_message', 'action_edit_components']);
 //
 export function isDiscordMessageNodeType(type) {
@@ -11,14 +13,15 @@ export async function executeDiscordMessageNode(node, {
   buildEmbed,
   isInputConnected = () => false,
   rest,
+  simulation = false,
   setOutput,
   log
 }) {
   if (!isDiscordMessageNodeType(node?.type)) return false;
 
   if (node.type === 'action_send_message') {
-    const channelId = String(resolveInput('channel_id', node.data?.channel_id || '')).trim();
-    const threadId = String(resolveInput('thread_id', node.data?.thread_id || '')).trim();
+    const channelId = validateDiscordSemanticValue(resolveInput('channel_id', node.data?.channel_id || ''), 'channel_id', 'Channel ID', { simulation, allowEmpty: true });
+    const threadId = validateDiscordSemanticValue(resolveInput('thread_id', node.data?.thread_id || ''), 'thread_id', 'Thread ID', { simulation, allowEmpty: true });
     const destinationId = threadId || channelId;
     const content = String(resolveInput('content', node.data?.content || '')).slice(0, 2000);
     const embed = resolveInput('embed', null) || (Array.isArray(node.data?.blocks) ? buildEmbed() : null);
@@ -26,7 +29,7 @@ export async function executeDiscordMessageNode(node, {
     const files = resolveFiles(resolveInput('files', node.data?.files || []));
     const fileData = String(resolveInput('file_data', node.data?.file_data || ''));
     const fileName = String(resolveInput('file_name', node.data?.file_name || 'image.png'));
-    const replyToMessageId = String(resolveInput('reply_to_message_id', node.data?.reply_to_message_id || '')).trim();
+    const replyToMessageId = validateDiscordSemanticValue(resolveInput('reply_to_message_id', node.data?.reply_to_message_id || ''), 'message_id', 'Reply message ID', { simulation, allowEmpty: true });
     const mentionRepliedUser = Boolean(resolveInput('mention_replied_user', node.data?.mention_replied_user ?? Boolean(replyToMessageId)));
     const componentsV2 = components?.format === 'arc-components-v2' || node.data?.componentsV2Enabled === true;
 
@@ -62,8 +65,8 @@ export async function executeDiscordMessageNode(node, {
   }
 
   if (node.type === 'action_edit_components') {
-    const channelId = String(resolveInput('channel_id', node.data?.channel_id || '')).trim();
-    const messageId = String(resolveInput('message_id', node.data?.message_id || '')).trim();
+    const channelId = validateDiscordSemanticValue(resolveInput('channel_id', node.data?.channel_id || ''), 'channel_id', 'Channel ID', { simulation, allowEmpty: true });
+    const messageId = validateDiscordSemanticValue(resolveInput('message_id', node.data?.message_id || ''), 'message_id', 'Message ID', { simulation, allowEmpty: true });
     const components = resolveComponents();
     const componentsV2 = components?.format === 'arc-components-v2' || node.data?.componentsV2Enabled === true;
     if (componentsV2) validateComponentsV2Mode(node, '', components, isInputConnected);
@@ -77,8 +80,8 @@ export async function executeDiscordMessageNode(node, {
     return true;
   }
 
-  const channelId = String(resolveInput('channel_id', node.data?.channel_id || ''));
-  const messageId = String(resolveInput('message_id', node.data?.message_id || ''));
+  const channelId = validateDiscordSemanticValue(resolveInput('channel_id', node.data?.channel_id || ''), 'channel_id', 'Channel ID', { simulation, allowEmpty: true });
+  const messageId = validateDiscordSemanticValue(resolveInput('message_id', node.data?.message_id || ''), 'message_id', 'Message ID', { simulation, allowEmpty: true });
   const content = resolveInput('content', node.data?.content);
   const embed = resolveInput('embed', null) || (Array.isArray(node.data?.blocks) ? buildEmbed() : null);
   const components = resolveComponents();
