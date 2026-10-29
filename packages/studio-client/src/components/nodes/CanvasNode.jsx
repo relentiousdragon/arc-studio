@@ -461,7 +461,12 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     /></FallbackField>;
   };
   const valueTypes = [{ value: 'number', label: 'Number' }, { value: 'string', label: 'Text' }, { value: 'boolean', label: 'Boolean' }, { value: 'object', label: 'Object / Array' }];
-  const functionArgumentTypes = [...valueTypes, { value: 'channel_id', label: 'Channel ID' }, { value: 'interaction_token', label: 'Interaction Token' }];
+  const functionArgumentTypes = [...valueTypes,
+    { value: 'channel_id', label: 'Channel ID' }, { value: 'thread_id', label: 'Thread ID' }, { value: 'message_id', label: 'Message ID' },
+    { value: 'interaction_id', label: 'Interaction ID' }, { value: 'application_id', label: 'Application ID' },
+    { value: 'guild_id', label: 'Server ID' }, { value: 'user_id', label: 'User ID' }, { value: 'role_id', label: 'Role ID' },
+    { value: 'interaction_token', label: 'Interaction Token' }
+  ];
   if (node.type === 'data_get_modal_value') {
     const fieldId = String(node.data?.custom_id ?? '');
     const fieldOptions = [...new Map(modalFieldOptions.map((item) => [item.value, item])).values()];
