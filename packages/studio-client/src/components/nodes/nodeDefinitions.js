@@ -121,12 +121,20 @@ export function getNodeRegistryDefinitions(registry) {
   return definitions;
 }
 
-export function getAvailableNodeDefinitions(definitions = BuiltInNodeDefinitions, supportedTypes = null) {
-  if (!supportedTypes) return [...definitions];
-  return definitions.filter((definition) => definition.pluginAdapter || supportedTypes.has(definition.type));
+export function getAvailableNodeDefinitions(definitions = BuiltInNodeDefinitions, supportedTypes = null, failedTypes = null) {
+  const available = supportedTypes
+    ? definitions.filter((definition) => definition.pluginAdapter || supportedTypes.has(definition.type))
+    : [...definitions];
+  const normalized = available.map((definition) => failedTypes?.has(definition.type) ? { ...definition, loadFailed: true } : definition);
+  for (const type of failedTypes || []) {
+    if (normalized.some((definition) => definition.type === type)) continue;
+    normalized.push({ type, label: type, category: 'Unavailable', color: '#778196', description: '', inputs: [], outputs: [], loadFailed: true });
+  }
+  return normalized;
 }
 
-export function isNodeTypeSupported(type, supportedTypes = null) {
+export function isNodeTypeSupported(type, supportedTypes = null, failedTypes = null) {
+  if (failedTypes?.has(type)) return false;
   if (!supportedTypes || supportedTypes.has(type)) return true;
   return BuiltInNodeDefinitions.some((definition) => definition.type === type && definition.pluginAdapter);
 }
