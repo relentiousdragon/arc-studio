@@ -17,7 +17,7 @@ export function TopBar({
   desktopMode = false, localWorkspace = false, workspaceLabel = '', activeProjectId = '', uploadProgress = null, shortcutPlatform = 'windows',
   isLocked = false, onToggleLock, onSelectTab, onFollowCollaborator,
   onAddTab, onAddBlankGraph, onAddFunctionGraph, onNewEmbed, onUseTemplate, onCloseTab, onSaveGraph, onRenameGraph, onDuplicateGraph, onSetDefault, onOpenSettings, onOpenUsers, onLogout,
-  onOpenBotSettings, onStartBot, onStopBot, onUndo, onRedo, canUndo = false, canRedo = false, onValidate, validationStatus = 'warning', validationErrors = 0, validationWarnings = 0, onSwitchWorkspace, networkOnline = true, appUpdate = null, serverUpdateAvailable = false, onOpenStudioUpdate
+  onOpenBotSettings, onStartBot, onStopBot, onUndo, onRedo, canUndo = false, canRedo = false, onValidate, validationStatus = 'warning', validationErrors = 0, validationWarnings = 0, onSwitchWorkspace, networkOnline = true, appUpdate = null, downloadedUpdateReady = null, updateInstalling = false, serverUpdateAvailable = false, onOpenStudioUpdate
 }) {
   const [tabMenu, setTabMenu] = useState(null);
   const [newGraphMenu, setNewGraphMenu] = useState(null);
@@ -171,7 +171,7 @@ export function TopBar({
           </button>
           <span className="topbar-separator history-separator" />
         </>}
-        {appUpdate && <button className={`studio-update-action is-${appUpdate.kind}`} disabled={!networkOnline} onClick={() => onOpenStudioUpdate?.(appUpdate.url)} title={!networkOnline ? 'Reconnect to check for the update' : appUpdate.native ? `${appUpdate.title} · download and install` : `${appUpdate.title} · open release`} aria-label={appUpdate.native ? `${appUpdate.title}. Install update` : `${appUpdate.title}. Open release page`}><Download size={13} /><span>{appUpdate.native ? 'Update ready' : appUpdate.kind === 'major' ? 'Major update' : appUpdate.kind === 'feature' ? 'Feature update' : 'Maintenance update'}</span></button>}
+        {(downloadedUpdateReady || appUpdate) && <button className={`studio-update-action ${!downloadedUpdateReady && !appUpdate?.native && appUpdate?.kind === 'major' ? 'is-major' : ''}`} disabled={(!downloadedUpdateReady && !networkOnline) || updateInstalling} onClick={() => onOpenStudioUpdate?.(appUpdate?.url)} title={updateInstalling ? 'Update in progress' : downloadedUpdateReady ? `Install ARC Studio ${downloadedUpdateReady.version}` : !networkOnline ? 'Reconnect to check for the update' : appUpdate.native ? `${appUpdate.title} · download and install` : `${appUpdate.title} · open release`} aria-label={downloadedUpdateReady ? `Install ARC Studio ${downloadedUpdateReady.version}` : appUpdate.native ? `${appUpdate.title}. Update ARC Studio` : `${appUpdate.title}. Open release page`}><Download size={13} /><span>{downloadedUpdateReady ? 'Install' : appUpdate.native ? 'Update' : appUpdate.kind === 'major' ? 'Major update' : appUpdate.kind === 'feature' ? 'Feature update' : 'Maintenance update'}</span></button>}
         {!networkOnline && <span className="network-offline-indicator" role="status"><WifiOff size={12} /><span>No internet</span></span>}
         <div className={`gateway-status ${connected ? 'is-online' : botStatus === 'CONNECTING' ? 'is-pending' : botStatus === 'ERROR' ? 'is-error' : ''}`}>
           <span className="status-indicator" />
