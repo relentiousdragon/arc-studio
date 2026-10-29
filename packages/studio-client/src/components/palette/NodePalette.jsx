@@ -44,7 +44,7 @@ export function NodePalette({ isOpen, onClose, onSelectNode, pluginDefinitionsRe
       if (event.key === 'Escape') onClose?.();
       if (event.key === 'ArrowDown') { event.preventDefault(); setActiveIndex((value) => Math.min(value + 1, navigableNodes.length - 1)); }
       if (event.key === 'ArrowUp') { event.preventDefault(); setActiveIndex((value) => Math.max(value - 1, 0)); }
-      if (event.key === 'Enter' && navigableNodes[activeIndex]) {
+      if (event.key === 'Enter' && navigableNodes[activeIndex] && !navigableNodes[activeIndex].loadFailed) {
         event.preventDefault();
         onSelectNode?.(navigableNodes[activeIndex].type);
         onClose?.();
@@ -74,14 +74,14 @@ export function NodePalette({ isOpen, onClose, onSelectNode, pluginDefinitionsRe
       <div className="palette-results" role="listbox">
           {showNewSection && <section className="palette-new-section" aria-label="New nodes">
             <h3>New nodes <span>{newNodes.length}</span></h3>
-            {newNodes.map((node, index) => <button key={`new-${node.type}`} role="option" aria-selected={activeIndex === index} className={`palette-result palette-new-result ${activeIndex === index ? 'is-active' : ''}`} onMouseEnter={() => setActiveIndex(index)} onClick={() => { onSelectNode?.(node.type); onClose?.(); }}>
+            {newNodes.map((node, index) => <button key={`new-${node.type}`} type="button" role="option" aria-selected={activeIndex === index} className={`palette-result palette-new-result ${activeIndex === index ? 'is-active' : ''} ${node.loadFailed ? 'is-node-load-failed' : ''}`} disabled={Boolean(node.loadFailed)} title={node.loadFailed ? 'Failed to load this node' : undefined} onMouseEnter={() => setActiveIndex(index)} onClick={() => { onSelectNode?.(node.type); onClose?.(); }}>
               <span className="palette-node-icon" style={{ '--node-accent': node.color }}><NodeTypeIcon type={node.type} color={node.color} size={15} /></span>
               <span className="palette-node-copy"><strong>{node.label}<i className="node-new-badge">NEW</i></strong><small>{node.description}</small></span>
               <span className="palette-node-category">{node.category}</span>
             </button>)}
           </section>}
           {filteredNodes.length ? filteredNodes.map((node, index) => (
-            <button key={node.type} role="option" aria-selected={activeIndex === index + (showNewSection ? newNodes.length : 0)} aria-label={node.pluginAdapter ? `${node.label}. Plugin node from ${node.pluginName || node.pluginId || 'an installed plugin'}` : undefined} className={`palette-result ${activeIndex === index + (showNewSection ? newNodes.length : 0) ? 'is-active' : ''}`} onMouseEnter={() => setActiveIndex(index + (showNewSection ? newNodes.length : 0))} onClick={() => { onSelectNode?.(node.type); onClose?.(); }}>
+            <button key={node.type} type="button" role="option" aria-selected={activeIndex === index + (showNewSection ? newNodes.length : 0)} aria-label={node.pluginAdapter ? `${node.label}. Plugin node from ${node.pluginName || node.pluginId || 'an installed plugin'}` : undefined} className={`palette-result ${activeIndex === index + (showNewSection ? newNodes.length : 0) ? 'is-active' : ''} ${node.loadFailed ? 'is-node-load-failed' : ''}`} disabled={Boolean(node.loadFailed)} title={node.loadFailed ? 'Failed to load this node' : undefined} onMouseEnter={() => setActiveIndex(index + (showNewSection ? newNodes.length : 0))} onClick={() => { onSelectNode?.(node.type); onClose?.(); }}>
               <span className="palette-node-icon" style={{ '--node-accent': node.color }}><NodeTypeIcon type={node.type} color={node.color} size={15} /></span>
               <span className="palette-node-copy"><strong>{node.label}{isNodeDefinitionNew(node, Date.now(), newNodesUserKey) && <i className="node-new-badge">NEW</i>}</strong><small>{node.description}</small></span>
               {node.pluginAdapter && <span className="node-plugin-origin palette-plugin-origin" title={`Plugin node from ${node.pluginName || node.pluginId || 'an installed plugin'}`} aria-label={`Plugin node from ${node.pluginName || node.pluginId || 'an installed plugin'}`}><Puzzle size={13} /></span>}
