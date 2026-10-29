@@ -14,6 +14,7 @@ import { EmbedStore } from '../engine/EmbedStore.js';
 import { ActivityStore } from '../security/ActivityStore.js';
 import { ActivityWebhookDispatcher, ActivityWebhookStore } from '../security/ActivityWebhook.js';
 import { StarterProjects } from '../storage/StarterProjects.js';
+import { hasImportableTextContent } from '../storage/ImportContentReview.js';
 import { randomUUID, createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -22,6 +23,7 @@ import { botManagerContext } from '../engine/RequestBotManager.js';
 import { stableJson } from '../storage/Integrity.js';
 import { readClientAccessSettings, writeClientAccessSettings, isArcStudioOrigin, isArcStudioClientIdentity } from '../security/ClientAccessPolicy.js';
 import { isArcStudioClientVersionAllowed } from '../versioning/arcProjectCompatibility.js';
+import { normalizeGraphRouteId, normalizeProjectRouteId } from './routeResourceIds.js';
 //
 const ACTIVITY_WEBHOOK_AVATAR_URL = 'https://raw.githubusercontent.com/relentiousdragon/arc-studio/main/packages/studio-client/public/arc.png';
 
@@ -53,6 +55,14 @@ function graphNodeChanges(previous, next) {
 
 export function createApiRouter(botManager, userStore, logger, managerForUser = () => botManager, broadcastWorkspace = () => {}, isUserOnline = () => false, clearDeletedGraphCollaboration = () => {}, onGraphSaved = () => {}, broadcastProject = () => {}, disconnectUnknownClients = () => {}) {
   const router = Router();
+  router.param('projectId', (req, _res, next, projectId) => {
+    req.params.projectId = normalizeProjectRouteId(projectId);
+    next();
+  });
+  router.param('tabId', (req, _res, next, graphId) => {
+    req.params.tabId = normalizeGraphRouteId(graphId);
+    next();
+  });
   router.use((req, res, next) => {
     const requestId = randomUUID();
     res.locals.arcRequestId = requestId;
@@ -502,6 +512,12 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       const bundle = submittedBundle?.format === 'arc-project-encrypted'
         ? botManager.projectStore.decryptProjectBundle(submittedBundle, req.body?.password)
         : submittedBundle;
+      if (!serverConfig.desktopMode && hasImportableTextContent(bundle) && req.body?.confirmCollaborativeText !== true) {
+        return res.status(409).json({
+          code: 'IMPORT_SHARED_CONTENT_CONFIRMATION_REQUIRED',
+          workspaceName: userStore.workspaceName || 'ARC Studio Workspace'
+        });
+      }
       const integrityWarning = !bundle?.integrity;
       const project = botManager.projectStore.importProject(bundle, { trusted: req.body?.trusted === true, allowOldVersion: req.body?.allowOldVersion === true, ownerId: req.user.id });
       managerForUser({ ...req.user, activeProjectId: project.id })?.importProjectSecretValues();
@@ -1309,6 +1325,12 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     }
     if (source.nodes.length > 2000 || source.connections.length > 10000) {
       return res.status(413).json({ error: 'This graph is too large to import.' });
+    }
+    if (!serverConfig.desktopMode && hasImportableTextContent(source) && req.body?.confirmCollaborativeText !== true) {
+      return res.status(409).json({
+        code: 'IMPORT_SHARED_CONTENT_CONFIRMATION_REQUIRED',
+        workspaceName: userStore.workspaceName || 'ARC Studio Workspace'
+      });
     }
     try {
       const id = `graph_import_${randomUUID()}`;
