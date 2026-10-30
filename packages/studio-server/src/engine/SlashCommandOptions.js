@@ -86,7 +86,9 @@ function validateParameter(option, prefix, errors) {
     return;
   }
   if (option.autocomplete && !SLASH_AUTOCOMPLETE_TYPES.has(type)) errors.push(`${prefix} “${name}” can use autocomplete only with text, integer, or number types.`);
-  if (option.autocomplete && !option.dynamicAutocomplete && (!Array.isArray(option.choices) || option.choices.length === 0)) errors.push(`${prefix} “${name}” needs fixed autocomplete suggestions or graph-generated suggestions.`);
+  if (option.dynamicAutocomplete && !option.autocomplete) errors.push(`${prefix} “${name}” must enable autocomplete to use graph-generated suggestions.`);
+  if (option.autocomplete && option.dynamicAutocomplete && Array.isArray(option.choices) && option.choices.length) errors.push(`${prefix} “${name}” cannot combine graph-generated autocomplete with fixed choices.`);
+  if (option.autocomplete && !option.dynamicAutocomplete && (!Array.isArray(option.choices) || option.choices.length === 0)) errors.push(`${prefix} “${name}” needs graph-generated suggestions.`);
   const choices = Array.isArray(option.choices) ? option.choices : [];
   if (choices.length > 25) errors.push(`${prefix} “${name}” can have at most 25 choices.`);
   if (choices.length && !SLASH_CHOICE_TYPES.has(type)) errors.push(`${prefix} “${name}” cannot have choices for this type.`);
@@ -226,7 +228,7 @@ export function normalizeSlashCommandOptions(options = []) {
       return { ...base, ...(Array.isArray(option.options) && option.options.length ? { options: normalize(option.options) } : {}) };
     }
     if (option.required) base.required = true;
-    if (option.autocomplete) base.autocomplete = true;
+    if (option.autocomplete && option.dynamicAutocomplete) base.autocomplete = true;
     else if (Array.isArray(option.choices) && option.choices.length) base.choices = option.choices.map((choice) => ({
       name: String(choice.name || '').trim().slice(0, 100),
       value: type === 4 ? Number(choice.value) : type === 10 ? Number(choice.value) : String(choice.value ?? '').slice(0, 100)
