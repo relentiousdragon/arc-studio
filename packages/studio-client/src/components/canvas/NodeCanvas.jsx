@@ -3745,7 +3745,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
             if (event.key === 'Enter') { event.preventDefault(); navigateCanvasFind(event.shiftKey ? -1 : 1); }
             if (event.key === 'Escape') { event.preventDefault(); setCanvasFindOpen(false); }
           }} placeholder="Find on canvas" aria-label="Find nodes on canvas" tabIndex={canvasFindOpen ? 0 : -1} /></label>
-          <span className="canvas-find-count" role="status">{canvasFindResults.error ? 'Invalid pattern' : canvasFindQuery.trim() ? canvasFindResults.results.length ? `${canvasFindIndex < 0 ? 0 : canvasFindIndex + 1} of ${canvasFindResults.results.length}` : 'No results' : ''}</span>
+          {Boolean(canvasFindQuery.trim()) && <span className="canvas-find-count" role="status">{canvasFindResults.error ? 'Invalid pattern' : canvasFindResults.results.length ? `${canvasFindIndex < 0 ? 0 : canvasFindIndex + 1} of ${canvasFindResults.results.length}` : 'No results'}</span>}
           <button type="button" className="canvas-find-button" onClick={() => navigateCanvasFind(-1)} title="Previous result (⌘⇧G)" aria-label="Previous canvas result" tabIndex={canvasFindOpen ? 0 : -1}><ChevronUp size={15} /></button>
           <button type="button" className="canvas-find-button" onClick={() => navigateCanvasFind(1)} title="Next result (⌘G)" aria-label="Next canvas result" tabIndex={canvasFindOpen ? 0 : -1}><ChevronDown size={15} /></button>
           <label className="canvas-find-option" title="Match case"><input type="checkbox" checked={canvasFindCaseSensitive} onChange={(event) => { setCanvasFindCaseSensitive(event.target.checked); setCanvasFindIndex(-1); }} tabIndex={canvasFindOpen ? 0 : -1} /> Aa</label>

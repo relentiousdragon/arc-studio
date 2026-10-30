@@ -1,9 +1,9 @@
 import React from 'react';
 import {
-  Activity, ArrowDown, ArrowLeftRight, ArrowUp, Asterisk, BarChart3, CaseSensitive,
+  Activity, ArrowDown, ArrowLeftRight, ArrowUp, Asterisk, BarChart3, Calculator, CaseSensitive,
   CircleDot, Database, Divide, Dices, GitBranch, GitCompare, GitFork, GitMerge, Hash, KeyRound,
   LockKeyhole, LogIn, LogOut, MessageSquare, MessageSquareReply, Minus,
-  MousePointerClick, PanelsTopLeft, Percent, Pi, Plus, Power, Search, Send, ShieldCheck,
+  MousePointerClick, PanelsTopLeft, Percent, Pi, Plus, Power, Puzzle, Search, Send, ShieldCheck,
   Slash, SlidersHorizontal, Square, SquareFunction, Sigma, TextCursorInput,
   Timer, ToggleLeft, TrendingUp, Type, UnlockKeyhole, UserRoundPlus, Workflow, RefreshCw, ListFilter
 } from 'lucide-react';
@@ -55,7 +55,7 @@ const icons = {
   function_input: LogIn,
   function_return: LogOut,
   function_call: Workflow,
-  function_math: CalculatorIcon,
+  function_math: Calculator,
   branch_if: GitBranch,
   branch_switch: GitBranch,
   parallel: GitFork,
@@ -81,7 +81,7 @@ const icons = {
   data_get_value_by_path: Database,
   data_find_array_item: Search,
   data_filter_array: ListFilter,
-  data_format_number: CalculatorIcon,
+  data_format_number: Calculator,
   format_text: TextCursorInput,
   build_embed: PanelsTopLeft,
   modify_embed: PanelsTopLeft,
@@ -124,13 +124,7 @@ const icons = {
   math_random: Dices
 };
 
-export function NodeTypeIcon({ type, color, size = 14, strokeWidth = 1.8, className }) {
-  const Icon = icons[type] || (type?.startsWith('math_') ? SquareFunction : Workflow);
+export function NodeTypeIcon({ type, color, size = 14, strokeWidth = 1.8, className, pluginAdapter }) {
+  const Icon = icons[type] || (pluginAdapter ? Puzzle : type?.startsWith('math_') ? SquareFunction : Workflow);
   return <Icon className={className} size={size} strokeWidth={strokeWidth} style={color ? { color } : undefined} aria-hidden="true" />;
-}
-
-function CalculatorIcon(props) {
-  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
-    <rect x="5" y="3" width="14" height="18" rx="2" /><path d="M8 7h8M8 11h2m4 0h2M8 15h2m4 0h2M8 18h2m4 0h2" />
-  </svg>;
 }
