@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ArrowLeft, Check, ChevronDown, ChevronUp, Plus, Trash2 } from 'lucide-react';
 import { AnimatedCheckbox, AnimatedDropdown } from '../ui/CustomControls.jsx';
 import { Modal } from '../ui/Modal.jsx';
@@ -56,6 +56,7 @@ function countArguments(options = []) {
 export function SlashCommandStudioView({ commandName, options = [], collaborators = [], onDraftChange, onApply, onClose }) {
   const draft = Array.isArray(options) ? options : [];
   const [discardOpen, setDiscardOpen] = useState(false);
+  const [activeTabKey, setActiveTabKey] = useState('start');
   const [appliedOptions] = useState(() => structuredClone(draft));
   const changed = JSON.stringify(draft) !== JSON.stringify(appliedOptions);
   const issue = validateSlashCommandOptions(draft, commandName)[0] || '';
@@ -77,14 +78,31 @@ export function SlashCommandStudioView({ commandName, options = [], collaborator
   const apply = () => { if (!issue) onApply?.(cleanOptions(draft)); };
   const rootHasArguments = draft.some((item) => ![1, 2].includes(Number(item.type)));
   const rootHasCommands = draft.some((item) => [1, 2].includes(Number(item.type)));
+  const rootArgumentIndexes = draft.flatMap((item, index) => [1, 2].includes(Number(item.type)) ? [] : [index]);
+  const rootTabs = [
+    ...(rootHasArguments ? [{ key: 'root-arguments', type: 'arguments', label: 'Arguments', indexes: rootArgumentIndexes }] : []),
+    ...draft.flatMap((item, index) => [1, 2].includes(Number(item.type)) ? [{
+      key: item.id || `${Number(item.type)}:${item.name}:${index}`,
+      type: Number(item.type) === 2 ? 'group' : 'subcommand',
+      label: `${Number(item.type) === 2 ? 'Group' : 'Subcommand'} · ${item.name || `Untitled ${index + 1}`}`,
+      index,
+      item
+    }] : [])
+  ];
+  const tabs = rootTabs.length ? rootTabs : [{ key: 'start', type: 'start', label: 'Overview' }];
+  const activeTab = tabs.find((tab) => tab.key === activeTabKey) || tabs[0];
+  useEffect(() => {
+    if (!tabs.some((tab) => tab.key === activeTabKey)) setActiveTabKey(tabs[0].key);
+  }, [activeTabKey, tabs]);
 
-  const renderOptionList = (items, parentPath = [], level = 0, parentType = 'root') => <div className={`slash-option-list level-${level}`}>
+  const renderOptionList = (items, parentPath = [], level = 0, sourceIndexes = null) => <div className={`slash-option-list level-${level}`}>
     {items.map((option, index) => {
-      const path = [...parentPath, index];
+      const optionIndex = sourceIndexes?.[index] ?? index;
+      const path = [...parentPath, optionIndex];
       const type = Number(option.type) || 3;
       const structural = type === 1 || type === 2;
       const choices = Array.isArray(option.choices) ? option.choices : [];
-      const mode = option.autocomplete ? 'autocomplete' : 'choices';
+      const mode = option.autocomplete && option.dynamicAutocomplete ? 'autocomplete' : 'choices';
       const supportsChoices = TEXT_TYPES.has(type);
       const kindLabel = type === 1 ? 'Subcommand' : type === 2 ? 'Subcommand group' : PARAMETER_TYPES.find((item) => item.value === type)?.label || 'Argument';
       return <article className={`slash-option-card${structural ? ' is-structural' : ''}${type === 2 ? ' is-group' : ''}`} key={option.id || `${path.join('.')}:${option.name}`}>
@@ -98,8 +116,7 @@ export function SlashCommandStudioView({ commandName, options = [], collaborator
         {!structural && type === 7 && <details className="slash-option-advanced"><summary>Channel type filters <small>{option.channel_types?.length ? `${option.channel_types.length} selected` : 'All channel types'}</small></summary><div className="slash-channel-type-list">{CHANNEL_TYPES.map(([channelType, label]) => <label key={channelType}><AnimatedCheckbox checked={(option.channel_types || []).includes(channelType)} label={label} onChange={(checked) => updateItem(path, { channel_types: checked ? [...(option.channel_types || []), channelType] : (option.channel_types || []).filter((value) => value !== channelType) })} /><span>{label}</span></label>)}</div></details>}
         {!structural && [3, 4, 10].includes(type) && <details className="slash-option-advanced"><summary>Input limits</summary><div className="slash-option-bounds">{type === 3 ? <><label>Minimum length<input type="number" min="0" max="6000" value={option.min_length ?? ''} onChange={(event) => updateItem(path, { min_length: event.target.value === '' ? undefined : Number(event.target.value) })} /></label><label>Maximum length<input type="number" min="0" max="6000" value={option.max_length ?? ''} onChange={(event) => updateItem(path, { max_length: event.target.value === '' ? undefined : Number(event.target.value) })} /></label></> : <><label>Minimum value<input type="number" step={type === 4 ? '1' : 'any'} value={option.min_value ?? ''} onChange={(event) => updateItem(path, { min_value: event.target.value === '' ? undefined : Number(event.target.value) })} /></label><label>Maximum value<input type="number" step={type === 4 ? '1' : 'any'} value={option.max_value ?? ''} onChange={(event) => updateItem(path, { max_value: event.target.value === '' ? undefined : Number(event.target.value) })} /></label></>}</div></details>}
         {!structural && supportsChoices && <section className="slash-option-choices">
-          <div className="slash-option-choice-toolbar"><label>Input<AnimatedDropdown value={mode} options={CHOICE_MODES} onChange={(value) => updateItem(path, { autocomplete: value === 'autocomplete', ...(value !== 'autocomplete' ? { dynamicAutocomplete: false } : {}) })} ariaLabel={`Input mode for ${option.name || `argument ${index + 1}`}`} /></label>{!option.dynamicAutocomplete && <button type="button" disabled={choices.length >= 25} onClick={() => updateItem(path, { choices: [...choices, { id: createLocalId('choice'), name: '', value: '' }] })}><Plus size={13} /> Add {mode === 'autocomplete' ? 'suggestion' : 'choice'}</button>}</div>
-          {mode === 'autocomplete' && <label className="slash-dynamic-suggestions"><AnimatedCheckbox checked={Boolean(option.dynamicAutocomplete)} label={`Use graph-generated suggestions for ${option.name || `argument ${index + 1}`}`} onChange={(dynamicAutocomplete) => updateItem(path, { dynamicAutocomplete })} /><span>Build suggestions in the graph</span></label>}
+          <div className="slash-option-choice-toolbar"><label>Input<AnimatedDropdown value={mode} options={CHOICE_MODES} onChange={(value) => updateItem(path, value === 'autocomplete' ? { autocomplete: true, dynamicAutocomplete: true, choices: [] } : { autocomplete: false, dynamicAutocomplete: false })} ariaLabel={`Input mode for ${option.name || `argument ${index + 1}`}`} /></label>{mode !== 'autocomplete' && <button type="button" disabled={choices.length >= 25} onClick={() => updateItem(path, { choices: [...choices, { id: createLocalId('choice'), name: '', value: '' }] })}><Plus size={13} /> Add choice</button>}</div>
           {option.dynamicAutocomplete ? <small>Use <b>On Command Autocomplete</b> and wire an array of {'{ name, value }'} objects into <b>Respond to Autocomplete</b>.</small> : <>
             {choices.length > 0 && <div className="slash-option-choice-head"><span>Shown to user</span><span>Value received by graph</span><span /></div>}
             {choices.map((choice, choiceIndex) => <div className="slash-option-choice-row" key={choice.id || choiceIndex}>
@@ -111,18 +128,13 @@ export function SlashCommandStudioView({ commandName, options = [], collaborator
           <small>{option.autocomplete ? 'Fixed suggestions are filtered by what the user types.' : 'The user must choose one of these values.'} Up to 25.</small>
         </section>}
         {structural && <div className="slash-option-nested">
-          {renderOptionList(option.options || [], path, level + 1, type === 2 ? 'group' : 'subcommand')}
+          {renderOptionList(option.options || [], path, level + 1)}
           <div className="slash-option-nested-actions">{type === 2
             ? <button type="button" disabled={(option.options || []).length >= MAX_OPTIONS} onClick={() => addItem(path, newSubcommand(option.options?.length || 0))}><Plus size={13} /> Add subcommand</button>
             : <button type="button" disabled={(option.options || []).length >= MAX_OPTIONS} onClick={() => addItem(path, newParameter(option.options?.length || 0))}><Plus size={13} /> Add argument</button>}</div>
         </div>}
       </article>;
     })}
-    {parentType === 'root' && <div className="slash-option-root-actions">
-      <button type="button" disabled={items.length >= MAX_OPTIONS || rootHasCommands} onClick={() => addItem([], newParameter(items.length))}><Plus size={14} /> Add argument</button>
-      <button type="button" disabled={items.length >= MAX_OPTIONS || rootHasArguments} onClick={() => addItem([], newSubcommand(items.length))}><Plus size={14} /> Add subcommand</button>
-      <button type="button" disabled={items.length >= MAX_OPTIONS || rootHasArguments} onClick={() => addItem([], newGroup(items.length))}><Plus size={14} /> Add group</button>
-    </div>}
   </div>;
 
   return <section className="slash-command-studio" aria-label="Slash command argument editor">
@@ -133,8 +145,29 @@ export function SlashCommandStudioView({ commandName, options = [], collaborator
     </header>
     <div className="slash-command-studio-toolbar"><span>{collaborators.length ? `Editing with ${collaborators.map((peer) => peer.username).join(', ')}` : 'Use arguments, subcommands, or groups. Discord supports one group level, with subcommands inside each group.'}</span></div>
     <div className="slash-command-studio-scroll" onWheel={(event) => event.stopPropagation()} tabIndex={0} aria-label="Command option fields">
-      {!draft.length && <div className="slash-command-studio-empty"><strong>No options</strong><span>Arguments collect values, subcommands select an action, and groups organize subcommands.</span></div>}
-      {renderOptionList(draft)}
+      <div className="slash-command-root-tools">
+        <div className="slash-option-root-actions">
+          <button type="button" disabled={draft.length >= MAX_OPTIONS || rootHasCommands} title={rootHasCommands ? 'Discord does not allow root arguments alongside subcommands or groups.' : 'Add a command argument'} onClick={() => { addItem([], newParameter(draft.length)); if (!rootHasArguments) setActiveTabKey('root-arguments'); }}><Plus size={14} /> Add argument</button>
+          <button type="button" disabled={draft.length >= MAX_OPTIONS || rootHasArguments} title={rootHasArguments ? 'Remove the root arguments before adding subcommands.' : 'Add a subcommand'} onClick={() => { const item = newSubcommand(draft.length); addItem([], item); setActiveTabKey(item.id); }}><Plus size={14} /> Add subcommand</button>
+          <button type="button" disabled={draft.length >= MAX_OPTIONS || rootHasArguments} title={rootHasArguments ? 'Remove the root arguments before adding groups.' : 'Add a subcommand group'} onClick={() => { const item = newGroup(draft.length); addItem([], item); setActiveTabKey(item.id); }}><Plus size={14} /> Add group</button>
+        </div>
+        {rootHasArguments && <p role="status">This command uses root arguments. Discord does not allow subcommands or groups alongside them.</p>}
+        {rootHasCommands && <p role="status">Choose a subcommand tab, or open a group tab to manage its subcommands. Add arguments inside a subcommand.</p>}
+      </div>
+      <div className="slash-command-option-tabs" role="tablist" aria-label="Slash command option sections">
+        {tabs.map((tab, index) => <button key={tab.key} type="button" role="tab" id={`slash-command-tab-${tab.key}`} aria-selected={activeTab.key === tab.key} aria-controls="slash-command-option-panel" tabIndex={activeTab.key === tab.key ? 0 : -1} onClick={() => setActiveTabKey(tab.key)} onKeyDown={(event) => {
+          if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+          event.preventDefault();
+          const nextIndex = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+          setActiveTabKey(tabs[nextIndex].key);
+          event.currentTarget.parentElement?.querySelectorAll('[role="tab"]')[nextIndex]?.focus();
+        }}>{tab.label}</button>)}
+      </div>
+      <section className="slash-command-option-panel" id="slash-command-option-panel" role="tabpanel" aria-labelledby={`slash-command-tab-${activeTab.key}`}>
+        {activeTab.type === 'start' ? <div className="slash-command-studio-empty"><strong>Set up this command</strong><span>Add root arguments for a slash command, or add subcommands to create separate actions.</span></div>
+          : activeTab.type === 'arguments' ? renderOptionList(activeTab.indexes.map((index) => draft[index]), [], 0, activeTab.indexes)
+            : renderOptionList([activeTab.item], [], 0, [activeTab.index])}
+      </section>
       {issue && <p className="slash-command-studio-error" role="alert">{issue}</p>}
     </div>
     <Modal isOpen={discardOpen} onClose={() => setDiscardOpen(false)} title="Discard option changes?" subtitle="These edits have not been applied to the graph." footer={<><Button variant="secondary" onClick={() => setDiscardOpen(false)}>Keep editing</Button><Button variant="danger" onClick={onClose}>Discard changes</Button></>}><p className="close-graph-copy">The command will keep its current options until you choose Apply.</p></Modal>
