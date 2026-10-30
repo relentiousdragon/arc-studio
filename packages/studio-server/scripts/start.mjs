@@ -83,3 +83,5 @@ if (!serverOnly && desktopMode && (!fs.existsSync(clientIndex) || logoPaths.some
 
 if (runServerOnly) process.env.ARC_SERVER_ONLY = '1';
 await import('../src/index.js');
+
+// contributors: @relentiousdragon
