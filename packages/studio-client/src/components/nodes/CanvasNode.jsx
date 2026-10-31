@@ -506,11 +506,14 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     };
     const warning = (message) => message && <button type="button" className="slash-command-warning" data-tooltip={message} aria-label={message} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.preventDefault(); event.stopPropagation(); }}><AlertTriangle size={11} /></button>;
     const options = Array.isArray(node.data?.options) ? node.data.options : [];
+    const hasCommands = options.some((opt) => [1, 2].includes(Number(opt.type)));
+    const countTotalArgs = (items) => items.reduce((sum, item) => sum + ([1, 2].includes(Number(item.type)) ? countTotalArgs(item.options || []) : 1), 0);
+    const totalArguments = countTotalArgs(options);
     return <div className="node-config node-config-stack slash-command-config">
       <label><span className="slash-command-field-label"><span>Command</span>{warning(commandNameIssue, 'Command name issue')}</span><CharacterLimit className="is-flex" value={node.data?.commandName ?? ''} maxLength={32}><div><b>/</b><input value={node.data?.commandName ?? ''} maxLength={32} autoCapitalize="none" autoCorrect="off" spellCheck={false} onChange={(event) => update('commandName', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="help" aria-label="Slash command name" /></div></CharacterLimit></label>
       <label><span className="slash-command-field-label"><span>Description</span>{warning(commandDescriptionIssue, 'Command description issue')}</span><CharacterLimit value={node.data?.description ?? ''} maxLength={100}><input value={node.data?.description ?? ''} maxLength={100} autoCapitalize="none" autoCorrect="off" spellCheck={false} onChange={(event) => update('description', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="What this command does" aria-label="Slash command description" /></CharacterLimit></label>
       <section className="slash-command-options-compact">
-        <div><strong>Arguments</strong><span>{options.length}/25</span></div>
+        <div><strong>{hasCommands ? 'Subcommands & groups' : 'Arguments'}</strong><span>{hasCommands ? `${options.length}/25 (${totalArguments} args)` : `${options.length}/25`}</span></div>
         <button type="button" className="node-config-action node-config-studio-action is-static-hover" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onOpenSlashCommandStudio?.(node); }}><Plus size={12} /> Edit arguments</button>
       </section>
       <section className="slash-command-options-compact">
@@ -560,8 +563,30 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     return <div className="node-config node-config-stack function-node-config">
       <span className="node-config-hint">Entry point for this function graph. Add every argument here.</span>
       {argumentsList.map((argument, index) => <section className="function-input-argument" key={argument.paramId}>
-        <header><strong>{argument.name || `Input ${index + 1}`}</strong>{(!legacy || argumentsList.length > 1) && <button type="button" className="node-config-action is-danger" aria-label={`Remove ${argument.name || 'function input'}`} onClick={() => writeArguments(argumentsList.filter((_item, itemIndex) => itemIndex !== index))}><Trash2 size={12} /></button>}</header>
-        <CharacterLimit value={argument.name || ''} maxLength={40}><input value={argument.name || ''} maxLength={40} onChange={(event) => updateArgument(index, { name: event.target.value })} onPointerDown={(event) => event.stopPropagation()} placeholder="Input name" aria-label="Function input name" /></CharacterLimit>
+        <div className="function-input-name-row">
+          <CharacterLimit value={argument.name || ''} maxLength={32}>
+            <input
+              value={argument.name ?? ''}
+              maxLength={32}
+              onChange={(event) => updateArgument(index, { name: event.target.value })}
+              onPointerDown={(event) => event.stopPropagation()}
+              placeholder={`Input ${index + 1}`}
+              aria-label="Function input name"
+              className={!argument.name.trim() ? 'is-invalid' : ''}
+            />
+          </CharacterLimit>
+          {(!legacy || argumentsList.length > 1) && <button
+            type="button"
+            className="function-input-delete"
+            title={`Remove ${argument.name.trim() || `Input ${index + 1}`}`}
+            aria-label={`Remove ${argument.name.trim() || `Input ${index + 1}`}`}
+            onClick={() => writeArguments(argumentsList.filter((_item, itemIndex) => itemIndex !== index))}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <Trash2 size={13} />
+          </button>}
+        </div>
+        {!argument.name.trim() && <span className="node-config-warning" role="status"><AlertTriangle size={11} /><span>Name required</span></span>}
         <AnimatedDropdown value={argument.valueType} options={functionArgumentTypes} onChange={(value) => updateArgument(index, { valueType: value, defaultValue: defaultValueForType(functionInputPinType({ valueType: value })) })} onPointerDown={(event) => event.stopPropagation()} ariaLabel={`Type for ${argument.name || `Input ${index + 1}`}`} className="node-select" />
         <div className="function-input-option"><span>Optional input</span><AnimatedCheckbox checked={argument.optional} label="Optional input" onChange={(value) => updateArgument(index, { optional: value })} onPointerDown={(event) => event.stopPropagation()} /></div>
         {argument.optional && (argument.valueType === 'object'
@@ -789,6 +814,14 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       {!isConnected('interaction_token') && !node.data?.interaction_token && (
         <span className="node-config-warning" role="status"><AlertTriangle size={12} /> Connect an interaction token to reply</span>
       )}
+      {!isConnected('ephemeral') && (
+        <FallbackCheckbox
+          label="Ephemeral (Hidden)"
+          checked={Boolean(node.data?.ephemeral)}
+          onChange={(value) => update('ephemeral', value)}
+        />
+      )}
+      <span className="node-config-hint">Once acknowledged, response visibility is locked and cannot be changed later.</span>
       {(node.data?.componentsV2Enabled || componentsV2SourceConnected) && <span className="node-config-hint">Components V2 is enabled. Message content and embeds are disabled.</span>}
       {!(node.data?.componentsV2Enabled || componentsV2SourceConnected) && !isConnected('content') && <label className="node-config-fallback"><span>Reply content</span>{textEditor('content', 'Reply content', 2000, 'Used when unconnected')}</label>}
       {!isConnected('files') && <AttachmentPicker files={node.data?.files || []} authToken={authToken} onChange={(files) => update('files', files)} />}
@@ -810,12 +843,20 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
   if (['action_defer_reply', 'action_defer_update'].includes(node.type)) {
     const missingToken = !isConnected('interaction_token') && !node.data?.interaction_token;
     const missingInteractionId = !isConnected('interaction_id') && !node.data?.interaction_id;
-    if (missingToken || missingInteractionId) {
-      return <div className="node-config node-config-stack">
-        {missingToken && <span className="node-config-warning" role="status"><AlertTriangle size={12} /> Connect an interaction token to acknowledge</span>}
-        {missingInteractionId && <span className="node-config-warning" role="status"><AlertTriangle size={12} /> Connect an Interaction ID</span>}
-      </div>;
-    }
+    return <div className="node-config node-config-stack">
+      {missingToken && <span className="node-config-warning" role="status"><AlertTriangle size={12} /> Connect an interaction token to acknowledge</span>}
+      {missingInteractionId && <span className="node-config-warning" role="status"><AlertTriangle size={12} /> Connect an Interaction ID</span>}
+      {node.type === 'action_defer_reply' && !isConnected('ephemeral') && (
+        <FallbackCheckbox
+          label="Ephemeral (Hidden)"
+          checked={Boolean(node.data?.ephemeral)}
+          onChange={(value) => update('ephemeral', value)}
+        />
+      )}
+      {node.type === 'action_defer_reply' && (
+        <span className="node-config-hint">Once deferred, response visibility is locked and cannot be changed later.</span>
+      )}
+    </div>;
   }
   if (node.type.startsWith('action_') && ['action_create_channel', 'action_create_thread', 'action_start_thread_from_message', 'action_edit_channel', 'action_delete_channel', 'action_create_role', 'action_member_role', 'action_moderate_member', 'action_voice_channel_status', 'action_voice_state'].includes(node.type)) {
     const textField = (id, label, placeholder = 'Used when unconnected') => isConnected(id) ? null : <FallbackField key={id} label={label}><input value={node.data?.[id] ?? ''} onChange={(event) => update(id, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder={placeholder} aria-label={label} /></FallbackField>;
