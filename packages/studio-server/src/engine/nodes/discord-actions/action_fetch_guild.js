@@ -72,6 +72,11 @@ export default {
       "id": "verification_level",
       "label": "Verification Level",
       "type": "number"
+    },
+    {
+      "id": "success",
+      "label": "Success",
+      "type": "boolean"
     }
   ]
 };

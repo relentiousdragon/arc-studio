@@ -40,6 +40,11 @@ export default {
       "id": "exec",
       "label": "Exec",
       "type": "exec"
+    },
+    {
+      "id": "success",
+      "label": "Success",
+      "type": "boolean"
     }
   ]
 };

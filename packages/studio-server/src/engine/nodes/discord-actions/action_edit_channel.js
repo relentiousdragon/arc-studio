@@ -129,6 +129,11 @@ export default {
       "id": "channel_id_out",
       "label": "Channel ID",
       "type": "string"
+    },
+    {
+      "id": "success",
+      "label": "Success",
+      "type": "boolean"
     }
   ]
 };

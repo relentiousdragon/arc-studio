@@ -62,6 +62,11 @@ export default {
       "id": "public_flags",
       "label": "Public Flags",
       "type": "number"
+    },
+    {
+      "id": "success",
+      "label": "Success",
+      "type": "boolean"
     }
   ]
 };

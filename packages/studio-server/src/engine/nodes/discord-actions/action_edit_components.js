@@ -12,6 +12,7 @@ export default {
   ],
   outputs: [
     { id: 'exec', label: 'Exec', type: 'exec' },
-    { id: 'message_id', label: 'Message ID', type: 'string' }
+    { id: 'message_id', label: 'Message ID', type: 'string' },
+    { id: 'success', label: 'Success', type: 'boolean' }
   ]
 };

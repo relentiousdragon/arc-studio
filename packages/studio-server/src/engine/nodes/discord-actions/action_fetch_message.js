@@ -21,6 +21,7 @@ export default {
     { id: 'attachments', label: 'Attachments', type: 'array' },
     { id: 'embeds', label: 'Embeds', type: 'array' },
     { id: 'components', label: 'Components', type: 'array' },
-    { id: 'pinned', label: 'Pinned', type: 'boolean' }
+    { id: 'pinned', label: 'Pinned', type: 'boolean' },
+    { id: 'success', label: 'Success', type: 'boolean' }
   ]
 };

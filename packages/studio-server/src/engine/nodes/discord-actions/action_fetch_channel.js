@@ -18,6 +18,7 @@ export default {
     { id: 'parent_id', label: 'Parent ID', type: 'string' },
     { id: 'topic', label: 'Topic', type: 'string' },
     { id: 'nsfw', label: 'Age Restricted', type: 'boolean' },
-    { id: 'last_message_id', label: 'Last Message ID', type: 'string' }
+    { id: 'last_message_id', label: 'Last Message ID', type: 'string' },
+    { id: 'success', label: 'Success', type: 'boolean' }
   ]
 };

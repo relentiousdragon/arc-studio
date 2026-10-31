@@ -36,6 +36,7 @@ export async function executeDiscordMessageNode(node, {
     if (componentsV2) validateComponentsV2Mode(node, content, components, isInputConnected);
 
     if (!destinationId) {
+      setOutput?.('success', false);
       log('[Action Send Message] Error: Missing Channel ID or Thread ID');
     } else {
       const payload = {};
@@ -60,6 +61,7 @@ export async function executeDiscordMessageNode(node, {
       log(`[Action Send Message] Sending message to ${threadId ? `thread ${threadId}` : `channel ${channelId}`}.`);
       const sentMessage = await rest.createMessage(destinationId, payload);
       if (sentMessage?.id) setOutput('message_id', sentMessage.id);
+      setOutput?.('success', Boolean(sentMessage?.id ?? true));
     }
     return true;
   }
@@ -70,13 +72,17 @@ export async function executeDiscordMessageNode(node, {
     const components = resolveComponents();
     const componentsV2 = components?.format === 'arc-components-v2' || node.data?.componentsV2Enabled === true;
     if (componentsV2) validateComponentsV2Mode(node, '', components, isInputConnected);
-    if (!channelId || !messageId) throw new Error('Edit Components needs a Channel ID and Message ID.');
+    if (!channelId || !messageId) {
+      setOutput?.('success', false);
+      throw new Error('Edit Components needs a Channel ID and Message ID.');
+    }
     const payload = componentsV2
       ? { flags: 32768, content: null, embeds: [], components: components.components }
       : { components: Array.isArray(components) ? components : [] };
     log(`[Edit Components] Replacing components on message ${messageId} in channel ${channelId}.`);
     const editedMessage = await rest.editMessage(channelId, messageId, payload);
     if (editedMessage?.id) setOutput('message_id', editedMessage.id);
+    setOutput?.('success', Boolean(editedMessage?.id ?? true));
     return true;
   }
 
@@ -91,6 +97,7 @@ export async function executeDiscordMessageNode(node, {
   if (componentsV2) validateComponentsV2Mode(node, content, components, isInputConnected);
 
   if (!channelId || !messageId) {
+    setOutput?.('success', false);
     log('[Action Edit Message] Error: Missing Channel ID or Message ID');
   } else {
     const payload = {};
@@ -109,6 +116,7 @@ export async function executeDiscordMessageNode(node, {
     log(`[Action Edit Message] Editing message ${messageId} in channel ${channelId}`);
     const editedMessage = await rest.editMessage(channelId, messageId, payload);
     if (editedMessage?.id) setOutput('message_id', editedMessage.id);
+    setOutput?.('success', Boolean(editedMessage?.id ?? true));
   }
   return true;
 }

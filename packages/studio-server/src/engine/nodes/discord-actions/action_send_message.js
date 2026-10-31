@@ -85,6 +85,11 @@ export default {
       "id": "message_id",
       "label": "Message ID",
       "type": "string"
+    },
+    {
+      "id": "success",
+      "label": "Success",
+      "type": "boolean"
     }
   ]
 };

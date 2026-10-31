@@ -63,6 +63,11 @@ export default {
       "id": "role_id",
       "label": "Role ID",
       "type": "string"
+    },
+    {
+      "id": "success",
+      "label": "Success",
+      "type": "boolean"
     }
   ]
 };
