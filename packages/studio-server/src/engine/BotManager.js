@@ -876,6 +876,7 @@ export class BotManager {
     const updated = desired.filter((command) => {
       const existing = currentByName.get(command.name);
       return existing && (existing.description !== command.description
+        || JSON.stringify(normalizeSlashCommandOptions(existing.options || [])) !== JSON.stringify(command.options || [])
         || (existing.default_member_permissions || undefined) !== (command.default_member_permissions || undefined)
         || JSON.stringify(existing.integration_types || undefined) !== JSON.stringify(command.integration_types || undefined)
         || JSON.stringify(existing.contexts || undefined) !== JSON.stringify(command.contexts || undefined));
@@ -883,6 +884,7 @@ export class BotManager {
     const unchanged = desired.filter((command) => {
       const existing = currentByName.get(command.name);
       return existing && existing.description === command.description
+        && JSON.stringify(normalizeSlashCommandOptions(existing.options || [])) === JSON.stringify(command.options || [])
         && (existing.default_member_permissions || undefined) === (command.default_member_permissions || undefined)
         && JSON.stringify(existing.integration_types || undefined) === JSON.stringify(command.integration_types || undefined)
         && JSON.stringify(existing.contexts || undefined) === JSON.stringify(command.contexts || undefined);

@@ -33,6 +33,7 @@ export async function executeDiscordGuildNode(node, {
             discriminator: user.discriminator || '', avatar: user.avatar || '', bot: Boolean(user.bot), public_flags: Number(user.public_flags) || 0
           })) setOutput(pinId, value);
           log(`[Get User Info] Fetched user ${user.id || userId}.`);
+          setOutput('success', true);
           return true;
         } else if (node.type === 'action_fetch_guild') {
           const guildId = String(resolveInput('guild_id', node.data?.guild_id || '')).trim();
@@ -48,6 +49,7 @@ export async function executeDiscordGuildNode(node, {
             verification_level: Number(guild.verification_level) || 0
           })) setOutput(pinId, value);
           log(`[Get Server Info] Fetched server ${guild.id || guildId}.`);
+          setOutput('success', true);
           return true;
         } else if (node.type === 'action_fetch_member') {
           const guildId = String(resolveInput('guild_id', node.data?.guild_id || '')).trim();
@@ -63,6 +65,7 @@ export async function executeDiscordGuildNode(node, {
             premium_since: member.premium_since || '', deaf: Boolean(member.deaf), mute: Boolean(member.mute), pending: Boolean(member.pending)
           })) setOutput(pinId, value);
           log(`[Get Server Member] Fetched member ${user.id || userId} in server ${guildId}.`);
+          setOutput('success', true);
           return true;
         } else if (node.type === 'action_fetch_channel') {
           const channelId = String(resolveInput('channel_id', node.data?.channel_id || '')).trim();
@@ -76,6 +79,7 @@ export async function executeDiscordGuildNode(node, {
             nsfw: Boolean(channel.nsfw), last_message_id: channel.last_message_id || ''
           })) setOutput(pinId, value);
           log(`[Get Channel Info] Fetched channel ${channel.id || channelId}.`);
+          setOutput('success', true);
           return true;
         } else if (node.type === 'action_fetch_channel_messages') {
           const channelId = String(resolveInput('channel_id', node.data?.channel_id || '')).trim();
@@ -92,6 +96,7 @@ export async function executeDiscordGuildNode(node, {
           setOutput('first_message', messages[0] || null);
           setOutput('last_message', messages.at(-1) || null);
           log(`[Get Channel Messages] Fetched ${messages.length} message${messages.length === 1 ? '' : 's'} from ${channelId}.`);
+          setOutput('success', true);
           return true;
         } else if (node.type === 'action_fetch_message') {
           const channelId = String(resolveInput('channel_id', node.data?.channel_id || '')).trim();
@@ -107,6 +112,7 @@ export async function executeDiscordGuildNode(node, {
             components: message.components || [], pinned: Boolean(message.pinned)
           })) setOutput(pinId, value);
           log(`[Get Message] Fetched message ${message.id || messageId} from ${channelId}.`);
+          setOutput('success', true);
           return true;
   } else if (node.type === 'action_create_thread') {
           const channelId = String(resolveInput('channel_id', node.data?.channel_id || '')).trim();
@@ -136,6 +142,7 @@ export async function executeDiscordGuildNode(node, {
           setOutput('thread_id', result?.id || '');
           setOutput('parent_channel_id', result?.parent_id || channelId);
           log(`[Create Thread] Created ${resultThreadType} thread ${result?.id || name} in channel ${channelId}.`);
+          setOutput('success', true);
           return true;
         } else if (node.type === 'action_start_thread_from_message') {
           const channelId = String(resolveInput('channel_id', node.data?.channel_id || '')).trim();
@@ -152,6 +159,7 @@ export async function executeDiscordGuildNode(node, {
           setOutput('thread_id', result?.id || '');
           setOutput('parent_channel_id', result?.parent_id || channelId);
           log(`[Start Thread from Message] Created thread ${result?.id || name} from message ${messageId}.`);
+          setOutput('success', true);
           return true;
         } else if (node.type === 'action_create_channel') {
           const guildId = String(resolveInput('guild_id', node.data?.guild_id || '')).trim();
@@ -176,6 +184,7 @@ export async function executeDiscordGuildNode(node, {
           const result = await rest.createGuildChannel(guildId, body, resolveInput('reason', node.data?.reason || ''));
           setOutput('channel_id', result?.id || '');
           log(`[Create Channel] Created #${name}${result?.id ? ` (${result.id})` : ''}`);
+          setOutput('success', true);
           return true;
         } else if (node.type === 'action_edit_channel') {
           const threadId = String(resolveInput('thread_id', node.data?.thread_id || '')).trim();
@@ -241,6 +250,7 @@ export async function executeDiscordGuildNode(node, {
           const result = await rest.modifyChannel(channelId, body, resolveInput('reason', node.data?.reason || ''));
           setOutput('channel_id_out', result?.id || channelId);
           log(`[Edit Channel] Updated channel ${channelId}`);
+          setOutput('success', true);
           return true;
         } else if (node.type === 'action_delete_channel') {
           const channelId = String(resolveInput('channel_id', node.data?.channel_id || '')).trim();
@@ -248,6 +258,7 @@ export async function executeDiscordGuildNode(node, {
           await rest.deleteChannel(channelId, resolveInput('reason', node.data?.reason || ''));
           setOutput('deleted_channel_id', channelId);
           log(`[Delete Channel] Deleted channel ${channelId}`);
+          setOutput('success', true);
           return true;
         } else if (node.type === 'action_create_role') {
           const guildId = String(resolveInput('guild_id', node.data?.guild_id || '')).trim();
@@ -261,6 +272,7 @@ export async function executeDiscordGuildNode(node, {
           const role = await rest.createGuildRole(guildId, { name, color, permissions, hoist, mentionable }, resolveInput('reason', node.data?.reason || ''));
           setOutput('role_id', role?.id || '');
           log(`[Create Role] Created ${name}${role?.id ? ` (${role.id})` : ''}`);
+          setOutput('success', true);
           return true;
         } else if (node.type === 'action_member_role') {
           const guildId = String(resolveInput('guild_id', node.data?.guild_id || '')).trim();
@@ -272,6 +284,7 @@ export async function executeDiscordGuildNode(node, {
           if (operation === 'remove') await rest.removeGuildMemberRole(guildId, userId, roleId, reason);
           else await rest.addGuildMemberRole(guildId, userId, roleId, reason);
           log(`[Member Role] ${operation === 'remove' ? 'Removed' : 'Added'} role ${roleId} for ${userId}`);
+          setOutput('success', true);
           return true;
         } else if (node.type === 'action_moderate_member') {
           let success = false;
@@ -314,6 +327,7 @@ export async function executeDiscordGuildNode(node, {
           if (!channelId) throw new Error('Set Voice Channel Status needs a channel ID.');
           await rest.setVoiceChannelStatus(channelId, status || null, resolveInput('reason', node.data?.reason || ''));
           log(`[Voice Channel Status] ${status ? `Set status to “${status}”` : 'Cleared status'} for ${channelId}`);
+          setOutput('success', true);
           return true;
         } else if (node.type === 'action_voice_state') {
           const guildId = String(resolveInput('guild_id', node.data?.guild_id || '')).trim();
@@ -325,6 +339,7 @@ export async function executeDiscordGuildNode(node, {
             selfDeaf: resolveInput('self_deaf', node.data?.self_deaf || false)
           });
           log(channelId ? `[Voice] Requested join to channel ${channelId}. Audio transport is not enabled.` : `[Voice] Requested leave from server ${guildId}.`);
+          setOutput('success', true);
           return true;
 
   }

@@ -4,6 +4,9 @@ export default {
   "category": "Discord Actions",
   "label": "Defer Reply",
   "color": "#10b981",
+  "dynamicPins": {
+    "kind": "connected-interaction-outputs"
+  },
   "inputs": [
     {
       "id": "exec",
@@ -39,6 +42,16 @@ export default {
       "id": "interaction_token",
       "label": "Interaction Token",
       "type": "string"
+    },
+    {
+      "id": "interaction_id",
+      "label": "Interaction ID",
+      "type": "string"
+    },
+    {
+      "id": "success",
+      "label": "Success",
+      "type": "boolean"
     }
   ]
 };

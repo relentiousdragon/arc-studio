@@ -9,7 +9,7 @@ export function getFunctionInputArguments(node) {
     return node.data.arguments.map((argument, index) => ({
       ...argument,
       paramId: String(argument?.paramId || `${node.id}_argument_${index + 1}`),
-      name: String(argument?.name || `Input ${index + 1}`),
+      name: typeof argument?.name === 'string' ? argument.name : (argument?.name != null ? String(argument.name) : `Input ${index + 1}`),
       valueType: String(argument?.valueType || 'string'),
       optional: Boolean(argument?.optional),
       defaultValue: argument?.defaultValue ?? defaultValueForFunctionType(argument?.valueType),
@@ -18,7 +18,7 @@ export function getFunctionInputArguments(node) {
   }
   return [{
     paramId: String(node.data?.paramId || node.id),
-    name: String(node.data?.name || 'Input'),
+    name: typeof node.data?.name === 'string' ? node.data.name : (node.data?.name != null ? String(node.data.name) : 'Input'),
     valueType: String(node.data?.valueType || 'number'),
     optional: Boolean(node.data?.optional),
     defaultValue: node.data?.defaultValue ?? defaultValueForFunctionType(node.data?.valueType),

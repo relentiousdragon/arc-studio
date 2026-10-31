@@ -17,6 +17,7 @@ export default {
     { id: 'messages', label: 'Messages', type: 'array' },
     { id: 'count', label: 'Count', type: 'number' },
     { id: 'first_message', label: 'First Message', type: 'object' },
-    { id: 'last_message', label: 'Last Message', type: 'object' }
+    { id: 'last_message', label: 'Last Message', type: 'object' },
+    { id: 'success', label: 'Success', type: 'boolean' }
   ]
 };

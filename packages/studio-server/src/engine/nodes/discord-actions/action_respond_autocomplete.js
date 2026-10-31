@@ -39,6 +39,11 @@ export default {
       "id": "choice_count",
       "label": "Suggestions Sent",
       "type": "number"
+    },
+    {
+      "id": "success",
+      "label": "Success",
+      "type": "boolean"
     }
   ]
 };

@@ -83,6 +83,11 @@ export default {
       "id": "pending",
       "label": "Membership Pending",
       "type": "boolean"
+    },
+    {
+      "id": "success",
+      "label": "Success",
+      "type": "boolean"
     }
   ]
 };

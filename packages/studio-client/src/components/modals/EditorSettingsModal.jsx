@@ -369,8 +369,7 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
       <section className="settings-about-section" aria-labelledby="about-updates-heading">
         <h3 id="about-updates-heading">Updates{serverUpdate && <span className="update-indicator-dot" aria-label="Server update available" />}</h3>
         <Toggle label="Check for updates automatically" description={desktopMode ? 'Checks for ARC Studio releases when you’re online.' : undefined} checked={settings.autoUpdateChecks !== false} onChange={(value) => update('autoUpdateChecks', value)} />
-        {desktopMode && <><div className="settings-about-credit"><strong>Release channel</strong><span>{releaseChannel === 'nightly' ? 'Nightly' : 'Stable'}</span></div>
-        <p className="settings-description">{releaseChannel === 'nightly' ? 'Nightly updates ask before downloading and installing.' : 'Stable updates download automatically and apply next launch.'}</p></>}
+        {desktopMode && <><div className="settings-about-credit"><strong>Release channel</strong><span>{releaseChannel === 'nightly' ? 'Nightly' : 'Stable'}</span></div></>}
         {serverUpdate && <a href={serverUpdate.url} target="_blank" rel="noreferrer" onClick={openExternal}><Download size={14} /><span>ARC Studio Server update · v{serverUpdate.version}</span><ExternalLink size={12} /></a>}
         {(downloadedUpdateReady || stableUpdateReady) && <div className="settings-update-explainer"><strong>ARC Studio v{downloadedUpdateReady?.version || stableUpdateReady.version} is ready</strong><span>It will be applied the next time you launch the app.</span></div>}
         {appUpdate?.native

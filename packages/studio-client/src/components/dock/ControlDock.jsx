@@ -43,7 +43,18 @@ function flattenReviewedSlashOptions(options = [], parents = []) {
       ...flattenReviewedSlashOptions(option.options, [...parents, option.name])
     ];
     const typeLabel = ({ 3: 'Text', 4: 'Integer', 5: 'Boolean', 6: 'User', 7: 'Channel', 8: 'Role', 9: 'Mentionable', 10: 'Number', 11: 'Attachment' })[type] || 'Argument';
-    return [{ key: name, name, description: `${typeLabel}${option.required ? ' · Required' : ' · Optional'} · ${option.description || ''}` }];
+    const details = [];
+    if (option.autocomplete && option.dynamicAutocomplete) details.push('Graph generated autocomplete');
+    else if (Array.isArray(option.choices) && option.choices.length) {
+      details.push(`Choices: ${option.choices.map((choice) => `${choice.name} (${choice.value})`).join(', ')}`);
+    }
+    if (type === 3 && (option.min_length !== undefined || option.max_length !== undefined)) {
+      details.push(`Length ${option.min_length ?? 0}–${option.max_length ?? 'unlimited'}`);
+    } else if ([4, 10].includes(type) && (option.min_value !== undefined || option.max_value !== undefined)) {
+      details.push(`Range ${option.min_value ?? 'unlimited'}–${option.max_value ?? 'unlimited'}`);
+    }
+    if (type === 7 && option.channel_types?.length) details.push(`Channel filters: ${option.channel_types.join(', ')}`);
+    return [{ key: name, name, description: `${typeLabel} · ${option.required ? 'Required' : 'Optional'} · ${option.description || ''}${details.length ? ` · ${details.join(' · ')}` : ''}` }];
   });
 }
 

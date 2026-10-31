@@ -1391,7 +1391,34 @@ export function App() {
   const [discordTextStudio, setDiscordTextStudio] = useState(null);
   const textCollaborationRef = useRef(new Map());
   const [permissionStudio, setPermissionStudio] = useState(null);
-  const [slashCommandStudio, setSlashCommandStudio] = useState(null);
+  const [slashCommandStudio, setSlashCommandStudioState] = useState(null);
+  const slashCommandStudioRef = useRef(null);
+  const slashCommandStudioHistoryRef = useRef(new Map());
+  const recordSlashCommandStudioHistory = (studio, force = false) => {
+    if (!studio?.collabId) return;
+    let history = slashCommandStudioHistoryRef.current.get(studio.collabId);
+    if (!history) {
+      history = { past: [], future: [], lastAt: 0 };
+      slashCommandStudioHistoryRef.current.set(studio.collabId, history);
+    }
+    const now = Date.now();
+    if (force || now - history.lastAt > 500) {
+      history.past.push(structuredClone(Array.isArray(studio.options) ? studio.options : []));
+      if (history.past.length > 100) history.past.shift();
+    }
+    history.future = [];
+    history.lastAt = now;
+    setHistoryRevision((revision) => revision + 1);
+  };
+  const setSlashCommandStudio = useCallback((update) => {
+    const current = slashCommandStudioRef.current;
+    const next = typeof update === 'function' ? update(current) : update;
+    if (next?.collabId && next.collabId !== current?.collabId) {
+      slashCommandStudioHistoryRef.current.set(next.collabId, { past: [], future: [], lastAt: 0 });
+    }
+    slashCommandStudioRef.current = next;
+    setSlashCommandStudioState(next);
+  }, []);
   const [modalStudio, setModalStudio] = useState(null);
   const studioFocusReturnRef = useRef(null);
   const studioWasOpenRef = useRef(false);
@@ -1706,9 +1733,13 @@ export function App() {
       const studioHistory = embedStudioHistoryRef.current.get(embedStudio?.collabId);
       return { canUndo: Boolean(studioHistory?.past.length), canRedo: Boolean(studioHistory?.future.length) };
     }
+    if (slashCommandStudioOpenForActiveGraph) {
+      const studioHistory = slashCommandStudioHistoryRef.current.get(slashCommandStudio?.collabId);
+      return { canUndo: Boolean(studioHistory?.past.length), canRedo: Boolean(studioHistory?.future.length) };
+    }
     const history = historyRef.current.get(activeTabId);
     return { canUndo: Boolean(history?.past.length), canRedo: Boolean(history?.future.length) };
-  }, [activeTabId, embedStudio?.collabId, embedStudioOpenForActiveGraph, historyRevision]);
+  }, [activeTabId, embedStudio?.collabId, embedStudioOpenForActiveGraph, historyRevision, slashCommandStudio?.collabId, slashCommandStudioOpenForActiveGraph]);
 
   useEffect(() => {
     if (!desktopMode) return undefined;
@@ -3866,20 +3897,25 @@ export function App() {
     const name = String(nameDialog?.value || '').trim();
     if (!name) { setNameDialogError('Enter a graph name.'); return; }
     const graph = tabs.find((tab) => tab.id === nameDialog?.graphId) || savedGraphs.find((item) => item.id === nameDialog?.graphId);
-    if (!graph) { setNameDialog(null); return; }
+    if (!graph) { setNameDialog(null); setNameDialogError(''); return; }
     const renamed = { ...graph, name, isDirty: true };
-    if (nameDialog.mode === 'save' || nameDialog.mode === 'save-close' || savedGraphs.some((item) => item.id === graph.id)) {
-      setTabs((previous) => previous.map((tab) => tab.id === graph.id ? renamed : tab));
-      const saved = await persistGraph(renamed, name);
-      if (saved) {
-        setNameDialog(null);
-        if (nameDialog.mode === 'save-close') closeTabImmediately(graph.id);
-      }
-      return;
-    }
-    setTabs((previous) => previous.map((tab) => tab.id === graph.id ? renamed : tab));
+    const isSaveMode = nameDialog.mode === 'save' || nameDialog.mode === 'save-close';
+    const wasAlreadySaved = savedGraphs.some((item) => item.id === graph.id);
+
     setNameDialog(null);
-    arcEvents.emit('toast:notify', { title: 'Name updated', message: `${name} · save to keep this change.`, type: 'success' });
+    setNameDialogError('');
+
+    setTabs((previous) => previous.map((tab) => tab.id === graph.id ? renamed : tab));
+    setSavedGraphs((previous) => previous.map((item) => item.id === graph.id ? { ...item, name } : item));
+
+    if (isSaveMode || wasAlreadySaved) {
+      const saved = await persistGraph(renamed, name);
+      if (saved && nameDialog.mode === 'save-close') {
+        closeTabImmediately(graph.id);
+      }
+    } else {
+      arcEvents.emit('toast:notify', { title: 'Name updated', message: `${name} · save to keep this change.`, type: 'success' });
+    }
   }, [nameDialog, persistGraph, savedGraphs, tabs, closeTabImmediately]);
 
   const handleAutoLayout = useCallback(() => {
@@ -4428,6 +4464,19 @@ export function App() {
       setHistoryRevision((revision) => revision + 1);
       return;
     }
+    if (slashCommandStudioOpenForActiveGraph) {
+      const history = slashCommandStudioHistoryRef.current.get(slashCommandStudio?.collabId);
+      const previous = history?.past.pop();
+      const current = slashCommandStudioRef.current;
+      if (!history || !previous || !current) return;
+      history.future.push(structuredClone(Array.isArray(current.options) ? current.options : []));
+      history.lastAt = 0;
+      const restored = { ...current, options: previous, sharedDraft: previous };
+      setSlashCommandStudio(restored);
+      sendCollaborationAction({ kind: 'studio-draft', studioId: current.collabId, studioType: 'arguments', draft: { options: previous } });
+      setHistoryRevision((revision) => revision + 1);
+      return;
+    }
     const history = historyRef.current.get(activeTabId);
     const previous = history?.past.pop();
     if (!history || !previous || !activeGraph) return;
@@ -4435,7 +4484,7 @@ export function App() {
     history.lastAt = 0;
     applyHistorySnapshot(previous, activeTabId);
     setHistoryRevision((revision) => revision + 1);
-  }, [activeGraph, activeTabId, applyHistorySnapshot, embedStudio?.collabId, embedStudioOpenForActiveGraph, sendCollaborationAction, setEmbedStudio]);
+  }, [activeGraph, activeTabId, applyHistorySnapshot, embedStudio?.collabId, embedStudioOpenForActiveGraph, sendCollaborationAction, setEmbedStudio, setSlashCommandStudio, slashCommandStudio?.collabId, slashCommandStudioOpenForActiveGraph]);
 
   const handleRedo = useCallback(() => {
     if (embedStudioOpenForActiveGraph) {
@@ -4451,6 +4500,19 @@ export function App() {
       setHistoryRevision((revision) => revision + 1);
       return;
     }
+    if (slashCommandStudioOpenForActiveGraph) {
+      const history = slashCommandStudioHistoryRef.current.get(slashCommandStudio?.collabId);
+      const next = history?.future.pop();
+      const current = slashCommandStudioRef.current;
+      if (!history || !next || !current) return;
+      history.past.push(structuredClone(Array.isArray(current.options) ? current.options : []));
+      history.lastAt = 0;
+      const restored = { ...current, options: next, sharedDraft: next };
+      setSlashCommandStudio(restored);
+      sendCollaborationAction({ kind: 'studio-draft', studioId: current.collabId, studioType: 'arguments', draft: { options: next } });
+      setHistoryRevision((revision) => revision + 1);
+      return;
+    }
     const history = historyRef.current.get(activeTabId);
     const next = history?.future.pop();
     if (!history || !next || !activeGraph) return;
@@ -4458,7 +4520,7 @@ export function App() {
     history.lastAt = 0;
     applyHistorySnapshot(next, activeTabId);
     setHistoryRevision((revision) => revision + 1);
-  }, [activeGraph, activeTabId, applyHistorySnapshot, embedStudio?.collabId, embedStudioOpenForActiveGraph, sendCollaborationAction, setEmbedStudio]);
+  }, [activeGraph, activeTabId, applyHistorySnapshot, embedStudio?.collabId, embedStudioOpenForActiveGraph, sendCollaborationAction, setEmbedStudio, setSlashCommandStudio, slashCommandStudio?.collabId, slashCommandStudioOpenForActiveGraph]);
 
   const handleValidateGraph = useCallback(() => {
     if (!activeGraph) return;
@@ -4738,11 +4800,13 @@ export function App() {
     });
   }, [activeGraph, activeProjectId]);
 
-  const updateSlashCommandStudioDraft = useCallback((options) => {
-    if (!slashCommandStudio) return;
-    sendCollaborationAction({ kind: 'studio-draft', studioId: slashCommandStudio.collabId, studioType: 'arguments', draft: { options } });
-    setSlashCommandStudio((current) => current?.collabId === slashCommandStudio.collabId ? { ...current, options, sharedDraft: options } : current);
-  }, [sendCollaborationAction, slashCommandStudio]);
+  const updateSlashCommandStudioDraft = useCallback((options, isStructural = false) => {
+    const current = slashCommandStudioRef.current;
+    if (!current) return;
+    recordSlashCommandStudioHistory(current, isStructural);
+    sendCollaborationAction({ kind: 'studio-draft', studioId: current.collabId, studioType: 'arguments', draft: { options } });
+    setSlashCommandStudio((prev) => prev?.collabId === current.collabId ? { ...prev, options, sharedDraft: options } : prev);
+  }, [sendCollaborationAction, setSlashCommandStudio]);
 
   const applySlashCommandStudio = useCallback((options) => {
     if (!slashCommandStudio) return;
@@ -6356,6 +6420,20 @@ export function App() {
         }
         return;
       }
+      if (command && !event.altKey && key === 's') {
+        event.preventDefault();
+        event.stopPropagation();
+        if (shortcutMatches(event, shortcuts.saveGraph)) {
+          if (discordTextStudioOpenForActiveGraph) {
+            handleSaveTextStudio();
+          } else if (embedStudioOpenForActiveGraph) {
+            handleSaveEmbedShortcut();
+          } else {
+            handleSaveGraph();
+          }
+        }
+        return;
+      }
       if (target instanceof HTMLElement && target.closest('[role="dialog"]')) return;
       if (command && !event.altKey && key === 'f') {
         const sidebarOpen = isLibraryOpen || isProjectsOpen || isPluginStoreOpen || isBotSidebarOpen || isVariablesOpen;
@@ -6461,23 +6539,6 @@ export function App() {
       if (command && !event.altKey && (key === '-' || key === '_' || key === 'subtract')) {
         event.preventDefault();
         adjustUiScale(-10);
-        return;
-      }
-      if (shortcutMatches(event, shortcuts.saveGraph) && discordTextStudioOpenForActiveGraph) {
-        event.preventDefault();
-        event.stopPropagation();
-        handleSaveTextStudio();
-        return;
-      }
-      if (shortcutMatches(event, shortcuts.saveGraph) && embedStudioOpenForActiveGraph) {
-        event.preventDefault();
-        event.stopPropagation();
-        handleSaveEmbedShortcut();
-        return;
-      }
-      if (shortcutMatches(event, shortcuts.saveGraph)) {
-        event.preventDefault();
-        handleSaveGraph();
         return;
       }
       if (isEditing) {
@@ -6932,6 +6993,10 @@ export function App() {
             commandName={slashCommandStudio.commandName}
             options={slashCommandStudio.options}
             collaborators={studioCollaborators}
+            canUndo={historyAvailability.canUndo}
+            canRedo={historyAvailability.canRedo}
+            onUndo={handleUndo}
+            onRedo={handleRedo}
             onDraftChange={updateSlashCommandStudioDraft}
             onApply={applySlashCommandStudio}
             onClose={() => setSlashCommandStudio(null)}
@@ -7308,13 +7373,15 @@ export function App() {
       <Modal
         isOpen={Boolean(nameDialog)}
         onClose={() => { setNameDialog(null); setNameDialogError(''); }}
+        onConfirm={handleNameDialogSubmit}
         title={nameDialog?.mode === 'save' || nameDialog?.mode === 'save-close' ? 'Save graph' : 'Rename graph'}
         subtitle={nameDialog?.mode === 'save' || nameDialog?.mode === 'save-close' ? 'Choose a name for this graph.' : 'Update the graph name.'}
         icon={FileCode2}
-        footer={<><Button variant="secondary" onClick={() => setNameDialog(null)}>Cancel</Button><Button onClick={handleNameDialogSubmit}>{nameDialog?.mode === 'save' || nameDialog?.mode === 'save-close' ? 'Save graph' : 'Rename graph'}</Button></>}
+        footer={<><Button variant="secondary" onClick={() => { setNameDialog(null); setNameDialogError(''); }}>Cancel</Button><Button onClick={handleNameDialogSubmit}>{nameDialog?.mode === 'save' || nameDialog?.mode === 'save-close' ? 'Save graph' : 'Rename graph'}</Button></>}
       >
         <form onSubmit={handleNameDialogSubmit}>
           <TextInput label="Graph name" placeholder="Untitled graph" value={nameDialog?.value || ''} maxLength={80} autoFocus error={nameDialogError} onChange={(event) => { setNameDialog((current) => current ? { ...current, value: event.target.value } : current); setNameDialogError(''); }} />
+          <button type="submit" style={{ display: 'none' }} tabIndex={-1} aria-hidden="true" />
         </form>
       </Modal>
       <Modal
@@ -7823,7 +7890,7 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
   }
   const initialVariableValue = (variable) => variable?.initialValue ?? (variable?.valueType === 'number' || variable?.type === 'number' ? 0 : variable?.valueType === 'boolean' || variable?.type === 'boolean' ? false : variable?.type === 'array' ? [] : variable?.type === 'object' ? {} : '');
   const findInputWire = (nodeId, pinId) => connections.find((wire) => wire.targetNodeId === nodeId && wire.targetPinId === pinId);
-  const hasUpstreamDefer = (targetNodeId) => {
+  const findUpstreamDeferNode = (targetNodeId) => {
     const pending = [targetNodeId];
     const visited = new Set();
     while (pending.length) {
@@ -7833,12 +7900,13 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
       for (const wire of connections) {
         if (wire.targetNodeId !== currentId || wire.targetPinId !== 'exec' || wire.sourcePinId !== 'exec') continue;
         const source = nodeById.get(wire.sourceNodeId);
-        if (['action_defer_reply', 'action_defer_update'].includes(source?.type)) return true;
+        if (['action_defer_reply', 'action_defer_update'].includes(source?.type)) return source;
         if (source) pending.push(source.id);
       }
     }
-    return false;
+    return null;
   };
+  const hasUpstreamDefer = (targetNodeId) => Boolean(findUpstreamDeferNode(targetNodeId));
   const resolveKnownStringOutput = (nodeId, pinId, seen = new Set()) => {
     const source = nodeById.get(nodeId);
     const key = `${nodeId}:${pinId}`;
@@ -8195,6 +8263,24 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
       const label = node.label || definitions.get(node.type)?.label || 'Reply to Interaction';
       const hasInteractionId = Boolean(String(node.data?.interaction_id ?? '').trim()) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'interaction_id');
       if (!hasInteractionId && !hasUpstreamDefer(node.id)) warnings.push(`${label}: connect an Interaction ID.`);
+      const upstreamDeferNode = findUpstreamDeferNode(node.id);
+      if (upstreamDeferNode && upstreamDeferNode.type === 'action_defer_reply') {
+        const upstreamEphemeralWire = connections.find((wire) => wire.targetNodeId === upstreamDeferNode.id && wire.targetPinId === 'ephemeral');
+        const upstreamSourceNode = upstreamEphemeralWire && nodeById.get(upstreamEphemeralWire.sourceNodeId);
+        const upstreamEphemeral = upstreamEphemeralWire
+          ? Boolean(upstreamSourceNode?.type === 'value_boolean' ? upstreamSourceNode.data?.value : true)
+          : Boolean(upstreamDeferNode.data?.ephemeral);
+        const downstreamEphemeralWire = connections.find((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'ephemeral');
+        const downstreamSourceNode = downstreamEphemeralWire && nodeById.get(downstreamEphemeralWire.sourceNodeId);
+        const downstreamEphemeral = downstreamEphemeralWire
+          ? Boolean(downstreamSourceNode?.type === 'value_boolean' ? downstreamSourceNode.data?.value : true)
+          : Boolean(node.data?.ephemeral);
+        if (downstreamEphemeralWire || node.data?.ephemeral !== undefined) {
+          if (upstreamEphemeral !== downstreamEphemeral) {
+            warnings.push(`${label}: this interaction was deferred as ${upstreamEphemeral ? 'ephemeral' : 'public'}. Once an interaction is acknowledged, its visibility cannot be switched between ephemeral and public.`);
+          }
+        }
+      }
       const hasContent = Boolean(String(node.data?.content ?? '').trim()) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'content');
       const hasEmbed = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'embed') || hasConfiguredEmbed(node);
       const componentsWire = findInputWire(node.id, 'components');

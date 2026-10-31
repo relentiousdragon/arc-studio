@@ -67,6 +67,7 @@ export async function executeDiscordInteractionNode(node, {
     catch (error) { state.acknowledged = false; throw error; }
     finally { state.pending = null; }
     log('[Show Popup Modal] Modal opened.');
+    setOutput?.('success', true);
     return true;
   }
 
@@ -109,6 +110,7 @@ export async function executeDiscordInteractionNode(node, {
     catch (error) { state.acknowledged = false; throw error; }
     finally { state.pending = null; }
     setOutput('choice_count', choices.length);
+    setOutput?.('success', true);
     log(`[Autocomplete] Sent ${choices.length} suggestion${choices.length === 1 ? '' : 's'}.`);
     return true;
   }
@@ -130,6 +132,7 @@ export async function executeDiscordInteractionNode(node, {
     if (interactionToken) setOutput('interaction_token', interactionToken);
 
     if (!interactionToken) {
+      setOutput?.('success', false);
       log('[Action Reply] Error: Missing interaction token');
     } else {
       if (interactionId) state.interactionId = interactionId;
@@ -161,6 +164,7 @@ export async function executeDiscordInteractionNode(node, {
         const messageId = callbackResponse?.interaction?.response_message_id || message?.id;
         if (messageId) setOutput('message_id', String(messageId));
       }
+      setOutput?.('success', true);
     }
     return true;
   }
@@ -181,6 +185,8 @@ export async function executeDiscordInteractionNode(node, {
     try {
       await state.pending;
       setOutput('interaction_token', interactionToken);
+      if (interactionId) setOutput('interaction_id', interactionId);
+      if (typeof setOutput === 'function') setOutput('success', true);
       log(`[${isUpdate ? 'Defer Update' : 'Defer Reply'}] Interaction acknowledged; continue with Reply to Interaction when ready.`);
     } catch (error) {
       state.acknowledged = false;
@@ -201,8 +207,10 @@ export async function executeDiscordInteractionNode(node, {
   if (componentsV2) validateComponentsV2Mode(node, content, components, isInputConnected);
 
   if (!applicationId) {
+    setOutput?.('success', false);
     log('[Edit Interaction Reply] Error: Missing Application ID');
   } else if (!interactionToken) {
+    setOutput?.('success', false);
     log('[Edit Interaction Reply] Error: Missing interaction token');
   } else {
     log('[Edit Interaction Reply] Editing original interaction response.');
@@ -211,6 +219,7 @@ export async function executeDiscordInteractionNode(node, {
       : buildMessagePayload(content, embed, components, files);
     if (typeof rest.editOriginalInteractionResponse !== 'function') throw new Error('This REST connection cannot edit interaction responses.');
     await rest.editOriginalInteractionResponse(applicationId, interactionToken, payload);
+    setOutput?.('success', true);
   }
   return true;
 }

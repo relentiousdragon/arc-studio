@@ -55,12 +55,13 @@ function buildBotPresence(node, resolveInput) {
   };
 }
 
-export function executePresenceNode(node, { resolveInput, context, log }) {
+export function executePresenceNode(node, { resolveInput, context, log, setOutput }) {
   if (!isPresenceNodeType(node?.type)) return false;
   const { presence, logMessage } = node.type === 'action_set_custom_status'
     ? buildCustomStatus(node, resolveInput)
     : buildBotPresence(node, resolveInput);
   log(logMessage);
   if (typeof context.client?.setPresence === 'function') context.client.setPresence(presence);
+  if (typeof setOutput === 'function') setOutput('success', true);
   return true;
 }

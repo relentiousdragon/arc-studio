@@ -33,6 +33,11 @@ export default {
       "id": "deleted_channel_id",
       "label": "Deleted Channel ID",
       "type": "string"
+    },
+    {
+      "id": "success",
+      "label": "Success",
+      "type": "boolean"
     }
   ]
 };

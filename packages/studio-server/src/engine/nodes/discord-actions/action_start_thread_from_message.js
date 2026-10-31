@@ -68,6 +68,11 @@ export default {
       "id": "parent_channel_id",
       "label": "Parent Channel ID",
       "type": "string"
+    },
+    {
+      "id": "success",
+      "label": "Success",
+      "type": "boolean"
     }
   ]
 };
