@@ -1245,6 +1245,7 @@ export class GraphRunner {
           executePresenceNode(targetNode, {
             resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
             context,
+            setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value),
             log
           });
           currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
