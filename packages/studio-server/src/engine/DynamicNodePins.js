@@ -44,6 +44,15 @@ function getStoredHighest(node, prefix) {
   return Object.keys(node?.data || {}).reduce((highest, key) => Math.max(highest, pinIndex(key, prefix)), 0);
 }
 
+function getStoredHighestFilled(node, prefix) {
+  return Object.entries(node?.data || {}).reduce((highest, [key, value]) => {
+    const index = pinIndex(key, prefix);
+    if (!index) return highest;
+    const isFilled = value !== undefined && value !== null && (typeof value !== 'string' || value.trim().length > 0);
+    return isFilled ? Math.max(highest, index) : highest;
+  }, 0);
+}
+
 function getSequentialPins(rule, count) {
   return Array.from({ length: count }, (_, index) => ({
     id: rule.id.replaceAll('{index}', String(index + 1)),
@@ -70,9 +79,9 @@ export function resolveDynamicNodePins(definition, node, connections = []) {
   }
   if (rule.kind === 'function-input-arguments') {
     if (!Array.isArray(node.data?.arguments)) return null;
-    const outputs = getFunctionInputArguments(node).map((argument) => ({
+    const outputs = getFunctionInputArguments(node).map((argument, index) => ({
       id: functionArgumentPinId(argument),
-      label: argument.name,
+      label: argument.name?.trim() || `Input ${index + 1}`,
       type: functionInputPinType(argument),
       ...(argument.valueType.endsWith('_id') || argument.valueType === 'interaction_token' ? { semanticType: argument.valueType } : {})
     }));
@@ -84,12 +93,25 @@ export function resolveDynamicNodePins(definition, node, connections = []) {
     const outputs = getSequentialPins({ id: `${rule.prefix || 'argument_'}{index}`, label: rule.label || 'Argument {index}', type: rule.type || 'string' }, Math.min(rule.max || 50, highest));
     return { outputs: [...(definition.outputs || []).filter((pin) => !pin.id.startsWith(rule.prefix || 'argument_')), ...outputs] };
   }
+  if (rule.kind === 'connected-interaction-outputs') {
+    const hasTokenConnected = connections.some((c) => (c.targetNodeId === node.id && c.targetPinId === 'interaction_token') || (c.sourceNodeId === node.id && c.sourcePinId === 'interaction_token'));
+    const hasIdConnected = connections.some((c) => (c.targetNodeId === node.id && c.targetPinId === 'interaction_id') || (c.sourceNodeId === node.id && c.sourcePinId === 'interaction_id'));
+    const outputs = [
+      { id: 'exec', label: 'Exec', type: 'exec' },
+      ...(hasTokenConnected ? [{ id: 'interaction_token', label: 'Interaction Token', type: 'string' }] : []),
+      ...(hasIdConnected ? [{ id: 'interaction_id', label: 'Interaction ID', type: 'string' }] : []),
+      { id: 'success', label: 'Success', type: 'boolean' }
+    ];
+    return { outputs };
+  }
   if (rule.kind === 'indexed-inputs' || rule.kind === 'indexed-outputs') {
     const direction = rule.kind === 'indexed-inputs' ? 'input' : 'output';
     const prefix = rule.connectionPrefix || rule.prefix;
-    const highest = getHighestConnected(node, connections, prefix, direction);
+    const highestConnected = getHighestConnected(node, connections, prefix, direction);
     const stored = direction === 'input' ? getStoredHighest(node, prefix) : 0;
-    const count = Math.min(rule.max || 50, Math.max(rule.min || 1, highest + (rule.revealNext === false ? 0 : 1), stored));
+    const storedFilled = direction === 'input' ? getStoredHighestFilled(node, prefix) : 0;
+    const highestActive = Math.max(highestConnected, storedFilled);
+    const count = Math.min(rule.max || 50, Math.max(rule.min || 1, highestActive + (rule.revealNext === false ? 0 : 1), stored));
     const pins = getSequentialPins({
       id: rule.id || `${prefix}{index}`,
       label: rule.label || `${rule.itemLabel || 'Value'} {index}`,
@@ -99,8 +121,12 @@ export function resolveDynamicNodePins(definition, node, connections = []) {
     return direction === 'input' ? { inputs: pins } : { outputs: [...(definition.outputs || []), ...pins] };
   }
   if (rule.kind === 'array-items' || rule.kind === 'array-append-items') {
-    const highest = Math.max(getHighestConnected(node, connections, rule.connectionPrefix), getStoredHighest(node, rule.id.replace('{index}', '')));
-    const count = Math.min(rule.max || 50, Math.max(rule.min || 1, highest + (rule.revealNext ? 1 : 0)));
+    const prefix = rule.id.replace('{index}', '');
+    const highestConnected = getHighestConnected(node, connections, rule.connectionPrefix);
+    const stored = getStoredHighest(node, prefix);
+    const storedFilled = getStoredHighestFilled(node, prefix);
+    const highestActive = Math.max(highestConnected, storedFilled);
+    const count = Math.min(rule.max || 50, Math.max(rule.min || 1, stored, highestActive + (rule.revealNext ? 1 : 0)));
     const generated = getSequentialPins(rule, count);
     if (rule.kind === 'array-append-items') {
       const baseArrayPin = (definition.inputs || []).find((pin) => pin.id === 'array');
@@ -113,13 +139,20 @@ export function resolveDynamicNodePins(definition, node, connections = []) {
   }
   if (rule.kind === 'math-list') {
     const baseIds = rule.baseIds || [];
-    const highest = connections.reduce((value, connection) => {
+    const highestConnected = connections.reduce((value, connection) => {
       if (connection.targetNodeId !== node.id) return value;
       const baseIndex = baseIds.indexOf(connection.targetPinId);
       const extraIndex = pinIndex(connection.targetPinId, rule.extraPrefix || 'value_');
       return Math.max(value, baseIndex >= 0 ? baseIndex + 1 : extraIndex);
     }, 0);
-    const count = Math.min(rule.max || 50, Math.max(rule.min || 2, highest + 1));
+    const storedFilled = Object.entries(node?.data || {}).reduce((highest, [key, value]) => {
+      if (value === undefined || value === null || value === '' || Number.isNaN(Number(value))) return highest;
+      const baseIndex = baseIds.indexOf(key);
+      const extraIndex = pinIndex(key, rule.extraPrefix || 'value_');
+      return Math.max(highest, baseIndex >= 0 ? baseIndex + 1 : extraIndex);
+    }, 0);
+    const highestActive = Math.max(highestConnected, storedFilled);
+    const count = Math.min(rule.max || 50, Math.max(rule.min || 2, highestActive + 1));
     return { inputs: Array.from({ length: count }, (_, index) => ({
       id: baseIds[index] || `${rule.extraPrefix || 'value_'}${index - baseIds.length + 1}`,
       label: baseIds[index] ? String.fromCharCode(65 + index) : `${rule.extraLabel || 'Value'} ${index + 1}`,
@@ -149,7 +182,9 @@ export function resolveDynamicNodePins(definition, node, connections = []) {
   }
   if (rule.kind === 'permission-overwrites') {
     const highestConnected = getHighestConnected(node, connections, 'target_id_');
-    const highest = Math.max(highestConnected + (highestConnected ? 1 : 0), getStoredHighest(node, 'target_id_'), Number(node.data?.overwriteCount) || 0);
+    const storedFilled = getStoredHighestFilled(node, 'target_id_');
+    const highestActive = Math.max(highestConnected, storedFilled);
+    const highest = Math.max(highestActive + (highestActive ? 1 : 0), getStoredHighest(node, 'target_id_'), Number(node.data?.overwriteCount) || 0);
     return { inputs: getSequentialPins({ id: 'target_id_{index}', label: 'Target ID {index}', type: 'string', defaultValue: '' }, Math.min(rule.max || 100, Math.max(1, highest))) };
   }
   if (rule.kind === 'switch-cases') {
@@ -159,7 +194,9 @@ export function resolveDynamicNodePins(definition, node, connections = []) {
       return Math.max(highest, inputCase, outputCase);
     }, 0);
     const storedCases = getStoredHighest(node, 'case_');
-    const count = Math.min(rule.max || 50, Math.max(rule.min || 2, Number(node.data?.caseCount) || 0, storedCases, highestConnected + (highestConnected ? 1 : 0)));
+    const storedFilled = getStoredHighestFilled(node, 'case_');
+    const highestActive = Math.max(highestConnected, storedFilled);
+    const count = Math.min(rule.max || 50, Math.max(rule.min || 2, Number(node.data?.caseCount) || 0, storedCases, highestActive + (highestActive ? 1 : 0)));
     const inputs = Array.from({ length: count }, (_, index) => ({ id: `case_${index + 1}`, label: `Case ${index + 1}`, type: 'string', defaultValue: '' }));
     const outputs = [
       ...Array.from({ length: count }, (_, index) => ({ id: `case_${index + 1}_exec`, label: `Case ${index + 1}`, type: 'exec' })),
