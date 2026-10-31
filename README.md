@@ -47,6 +47,13 @@ Run it yourself in a browser, or install the desktop app:
 
 See [desktop downloads and system requirements](docs/DESKTOP_DISTRIBUTION.md).
 
+
+## Support the project
+
+We currently do not take any donations at the moment.
+
+If you'd like to support the project in a another way, join the [ARC Studio Community Discord Server](https://discord.gg/FMv3T6XSyq).
+
 ## Run it locally
 
 Requires Node.js 22 or newer
@@ -111,10 +118,13 @@ To work on the desktop app, run `npm run dev:desktop`. See [how the desktop app 
 - [Plugin registry and publishing](docs/PLUGIN_REGISTRY.md)
 - [WebAssembly adapter runtime](docs/PLUGIN_ADAPTER_RUNTIME.md)
 
+Join the community Discord server to learn more about the current state of the project.
+
 ## License
 
 ARC Studio and Chezcord are licensed under the [Apache License 2.0](LICENSE). Third party packages keep their own licenses.
 
 
+[ARC Studio Community Discord Server](https://discord.gg/FMv3T6XSyq)
 [Termux Labs Discord Server](https://discord.gg/Cet9px5ZnZ) (Application only)
-30 October 2026
+1 November 2026
