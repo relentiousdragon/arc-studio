@@ -1168,8 +1168,8 @@ export function NodeCanvas({
         ...definition,
         outputs: hasArgumentList ? [
           { id: 'exec', label: 'Exec', type: 'exec' },
-          ...getFunctionInputArguments(node).map((argument) => ({
-            id: functionArgumentPinId(argument), label: argument.name, type: functionInputPinType(argument),
+          ...getFunctionInputArguments(node).map((argument, index) => ({
+            id: functionArgumentPinId(argument), label: argument.name?.trim() || `Input ${index + 1}`, type: functionInputPinType(argument),
             ...(argument.valueType.endsWith('_id') || argument.valueType === 'interaction_token' ? { semanticType: argument.valueType } : {})
           }))
         ] : [
