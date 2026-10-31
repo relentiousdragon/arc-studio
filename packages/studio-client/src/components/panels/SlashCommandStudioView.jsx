@@ -70,10 +70,31 @@ export function SlashCommandStudioView({
   const [activeTabKey, setActiveTabKey] = useState('start');
   const [appliedOptions] = useState(() => structuredClone(draft));
   const tabsRef = useRef(null);
+  const stableIdsRef = useRef(new Map());
   const changed = JSON.stringify(draft) !== JSON.stringify(appliedOptions);
   const issue = validateSlashCommandOptions(draft, commandName)[0] || '';
   const requestClose = () => changed ? setDiscardOpen(true) : onClose?.();
   useStudioEscape(requestClose);
+
+  if (draft.length) {
+    const seen = new Set();
+    for (const item of draft) {
+      if (!item.id) {
+        const fingerprint = `${Number(item.type)}:${draft.indexOf(item)}`;
+        if (!stableIdsRef.current.has(fingerprint)) stableIdsRef.current.set(fingerprint, createLocalId('stable'));
+        item.id = stableIdsRef.current.get(fingerprint);
+      }
+      seen.add(item.id);
+      for (const child of (item.options || [])) {
+        if (!child.id) {
+          const childFingerprint = `${Number(child.type)}:${item.id}:${(item.options || []).indexOf(child)}`;
+          if (!stableIdsRef.current.has(childFingerprint)) stableIdsRef.current.set(childFingerprint, createLocalId('stable'));
+          child.id = stableIdsRef.current.get(childFingerprint);
+        }
+        seen.add(child.id);
+      }
+    }
+  }
 
   const updateDraft = (updater, isStructural = false) => {
     const next = typeof updater === 'function' ? updater(draft) : updater;
@@ -99,7 +120,7 @@ export function SlashCommandStudioView({
   const rootTabs = [
     ...(rootHasArguments ? [{ key: 'root-arguments', type: 'arguments', label: 'Arguments', indexes: rootArgumentIndexes }] : []),
     ...draft.flatMap((item, index) => [1, 2].includes(Number(item.type)) ? [{
-      key: item.id || `${Number(item.type)}:${item.name}:${index}`,
+      key: item.id,
       type: Number(item.type) === 2 ? 'group' : 'subcommand',
       label: `${Number(item.type) === 2 ? 'Group' : 'Subcommand'} · ${item.name || `Untitled ${index + 1}`}`,
       index,
@@ -119,7 +140,7 @@ export function SlashCommandStudioView({
     }
   };
 
-  const renderOptionList = (items, parentPath = [], level = 0, sourceIndexes = null) => <div className={`slash-option-list level-${level}`}>
+  const renderOptionList = (items, parentPath = [], level = 0, sourceIndexes = null, parentList = null) => <div className={`slash-option-list level-${level}`}>
     {items.map((option, index) => {
       const optionIndex = sourceIndexes?.[index] ?? index;
       const path = [...parentPath, optionIndex];
@@ -130,16 +151,20 @@ export function SlashCommandStudioView({
       const supportsChoices = TEXT_TYPES.has(type);
       const kindLabel = type === 1 ? 'Subcommand' : type === 2 ? 'Subcommand group' : PARAMETER_TYPES.find((item) => item.value === type)?.label || 'Argument';
       const childCount = (option.options || []).length;
+      const actualList = parentList || items;
+      const actualIndex = sourceIndexes ? optionIndex : index;
+      const canMoveUp = actualIndex > 0;
+      const canMoveDown = actualIndex < actualList.length - 1;
       return <article className={`slash-option-card${structural ? ' is-structural' : ''}${type === 2 ? ' is-group' : ''}`} key={option.id || `${path.join('.')}:${option.name}`}>
         <header>
           <span>
-            <b>{String(index + 1).padStart(2, '0')}</b>
+            <b>{String(optionIndex + 1).padStart(2, '0')}</b>
             <strong>{option.name || `New ${kindLabel.toLowerCase()}`}</strong>
             <small>{kindLabel}{!structural ? (option.required ? ' · Required' : ' · Optional') : ` · ${childCount}/25 ${type === 2 ? 'subcommands' : 'arguments'}`}</small>
           </span>
           <div className="slash-option-order">
-            <button type="button" title="Move up" aria-label={`Move ${option.name || kindLabel} up`} disabled={index === 0} onClick={() => moveItem(path, -1)}><ChevronUp size={15} /></button>
-            <button type="button" title="Move down" aria-label={`Move ${option.name || kindLabel} down`} disabled={index === items.length - 1} onClick={() => moveItem(path, 1)}><ChevronDown size={15} /></button>
+            <button type="button" title="Move up" aria-label={`Move ${option.name || kindLabel} up`} disabled={!canMoveUp} onClick={() => moveItem(path, -1)}><ChevronUp size={15} /></button>
+            <button type="button" title="Move down" aria-label={`Move ${option.name || kindLabel} down`} disabled={!canMoveDown} onClick={() => moveItem(path, 1)}><ChevronDown size={15} /></button>
             <button type="button" className="is-danger" title={`Remove ${kindLabel.toLowerCase()}`} aria-label={`Remove ${option.name || kindLabel}`} onClick={() => removeItem(path)}><Trash2 size={14} /></button>
           </div>
         </header>
@@ -182,35 +207,35 @@ export function SlashCommandStudioView({
       <button type="button" className="permission-studio-back" onClick={requestClose}><ArrowLeft size={16} /> Back</button>
       <div className="permission-studio-title"><div><h1>Command options</h1><p>/{commandName || 'command'} · {countArguments(draft)} arguments</p></div></div>
       <div className="slash-command-studio-header-actions">
-        <button type="button" className="permission-studio-action" onClick={onUndo} disabled={!canUndo} title="Undo" aria-label="Undo slash command edit"><Undo2 size={15} /></button>
-        <button type="button" className="permission-studio-action" onClick={onRedo} disabled={!canRedo} title="Redo" aria-label="Redo slash command edit"><Redo2 size={15} /></button>
+        <button type="button" className="icon-button" onClick={onUndo} disabled={!canUndo} title="Undo" aria-label="Undo slash command edit"><Undo2 size={15} /></button>
+        <button type="button" className="icon-button" onClick={onRedo} disabled={!canRedo} title="Redo" aria-label="Redo slash command edit"><Redo2 size={15} /></button>
         <button type="button" className="permission-studio-apply" onClick={apply} disabled={Boolean(issue)}><Check size={15} /> Apply</button>
       </div>
     </header>
     <div className="slash-command-studio-toolbar"><span>{collaborators.length ? `Editing with ${collaborators.map((peer) => peer.username).join(', ')}` : 'Use arguments, subcommands, or groups. Discord supports one group level, with subcommands inside each group.'}</span></div>
+    <div className="slash-command-root-tools">
+      <div className="slash-option-root-actions">
+        <button type="button" disabled={draft.length >= MAX_OPTIONS || rootHasCommands} title={rootHasCommands ? 'Discord does not allow root arguments alongside subcommands or groups.' : 'Add a command argument'} onClick={() => { addItem([], newParameter(draft.length)); if (!rootHasArguments) setActiveTabKey('root-arguments'); }}><Plus size={14} /> Add argument</button>
+        <button type="button" disabled={draft.length >= MAX_OPTIONS || rootHasArguments} title={rootHasArguments ? 'Remove the root arguments before adding subcommands.' : 'Add a subcommand'} onClick={() => { const item = newSubcommand(draft.length); addItem([], item); setActiveTabKey(item.id); }}><Plus size={14} /> Add subcommand</button>
+        <button type="button" disabled={draft.length >= MAX_OPTIONS || rootHasArguments} title={rootHasArguments ? 'Remove the root arguments before adding groups.' : 'Add a subcommand group'} onClick={() => { const item = newGroup(draft.length); addItem([], item); setActiveTabKey(item.id); }}><Plus size={14} /> Add group</button>
+      </div>
+      {rootHasArguments && <p role="status">This command uses root arguments. Discord does not allow subcommands or groups alongside them.</p>}
+      {rootHasCommands && <p role="status">Choose a subcommand tab, or open a group tab to manage its subcommands. Add arguments inside a subcommand.</p>}
+    </div>
+    <div className="slash-command-option-tabs" ref={tabsRef} onWheel={handleTabsWheel} role="tablist" aria-label="Slash command option sections">
+      {tabs.map((tab, index) => <button key={tab.key} type="button" role="tab" id={`slash-command-tab-${tab.key}`} aria-selected={activeTab.key === tab.key} aria-controls="slash-command-option-panel" tabIndex={activeTab.key === tab.key ? 0 : -1} onClick={() => setActiveTabKey(tab.key)} onKeyDown={(event) => {
+        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+        event.preventDefault();
+        const nextIndex = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+        setActiveTabKey(tabs[nextIndex].key);
+        event.currentTarget.parentElement?.querySelectorAll('[role="tab"]')[nextIndex]?.focus();
+      }}>{tab.label}</button>)}
+    </div>
     <div className="slash-command-studio-scroll" onWheel={(event) => event.stopPropagation()} tabIndex={0} aria-label="Command option fields">
-      <div className="slash-command-root-tools">
-        <div className="slash-option-root-actions">
-          <button type="button" disabled={draft.length >= MAX_OPTIONS || rootHasCommands} title={rootHasCommands ? 'Discord does not allow root arguments alongside subcommands or groups.' : 'Add a command argument'} onClick={() => { addItem([], newParameter(draft.length)); if (!rootHasArguments) setActiveTabKey('root-arguments'); }}><Plus size={14} /> Add argument</button>
-          <button type="button" disabled={draft.length >= MAX_OPTIONS || rootHasArguments} title={rootHasArguments ? 'Remove the root arguments before adding subcommands.' : 'Add a subcommand'} onClick={() => { const item = newSubcommand(draft.length); addItem([], item); setActiveTabKey(item.id); }}><Plus size={14} /> Add subcommand</button>
-          <button type="button" disabled={draft.length >= MAX_OPTIONS || rootHasArguments} title={rootHasArguments ? 'Remove the root arguments before adding groups.' : 'Add a subcommand group'} onClick={() => { const item = newGroup(draft.length); addItem([], item); setActiveTabKey(item.id); }}><Plus size={14} /> Add group</button>
-        </div>
-        {rootHasArguments && <p role="status">This command uses root arguments. Discord does not allow subcommands or groups alongside them.</p>}
-        {rootHasCommands && <p role="status">Choose a subcommand tab, or open a group tab to manage its subcommands. Add arguments inside a subcommand.</p>}
-      </div>
-      <div className="slash-command-option-tabs" ref={tabsRef} onWheel={handleTabsWheel} role="tablist" aria-label="Slash command option sections">
-        {tabs.map((tab, index) => <button key={tab.key} type="button" role="tab" id={`slash-command-tab-${tab.key}`} aria-selected={activeTab.key === tab.key} aria-controls="slash-command-option-panel" tabIndex={activeTab.key === tab.key ? 0 : -1} onClick={() => setActiveTabKey(tab.key)} onKeyDown={(event) => {
-          if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-          event.preventDefault();
-          const nextIndex = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
-          setActiveTabKey(tabs[nextIndex].key);
-          event.currentTarget.parentElement?.querySelectorAll('[role="tab"]')[nextIndex]?.focus();
-        }}>{tab.label}</button>)}
-      </div>
       <section className="slash-command-option-panel" id="slash-command-option-panel" role="tabpanel" aria-labelledby={`slash-command-tab-${activeTab.key}`}>
         {activeTab.type === 'start' ? <div className="slash-command-studio-empty"><strong>Set up this command</strong><span>Add root arguments for a slash command, or add subcommands to create separate actions.</span></div>
-          : activeTab.type === 'arguments' ? renderOptionList(activeTab.indexes.map((index) => draft[index]), [], 0, activeTab.indexes)
-            : renderOptionList([activeTab.item], [], 0, [activeTab.index])}
+          : activeTab.type === 'arguments' ? renderOptionList(activeTab.indexes.map((index) => draft[index]), [], 0, activeTab.indexes, draft)
+            : renderOptionList([activeTab.item], [], 0, [activeTab.index], draft)}
       </section>
       {issue && <p className="slash-command-studio-error" role="alert">{issue}</p>}
     </div>
