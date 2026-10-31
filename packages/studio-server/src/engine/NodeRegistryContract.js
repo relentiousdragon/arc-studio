@@ -4,7 +4,7 @@ export const CLIENT_PROTOCOL_VERSION = 1;
 export const SUPPORTED_DYNAMIC_PIN_KINDS = Object.freeze([
   'array-combine', 'array-items', 'array-append-items', 'math-list', 'permission-overwrites',
   'switch-cases', 'indexed-inputs', 'indexed-outputs', 'wire-extender', 'slash-options',
-  'connected-output-arguments', 'function-input-arguments'
+  'connected-output-arguments', 'function-input-arguments', 'connected-interaction-outputs'
 ]);
 
 export const SUPPORTED_EDITOR_CONTROL_TYPES = Object.freeze(['hint', 'checkbox', 'number', 'select', 'text']);
