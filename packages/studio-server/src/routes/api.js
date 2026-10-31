@@ -248,6 +248,20 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     });
   });
 
+  router.post('/auth/verify-setup-key', (req, res) => {
+    if (userStore.isSetupCompleted()) {
+      return res.status(400).json({ error: 'Initial setup has already been completed.' });
+    }
+    const masterKey = String(req.body?.masterKey || '').trim();
+    if (!masterKey) {
+      return res.status(400).json({ error: 'A setup key is required.' });
+    }
+    if (masterKey !== serverConfig.setupKey) {
+      return res.status(401).json({ error: 'Invalid setup key.' });
+    }
+    res.json({ success: true, valid: true });
+  });
+
   router.post('/auth/setup', (req, res) => {
     const { masterKey, username, password, workspaceName, rememberMe } = req.body;
     const clientBuild = req.body?.clientBuild;
@@ -277,6 +291,22 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     } catch (err) {
       res.status(400).json({ error: err.message });
     }
+  });
+
+  router.get('/auth/user-profile', (req, res) => {
+    if (!userStore.isSetupCompleted()) return res.json({ exists: false });
+    const username = String(req.query?.username || '').trim().toLowerCase();
+    if (!username) return res.status(400).json({ error: 'Username is required' });
+    const user = userStore.users.find((u) => String(u.username || '').toLowerCase() === username);
+    if (!user) return res.json({ exists: false });
+    res.json({
+      exists: true,
+      username: user.username,
+      role: user.role,
+      isPrimaryAdmin: Boolean(user.isPrimaryAdmin),
+      avatar: user.avatar || null,
+      id: user.id
+    });
   });
 
   router.post('/auth/login', (req, res) => {

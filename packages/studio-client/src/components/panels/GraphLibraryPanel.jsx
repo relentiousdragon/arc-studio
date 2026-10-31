@@ -1,14 +1,18 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { getArcUiScale } from '../../core/uiScale.js';
+import { arcEvents } from '../../core/ArcEvents.js';
 import { readAppStorage, writeAppStorage } from '../../core/storage.js';
 import { onPageBlur } from '../../core/pageFocus.js';
-import { BookmarkPlus, Braces, Calculator, ChevronDown, ChevronRight, Clock3, Copy, Database, FileCode2, FileUp, FolderTree, GitCompare, Layers, MoreHorizontal, PackageOpen, Pencil, Play, Plus, Puzzle, RotateCcw, Save, Search, Sparkles, Star, Trash2, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, BookmarkPlus, Braces, Calculator, ChevronDown, ChevronRight, Clock3, Copy, Database, FileCode2, FileUp, FolderTree, GitCompare, Layers, MoreHorizontal, PackageOpen, Pencil, Play, Plus, Puzzle, RotateCcw, Save, Search, Sparkles, Star, Trash2, X } from 'lucide-react';
 import { BuiltInNodeDefinitions, createDefaultNodeData, getVisibleNewNodeDefinitions, isNodeDefinitionNew, markNewNodeDefinitionsSeen } from '../nodes/nodeDefinitions.js';
 import { NodeTypeIcon } from '../nodes/NodeTypeIcon.jsx';
 import { CharacterLimit } from '../ui/Inputs.jsx';
 import { SidebarResizeHandle } from '../ui/SidebarResizeHandle.jsx';
 import { createSearchIndex } from '../palette/nodeSearch.js';
+import { readLibraryUsage, recordLibraryItemUsage } from '../../core/libraryUsage.js';
+
+export { recordLibraryItemUsage };
 
 const EXPANSION_STORAGE_KEY = 'arc_library_expansion_by_project';
 const DEFAULT_EXPANDED_GRAPH_GROUPS = { 'Slash Commands': true, Messages: true, Components: true, 'Member Events': true, Functions: true, Other: true };
@@ -22,7 +26,7 @@ function readLibraryExpansion() {
 }
 
 export function GraphLibraryPanel({
-  graphs = [], templates = [], snapshots = [], nodePrefabs = [], embedAssets = [], graphVariables = [], graphActivity = [], definitions = BuiltInNodeDefinitions, newNodesUserKey = 'anonymous', defaultGraphId, activeGraph, openGraphIds = [], activeTabId, usageScope = 'default', desktopMode = false, canImportGraph = true, sidebarWidth = 320, activeSection: activeSectionProp, onActiveSectionChange, onSidebarResize, onClose, onOpenGraph, onImportGraph, onUseTemplate, onCreateFunction, onDeleteGraph, onDeleteGraphs, onDuplicateGraph, onRenameGraph, onSaveTemplate, onDeleteTemplate, onSetDefault, onExportBot, exportInProgress = false, onAddNode, onAddPrefab, onDeletePrefab, onCreateEmbed, onCreateComponentsV2, onOpenEmbed, onDeleteEmbed, onManageVariables, onCreateSnapshot, onDeleteSnapshot, onRestoreSnapshot
+  graphs = [], graphValidationReports = new Map(), templates = [], snapshots = [], nodePrefabs = [], embedAssets = [], graphVariables = [], graphActivity = [], definitions = BuiltInNodeDefinitions, newNodesUserKey = 'anonymous', defaultGraphId, activeGraph, openGraphIds = [], activeTabId, usageScope = 'default', desktopMode = false, canImportGraph = true, sidebarWidth = 320, activeSection: activeSectionProp, onActiveSectionChange, onSidebarResize, onClose, onOpenGraph, onOpenGraphReview, onImportGraph, onUseTemplate, onCreateFunction, onDeleteGraph, onDeleteGraphs, onDuplicateGraph, onRenameGraph, onSaveTemplate, onDeleteTemplate, onSetDefault, onExportBot, exportInProgress = false, onAddNode, onAddPrefab, onDeletePrefab, onCreateEmbed, onCreateComponentsV2, onOpenEmbed, onDeleteEmbed, onManageVariables, onCreateSnapshot, onDeleteSnapshot, onRestoreSnapshot
 }) {
   const uiScale = getArcUiScale();
   const [query, setQuery] = useState('');
@@ -135,7 +139,13 @@ export function GraphLibraryPanel({
     const nextUsage = readLibraryUsage(usageStorageKey);
     usageRef.current = nextUsage;
     setUsage(nextUsage);
-  }, [usageStorageKey]);
+    return arcEvents.on('library:usage-updated', ({ usageScope: scope, usage: next }) => {
+      if ((scope || 'default') === (usageScope || 'default')) {
+        usageRef.current = next;
+        setUsage(next);
+      }
+    });
+  }, [usageStorageKey, usageScope]);
 
   const recordUsage = (kind, id) => {
     if (!id || !['nodes', 'graphs', 'embeds'].includes(kind)) return;
@@ -167,10 +177,19 @@ export function GraphLibraryPanel({
   };
 
   const startNodeDrag = (event, payload) => {
+    hideNativeDragImage(event);
     const dragPayload = payload.nodeType ? { ...payload, previewNode: { type: payload.nodeType, data: payload.data || createDefaultNodeData(payload.nodeType) } } : payload;
-    for (const type of payload.nodeTypes || (payload.nodeType ? [payload.nodeType] : [])) recordUsage('nodes', type);
     window.__arcNodeDragPayload = dragPayload;
     setLibraryTransferData(event, 'application/x-arc-node', dragPayload);
+    const type = dragPayload.previewNode?.type || dragPayload.prefabNode?.type || dragPayload.nodeType;
+    const definition = definitions.find((node) => node.type === type);
+    const prefab = dragPayload.type === 'prefab' ? nodePrefabs.find((item) => item.id === dragPayload.prefabId) : null;
+    startLibraryGhost(event, {
+      type,
+      label: prefab?.name || definition?.label || dragPayload.prefabNode?.label || 'Node',
+      color: definition?.color || '#778196',
+      pluginAdapter: Boolean(definition?.pluginAdapter)
+    });
   };
 
   const nodeDragPayload = (node) => ({ type: 'builtin', nodeType: node.type, ...(selectedLibraryNodeTypes.includes(node.type) && selectedLibraryNodeTypes.length > 1 ? { type: 'multi-node', nodeTypes: selectedLibraryNodeTypes } : {}) });
@@ -180,18 +199,19 @@ export function GraphLibraryPanel({
     return { type: 'variable-get', nodeType: 'variable_get', data: { variableId: variable.id, scope: variable.scope || 'graph' }, variables: selected.map((item) => ({ variableId: item.id, scope: item.scope || 'graph' })) };
   };
 
-  const finishNodeDrag = () => { window.__arcNodeDragPayload = null; clearLibraryDragPayload(); setLibraryDragGhost(null); };
-
-  const previewLibraryDrag = (event) => {
-    const payload = window.__arcNodeDragPayload;
-    if (!payload) { setLibraryDragGhost(null); return; }
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'none';
-    const type = payload.previewNode?.type || payload.prefabNode?.type || payload.nodeType;
-    const definition = definitions.find((node) => node.type === type);
-    const prefab = payload.type === 'prefab' ? nodePrefabs.find((item) => item.id === payload.prefabId) : null;
-    setLibraryDragGhost({ x: (event.clientX + 14) / uiScale, y: (event.clientY + 12) / uiScale, type, label: prefab?.name || definition?.label || payload.prefabNode?.label || 'Node', color: definition?.color || '#778196' });
+  const startLibraryGhost = (event, { type, label, color, pluginAdapter }) => {
+    setLibraryDragGhost({
+      clientX: event.clientX,
+      clientY: event.clientY,
+      type,
+      label: label || 'Node',
+      color: color || '#778196',
+      pluginAdapter: Boolean(pluginAdapter),
+      hidden: false
+    });
   };
+
+  const finishNodeDrag = () => { window.__arcNodeDragPayload = null; clearLibraryDragPayload(); setLibraryDragGhost(null); };
 
   const ignoreLibraryDrop = (event) => {
     const types = event.dataTransfer.types;
@@ -210,30 +230,33 @@ export function GraphLibraryPanel({
   };
 
   const startEmbedDrag = (event, asset) => {
-    recordUsage('embeds', asset.id);
+    hideNativeDragImage(event);
     const payload = { type: 'embed-asset', id: asset.id, name: asset.name || 'Untitled embed', blocks: asset.blocks || [], components: asset.components || [] };
     window.__arcEmbedDragPayload = payload;
     setLibraryTransferData(event, 'application/x-arc-embed-asset', payload);
+    startLibraryGhost(event, { type: 'build_embed', label: asset.name || 'Untitled embed', color: '#8b5cf6' });
   };
 
   const startComponentsV2Drag = (event, asset) => {
-    recordUsage('embeds', asset.id);
+    hideNativeDragImage(event);
     const payload = { type: 'components-v2-asset', id: asset.id, name: asset.name || 'Untitled Components V2', componentsV2Layout: asset.componentsV2Layout || [], attachments: asset.attachments || [] };
     window.__arcComponentsV2DragPayload = payload;
     const transferPayload = { ...payload, attachments: [] };
     setLibraryTransferData(event, 'application/x-arc-components-v2-asset', transferPayload);
+    startLibraryGhost(event, { type: 'build_components', label: asset.name || 'Untitled Components V2', color: '#06b6d4' });
   };
 
-  const finishEmbedDrag = () => { window.__arcEmbedDragPayload = null; window.__arcComponentsV2DragPayload = null; clearLibraryDragPayload(); };
+  const finishEmbedDrag = () => { window.__arcEmbedDragPayload = null; window.__arcComponentsV2DragPayload = null; clearLibraryDragPayload(); setLibraryDragGhost(null); };
 
   const startGraphDrag = (event, graph) => {
-    recordUsage('graphs', graph.id);
+    hideNativeDragImage(event);
     const payload = { type: 'graph-call', graphId: graph.id };
     window.__arcGraphDragPayload = payload;
     setLibraryTransferData(event, 'application/x-arc-graph-call', payload);
+    startLibraryGhost(event, { type: 'function_call', label: graph.name || 'Untitled graph', color: '#7a889b' });
   };
 
-  const finishGraphDrag = () => { window.__arcGraphDragPayload = null; clearLibraryDragPayload(); };
+  const finishGraphDrag = () => { window.__arcGraphDragPayload = null; clearLibraryDragPayload(); setLibraryDragGhost(null); };
 
   const beginPointerDrag = (event, payload) => {
     if (!desktopMode || event.button !== 0) return;
@@ -249,22 +272,41 @@ export function GraphLibraryPanel({
   };
 
   useEffect(() => {
+    if (!libraryDragGhost) return undefined;
+    const onWindowDragOver = (event) => {
+      if (event.clientX === 0 && event.clientY === 0) return;
+      const isOverCanvas = Boolean(event.target?.closest?.('.node-canvas, .canvas-container'));
+      setLibraryDragGhost((current) => current ? {
+        ...current,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        hidden: isOverCanvas
+      } : null);
+    };
+    const onWindowDragEnd = () => {
+      setLibraryDragGhost(null);
+    };
+    window.addEventListener('dragover', onWindowDragOver, { passive: true });
+    window.addEventListener('dragend', onWindowDragEnd);
+    window.addEventListener('drop', onWindowDragEnd);
+    return () => {
+      window.removeEventListener('dragover', onWindowDragOver);
+      window.removeEventListener('dragend', onWindowDragEnd);
+      window.removeEventListener('drop', onWindowDragEnd);
+    };
+  }, [Boolean(libraryDragGhost)]);
+
+  useEffect(() => {
     if (!desktopMode) return undefined;
     const clearPointerDrag = () => {
       pointerDragRef.current = null;
       window.__arcLibraryPointerDragActive = false;
       window.__arcLibraryPointerDrag = null;
-      setLibraryDragGhost(null);
     };
     const onMove = (event) => {
       const drag = pointerDragRef.current;
       if (!drag || drag.pointerId !== event.pointerId) return;
       if (!drag.active && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 6) return;
-      if (!drag.active) {
-        if (drag.payload.nodeType) recordUsageRef.current('nodes', drag.payload.nodeType);
-        if (drag.payload.type === 'graph-call') recordUsageRef.current('graphs', drag.payload.graphId);
-        if (drag.payload.type === 'embed-asset' || drag.payload.type === 'components-v2-asset') recordUsageRef.current('embeds', drag.payload.id);
-      }
       drag.active = true;
       event.preventDefault();
       window.__arcLibraryPointerDragActive = true;
@@ -378,7 +420,7 @@ export function GraphLibraryPanel({
     }} title={node.loadFailed ? 'Failed to load this node' : `${node.description || ''}${selected ? ' · Drag to add selected nodes' : ''}`} aria-label={node.pluginAdapter ? `${node.label}. Plugin node from ${node.pluginName || node.pluginId || 'an installed plugin'}` : undefined}><NodeTypeIcon type={node.type} color={node.color} size={14} /><span>{node.label}</span>{isNodeDefinitionNew(node, Date.now(), newNodesUserKey) && <i className="node-new-badge">NEW</i>}{node.pluginAdapter && <span className="node-plugin-origin library-plugin-origin" title={`Plugin node from ${node.pluginName || node.pluginId || 'an installed plugin'}`} aria-label={`Plugin node from ${node.pluginName || node.pluginId || 'an installed plugin'}`}><Puzzle size={12} /></span>}</button>;
   };
 
-  return <aside className="graph-library-panel" aria-label="Graph library" style={{ '--arc-sidebar-width': `${sidebarWidth}px` }} onDragOver={previewLibraryDrag} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setLibraryDragGhost(null); }} onDrop={ignoreLibraryDrop}>
+  return <aside className="graph-library-panel" aria-label="Graph library" style={{ '--arc-sidebar-width': `${sidebarWidth}px` }} onDragOver={(event) => { event.preventDefault(); try { event.dataTransfer.dropEffect = 'copy'; } catch {} }} onDrop={ignoreLibraryDrop}>
     <SidebarResizeHandle width={sidebarWidth} defaultWidth={320} onResize={onSidebarResize} />
     <header className="graph-library-header"><span><FolderTree size={15} /> Library</span><div className="graph-library-header-actions">{activeGroupKind && activeGroupNames.length > 0 && <button className="graph-library-expand-all" onClick={toggleAllGroups} aria-label={`${allGroupsExpanded ? 'Collapse' : 'Expand'} all ${activeGroupKind} groups`} title={`${allGroupsExpanded ? 'Collapse' : 'Expand'} all ${activeGroupKind} groups`}><ChevronDown size={12} /><span>{allGroupsExpanded ? 'Collapse all' : 'Expand all'}</span></button>}<input ref={importGraphInputRef} type="file" accept=".arcgraph,application/vnd.arc-studio.graph+json" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) onImportGraph?.(file); event.target.value = ''; }} /><button className="icon-button compact" onClick={() => importGraphInputRef.current?.click()} disabled={!canImportGraph} aria-label="Import graph file" title={canImportGraph ? 'Import .arcgraph file' : 'Graph editing access required'}><FileUp size={14} /></button><button className="icon-button compact" onClick={onClose} aria-label="Close graph library"><X size={14} /></button></div></header>
     <div className="graph-library-tabs" role="tablist" aria-label="Library sections">
@@ -399,7 +441,14 @@ export function GraphLibraryPanel({
             const lastSeen = graphLastSeen.get(graph.id);
             const selected = uniqueSelectedGraphKeys.includes(graphSelectionKey(graph));
             const active = graph.id === activeTabId;
-            return <button key={graph.id} className={`graph-library-entry graph-library-entry-with-activity${active ? ' is-active' : ''}${selected ? ' is-multi-selected' : ''}`} aria-pressed={selected} aria-current={active ? 'page' : undefined} onClick={(event) => handleGraphClick(event, graph)} onContextMenu={(event) => openContextMenu(event, graph)} title={active ? 'Currently active graph' : lastSeen ? `Last here: ${lastSeen.username || 'Collaborator'} · ${formatGraphLastSeen(lastSeen.updatedAt)}` : 'Open graph'}><FileCode2 size={14} /><span className="graph-library-entry-copy"><span>{graph.name || 'Untitled graph'}</span>{lastSeen?.username && <small>{lastSeen.username} · {formatGraphLastSeen(lastSeen.updatedAt)}</small>}</span>{openGraphIds.includes(graph.id) && <i title={active ? 'Currently active graph' : 'Open in a tab'} />}</button>;
+            const report = graphValidationReports?.get?.(graph.id);
+            const errorCount = report?.errors?.length || 0;
+            const warningCount = report?.warnings?.length || 0;
+            return <button key={graph.id} className={`graph-library-entry graph-library-entry-with-activity${active ? ' is-active' : ''}${selected ? ' is-multi-selected' : ''}`} aria-pressed={selected} aria-current={active ? 'page' : undefined} onClick={(event) => handleGraphClick(event, graph)} onContextMenu={(event) => openContextMenu(event, graph)} title={active ? 'Currently active graph' : lastSeen ? `Last here: ${lastSeen.username || 'Collaborator'} · ${formatGraphLastSeen(lastSeen.updatedAt)}` : 'Open graph'}><FileCode2 size={14} /><span className="graph-library-entry-copy"><span className="graph-library-entry-title"><span>{graph.name || 'Untitled graph'}</span>{defaultGraphId === graph.id && <Star className="graph-default-star" size={11} fill="currentColor" title="Default for new graphs" />}{errorCount > 0 ? (
+              <span role="button" tabIndex={0} className="graph-library-issue is-error" title={`${errorCount} blocking error${errorCount === 1 ? '' : 's'}`} aria-label={`${errorCount} blocking error${errorCount === 1 ? '' : 's'}`} onClick={(event) => { event.stopPropagation(); event.preventDefault(); onOpenGraphReview?.(graph); }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.stopPropagation(); event.preventDefault(); onOpenGraphReview?.(graph); } }}><AlertCircle size={13} /></span>
+            ) : warningCount > 0 ? (
+              <span role="button" tabIndex={0} className="graph-library-issue is-warning" title={`${warningCount} review warning${warningCount === 1 ? '' : 's'}`} aria-label={`${warningCount} review warning${warningCount === 1 ? '' : 's'}`} onClick={(event) => { event.stopPropagation(); event.preventDefault(); onOpenGraphReview?.(graph); }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.stopPropagation(); event.preventDefault(); onOpenGraphReview?.(graph); } }}><AlertTriangle size={13} /></span>
+            ) : null}</span>{lastSeen?.username && <small>{lastSeen.username} · {formatGraphLastSeen(lastSeen.updatedAt)}</small>}</span>{openGraphIds.includes(graph.id) && !active && <span className="graph-library-open-indicator" title="Open in another tab" aria-label="Open in another tab"><Layers size={11} /></span>}</button>;
           })}</div>
         </section>}
         {graphGroups.map(([groupName, items]) => <section className="graph-library-group" key={groupName}>
@@ -411,9 +460,17 @@ export function GraphLibraryPanel({
             const lastSeen = graphLastSeen.get(graph.id);
             const graphKey = graphSelectionKey(graph);
             const selected = uniqueSelectedGraphKeys.includes(graphKey);
-            return <div key={graphKey} className={`graph-library-item ${graph.id === activeTabId ? 'is-active' : ''}${selected ? ' is-multi-selected' : ''} ${contextMenu?.kind === 'graph' && graphSelectionKey(contextMenu.graph) === graphKey ? 'is-context-menu-open' : ''}`} role="treeitem" aria-selected={selected} aria-current={graph.id === activeTabId ? 'page' : undefined}>
+            const active = graph.id === activeTabId;
+            const report = graphValidationReports?.get?.(graph.id);
+            const errorCount = report?.errors?.length || 0;
+            const warningCount = report?.warnings?.length || 0;
+            return <div key={graphKey} className={`graph-library-item ${active ? 'is-active' : ''}${selected ? ' is-multi-selected' : ''} ${contextMenu?.kind === 'graph' && graphSelectionKey(contextMenu.graph) === graphKey ? 'is-context-menu-open' : ''}`} role="treeitem" aria-selected={selected} aria-current={active ? 'page' : undefined}>
               <button className={`graph-library-entry${lastSeen?.username ? ' graph-library-entry-with-activity' : ''}`} aria-pressed={selected} draggable={!desktopMode} onPointerDown={(event) => beginPointerDrag(event, { type: 'graph-call', graphId: graph.id })} onClickCapture={suppressClickAfterDrag} onDragStart={(event) => startGraphDrag(event, graph)} onDragEnd={finishGraphDrag} onClick={(event) => handleGraphClick(event, graph)} onContextMenu={(event) => openContextMenu(event, graph)} title={lastSeen?.username ? `Last here: ${lastSeen.username} · ${formatGraphLastSeen(lastSeen.updatedAt)}. Drag into the canvas to call this graph.` : 'Drag into the canvas to call this graph'}>
-                <FileCode2 size={14} /><span className="graph-library-entry-copy"><span>{graph.name || 'Untitled graph'}</span>{lastSeen?.username && <small>{lastSeen.username} · {formatGraphLastSeen(lastSeen.updatedAt)}</small>}</span>{defaultGraphId === graph.id && <Star className="graph-default-star" size={11} fill="currentColor" title="Default for new graphs" />}{isOpen && <i title="Open in a tab" />}
+                <FileCode2 size={14} /><span className="graph-library-entry-copy"><span className="graph-library-entry-title"><span>{graph.name || 'Untitled graph'}</span>{defaultGraphId === graph.id && <Star className="graph-default-star" size={11} fill="currentColor" title="Default for new graphs" />}{errorCount > 0 ? (
+                  <span role="button" tabIndex={0} className="graph-library-issue is-error" title={`${errorCount} blocking error${errorCount === 1 ? '' : 's'}`} aria-label={`${errorCount} blocking error${errorCount === 1 ? '' : 's'}`} onClick={(event) => { event.stopPropagation(); event.preventDefault(); onOpenGraphReview?.(graph); }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.stopPropagation(); event.preventDefault(); onOpenGraphReview?.(graph); } }}><AlertCircle size={13} /></span>
+                ) : warningCount > 0 ? (
+                  <span role="button" tabIndex={0} className="graph-library-issue is-warning" title={`${warningCount} review warning${warningCount === 1 ? '' : 's'}`} aria-label={`${warningCount} review warning${warningCount === 1 ? '' : 's'}`} onClick={(event) => { event.stopPropagation(); event.preventDefault(); onOpenGraphReview?.(graph); }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.stopPropagation(); event.preventDefault(); onOpenGraphReview?.(graph); } }}><AlertTriangle size={13} /></span>
+                ) : null}</span>{lastSeen?.username && <small>{lastSeen.username} · {formatGraphLastSeen(lastSeen.updatedAt)}</small>}</span>{isOpen && !active && <span className="graph-library-open-indicator" title="Open in another tab" aria-label="Open in another tab"><Layers size={11} /></span>}
               </button>
               <button className="graph-library-more" onClick={(event) => openContextMenu(event, graph)} aria-label={`Actions for ${graph.name || 'graph'}`} title="Graph actions"><MoreHorizontal size={14} /></button>
             </div>;
@@ -501,7 +558,6 @@ export function GraphLibraryPanel({
       <button className="graph-template-button" onClick={onCreateComponentsV2}><Layers size={14} /><span>New Component</span></button>
       <button className="graph-export-button" onClick={() => onExportBot?.()} disabled={exportInProgress || (!graphs.length && !openGraphIds.length)}><PackageOpen size={15} /><span>{exportInProgress ? 'Exporting…' : 'Export app'}</span><kbd>.zip</kbd></button>
     </footer>
-    {libraryDragGhost && <div className="library-drag-ghost" style={{ left: libraryDragGhost.x, top: libraryDragGhost.y, '--node-accent': libraryDragGhost.color }} aria-hidden="true"><NodeTypeIcon type={libraryDragGhost.type} color={libraryDragGhost.color} size={14} /><span>{libraryDragGhost.label}</span></div>}
     {contextMenu && createPortal(<div ref={contextMenuRef} className="graph-context-menu" style={{ left: contextMenu.x, top: contextMenu.y, transform: `scale(${uiScale})`, transformOrigin: 'top left' }} onPointerDown={(event) => event.stopPropagation()}>
       {contextMenu.kind === 'graph' ? <>
         <button onClick={() => { onOpenGraph?.(contextMenu.graph); setContextMenu(null); }}><FileCode2 size={14} /> Open graph</button>
@@ -535,7 +591,55 @@ export function GraphLibraryPanel({
       <SnapshotComparison base={compareSnapshot.graph} current={activeGraph} definitions={definitions} />
       <footer><button onClick={() => { onRestoreSnapshot?.(compareSnapshot); setCompareSnapshot(null); }}><RotateCcw size={13} />Restore snapshot</button><button onClick={() => setCompareSnapshot(null)}>Close</button></footer>
     </section></div>}
+    {libraryDragGhost && !libraryDragGhost.hidden && createPortal(
+      <div
+        className="library-drag-ghost"
+        style={{
+          position: 'fixed',
+          left: `${libraryDragGhost.clientX + 14}px`,
+          top: `${libraryDragGhost.clientY + 12}px`,
+          transform: `scale(${getArcUiScale()})`,
+          transformOrigin: 'top left',
+          '--node-accent': libraryDragGhost.color,
+          pointerEvents: 'none',
+          zIndex: 99999
+        }}
+        aria-hidden="true"
+      >
+        <NodeTypeIcon type={libraryDragGhost.type} color={libraryDragGhost.color} size={14} pluginAdapter={libraryDragGhost.pluginAdapter} />
+        <span>{libraryDragGhost.label}</span>
+        {libraryDragGhost.pluginAdapter && <span className="node-plugin-origin library-plugin-origin" title="Plugin node"><Puzzle size={12} /></span>}
+      </div>,
+      document.body
+    )}
   </aside>;
+}
+
+let blankDragCanvas = null;
+function getBlankDragCanvas() {
+  if (!blankDragCanvas && typeof document !== 'undefined') {
+    blankDragCanvas = document.createElement('canvas');
+    blankDragCanvas.width = 1;
+    blankDragCanvas.height = 1;
+    blankDragCanvas.style.position = 'fixed';
+    blankDragCanvas.style.left = '-9999px';
+    blankDragCanvas.style.top = '-9999px';
+    blankDragCanvas.style.opacity = '0';
+    blankDragCanvas.style.pointerEvents = 'none';
+    if (document.body) document.body.appendChild(blankDragCanvas);
+  }
+  return blankDragCanvas;
+}
+
+function hideNativeDragImage(event) {
+  const dt = event?.dataTransfer;
+  if (!dt || typeof dt.setDragImage !== 'function') return;
+  try {
+    const canvas = getBlankDragCanvas();
+    if (canvas) {
+      dt.setDragImage(canvas, 0, 0);
+    }
+  } catch {}
 }
 
 function setLibraryTransferData(event, mimeType, payload) {
@@ -546,17 +650,9 @@ function setLibraryTransferData(event, mimeType, payload) {
   try { event.dataTransfer.effectAllowed = 'copy'; } catch {}
   try { event.dataTransfer.setData(mimeType, JSON.stringify(payload)); } catch {}
   try { event.dataTransfer.setData('text/plain', `arc-studio:${mimeType}:${token}`); } catch {}
+  hideNativeDragImage(event);
 }
 
-function readLibraryUsage(storageKey) {
-  try {
-    const parsed = JSON.parse(readAppStorage(storageKey, '{}') || '{}');
-    const safeEntries = (value) => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
-    return { nodes: safeEntries(parsed.nodes), graphs: safeEntries(parsed.graphs), embeds: safeEntries(parsed.embeds) };
-  } catch {
-    return { nodes: {}, graphs: {}, embeds: {} };
-  }
-}
 
 function rankByUsage(items, usage, getId, limit) {
   return items
@@ -655,3 +751,5 @@ function graphSelectionKey(graph) {
     nodes.map((node) => [node?.id || '', node?.type || '']).sort(([leftId, leftType], [rightId, rightType]) => leftId.localeCompare(rightId) || leftType.localeCompare(rightType))
   ]);
 }
+
+// contributors: @paccman-0, @relentiousdragon

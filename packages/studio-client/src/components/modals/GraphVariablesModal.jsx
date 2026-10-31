@@ -280,9 +280,14 @@ export function GraphVariablesModal({ isOpen, onClose, variables = [], projectVa
         <button className="icon-button compact" type="button" aria-label="Close graph variables" onClick={onClose}><X size={14} /></button>
       </div>
     </header>
+    <div className="graph-variable-tabs" role="tablist" aria-label="Variable scope">
+      <button type="button" role="tab" aria-selected={activeScope === 'project'} className={activeScope === 'project' ? 'is-active' : ''} onClick={() => selectScope('project')}>Project <span>{projectVariables.length}</span></button>
+      <button type="button" role="tab" aria-selected={activeScope === 'graph'} className={activeScope === 'graph' ? 'is-active' : ''} onClick={() => selectScope('graph')}>Graph <span>{variables.length}</span></button>
+    </div>
     <div className={`graph-variables-sidebar-content ${isSaving ? 'is-saving' : ''}`}>
       {isSaving && <div className="variable-save-progress" role="status" aria-label="Saving variables"><i /></div>}
-      {scopeTabs}{content}
+      <small className="graph-variable-scope-hint">{activeScope === 'project' ? 'Project variables are shared across graphs and always persist.' : 'Graph variables persist by default. Turn off Persist to reset a value after each run.'}</small>
+      {content}
     </div>
   </aside> : null}{secretConversionModal}</>;
   return <><Modal isOpen={isOpen} onClose={onClose} title="Variables" subtitle="Project-wide and graph-specific values" icon={Braces} maxWidth="lg" headerMeta={systemVariablesControl}>{scopeTabs}{content}</Modal>{secretConversionModal}</>;

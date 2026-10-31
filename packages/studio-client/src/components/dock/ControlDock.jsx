@@ -362,6 +362,12 @@ export function ControlDock({
   }, [isOpen, dockHeight]);
 
   useEffect(() => {
+    if (!isResizing) return undefined;
+    document.body.classList.add('is-resizing-dock');
+    return () => document.body.classList.remove('is-resizing-dock');
+  }, [isResizing]);
+
+  useEffect(() => {
     if (!commandDeployUntil) { setCommandDeploySeconds(0); return undefined; }
     const update = () => {
       const remaining = Math.max(0, Math.ceil((commandDeployUntil - Date.now()) / 1000));

@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getAvailableMemoryBytes, getClientStartupAction, inspectClientBuild, MIN_CLIENT_BUILD_MEMORY_BYTES } from '../src/engine/clientStartup.js';
+import { getClientStartupAction, inspectClientBuild } from '../src/engine/clientStartup.js';
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDirectory, '../../..');
@@ -46,27 +46,6 @@ if (!serverOnly && !desktopMode) {
   } else if (getClientStartupAction({ clientCurrent: buildStatus.current }) === 'serve') {
     console.log(`[ARC Studio] Using the existing ARC Studio ${buildStatus.version} browser client.`);
   } else {
-    let availableMemory = null;
-    let memoryWarning = '';
-    try {
-      availableMemory = getAvailableMemoryBytes();
-    } catch (error) {
-      if (!['EACCES', 'EPERM'].includes(error.code)) throw error;
-      memoryWarning = `Could not inspect container memory limits because access was denied. ${availableMemory === null ? 'The build will still be attempted.' : ''}`;
-    }
-    const minimumMemoryMB = Math.ceil(MIN_CLIENT_BUILD_MEMORY_BYTES / 1_000_000);
-    if (availableMemory === null) {
-      memoryWarning ||= 'Could not determine available memory from the host or container limits.';
-    } else if (availableMemory < MIN_CLIENT_BUILD_MEMORY_BYTES) {
-      const availableMB = Math.floor(availableMemory / 1_000_000);
-      memoryWarning = `Only ${availableMB} MB is available. At least ${minimumMemoryMB} MB is recommended for a client build.`;
-    }
-    if (memoryWarning) console.warn(`[ARC Studio] ${memoryWarning} Attempting the client build anyway.`);
-    else {
-      const availableMB = Math.floor(availableMemory / 1_000_000);
-      console.log(`[ARC Studio] Startup memory check passed (${availableMB} MB available, ${minimumMemoryMB} MB recommended).`);
-    }
-
     console.log('[ARC Studio] Building the web client before startup...');
     const isWindows = process.platform === 'win32';
     const result = spawnSync(isWindows ? 'npm.cmd' : 'npm', ['run', 'build:client'], {
@@ -104,3 +83,5 @@ if (!serverOnly && desktopMode && (!fs.existsSync(clientIndex) || logoPaths.some
 
 if (runServerOnly) process.env.ARC_SERVER_ONLY = '1';
 await import('../src/index.js');
+
+// contributors: @relentiousdragon

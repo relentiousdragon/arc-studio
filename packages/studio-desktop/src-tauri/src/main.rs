@@ -455,7 +455,7 @@ fn read_arc_project_file(path: String) -> Result<String, String> {
 fn is_arc_graph_path(path: &Path) -> bool {
     path.file_name().and_then(|name| name.to_str()).is_some_and(|name| {
         let name = name.to_ascii_lowercase();
-        name.ends_with(".arcgraph") || name.ends_with(".arc.json")
+        name.ends_with(".arcgraph") || name.ends_with(".arc.json") || name.ends_with(".arcgraph.json") || name.ends_with(".graph.json")
     })
 }
 
@@ -549,7 +549,10 @@ fn open_project_window(project_id: String) -> Result<(), String> {
 }
 
 fn is_arc_project_path(path: &Path) -> bool {
-    path.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| extension.eq_ignore_ascii_case("arcproject"))
+    path.file_name().and_then(|name| name.to_str()).is_some_and(|name| {
+        let name = name.to_ascii_lowercase();
+        name.ends_with(".arcproject") || name.ends_with(".arcproject.json")
+    })
 }
 
 #[cfg(target_os = "macos")]

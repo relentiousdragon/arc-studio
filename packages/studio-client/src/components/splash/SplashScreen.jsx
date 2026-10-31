@@ -1,8 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { AlertTriangle, ArrowLeft, ArrowRight, Eye, EyeOff, Globe2, KeyRound, Laptop2, LoaderCircle, LockKeyhole, Moon, Pencil, ShieldCheck, Sun } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, ArrowLeftRight, ArrowRight, Eye, EyeOff, Globe2, KeyRound, Laptop2, LoaderCircle, LockKeyhole, Moon, Pencil, ShieldCheck, Sun } from 'lucide-react';
 import { arcEvents } from '../../core/ArcEvents.js';
 import { apiUrl, normalizeWorkspaceUrl } from '../../core/api.js';
 import { getClientBuildInfo } from '../../core/clientBuildInfo.js';
+import { SetupNetworkWires } from './SetupNetworkWires.jsx';
+import { AuthGridCanvas } from './AuthGridCanvas.jsx';
+import { getContrastTextColor } from '../../core/colorContrast.js';
 import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
 import studioPackage from '../../../package.json';
@@ -15,6 +18,7 @@ const getLocalUsername = () => {
 };
 const isUnsupportedNodeCompatibilityError = (message) => /node feature(?:s)? this desktop app does not support/i.test(String(message || ''));
 const xmasSnow = (date = new Date()) => date.getMonth() === 11 && date.getDate() >= 20;
+const halloweenFrills = (date = new Date()) => date.getMonth() === 9 && date.getDate() >= 15;
 //
 export function SplashScreen({
   studioVersion = studioPackage.version,
@@ -102,6 +106,7 @@ export function SplashScreen({
   const [connectError, setConnectError] = useState('');
   const [compatibilityNotice, setCompatibilityNotice] = useState('');
   const [fieldErrors, setFieldErrors] = useState({});
+  const [verifyingSetupKey, setVerifyingSetupKey] = useState(false);
   const [recoveryMode, setRecoveryMode] = useState('');
   const [recoveryPassword, setRecoveryPassword] = useState('');
   const [recoveryConfirmPassword, setRecoveryConfirmPassword] = useState('');
@@ -114,13 +119,23 @@ export function SplashScreen({
   const [lowPower, setLowPower] = useState(false);
   const [reducedMotion, setReducedMotion] = useState(() => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches || false);
   const [xmas] = useState(() => xmasSnow());
+  const [halloween] = useState(() => halloweenFrills());
   const [typedIntro, setTypedIntro] = useState(() => needsSetup ? '' : SETUP_TAGLINE);
   const fieldRefs = useRef({});
   const snowCanvasRef = useRef(null);
+  const halloweenCanvasRef = useRef(null);
 
   const credentialOrigin = (() => { try { return normalizeWorkspaceUrl(remoteUrl); } catch { return ''; } })();
   const usernameStorageKey = credentialOrigin ? `arc_remote_username:${credentialOrigin}` : '';
   const rememberStorageKey = credentialOrigin ? `arc_remember_password:${credentialOrigin}` : '';
+  const rememberedUserStorageKey = (() => {
+    if (desktopMode && workspaceChoice === 'remote' && credentialOrigin) return `arc_remote_username:${credentialOrigin}`;
+    if (desktopMode && workspaceChoice === 'local') return 'arc_local_username';
+    return 'arc_last_user';
+  })();
+
+  const [rememberedProfile, setRememberedProfile] = useState(null);
+  const [validatingRememberedUser, setValidatingRememberedUser] = useState(false);
 
   useEffect(() => {
     setWorkspaceChoice(workspaceMode);
@@ -161,6 +176,78 @@ export function SplashScreen({
       .catch(() => {});
     return () => { cancelled = true; };
   }, [desktopMode, workspaceMode, needsSetup, credentialOrigin, rememberStorageKey]);
+
+  useEffect(() => {
+    if (needsSetup) {
+      setRememberedProfile(null);
+      return undefined;
+    }
+    let candidate = '';
+    try {
+      candidate = (
+        localStorage.getItem(rememberedUserStorageKey) ||
+        (desktopMode && workspaceChoice === 'local' ? (localAccountUsername || getLocalUsername()) : '') ||
+        (desktopMode && workspaceChoice === 'remote' && usernameStorageKey ? localStorage.getItem(usernameStorageKey) : '') ||
+        localStorage.getItem('arc_last_user') ||
+        ''
+      ).trim();
+    } catch {
+      candidate = '';
+    }
+    if (!candidate) {
+      setRememberedProfile(null);
+      return undefined;
+    }
+
+    let cancelled = false;
+    setValidatingRememberedUser(true);
+    fetch(apiUrl(`/api/auth/user-profile?username=${encodeURIComponent(candidate)}`))
+      .then((res) => (res.ok ? res.json() : { exists: false }))
+      .then((data) => {
+        if (cancelled) return;
+        if (data.exists) {
+          setRememberedProfile(data);
+          setUsername(data.username);
+        } else {
+          setRememberedProfile(null);
+          try {
+            if (rememberedUserStorageKey) localStorage.removeItem(rememberedUserStorageKey);
+            localStorage.removeItem('arc_last_user');
+          } catch {}
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setRememberedProfile(null);
+      })
+      .finally(() => {
+        if (!cancelled) setValidatingRememberedUser(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [needsSetup, workspaceChoice, workspaceMode, rememberedUserStorageKey, credentialOrigin, localAccountUsername]);
+
+  const handleSwitchAccount = () => {
+    setRememberedProfile(null);
+    setUsername('');
+    setPassword('');
+    setError('');
+    setFieldErrors({});
+    try {
+      if (rememberedUserStorageKey) localStorage.removeItem(rememberedUserStorageKey);
+      localStorage.removeItem('arc_last_user');
+      if (desktopMode && workspaceChoice === 'local') {
+        localStorage.removeItem('arc_local_username');
+      }
+    } catch {}
+  };
+
+  const rememberedInitial = rememberedProfile?.username
+    ? Array.from(rememberedProfile.username.trim())[0]?.toUpperCase()
+    : 'U';
+  const rememberedColor = rememberedProfile?.username
+    ? `hsl(${Math.abs(Array.from(rememberedProfile.id || rememberedProfile.username).reduce((acc, char) => (acc * 31 + char.charCodeAt(0)) | 0, 0)) % 360}, 65%, 45%)`
+    : 'var(--accent)';
+  const rememberedTextColor = getContrastTextColor(rememberedColor);
   useEffect(() => {
     let mounted = true;
     let battery;
@@ -203,6 +290,20 @@ export function SplashScreen({
     };
   }, [xmas, reducedMotion]);
   useEffect(() => {
+    if (!halloween) return undefined;
+    const canvas = halloweenCanvasRef.current;
+    if (!canvas) return undefined;
+    let cancelled = false;
+    let stopHalloween = () => {};
+    import('./halloween.js')
+      .then(({ startHalloween }) => { if (!cancelled) stopHalloween = startHalloween(canvas) || stopHalloween; })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      stopHalloween();
+    };
+  }, [halloween, reducedMotion]);
+  useEffect(() => {
     const message = SETUP_TAGLINE;
     if (!needsSetup || lowPower || reducedMotion) {
       setTypedIntro(message);
@@ -241,16 +342,78 @@ export function SplashScreen({
     setFieldErrors((current) => ({ ...current, [field]: '' }));
   };
 
-  const handleContinue = (event) => {
+  const handleContinue = async (event) => {
     event.preventDefault();
     setError('');
     setFieldErrors({});
-    if (!masterKey.trim()) {
+    const trimmedKey = masterKey.trim();
+    if (!trimmedKey) {
       setFieldErrors({ masterKey: 'A setup key is required.' });
       shakeFields(['masterKey']);
       return;
     }
-    setSetupStep(2);
+    setVerifyingSetupKey(true);
+    try {
+      let isKeyValid = false;
+      let errorMessage = '';
+
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => controller.abort(), 8000);
+
+      try {
+        const verifyResponse = await fetch(apiUrl('/api/auth/verify-setup-key'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ masterKey: trimmedKey }),
+          signal: controller.signal
+        });
+        window.clearTimeout(timeoutId);
+
+        if (verifyResponse.status === 200) {
+          isKeyValid = true;
+        } else if (verifyResponse.status === 401 || verifyResponse.status === 400) {
+          const verifyData = await verifyResponse.json().catch(() => ({}));
+          errorMessage = verifyData.error || 'Invalid setup key.';
+        } else if (verifyResponse.status === 404) {
+          const probeController = new AbortController();
+          const probeTimeout = window.setTimeout(() => probeController.abort(), 8000);
+          const probeResponse = await fetch(apiUrl('/api/auth/setup'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              masterKey: trimmedKey,
+              username: 'arc_setup_key_probe',
+              password: '',
+              clientBuild: await getClientBuildInfo()
+            }),
+            signal: probeController.signal
+          });
+          window.clearTimeout(probeTimeout);
+          const probeData = await probeResponse.json().catch(() => ({}));
+          if (probeData.error && /master setup key/i.test(probeData.error)) {
+            errorMessage = 'Invalid setup key.';
+          } else {
+            isKeyValid = true;
+          }
+        } else {
+          const verifyData = await verifyResponse.json().catch(() => ({}));
+          errorMessage = verifyData.error || 'Could not verify setup key.';
+        }
+      } catch (networkErr) {
+        window.clearTimeout(timeoutId);
+        errorMessage = networkErr.name === 'AbortError' ? 'Verification timed out.' : 'Could not connect to verify setup key.';
+      }
+
+      if (!isKeyValid) {
+        setFieldErrors({ masterKey: errorMessage || 'Invalid setup key.' });
+        shakeFields(['masterKey']);
+        return;
+      }
+
+      setSetupStep(2);
+    } finally {
+      setVerifyingSetupKey(false);
+    }
   };
 
   const handleConnectWorkspace = async (event) => {
@@ -396,6 +559,10 @@ export function SplashScreen({
       if (desktopMode && workspaceMode === 'local') {
         try { localStorage.setItem('arc_local_username', username.trim()); } catch {}
       }
+      try {
+        if (rememberedUserStorageKey) localStorage.setItem(rememberedUserStorageKey, username.trim());
+        localStorage.setItem('arc_last_user', username.trim());
+      } catch {}
       await onAuthComplete(data.token, data.user, persistSession);
       arcEvents.emit('toast:notify', {
         title: needsSetup ? 'Workspace ready' : 'Welcome back',
@@ -523,17 +690,12 @@ export function SplashScreen({
 
   return (
     <main className={`auth-screen ${desktopMode ? 'is-desktop' : ''}`} data-initial-setup={needsSetup ? 'true' : undefined} data-low-power={lowPower ? 'true' : undefined}>
+      <AuthGridCanvas reducedMotion={reducedMotion} />
       {xmas && !reducedMotion && <canvas ref={snowCanvasRef} className="splash-snow" aria-hidden="true" />}
+      {halloween && <canvas ref={halloweenCanvasRef} className="splash-halloween" aria-hidden="true" />}
       {desktopMode && <div className="auth-window-drag-region" data-tauri-drag-region="true" aria-hidden="true" />}
       <div className="auth-backdrop" aria-hidden="true"><span /><span /><span /></div>
-      {needsSetup && !desktopServerError && <svg className="setup-network" viewBox="0 0 1440 900" preserveAspectRatio="none" aria-hidden="true">
-        <path className="setup-network-wire setup-network-wire-a" pathLength="1" d="M -80 112 C 132 48 220 170 410 126 S 708 54 900 106 S 1244 174 1520 88" />
-        <path className="setup-network-wire setup-network-wire-b" pathLength="1" d="M -80 188 C 148 116 266 252 458 204 S 762 126 966 174 S 1284 238 1520 158" />
-        <path className="setup-network-wire setup-network-wire-c" pathLength="1" d="M -80 268 C 156 202 280 324 480 278 S 796 202 1000 248 S 1304 308 1520 232" />
-        <path className="setup-network-wire setup-network-wire-d" pathLength="1" d="M -80 788 C 156 854 280 732 480 778 S 796 854 1000 808 S 1304 748 1520 824" />
-        <path className="setup-network-wire setup-network-wire-e" pathLength="1" d="M -80 712 C 148 784 266 648 458 696 S 762 774 966 726 S 1284 662 1520 742" />
-        <path className="setup-network-wire setup-network-wire-f" pathLength="1" d="M -80 632 C 132 696 220 574 410 618 S 708 690 900 638 S 1244 570 1520 656" />
-      </svg>}
+      {needsSetup && !desktopServerError && <SetupNetworkWires reducedMotion={reducedMotion} />}
       {needsSetup && !desktopServerError && <div className="setup-vignette" aria-hidden="true" />}
       <button className="auth-theme-toggle" onClick={onToggleTheme} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}>{theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}</button>
       {desktopServerError ? <section className="desktop-server-error" role="alert" aria-labelledby="desktop-server-error-title">
@@ -570,12 +732,14 @@ export function SplashScreen({
           {!needsProjectOnboarding && desktopMode && workspaceMode === 'remote' && !showWorkspaceUrl && <button className="auth-back workspace-change-server" type="button" onClick={() => { setShowWorkspaceUrl(true); setConnectError(''); setError(''); }}>Change workspace URL</button>}
 
           {!remotePending && <div className="auth-heading">
-            {(needsProjectOnboarding || needsSetup) && <span className="auth-kicker">{needsProjectOnboarding ? 'PROJECT SETUP' : 'INITIAL SETUP'}</span>}
-            <h1 id="auth-title">{passwordChangeSession ? 'Choose a new password' : needsProjectOnboarding ? 'Create your first project' : needsSetup ? setupCredential ? 'Set up your studio' : 'Create administrator' : 'Sign in'}</h1>
-            <p>{passwordChangeSession ? 'Set a new password before continuing.' : needsProjectOnboarding ? 'Give your bot project a name to get started.' : needsSetup ? setupCredential ? 'Enter your setup key to begin.' : desktopMode && workspaceMode === 'local' ? 'Create the owner account for this device.' : 'Choose the primary account credentials.' : 'Continue to your workspace.'}</p>
+            <div key={`heading-${setupStep}-${needsProjectOnboarding ? 'project' : needsSetup ? 'setup' : 'auth'}`} className="auth-step-heading">
+              {(needsProjectOnboarding || needsSetup) && <span className="auth-kicker">{needsProjectOnboarding ? 'PROJECT SETUP' : 'Welcome'}</span>}
+              <h1 id="auth-title">{passwordChangeSession ? 'Choose a new password' : needsProjectOnboarding ? 'Create your first project' : needsSetup ? setupCredential ? 'Set up your studio' : 'Create administrator' : 'Sign in'}</h1>
+              <p>{passwordChangeSession ? 'Set a new password before continuing.' : needsProjectOnboarding ? 'Give your bot project a name to get started.' : needsSetup ? setupCredential ? 'Enter your setup key to begin.' : desktopMode && workspaceMode === 'local' ? 'Create the owner account for this device.' : 'Choose the primary account credentials.' : 'Continue to your workspace.'}</p>
+            </div>
           </div>}
 
-          {!needsProjectOnboarding && !remotePending && needsSetup && !setupCredential && !(desktopMode && workspaceMode === 'local') && <div className="setup-progress" aria-label={`Step ${setupStep} of 2`}><span className={setupStep >= 1 ? 'is-current' : ''} /><span className={setupStep >= 2 ? 'is-current' : ''} /></div>}
+          {!needsProjectOnboarding && !remotePending && needsSetup && !(desktopMode && workspaceMode === 'local') && <div className="setup-progress" aria-label={`Step ${setupStep} of 2`}><span className={setupStep >= 1 ? 'is-current' : ''} /><span className={setupStep >= 2 ? 'is-current' : ''} /></div>}
 
           {!needsProjectOnboarding && !remotePending && startupError && <div className="auth-startup-error" role="alert"><strong>{documentsPermissionRequired ? 'ARC Studio needs Documents access' : 'Local workspace unavailable'}</strong><span>{documentsPermissionRequired ? 'Allow ARC Studio to access Documents/ARC Studio in Privacy & Security, then restart the app.' : startupErrorMessage}</span>
             {documentsPermissionRequired && <button className="auth-retry" type="button" onClick={() => {
@@ -604,13 +768,15 @@ export function SplashScreen({
               <button className="auth-submit" type="submit" disabled={creatingFirstProject || !firstProjectName.trim()}>{creatingFirstProject ? <><LoaderCircle size={16} className="is-spinning" /> Creating project</> : <>{firstProjectTemplate === 'blank' ? 'Start Blank' : 'Create project'} <ArrowRight size={16} /></>}</button>
             </form>
           ) : remotePending ? null : setupCredential ? (
-            <form className="auth-form" noValidate onInvalidCapture={(event) => event.preventDefault()} onSubmit={handleContinue}>
-              <label className="field-label" htmlFor="setup-key">Setup key</label>
-              <div ref={(element) => { fieldRefs.current.masterKey = element; }} className={`auth-input-wrap ${fieldErrors.masterKey ? 'has-error' : ''}`}><KeyRound size={16} /><input id="setup-key" autoFocus type="password" autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck="false" value={masterKey} onChange={updateField('masterKey', setMasterKey)} placeholder="Enter setup key" aria-invalid={Boolean(fieldErrors.masterKey)} /></div>
-              {fieldErrors.masterKey && <p className="auth-field-error" role="alert">{fieldErrors.masterKey}</p>}
-              {error && <p className="form-error" role="alert">{error}</p>}
-              <button className="auth-submit" type="submit">Continue <ArrowRight size={16} /></button>
-            </form>
+            <div key="setup-step-1" className="auth-step-pane">
+              <form className="auth-form" noValidate onInvalidCapture={(event) => event.preventDefault()} onSubmit={handleContinue}>
+                <label className="field-label" htmlFor="setup-key">Setup key</label>
+                <div ref={(element) => { fieldRefs.current.masterKey = element; }} className={`auth-input-wrap ${fieldErrors.masterKey ? 'has-error' : ''}`}><KeyRound size={16} /><input id="setup-key" autoFocus type="password" autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck="false" value={masterKey} onChange={updateField('masterKey', setMasterKey)} placeholder="Enter setup key" aria-invalid={Boolean(fieldErrors.masterKey)} /></div>
+                {fieldErrors.masterKey && <p className="auth-field-error" role="alert">{fieldErrors.masterKey}</p>}
+                {error && <p className="form-error" role="alert">{error}</p>}
+                <button className="auth-submit" type="submit" disabled={verifyingSetupKey}>{verifyingSetupKey ? <><LoaderCircle size={16} className="is-spinning" /> Verifying</> : <>Continue <ArrowRight size={16} /></>}</button>
+              </form>
+            </div>
           ) : recoveryMode ? (
             <form className="auth-form" noValidate onSubmit={handlePasswordRecovery}>
               {recoveryMode === 'master' && <><label className="field-label" htmlFor="recovery-master-key">Master key</label><div className="auth-input-wrap"><KeyRound size={16} /><input id="recovery-master-key" type="password" autoFocus autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck="false" value={masterKey} onChange={(event) => setMasterKey(event.target.value)} placeholder="Master key" /></div></>}
@@ -623,32 +789,78 @@ export function SplashScreen({
               <button className="auth-back" type="button" onClick={() => { setRecoveryMode(''); setError(''); setRecoveryMessage(''); }}>Back to sign in</button>
             </form>
           ) : !startupError && (
-            <form className="auth-form" noValidate onInvalidCapture={(event) => event.preventDefault()} onSubmit={handleSubmit}>
-              {needsSetup && !desktopMode && <><label className="field-label" htmlFor="workspace-name">Workspace name</label><div ref={(element) => { fieldRefs.current.workspaceName = element; }} className={`auth-input-wrap ${fieldErrors.workspaceName ? 'has-error' : ''}`}><input id="workspace-name" autoComplete="organization" autoCapitalize="none" autoCorrect="off" spellCheck="false" maxLength={35} value={serverWorkspaceName} onChange={updateField('workspaceName', setServerWorkspaceName)} placeholder="My Workspace" aria-invalid={Boolean(fieldErrors.workspaceName)} /></div><p className={`auth-field-hint ${fieldErrors.workspaceName ? 'has-error' : ''}`} role={fieldErrors.workspaceName ? 'alert' : undefined}>{fieldErrors.workspaceName || '2–35 characters · letters, numbers, spaces, - and _'} <span>{serverWorkspaceName.length}/35</span></p></>}
-              <label className="field-label" htmlFor="username">{desktopMode && workspaceMode === 'local' && needsSetup ? 'Owner username' : 'Username'}</label>
-              <div ref={(element) => { fieldRefs.current.username = element; }} className={`auth-input-wrap ${fieldErrors.username ? 'has-error' : ''} ${desktopMode && workspaceMode === 'local' && !localUsernameEditable ? 'is-readonly' : ''}`}>
-                <input id="username" autoFocus={!needsSetup} autoComplete="username" autoCapitalize="none" autoCorrect="off" spellCheck="false" value={username} disabled={desktopMode && workspaceMode === 'local' && !localUsernameEditable} onChange={(event) => { updateField('username', setUsername)(event); setOwnerResetPromptForUsername(''); if (desktopMode && workspaceMode === 'remote' && usernameStorageKey) { try { localStorage.setItem(usernameStorageKey, event.target.value); } catch {} } }} placeholder="Username" aria-invalid={Boolean(fieldErrors.username)} />
-                {desktopMode && workspaceMode === 'local' && <button className="auth-edit-username" type="button" onClick={() => setLocalUsernameEditable((editable) => !editable)} aria-label={localUsernameEditable ? 'Lock username field' : 'Edit username'} title={localUsernameEditable ? 'Done editing username' : 'Edit username'}>{localUsernameEditable ? 'Done' : <><Pencil size={13} /> Edit</>}</button>}
-              </div>
-              {fieldErrors.username && <p className="auth-field-error" role="alert">{fieldErrors.username}</p>}
-              <label className="field-label" htmlFor="password">Password</label>
-              <div ref={(element) => { fieldRefs.current.password = element; }} className={`auth-input-wrap ${fieldErrors.password ? 'has-error' : ''}`}><LockKeyhole size={16} /><input id="password" type={showPassword ? 'text' : 'password'} autoComplete={needsSetup ? 'new-password' : 'current-password'} autoCapitalize="none" autoCorrect="off" spellCheck="false" value={password} onChange={(event) => { updateField('password', setPassword)(event); setOwnerResetPromptForUsername(''); }} placeholder="Password" aria-invalid={Boolean(fieldErrors.password)} /><button className="auth-reveal" type="button" onClick={() => setShowPassword((show) => !show)} aria-label={showPassword ? 'Hide password' : 'Show password'}>{showPassword ? <EyeOff size={15} /> : <Eye size={15} />}</button></div>
-              {fieldErrors.password && <p className="auth-field-error" role="alert">{fieldErrors.password}</p>}
-              {desktopMode && workspaceMode === 'remote' && <label className="remember-password"><input type="checkbox" checked={rememberPassword} onChange={(event) => { const checked = event.target.checked; setRememberPassword(checked); try { if (rememberStorageKey) localStorage.setItem(rememberStorageKey, String(checked)); } catch {} if (!checked && credentialOrigin) window.__TAURI_INTERNALS__?.invoke?.('delete_workspace_password', { origin: credentialOrigin }).catch(() => {}); }} /><span>Remember password on this device</span></label>}
-              {desktopMode && workspaceMode === 'local' && !needsSetup && <label className="remember-password"><input type="checkbox" checked={keepLocalSignedIn} onChange={(event) => { const checked = event.target.checked; setKeepLocalSignedIn(checked); try { localStorage.setItem('arc_local_keep_signed_in', String(checked)); if (!checked) localStorage.removeItem('arc_local_session_token'); } catch {} if (!checked) window.__TAURI_INTERNALS__?.invoke?.('delete_local_session_token').catch(() => {}); }} /><span>Keep me signed in</span></label>}
-              {recoveryMessage && <p className="auth-field-hint" role="status">{recoveryMessage}</p>}
-              {!needsSetup && desktopMode && workspaceMode === 'local' && <button className="auth-back" type="button" onClick={() => { setRecoveryMode('local'); setError(''); setRecoveryMessage(''); }}>Forgot password?</button>}
-              {showMasterPasswordReset && <button className="auth-back" type="button" onClick={() => { setRecoveryMode('master'); setError(''); setRecoveryMessage(''); }}>Reset owner password with master key</button>}
-              {needsSetup && <><label className="field-label" htmlFor="confirm-password">Confirm password</label><div ref={(element) => { fieldRefs.current.confirmPassword = element; }} className={`auth-input-wrap ${fieldErrors.confirmPassword ? 'has-error' : ''}`}><LockKeyhole size={16} /><input id="confirm-password" type={showConfirmPassword ? 'text' : 'password'} autoComplete="new-password" autoCapitalize="none" autoCorrect="off" spellCheck="false" value={confirmPassword} onChange={updateField('confirmPassword', setConfirmPassword)} placeholder="Confirm password" aria-invalid={Boolean(fieldErrors.confirmPassword)} /><button className="auth-reveal" type="button" onClick={() => setShowConfirmPassword((show) => !show)} aria-label={showConfirmPassword ? 'Hide confirm password' : 'Show confirm password'}>{showConfirmPassword ? <EyeOff size={15} /> : <Eye size={15} />}</button></div>{fieldErrors.confirmPassword && <p className="auth-field-error" role="alert">{fieldErrors.confirmPassword}</p>}</>}
-              {needsSetup && desktopMode && workspaceMode === 'local' && <label className="remember-password"><input type="checkbox" checked={keepLocalSignedIn} onChange={(event) => { const checked = event.target.checked; setKeepLocalSignedIn(checked); try { localStorage.setItem('arc_local_keep_signed_in', String(checked)); if (!checked) localStorage.removeItem('arc_local_session_token'); } catch {} if (!checked) window.__TAURI_INTERNALS__?.invoke?.('delete_local_session_token').catch(() => {}); }} /><span>Keep me signed in</span></label>}
-              {error && <p className="form-error" role="alert">{error}</p>}
-              {workspaceError && <p className="form-error" role="alert">{workspaceError}</p>}
-              {workspaceError && !startupError && <button className="auth-retry" type="button" onClick={onRetryWorkspace}>Retry connection</button>}
-              <button className="auth-submit" type="submit" disabled={loading || remotePending || Boolean(workspaceError)}>
-                {loading ? <><LoaderCircle size={16} className="is-spinning" /> {sessionReplacementPending ? 'Please wait…' : needsSetup ? 'Creating account' : 'Signing in'}</> : <>{needsSetup ? 'Create account' : 'Continue'} <ArrowRight size={16} /></>}
-              </button>
-              {needsSetup && !setupCredential && !(desktopMode && workspaceMode === 'local') && <button className="auth-back" type="button" onClick={() => { setSetupStep(1); setError(''); }}><ArrowLeft size={14} /> Back</button>}
-            </form>
+            <div key="setup-step-2" className="auth-step-pane">
+              <form className="auth-form" noValidate onInvalidCapture={(event) => event.preventDefault()} onSubmit={handleSubmit}>
+                {needsSetup && !desktopMode && <><label className="field-label" htmlFor="workspace-name">Workspace name</label><div ref={(element) => { fieldRefs.current.workspaceName = element; }} className={`auth-input-wrap ${fieldErrors.workspaceName ? 'has-error' : ''}`}><input id="workspace-name" autoComplete="organization" autoCapitalize="none" autoCorrect="off" spellCheck="false" maxLength={35} value={serverWorkspaceName} onChange={updateField('workspaceName', setServerWorkspaceName)} placeholder="My Workspace" aria-invalid={Boolean(fieldErrors.workspaceName)} /></div><p className={`auth-field-hint ${fieldErrors.workspaceName ? 'has-error' : ''}`} role={fieldErrors.workspaceName ? 'alert' : undefined}>{fieldErrors.workspaceName || '2–35 characters · letters, numbers, spaces, - and _'} <span>{serverWorkspaceName.length}/35</span></p></>}
+                {!needsSetup && rememberedProfile ? (
+                  <div className="auth-remembered-user-card">
+                    <div className="auth-remembered-user-avatar" style={{ '--collaborator-color': rememberedColor, '--collaborator-text-color': rememberedTextColor, color: rememberedTextColor }}>
+                      {rememberedProfile.avatar ? (
+                        <img src={rememberedProfile.avatar} alt="" className="auth-remembered-avatar-img" />
+                      ) : (
+                        <span className="auth-remembered-avatar-initial">{rememberedInitial}</span>
+                      )}
+                    </div>
+                    <div className="auth-remembered-user-info">
+                      <div className="auth-remembered-user-name">
+                        <strong>{rememberedProfile.username}</strong>
+                        {rememberedProfile.isPrimaryAdmin ? (
+                          <span className="auth-remembered-badge">Owner</span>
+                        ) : rememberedProfile.role ? (
+                          <span className="auth-remembered-badge">{rememberedProfile.role}</span>
+                        ) : null}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="auth-switch-account-button"
+                      onClick={handleSwitchAccount}
+                      title="Switch account"
+                      aria-label="Switch account"
+                    >
+                      <ArrowLeftRight size={14} />
+                    </button>
+                    <input
+                      id="username"
+                      type="text"
+                      name="username"
+                      value={username}
+                      readOnly
+                      tabIndex={-1}
+                      autoComplete="username"
+                      aria-hidden="true"
+                      className="auth-hidden-username"
+                    />
+                  </div>
+                ) : (
+                  <>
+                    <label className="field-label" htmlFor="username">{desktopMode && workspaceMode === 'local' && needsSetup ? 'Owner username' : 'Username'}</label>
+                    <div ref={(element) => { fieldRefs.current.username = element; }} className={`auth-input-wrap ${fieldErrors.username ? 'has-error' : ''} ${desktopMode && workspaceMode === 'local' && !localUsernameEditable ? 'is-readonly' : ''}`}>
+                      <input id="username" name="username" autoFocus={!needsSetup} autoComplete="username" autoCapitalize="none" autoCorrect="off" spellCheck="false" value={username} disabled={desktopMode && workspaceMode === 'local' && !localUsernameEditable} onChange={(event) => { updateField('username', setUsername)(event); setOwnerResetPromptForUsername(''); if (desktopMode && workspaceMode === 'remote' && usernameStorageKey) { try { localStorage.setItem(usernameStorageKey, event.target.value); } catch {} } }} placeholder="Username" aria-invalid={Boolean(fieldErrors.username)} />
+                      {desktopMode && workspaceMode === 'local' && <button className="auth-edit-username" type="button" onClick={() => setLocalUsernameEditable((editable) => !editable)} aria-label={localUsernameEditable ? 'Lock username field' : 'Edit username'} title={localUsernameEditable ? 'Done editing username' : 'Edit username'}>{localUsernameEditable ? 'Done' : <><Pencil size={13} /> Edit</>}</button>}
+                    </div>
+                    {fieldErrors.username && <p className="auth-field-error" role="alert">{fieldErrors.username}</p>}
+                  </>
+                )}
+                <label className="field-label" htmlFor="password">Password</label>
+                <div ref={(element) => { fieldRefs.current.password = element; }} className={`auth-input-wrap ${fieldErrors.password ? 'has-error' : ''}`}><LockKeyhole size={16} /><input id="password" name="password" autoFocus={!needsSetup && Boolean(rememberedProfile)} type={showPassword ? 'text' : 'password'} autoComplete={needsSetup ? 'new-password' : 'current-password'} autoCapitalize="none" autoCorrect="off" spellCheck="false" value={password} onChange={(event) => { updateField('password', setPassword)(event); setOwnerResetPromptForUsername(''); }} placeholder="Password" aria-invalid={Boolean(fieldErrors.password)} /><button className="auth-reveal" type="button" onClick={() => setShowPassword((show) => !show)} aria-label={showPassword ? 'Hide password' : 'Show password'}>{showPassword ? <EyeOff size={15} /> : <Eye size={15} />}</button></div>
+                {fieldErrors.password && <p className="auth-field-error" role="alert">{fieldErrors.password}</p>}
+                {desktopMode && workspaceMode === 'remote' && <label className="remember-password"><input type="checkbox" checked={rememberPassword} onChange={(event) => { const checked = event.target.checked; setRememberPassword(checked); try { if (rememberStorageKey) localStorage.setItem(rememberStorageKey, String(checked)); } catch {} if (!checked && credentialOrigin) window.__TAURI_INTERNALS__?.invoke?.('delete_workspace_password', { origin: credentialOrigin }).catch(() => {}); }} /><span>Remember password on this device</span></label>}
+                {desktopMode && workspaceMode === 'local' && !needsSetup && <label className="remember-password"><input type="checkbox" checked={keepLocalSignedIn} onChange={(event) => { const checked = event.target.checked; setKeepLocalSignedIn(checked); try { localStorage.setItem('arc_local_keep_signed_in', String(checked)); if (!checked) localStorage.removeItem('arc_local_session_token'); } catch {} if (!checked) window.__TAURI_INTERNALS__?.invoke?.('delete_local_session_token').catch(() => {}); }} /><span>Keep me signed in</span></label>}
+                {recoveryMessage && <p className="auth-field-hint" role="status">{recoveryMessage}</p>}
+                {!needsSetup && desktopMode && workspaceMode === 'local' && <button className="auth-back" type="button" onClick={() => { setRecoveryMode('local'); setError(''); setRecoveryMessage(''); }}>Forgot password?</button>}
+                {showMasterPasswordReset && <button className="auth-back" type="button" onClick={() => { setRecoveryMode('master'); setError(''); setRecoveryMessage(''); }}>Reset owner password with master key</button>}
+                {needsSetup && <><label className="field-label" htmlFor="confirm-password">Confirm password</label><div ref={(element) => { fieldRefs.current.confirmPassword = element; }} className={`auth-input-wrap ${fieldErrors.confirmPassword ? 'has-error' : ''}`}><LockKeyhole size={16} /><input id="confirm-password" type={showConfirmPassword ? 'text' : 'password'} autoComplete="new-password" autoCapitalize="none" autoCorrect="off" spellCheck="false" value={confirmPassword} onChange={updateField('confirmPassword', setConfirmPassword)} placeholder="Confirm password" aria-invalid={Boolean(fieldErrors.confirmPassword)} /><button className="auth-reveal" type="button" onClick={() => setShowConfirmPassword((show) => !show)} aria-label={showConfirmPassword ? 'Hide confirm password' : 'Show confirm password'}>{showConfirmPassword ? <EyeOff size={15} /> : <Eye size={15} />}</button></div>{fieldErrors.confirmPassword && <p className="auth-field-error" role="alert">{fieldErrors.confirmPassword}</p>}</>}
+                {needsSetup && desktopMode && workspaceMode === 'local' && <label className="remember-password"><input type="checkbox" checked={keepLocalSignedIn} onChange={(event) => { const checked = event.target.checked; setKeepLocalSignedIn(checked); try { localStorage.setItem('arc_local_keep_signed_in', String(checked)); if (!checked) localStorage.removeItem('arc_local_session_token'); } catch {} if (!checked) window.__TAURI_INTERNALS__?.invoke?.('delete_local_session_token').catch(() => {}); }} /><span>Keep me signed in</span></label>}
+                {error && <p className="form-error" role="alert">{error}</p>}
+                {workspaceError && <p className="form-error" role="alert">{workspaceError}</p>}
+                {workspaceError && !startupError && <button className="auth-retry" type="button" onClick={onRetryWorkspace}>Retry connection</button>}
+                <button className="auth-submit" type="submit" disabled={loading || remotePending || Boolean(workspaceError)}>
+                  {loading ? <><LoaderCircle size={16} className="is-spinning" /> {sessionReplacementPending ? 'Please wait…' : needsSetup ? 'Creating account' : 'Signing in'}</> : <>{needsSetup ? 'Create account' : 'Continue'} <ArrowRight size={16} /></>}
+                </button>
+                {needsSetup && !setupCredential && !(desktopMode && workspaceMode === 'local') && <button className="auth-back" type="button" onClick={() => { setSetupStep(1); setError(''); }}><ArrowLeft size={14} /> Back</button>}
+              </form>
+            </div>
           )}
           {!remotePending && <div className="auth-footer">{desktopMode ? activeWorkspaceName : activeWorkspaceName || 'Private workspace'}</div>}
         </section>
@@ -674,3 +886,5 @@ export function SplashScreen({
     </main>
   );
 }
+
+// contributors: @paccman-0, @relentiousdragon

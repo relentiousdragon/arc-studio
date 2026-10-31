@@ -52,9 +52,10 @@ const PluginStoreModal = lazyNamed(() => import('./components/modals/PluginStore
 [NodePalette, CommandPalette, EditorSettingsModal, GraphVariablesModal, GraphLibraryPanel, BotSettingsModal].forEach((Component) => {
   void Component.preload().catch(() => {});
 });
+import { recordLibraryItemUsage } from './core/libraryUsage.js';
 import { ToastContainer } from './components/ui/ToastContainer.jsx';
 import { Modal } from './components/ui/Modal.jsx';
-import { TextInput } from './components/ui/Inputs.jsx';
+import { PasswordInput, TextInput } from './components/ui/Inputs.jsx';
 import { Button } from './components/ui/Button.jsx';
 import { TooltipLayer } from './components/ui/TooltipLayer.jsx';
 import { EmojiPickerOverlay } from './components/ui/EmojiPickerOverlay.jsx';
@@ -803,6 +804,48 @@ export function App() {
   const [projectImportError, setProjectImportError] = useState('');
   const [projectImportCompatibility, setProjectImportCompatibility] = useState(null);
   const [projectImportOldVersionApproved, setProjectImportOldVersionApproved] = useState(false);
+  const [projectExportDialog, setProjectExportDialog] = useState(null);
+  const [confirmDialog, setConfirmDialog] = useState(null);
+  const [promptDialog, setPromptDialog] = useState(null);
+
+  const requestConfirmation = useCallback(({ title = 'Confirm action', subtitle, message, confirmText = 'Confirm', cancelText = 'Cancel', variant = 'danger', icon = AlertCircle }) => {
+    return new Promise((resolve) => {
+      setConfirmDialog({
+        title,
+        subtitle,
+        message,
+        confirmText,
+        cancelText,
+        variant,
+        icon,
+        resolve: (value) => {
+          setConfirmDialog(null);
+          resolve(Boolean(value));
+        }
+      });
+    });
+  }, []);
+
+  const requestPrompt = useCallback(({ title = 'Enter value', subtitle, label, defaultValue = '', placeholder = '', confirmText = 'Save', cancelText = 'Cancel', icon = FileCode2 }) => {
+    return new Promise((resolve) => {
+      setPromptDialog({
+        title,
+        subtitle,
+        label,
+        value: defaultValue,
+        placeholder,
+        confirmText,
+        cancelText,
+        icon,
+        resolve: (value) => {
+          setPromptDialog(null);
+          resolve(value);
+        }
+      });
+    });
+  }, []);
+  const [isDraggingFileOver, setIsDraggingFileOver] = useState(false);
+  const dragCounterRef = useRef(0);
   const [projectTemplateDialog, setProjectTemplateDialog] = useState(false);
   const [newProjectTemplate, setNewProjectTemplate] = useState('ticket');
   const [projectNameManuallyEdited, setProjectNameManuallyEdited] = useState(false);
@@ -921,7 +964,7 @@ export function App() {
     const normalizedPath = String(path).replace(/\\/g, '/');
     const name = normalizedPath.split('/').pop() || 'project.arcproject';
     const lowerName = name.toLowerCase();
-    if (lowerName.endsWith('.arcgraph') || lowerName.endsWith('.arc.json')) {
+    if (lowerName.endsWith('.arcgraph') || lowerName.endsWith('.arc.json') || lowerName.endsWith('.arcgraph.json') || lowerName.endsWith('.graph.json')) {
       const invoke = window.__TAURI_INTERNALS__?.invoke;
       if (typeof invoke !== 'function') {
         arcEvents.emit('toast:notify', { title: 'Open failed', message: 'ARC Studio could not read this graph file.', type: 'error' });
@@ -934,7 +977,7 @@ export function App() {
         .finally(() => setDesktopFileImportBusy(false));
       return;
     }
-    if (!lowerName.endsWith('.arcproject')) {
+    if (!lowerName.endsWith('.arcproject') && !lowerName.endsWith('.arcproject.json')) {
       arcEvents.emit('toast:notify', { title: 'Unsupported file', message: 'Choose an .arcgraph file or .arcproject file.', type: 'error' });
       return;
     }
@@ -951,6 +994,114 @@ export function App() {
     setProjectImportCompatibility(null);
     setProjectImportOldVersionApproved(false);
   }, [desktopFileImportBusy, desktopMode, openedProjectFiles, projectImportFile]);
+  useEffect(() => {
+    const isExternalFileDrag = (event) => {
+      if (window.__arcNodeDragPayload || window.__arcGraphDragPayload || window.__arcEmbedDragPayload || window.__arcComponentsV2DragPayload) {
+        return false;
+      }
+      const types = event.dataTransfer?.types;
+      if (!types) return false;
+      return Array.from(types).some((t) => t === 'Files' || t === 'application/x-moz-file');
+    };
+
+    const handleDragEnter = (event) => {
+      if (!isExternalFileDrag(event)) return;
+      event.preventDefault();
+      dragCounterRef.current += 1;
+      setIsDraggingFileOver(true);
+    };
+
+    const handleDragOver = (event) => {
+      if (!isExternalFileDrag(event)) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+    };
+
+    const handleDragLeave = (event) => {
+      if (!isExternalFileDrag(event)) return;
+      event.preventDefault();
+      dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
+      if (dragCounterRef.current === 0) {
+        setIsDraggingFileOver(false);
+      }
+    };
+
+    const handleDrop = async (event) => {
+      if (!isExternalFileDrag(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      dragCounterRef.current = 0;
+      setIsDraggingFileOver(false);
+
+      const files = Array.from(event.dataTransfer?.files || []);
+      if (!files.length) return;
+
+      for (const file of files) {
+        const name = file.name || '';
+        const lowerName = name.toLowerCase();
+
+        if (lowerName.endsWith('.arcproject') || lowerName.endsWith('.arcproject.json')) {
+          setProjectImportPathRef.current = null;
+          setProjectImportTrusted(false);
+          setProjectImportError('');
+          setProjectImportSharingWarning(null);
+          setProjectImportSharingApproved(false);
+          setProjectImportCompatibility(null);
+          setProjectImportOldVersionApproved(false);
+          setProjectImportFile(file);
+        } else if (lowerName.endsWith('.arcgraph') || lowerName.endsWith('.arc.json') || lowerName.endsWith('.arcgraph.json') || lowerName.endsWith('.graph.json')) {
+          await desktopGraphImportHandlerRef.current?.(file);
+        } else if (lowerName.endsWith('.json')) {
+          try {
+            const text = await file.text();
+            const parsed = JSON.parse(text);
+            if (parsed?.format === 'arc-project' || parsed?.format === 'arc-project-encrypted' || (parsed?.graphs && parsed?.settings)) {
+              setProjectImportPathRef.current = null;
+              setProjectImportTrusted(false);
+              setProjectImportError('');
+              setProjectImportSharingWarning(null);
+              setProjectImportSharingApproved(false);
+              setProjectImportCompatibility(null);
+              setProjectImportOldVersionApproved(false);
+              setProjectImportFile(file);
+            } else if (parsed?.format === 'arc-graph' || Array.isArray(parsed?.nodes) || Array.isArray(parsed?.graph?.nodes)) {
+              await desktopGraphImportHandlerRef.current?.({ name: file.name, text: async () => text });
+            } else {
+              arcEvents.emit('toast:notify', {
+                title: 'Unsupported JSON file',
+                message: `“${name}” is not an ARC Studio project or graph.`,
+                type: 'warning'
+              });
+            }
+          } catch (err) {
+            arcEvents.emit('toast:notify', {
+              title: 'Could not parse file',
+              message: err.message || `Could not read ${name}.`,
+              type: 'error'
+            });
+          }
+        } else {
+          arcEvents.emit('toast:notify', {
+            title: 'Unsupported file type',
+            message: `“${name}” is not an .arcproject or .arcgraph file.`,
+            type: 'warning'
+          });
+        }
+      }
+    };
+
+    window.addEventListener('dragenter', handleDragEnter);
+    window.addEventListener('dragover', handleDragOver);
+    window.addEventListener('dragleave', handleDragLeave);
+    window.addEventListener('drop', handleDrop);
+
+    return () => {
+      window.removeEventListener('dragenter', handleDragEnter);
+      window.removeEventListener('dragover', handleDragOver);
+      window.removeEventListener('dragleave', handleDragLeave);
+      window.removeEventListener('drop', handleDrop);
+    };
+  }, []);
   useEffect(() => {
     let active = true;
     setProjectImportEncrypted(false);
@@ -1507,6 +1658,24 @@ export function App() {
   const functionGraphs = useMemo(() => [...graphLookup.values()].filter((graph) => graph.graphType === 'function'), [graphLookup]);
   const callableGraphs = useMemo(() => [...graphLookup.values()], [graphLookup]);
   const graphValidation = useMemo(() => validateGraph(activeGraph ? { ...activeGraph, variables: graphVariables } : activeGraph, graphLookup, botProfile?.intentSummary, projectVariables), [activeGraph, graphVariables, graphLookup, botProfile?.intentSummary, projectVariables]);
+  const graphValidationReportsList = useMemo(() => {
+    return [...graphLookup.values()].map((graph) => ({
+      graph,
+      report: validateGraph(
+        graph.id === activeGraph?.id ? { ...activeGraph, variables: graphVariables } : graph,
+        graphLookup,
+        botProfile?.intentSummary,
+        projectVariables
+      )
+    }));
+  }, [graphLookup, activeGraph, graphVariables, botProfile?.intentSummary, projectVariables]);
+  const graphValidationReportsMap = useMemo(() => {
+    const map = new Map();
+    for (const item of graphValidationReportsList) {
+      map.set(item.graph.id, item.report);
+    }
+    return map;
+  }, [graphValidationReportsList]);
   const embedStudioOpenForActiveGraph = Boolean(embedStudio && embedStudio.graphId === activeTabId && embedStudio.projectId === activeProjectId);
   const discordTextStudioOpenForActiveGraph = Boolean(discordTextStudio && discordTextStudio.graphId === activeTabId && discordTextStudio.projectId === activeProjectId);
   const permissionStudioOpenForActiveGraph = Boolean(permissionStudio && permissionStudio.graphId === activeTabId && permissionStudio.projectId === activeProjectId);
@@ -2386,6 +2555,9 @@ export function App() {
             return;
           }
           if (msg.type === 'SESSION_EXPIRED') {
+            active = false;
+            window.clearTimeout(reconnectTimer);
+            reconnectTimer = null;
             forceSignOutRef.current?.();
             return;
           }
@@ -3045,17 +3217,18 @@ export function App() {
         } catch { /* malformed/unrelated socket messages. */ }
       };
       currentSocket.onclose = (event) => {
-        const closeReason = String(event?.reason || '').toLowerCase();
         const authenticationClose = event?.code === 1008 && (
-          closeReason.includes('authentication required')
-          || closeReason.includes('session expired')
-          || closeReason.includes('permissions changed')
-          || closeReason.includes('session revoked')
-          || closeReason.includes('change your password')
+          !closeReason
+          || closeReason.includes('authentication')
+          || closeReason.includes('session')
+          || closeReason.includes('permission')
+          || closeReason.includes('password')
         );
         if (authenticationClose) {
-          forceSignOutRef.current?.();
           active = false;
+          window.clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+          forceSignOutRef.current?.();
         }
         if (active) {
           const nextReconnectBases = new Map(liveGraphBaseRef.current);
@@ -3318,27 +3491,51 @@ export function App() {
     const structuralChange = previousIds !== nextIds;
     recordHistory(activeTabId, { force: structuralChange });
     setActiveNodes(nextNodes);
-    setTabs((previous) => previous.map((tab) => tab.id === activeTabId ? { ...tab, nodes: nextNodes, isDirty: true } : tab));
+    setTabs((previous) => previous.map((tab) => {
+      if (tab.id !== activeTabId) return tab;
+      const nextTab = { ...tab, nodes: nextNodes };
+      const saved = savedGraphsRef.current.find((item) => item.id === tab.id);
+      const isDirty = saved ? !sameGraphContent(nextTab, saved) : true;
+      return { ...nextTab, isDirty };
+    }));
   }, [activeGraph, activeNodes, activeTabId, recordHistory]);
 
   const handleTagGroupsChange = useCallback((nextGroups) => {
     const graph = tabs.find((tab) => tab.id === activeTabId);
     if (!graph) return;
     recordHistory(activeTabId, { force: true, graph });
-    setTabs((previous) => previous.map((tab) => tab.id === activeTabId ? { ...tab, tagGroups: nextGroups, isDirty: true } : tab));
+    setTabs((previous) => previous.map((tab) => {
+      if (tab.id !== activeTabId) return tab;
+      const nextTab = { ...tab, tagGroups: nextGroups };
+      const saved = savedGraphsRef.current.find((item) => item.id === tab.id);
+      const isDirty = saved ? !sameGraphContent(nextTab, saved) : true;
+      return { ...nextTab, isDirty };
+    }));
   }, [tabs, activeTabId, recordHistory]);
   const handleGraphArrowsChange = useCallback((nextArrows) => {
     const graph = tabs.find((tab) => tab.id === activeTabId);
     if (!graph) return;
     recordHistory(activeTabId, { graph });
-    setTabs((previous) => previous.map((tab) => tab.id === activeTabId ? { ...tab, arrows: nextArrows, isDirty: true } : tab));
+    setTabs((previous) => previous.map((tab) => {
+      if (tab.id !== activeTabId) return tab;
+      const nextTab = { ...tab, arrows: nextArrows };
+      const saved = savedGraphsRef.current.find((item) => item.id === tab.id);
+      const isDirty = saved ? !sameGraphContent(nextTab, saved) : true;
+      return { ...nextTab, isDirty };
+    }));
   }, [tabs, activeTabId, recordHistory]);
 
   const handleGraphNotesChange = useCallback((nextNotes) => {
     const graph = tabs.find((tab) => tab.id === activeTabId);
     if (!graph) return;
     recordHistory(activeTabId, { graph });
-    setTabs((previous) => previous.map((tab) => tab.id === activeTabId ? { ...tab, notes: nextNotes, isDirty: true } : tab));
+    setTabs((previous) => previous.map((tab) => {
+      if (tab.id !== activeTabId) return tab;
+      const nextTab = { ...tab, notes: nextNotes };
+      const saved = savedGraphsRef.current.find((item) => item.id === tab.id);
+      const isDirty = saved ? !sameGraphContent(nextTab, saved) : true;
+      return { ...nextTab, isDirty };
+    }));
   }, [tabs, activeTabId, recordHistory]);
 
   const openNodeRename = (node) => {
@@ -3382,7 +3579,13 @@ export function App() {
   const handleConnectionsChange = useCallback((nextConnections) => {
     recordHistory(activeTabId, { force: true });
     setActiveConnections(nextConnections);
-    setTabs((previous) => previous.map((tab) => tab.id === activeTabId ? { ...tab, connections: nextConnections, isDirty: true } : tab));
+    setTabs((previous) => previous.map((tab) => {
+      if (tab.id !== activeTabId) return tab;
+      const nextTab = { ...tab, connections: nextConnections };
+      const saved = savedGraphsRef.current.find((item) => item.id === tab.id);
+      const isDirty = saved ? !sameGraphContent(nextTab, saved) : true;
+      return { ...nextTab, isDirty };
+    }));
   }, [activeTabId, recordHistory]);
 
   const handleVariablesChange = useCallback((nextVariables) => {
@@ -3991,7 +4194,15 @@ export function App() {
       if (!graph.name) graph.name = file.name.replace(/\.arcgraph$|\.arc\.json$|\.json$/i, '').replace(/[_-]+/g, ' ') || 'Imported graph';
       let confirmCollaborativeText = false;
       if (externalCollaborativeWorkspace && hasImportableTextContent(graph)) {
-        confirmCollaborativeText = window.confirm(`This graph contains text or request fields. Importing it into “${externalWorkspaceName}” makes this content visible to members with graph read permission and editable by members with graph write permission. Continue?`);
+        confirmCollaborativeText = await requestConfirmation({
+          title: 'Import collaborative text?',
+          subtitle: externalWorkspaceName,
+          message: `This graph contains text or request fields. Importing it into “${externalWorkspaceName}” makes this content visible to members with graph read permission and editable by members with graph write permission. Continue?`,
+          confirmText: 'Continue import',
+          cancelText: 'Cancel',
+          variant: 'primary',
+          icon: ShieldCheck
+        });
         if (!confirmCollaborativeText) return;
       }
       const body = JSON.stringify({ graph, confirmCollaborativeText });
@@ -4019,7 +4230,7 @@ export function App() {
       const corrupted = /integrity|corrupt/i.test(error.message || '');
       arcEvents.emit('toast:notify', { title: corrupted ? 'Graph file may be corrupted' : 'Import failed', message: error.message || 'Could not read this graph file.', type: corrupted ? 'warning' : 'error' });
     }
-  }, [authToken, externalCollaborativeWorkspace, externalWorkspaceName, handleOpenGraph]);
+  }, [authToken, externalCollaborativeWorkspace, externalWorkspaceName, handleOpenGraph, requestConfirmation]);
   desktopGraphImportHandlerRef.current = handleImportGraph;
 
   const handleDeleteSavedGraphs = useCallback(async (graphs) => {
@@ -4030,7 +4241,16 @@ export function App() {
     const confirmation = targets.length === 1
       ? `Delete “${names}” from the Library? This cannot be undone.`
       : `Delete these ${targets.length} saved graphs from the Library? ${names}${extra}. This cannot be undone.`;
-    if (!window.confirm(confirmation)) return;
+    const confirmed = await requestConfirmation({
+      title: targets.length === 1 ? 'Delete saved graph?' : 'Delete saved graphs?',
+      subtitle: 'Library deletion',
+      message: confirmation,
+      confirmText: 'Delete',
+      cancelText: 'Cancel',
+      variant: 'danger',
+      icon: Trash2
+    });
+    if (!confirmed) return;
 
     const deletedIds = [];
     let nextDefaultGraphId = null;
@@ -4069,7 +4289,7 @@ export function App() {
       message: targets.length === 1 ? names : `${deletedIds.length} graphs removed from the Library`,
       type: 'success'
     });
-  }, [activeTabId, authToken, tabs]);
+  }, [activeTabId, authToken, requestConfirmation, tabs]);
   const handleDeleteSavedGraph = useCallback((graph) => handleDeleteSavedGraphs([graph]), [handleDeleteSavedGraphs]);
 
   const handleExportBot = useCallback(async (projectId = activeProjectId, skipReview = false, exportOptions = {}) => {
@@ -4220,7 +4440,9 @@ export function App() {
   }, [activeProjectId, authToken, botProfile?.intentSummary, currentUser, graphLookup, projectVariables, savedGraphs, tabs]);
 
   const applyHistorySnapshot = useCallback((snapshot, graphId) => {
-    const restored = { ...snapshot, isDirty: true };
+    const saved = savedGraphsRef.current.find((graph) => graph.id === graphId);
+    const isDirty = saved ? !sameGraphContent(snapshot, saved) : true;
+    const restored = { ...snapshot, isDirty };
     setTabs((previous) => previous.map((tab) => tab.id === graphId ? restored : tab));
     if (graphId === activeTabId) {
       setActiveNodes(restored.nodes || []);
@@ -4303,8 +4525,16 @@ export function App() {
   const handleValidateGraph = useCallback(() => {
     if (!activeGraph) return;
     const report = validateGraph(activeGraph, graphLookup, botProfile?.intentSummary, projectVariables);
-      setValidationResult({ ...report, graphId: activeGraph.id, graphName: activeGraph?.name || 'Untitled graph' });
+    setValidationResult({ ...report, graphId: activeGraph.id, graphName: activeGraph?.name || 'Untitled graph' });
   }, [activeGraph, graphLookup, botProfile?.intentSummary, projectVariables]);
+
+  const handleOpenGraphReview = useCallback((targetGraph) => {
+    if (!targetGraph) return;
+    const graph = graphLookup.get(targetGraph.id) || targetGraph;
+    handleOpenGraph(graph);
+    const report = validateGraph(graph, graphLookup, botProfile?.intentSummary, projectVariables);
+    setValidationResult({ ...report, graphId: graph.id, graphName: graph.name || 'Untitled graph' });
+  }, [botProfile?.intentSummary, graphLookup, handleOpenGraph, projectVariables]);
 
   const validationStatus = graphValidation.errors.length ? 'error' : graphValidation.warnings.length ? 'warning' : 'success';
   const newNodesUserKey = `${globalThis.location?.origin || 'arc'}:${apiUrl('/api/system/status')}:${desktopMode ? workspaceMode : 'web'}:${currentUser?.id || currentUser?.username || 'guest'}`;
@@ -4354,7 +4584,8 @@ export function App() {
     const node = makeNode(type, nodeTopLeftAtCenter(type, center));
     appendNodeToGraph(targetGraph, node);
     setPaletteNodePosition(null);
-  }, [activeGraph, appendNodeToGraph, failedWorkspaceNodeTypes, handleAddBlankGraph, makeNode, paletteNodePosition, supportedWorkspaceNodeTypes]);
+    recordLibraryItemUsage(activeProjectId, 'nodes', type);
+  }, [activeGraph, activeProjectId, appendNodeToGraph, failedWorkspaceNodeTypes, handleAddBlankGraph, makeNode, paletteNodePosition, supportedWorkspaceNodeTypes]);
 
   const openPaletteAt = useCallback((position = null) => {
     const validPosition = Number.isFinite(position?.x) && Number.isFinite(position?.y) ? position : null;
@@ -4402,7 +4633,20 @@ export function App() {
     }
     if (nodesToAdd.length) appendNodeToGraph(targetGraph, nodesToAdd);
     else if (node) appendNodeToGraph(targetGraph, node);
-  }, [activeGraph, appendNodeToGraph, availableVariables, graphLookup, handleAddBlankGraph, makeNode, nodePrefabs, supportedWorkspaceNodeTypes]);
+
+    if (payload?.type === 'multi-node') {
+      for (const type of payload.nodeTypes || []) recordLibraryItemUsage(activeProjectId, 'nodes', type);
+    } else if (payload?.type === 'graph-call') {
+      recordLibraryItemUsage(activeProjectId, 'graphs', payload.graphId);
+    } else if (payload?.type === 'embed-asset') {
+      recordLibraryItemUsage(activeProjectId, 'embeds', payload.id);
+    } else if (payload?.nodeType) {
+      recordLibraryItemUsage(activeProjectId, 'nodes', payload.nodeType);
+    } else if (payload?.type === 'prefab') {
+      const prefab = nodePrefabs.find((item) => item.id === payload.prefabId);
+      if (prefab?.node?.type) recordLibraryItemUsage(activeProjectId, 'nodes', prefab.node.type);
+    }
+  }, [activeGraph, activeProjectId, appendNodeToGraph, availableVariables, graphLookup, handleAddBlankGraph, makeNode, nodePrefabs, supportedWorkspaceNodeTypes]);
 
   const handleRequestSaveNodePrefab = useCallback((node) => {
     if (!node) return;
@@ -4943,7 +5187,15 @@ export function App() {
 
   const handleSaveComponentsV2AsAsset = useCallback(async () => {
     if (!embedStudio?.componentsV2Enabled) return;
-    const proposedName = window.prompt('Name this Components V2 layout for the library:', String(embedStudio.name || 'Untitled Components V2'));
+    const proposedName = await requestPrompt({
+      title: 'Name Components V2 layout',
+      subtitle: 'Add to the component library',
+      label: 'Layout name',
+      defaultValue: String(embedStudio.name || 'Untitled Components V2'),
+      placeholder: 'e.g. Navigation Header',
+      confirmText: 'Save layout',
+      icon: LayoutGrid
+    });
     if (proposedName === null) return;
     const name = proposedName.trim();
     if (!name) {
@@ -4954,7 +5206,7 @@ export function App() {
       const asset = await persistComponentsV2Asset({ ...embedStudio, id: null, name });
       arcEvents.emit('toast:notify', { title: 'Components V2 saved', message: `${asset.name} added to Components V2 in the library.`, type: 'success' });
     } catch (error) { arcEvents.emit('toast:notify', { title: 'Components V2 not saved', message: error.message, type: 'error' }); }
-  }, [embedStudio, persistComponentsV2Asset]);
+  }, [embedStudio, persistComponentsV2Asset, requestPrompt]);
 
   const handleSaveEmbedShortcut = useCallback(async () => {
     const studio = embedStudioRef.current;
@@ -4971,14 +5223,30 @@ export function App() {
         return false;
       }
     }
-    const proposedName = window.prompt('Name this embed for the library:', String(studio.name || 'Untitled embed'));
+    const proposedName = await requestPrompt({
+      title: 'Name embed for library',
+      subtitle: 'Add to the embed library',
+      label: 'Embed name',
+      defaultValue: String(studio.name || 'Untitled embed'),
+      placeholder: 'e.g. Welcome embed',
+      confirmText: 'Continue',
+      icon: Sparkles
+    });
     if (proposedName === null) return false;
     const name = proposedName.trim();
     if (!name) {
       arcEvents.emit('toast:notify', { title: 'Embed not saved', message: 'Enter a name before saving this embed to the library.', type: 'warning' });
       return false;
     }
-    if (!window.confirm(`Save “${name}” to the Embed Library?`)) return false;
+    const confirmed = await requestConfirmation({
+      title: 'Save embed to library?',
+      subtitle: name,
+      message: `Save “${name}” to the Embed Library?`,
+      confirmText: 'Save to library',
+      variant: 'primary',
+      icon: Sparkles
+    });
+    if (!confirmed) return false;
     let asset;
     try { asset = await persistEmbedAsset({ ...studio, id: null, name }); }
     catch (error) {
@@ -4996,7 +5264,7 @@ export function App() {
       setEmbedStudio((current) => current?.collabId === studio.collabId ? { ...current, ...asset, mode: 'asset', isDirty: false } : current);
     }
     return true;
-  }, [handleSaveEmbedStudio, persistComponentsV2Asset, persistEmbedAsset, persistGraph]);
+  }, [handleSaveEmbedStudio, persistComponentsV2Asset, persistEmbedAsset, persistGraph, requestConfirmation, requestPrompt]);
   saveEmbedShortcutRef.current = handleSaveEmbedShortcut;
 
   const handleSaveTextStudio = useCallback(() => {
@@ -5246,31 +5514,60 @@ export function App() {
     setProjectBusy(true);
     try {
       if (project.id === activeProjectId) await ensureWorkspaceGraphsSaved();
-      let response = await fetch(apiUrl(`/api/projects/${encodeURIComponent(project.id)}/export`), { headers: { 'x-arc-token': authToken } });
+      const response = await fetch(apiUrl(`/api/projects/${encodeURIComponent(project.id)}/export`), { headers: { 'x-arc-token': authToken } });
       if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Could not export the project.'); }
-      let bundle = await response.json();
-      let includeSecrets = false;
-      if (bundle.sensitiveData?.omittedFields > 0 && window.confirm(`This project contains ${bundle.sensitiveData.omittedFields} sensitive field(s). Eligible secrets are omitted by default. Include them in the exported file?\n\nDiscord bot tokens are always removed from .arcproject files.`)) {
-        includeSecrets = true;
-        response = await fetch(apiUrl(`/api/projects/${encodeURIComponent(project.id)}/export?includeSecrets=1`), { headers: { 'x-arc-token': authToken } });
-        if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Could not export the project.'); }
-        bundle = await response.json();
+      const bundle = await response.json();
+      setProjectExportDialog({
+        project,
+        bundle,
+        omittedFields: bundle.sensitiveData?.omittedFields || 0,
+        includeSecrets: false,
+        passwordProtect: false,
+        password: '',
+        confirmPassword: '',
+        error: '',
+        isSubmitting: false
+      });
+    } catch (error) {
+      arcEvents.emit('toast:notify', { title: 'Project export failed', message: error.message || 'Could not prepare the project export.', type: 'error' });
+    } finally {
+      setProjectBusy(false);
+    }
+  };
+
+  const handleExecuteProjectExport = async (forceEncryption) => {
+    if (!projectExportDialog || projectExportDialog.isSubmitting) return;
+    const shouldEncrypt = typeof forceEncryption === 'boolean' ? forceEncryption : projectExportDialog.passwordProtect;
+    const { project, includeSecrets, password, confirmPassword } = projectExportDialog;
+    if (shouldEncrypt) {
+      if (!password || password.length < 12 || password.length > 1024) {
+        setProjectExportDialog((cur) => ({ ...cur, passwordProtect: true, error: 'Use an export password between 12 and 1,024 characters.' }));
+        return;
       }
-      const filename = `${String(project.name || 'project').replace(/[\\/:*?"<>|]/g, '_')}.arcproject`;
-      if (window.confirm('Encrypt this project file with a password?')) {
-        const password = window.prompt('Choose an export password with at least 12 characters. You will need it to import this file.');
-        if (password === null) return;
-        if (password.length < 12 || password.length > 1024) throw new Error('Use an export password between 12 and 1,024 characters.');
-        const confirmation = window.prompt('Enter the export password again to confirm it.');
-        if (confirmation === null) return;
-        if (password !== confirmation) throw new Error('The export passwords do not match.');
-        response = await fetch(apiUrl(`/api/projects/${encodeURIComponent(project.id)}/export/encrypted`), {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
+      if (password !== confirmPassword) {
+        setProjectExportDialog((cur) => ({ ...cur, passwordProtect: true, error: 'The export passwords do not match.' }));
+        return;
+      }
+    }
+    setProjectExportDialog((cur) => ({ ...cur, isSubmitting: true, error: '' }));
+    try {
+      let bundle;
+      if (shouldEncrypt) {
+        const response = await fetch(apiUrl(`/api/projects/${encodeURIComponent(project.id)}/export/encrypted`), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
           body: JSON.stringify({ password, includeSecrets })
         });
         if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Could not encrypt the project export.'); }
         bundle = await response.json();
+      } else if (includeSecrets) {
+        const response = await fetch(apiUrl(`/api/projects/${encodeURIComponent(project.id)}/export?includeSecrets=1`), { headers: { 'x-arc-token': authToken } });
+        if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Could not export the project.'); }
+        bundle = await response.json();
+      } else {
+        bundle = projectExportDialog.bundle;
       }
+      const filename = `${String(project.name || 'project').replace(/[\\/:*?"<>|]/g, '_')}.arcproject`;
       const contents = JSON.stringify(bundle, null, 2);
       if (desktopMode) {
         const invoke = window.__TAURI_INTERNALS__?.invoke;
@@ -5293,8 +5590,10 @@ export function App() {
         window.setTimeout(() => URL.revokeObjectURL(url), 1000);
         arcEvents.emit('toast:notify', { title: 'Project exported', message: `${filename} was downloaded.${bundle.format === 'arc-project-encrypted' ? ' Password protected.' : ''}`, type: 'success' });
       }
-    } catch (error) { arcEvents.emit('toast:notify', { title: 'Project export failed', message: error.message || 'Could not export the project.', type: 'error' }); }
-    finally { setProjectBusy(false); }
+      setProjectExportDialog(null);
+    } catch (error) {
+      setProjectExportDialog((cur) => cur ? { ...cur, error: error.message || 'Could not export the project.', isSubmitting: false } : null);
+    }
   };
 
   const handleImportProject = async () => {
@@ -5311,6 +5610,7 @@ export function App() {
       if (response.status === 409 && data.code === 'IMPORT_SHARED_CONTENT_CONFIRMATION_REQUIRED') {
         setProjectImportSharingWarning({ workspaceName: String(data.workspaceName || externalWorkspaceName).trim() || externalWorkspaceName });
         setProjectImportSharingApproved(false);
+        setProjectImportError('');
         return;
       }
       if (response.status === 409 && ['PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED', 'PROJECT_REQUIRES_NEWER_ARC'].includes(data.code)) {
@@ -5336,6 +5636,10 @@ export function App() {
         : { title: 'Project imported', message: imported?.name || 'Project added to your workspace', type: 'success' });
     } catch (error) {
       setProjectImportError(error.message);
+      if (/password/i.test(error.message || '')) {
+        setProjectImportSharingWarning(null);
+        setProjectImportCompatibility(null);
+      }
       if (/integrity|corrupt/i.test(error.message || '')) arcEvents.emit('toast:notify', { title: 'Project file may be corrupted', message: error.message, type: 'warning', duration: 7000 });
     }
     finally { setProjectBusy(false); }
@@ -6797,7 +7101,7 @@ export function App() {
           {isLocked && <div className="canvas-lock-state"><LockKeyhole size={13} /> Locked</div>}
           </>}
 
-          {isLibraryOpen && <Suspense fallback={<LazyFeatureLoading label="Opening Library…" kind="sidebar" isDesktop={desktopMode} width={sidebarWidths.library} />}><GraphLibraryPanel definitions={availableNodeDefinitions} newNodesUserKey={newNodesUserKey} graphActivity={projectCollaboration.projectId === activeProjectId ? projectCollaboration.graphActivity || [] : []} sidebarWidth={sidebarWidths.library} onSidebarResize={(width) => handleSidebarResize('library', width)} activeSection={librarySection} onActiveSectionChange={setLibrarySection} usageScope={activeProjectId} desktopMode={desktopMode} canImportGraph={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onImportGraph={handleImportGraph} graphs={savedGraphs} templates={graphTemplates} snapshots={graphSnapshots} nodePrefabs={nodePrefabs} embedAssets={embedAssets} graphVariables={availableVariables} defaultGraphId={defaultGraphId} activeGraph={activeGraph} openGraphIds={tabs.map((tab) => tab.id)} activeTabId={activeTabId} onClose={() => setIsLibraryOpen(false)} onOpenGraph={handleOpenGraph} onUseTemplate={(template) => handleAddTab(template)} onCreateFunction={handleAddFunctionGraph} onDeleteGraph={handleDeleteSavedGraph} onDeleteGraphs={handleDeleteSavedGraphs} onDuplicateGraph={handleDuplicateGraph} onRenameGraph={handleRenameGraph} onSaveTemplate={handleSaveGraphTemplate} onDeleteTemplate={handleDeleteGraphTemplate} onSetDefault={handleSetDefaultGraph} onExportBot={handleExportBot} exportInProgress={exportInProgress} onAddNode={handlePlaceNode} onAddPrefab={(prefab) => handleDropNode({ type: 'prefab', prefabId: prefab.id })} onDeletePrefab={handleDeleteNodePrefab} onCreateEmbed={createEmbedAsset} onCreateComponentsV2={createComponentsV2Asset} onOpenEmbed={openEmbedAsset} onDeleteEmbed={handleDeleteEmbedAsset} onManageVariables={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(true); }} onCreateSnapshot={async (graph, name) => {
+          {isLibraryOpen && <Suspense fallback={<LazyFeatureLoading label="Opening Library…" kind="sidebar" isDesktop={desktopMode} width={sidebarWidths.library} />}><GraphLibraryPanel definitions={availableNodeDefinitions} newNodesUserKey={newNodesUserKey} graphActivity={projectCollaboration.projectId === activeProjectId ? projectCollaboration.graphActivity || [] : []} sidebarWidth={sidebarWidths.library} onSidebarResize={(width) => handleSidebarResize('library', width)} activeSection={librarySection} onActiveSectionChange={setLibrarySection} usageScope={activeProjectId} desktopMode={desktopMode} canImportGraph={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onImportGraph={handleImportGraph} graphs={savedGraphs} graphValidationReports={graphValidationReportsMap} templates={graphTemplates} snapshots={graphSnapshots} nodePrefabs={nodePrefabs} embedAssets={embedAssets} graphVariables={availableVariables} defaultGraphId={defaultGraphId} activeGraph={activeGraph} openGraphIds={tabs.map((tab) => tab.id)} activeTabId={activeTabId} onClose={() => setIsLibraryOpen(false)} onOpenGraph={handleOpenGraph} onOpenGraphReview={handleOpenGraphReview} onUseTemplate={(template) => handleAddTab(template)} onCreateFunction={handleAddFunctionGraph} onDeleteGraph={handleDeleteSavedGraph} onDeleteGraphs={handleDeleteSavedGraphs} onDuplicateGraph={handleDuplicateGraph} onRenameGraph={handleRenameGraph} onSaveTemplate={handleSaveGraphTemplate} onDeleteTemplate={handleDeleteGraphTemplate} onSetDefault={handleSetDefaultGraph} onExportBot={handleExportBot} exportInProgress={exportInProgress} onAddNode={handlePlaceNode} onAddPrefab={(prefab) => handleDropNode({ type: 'prefab', prefabId: prefab.id })} onDeletePrefab={handleDeleteNodePrefab} onCreateEmbed={createEmbedAsset} onCreateComponentsV2={createComponentsV2Asset} onOpenEmbed={openEmbedAsset} onDeleteEmbed={handleDeleteEmbedAsset} onManageVariables={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(true); }} onCreateSnapshot={async (graph, name) => {
             await ensureWorkspaceGraphsSaved();
             const response = await fetch(apiUrl(`/api/graphs/${encodeURIComponent(graph.id)}/snapshots`), { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken }, body: JSON.stringify({ graph, name }) });
             const data = await response.json();
@@ -6903,7 +7207,7 @@ export function App() {
         graphs={[...graphLookup.values()]}
         emojiCacheScope={`${workspaceMode}:${activeProjectId}:${workspaceRevision}`}
         graphLookup={graphLookup}
-        graphValidationReports={[...graphLookup.values()].map((graph) => ({ graph, report: validateGraph(graph, graphLookup, botProfile?.intentSummary, projectVariables) }))}
+        graphValidationReports={graphValidationReportsList}
         graphNodes={activeNodes}
         nodeDefinitions={availableNodeDefinitions}
         authToken={authToken}
@@ -7123,7 +7427,7 @@ export function App() {
         title="Import project file?"
         subtitle={projectImportFile?.name || ''}
         icon={ShieldCheck}
-        footer={<><Button variant="secondary" disabled={projectBusy} onClick={cancelProjectImport}>Cancel</Button><Button icon={FileUp} loading={projectBusy} disabled={!projectImportTrusted || projectBusy || projectImportSharingWarning && !projectImportSharingApproved || projectImportEncrypted && projectImportPassword.length < 12 || projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' || projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && !projectImportOldVersionApproved} onClick={handleImportProject}>{projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' ? 'Newer ARC Studio required' : projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' ? 'Import older project' : projectImportSharingWarning && projectImportSharingApproved ? 'Import project' : 'Trust and import'}</Button></>}
+        footer={<><Button variant="secondary" disabled={projectBusy} onClick={cancelProjectImport}>Cancel</Button><Button icon={FileUp} loading={projectBusy} disabled={!projectImportTrusted || projectBusy || projectImportSharingWarning && !projectImportSharingApproved || (!projectImportSharingWarning && !projectImportCompatibility && projectImportEncrypted && projectImportPassword.length < 12) || projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' || projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && !projectImportOldVersionApproved} onClick={handleImportProject}>{projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' ? 'Newer ARC Studio required' : projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' ? 'Import older project' : projectImportSharingWarning ? 'Import project' : 'Trust and import'}</Button></>}
       >
         <div className="project-import-warning">
           <strong>Only import a project from someone you trust.</strong>
@@ -7133,8 +7437,30 @@ export function App() {
             <p>This project contains text or request fields. Importing it into “{projectImportSharingWarning.workspaceName}” makes that content visible to members with graph read permission and editable by members with graph write permission.</p>
             <label><input type="checkbox" checked={projectImportSharingApproved} onChange={(event) => setProjectImportSharingApproved(event.target.checked)} /><span>I understand who can access this content.</span></label>
           </div>}
-          {projectImportEncrypted && <label className="project-import-password"><span>Export password</span><input type="password" autoComplete="current-password" value={projectImportPassword} onChange={(event) => setProjectImportPassword(event.target.value)} placeholder="Enter the password used to encrypt this file" /></label>}
-          <label><input type="checkbox" checked={projectImportTrusted} onChange={(event) => setProjectImportTrusted(event.target.checked)} /><span>I trust the source of this project file.</span></label>
+          {!projectImportSharingWarning && !projectImportCompatibility && (
+            <>
+              {projectImportEncrypted && (
+                <div className="project-import-password-card">
+                  <PasswordInput
+                    label="Export password"
+                    placeholder="Enter password used to encrypt this file"
+                    value={projectImportPassword}
+                    autoComplete="one-time-code"
+                    name="arc_project_decryption_passphrase"
+                    id="arc-project-decryption-passphrase"
+                    data-lpignore="true"
+                    data-1p-ignore="true"
+                    data-form-type="other"
+                    onChange={(event) => {
+                      setProjectImportPassword(event.target.value);
+                      setProjectImportError('');
+                    }}
+                  />
+                </div>
+              )}
+              <label className="project-import-checkbox-label"><input type="checkbox" checked={projectImportTrusted} onChange={(event) => setProjectImportTrusted(event.target.checked)} /><span>I trust the source of this project file.</span></label>
+            </>
+          )}
           {projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && <div className="project-import-compatibility-warning" role="alert"><strong>Older project version</strong><p>{projectImportCompatibility.unknownProjectVersion ? 'This file does not record an ARC Studio version.' : `Created with ARC Studio ${projectImportCompatibility.projectVersion}; this is at least 10 releases older than ${projectImportCompatibility.currentVersion}.`} Its graphs or settings may behave differently. Review it before using it.</p><label><input type="checkbox" checked={projectImportOldVersionApproved} onChange={(event) => setProjectImportOldVersionApproved(event.target.checked)} /><span>I understand and want to import this older project.</span></label></div>}
           {projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' && <div className="project-import-compatibility-warning" role="alert"><strong>Update ARC Studio to import this project</strong><p>Created with ARC Studio {projectImportCompatibility.projectVersion}. This workspace runs {projectImportCompatibility.currentVersion || 'an older version'}; open it with ARC Studio {projectImportCompatibility.projectVersion} or newer.</p></div>}
           {projectImportError && <p className="field-error" role="alert">{projectImportError}</p>}
@@ -7212,7 +7538,180 @@ export function App() {
       >
         <ReleaseNotes>{releaseNotesNotice?.notes}</ReleaseNotes>
       </Modal>
+      <Modal
+        isOpen={Boolean(projectExportDialog)}
+        onClose={() => { if (!projectExportDialog?.isSubmitting) setProjectExportDialog(null); }}
+        title="Export project"
+        subtitle={projectExportDialog ? `${projectExportDialog.project.name || 'Project'} (.arcproject)` : ''}
+        icon={Download}
+        footer={<>
+          <Button
+            variant="secondary"
+            disabled={projectExportDialog?.isSubmitting}
+            onClick={() => setProjectExportDialog(null)}
+          >
+            Cancel
+          </Button>
+          <Button
+            icon={projectExportDialog?.passwordProtect ? LockKeyhole : Download}
+            loading={projectExportDialog?.isSubmitting}
+            disabled={projectExportDialog?.isSubmitting || (projectExportDialog?.passwordProtect && (!projectExportDialog?.password || projectExportDialog.password.length < 12))}
+            onClick={() => handleExecuteProjectExport(projectExportDialog?.passwordProtect)}
+          >
+            Export bot
+          </Button>
+        </>}
+      >
+        {projectExportDialog && (
+          <div className="project-export-body">
+            <p className="project-export-summary">
+              Export this project including its graphs, settings, and assets into an ARC Studio project bundle.
+            </p>
+
+            {projectExportDialog.omittedFields > 0 && (
+              <div className="project-export-option-card">
+                <label className="project-export-checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={projectExportDialog.includeSecrets}
+                    onChange={(e) => setProjectExportDialog((cur) => cur ? { ...cur, includeSecrets: e.target.checked } : null)}
+                  />
+                  <div>
+                    <strong>Include sensitive secrets</strong>
+                    <p>
+                      This project contains {projectExportDialog.omittedFields} sensitive field{projectExportDialog.omittedFields === 1 ? '' : 's'}.
+                      Eligible secrets are omitted by default for safety. Discord bot tokens are always stripped.
+                    </p>
+                  </div>
+                </label>
+              </div>
+            )}
+
+            <div className={`project-export-option-card ${projectExportDialog.passwordProtect ? 'is-active' : ''}`}>
+              <label className="project-export-checkbox-label">
+                <input
+                  type="checkbox"
+                  checked={projectExportDialog.passwordProtect}
+                  onChange={(e) => setProjectExportDialog((cur) => cur ? { ...cur, passwordProtect: e.target.checked, error: '' } : null)}
+                />
+                <div>
+                  <strong>Password protect file</strong>
+                  <p>Encrypt this project bundle using AES-GCM. The password will be required when importing.</p>
+                </div>
+              </label>
+
+              {projectExportDialog.passwordProtect && (
+                <div className="project-export-passwords">
+                  <PasswordInput
+                    label="Export password"
+                    placeholder="At least 12 characters"
+                    value={projectExportDialog.password}
+                    autoComplete="one-time-code"
+                    name="arc_export_encryption_key"
+                    id="arc-export-encryption-key"
+                    data-lpignore="true"
+                    data-1p-ignore="true"
+                    data-form-type="other"
+                    onChange={(e) => setProjectExportDialog((cur) => cur ? { ...cur, password: e.target.value, error: '' } : null)}
+                  />
+                  <PasswordInput
+                    label="Confirm password"
+                    placeholder="Re-enter password"
+                    value={projectExportDialog.confirmPassword}
+                    autoComplete="one-time-code"
+                    name="arc_export_encryption_key_confirm"
+                    id="arc-export-encryption-key-confirm"
+                    data-lpignore="true"
+                    data-1p-ignore="true"
+                    data-form-type="other"
+                    onChange={(e) => setProjectExportDialog((cur) => cur ? { ...cur, confirmPassword: e.target.value, error: '' } : null)}
+                  />
+                </div>
+              )}
+            </div>
+
+            {projectExportDialog.error && (
+              <p className="field-error" role="alert">{projectExportDialog.error}</p>
+            )}
+          </div>
+        )}
+      </Modal>
+      <Modal
+        isOpen={Boolean(confirmDialog)}
+        onClose={() => confirmDialog?.resolve?.(false)}
+        title={confirmDialog?.title || 'Confirm action'}
+        subtitle={confirmDialog?.subtitle}
+        icon={confirmDialog?.icon || AlertCircle}
+        footer={<>
+          <Button
+            variant="secondary"
+            onClick={() => confirmDialog?.resolve?.(false)}
+          >
+            {confirmDialog?.cancelText || 'Cancel'}
+          </Button>
+          <Button
+            variant={confirmDialog?.variant || 'danger'}
+            onClick={() => confirmDialog?.resolve?.(true)}
+          >
+            {confirmDialog?.confirmText || 'Confirm'}
+          </Button>
+        </>}
+      >
+        {confirmDialog && (
+          <p className="modal-dialog-message">{confirmDialog.message}</p>
+        )}
+      </Modal>
+      <Modal
+        isOpen={Boolean(promptDialog)}
+        onClose={() => promptDialog?.resolve?.(null)}
+        title={promptDialog?.title || 'Enter value'}
+        subtitle={promptDialog?.subtitle}
+        icon={promptDialog?.icon || FileCode2}
+        footer={<>
+          <Button
+            variant="secondary"
+            onClick={() => promptDialog?.resolve?.(null)}
+          >
+            {promptDialog?.cancelText || 'Cancel'}
+          </Button>
+          <Button
+            disabled={!promptDialog?.value?.trim()}
+            onClick={() => promptDialog?.resolve?.(promptDialog.value)}
+          >
+            {promptDialog?.confirmText || 'Save'}
+          </Button>
+        </>}
+      >
+        {promptDialog && (
+          <form
+            className="modal-prompt-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (promptDialog.value?.trim()) promptDialog.resolve(promptDialog.value);
+            }}
+          >
+            <TextInput
+              autoFocus
+              label={promptDialog.label || 'Value'}
+              placeholder={promptDialog.placeholder || ''}
+              value={promptDialog.value}
+              onChange={(e) => setPromptDialog((cur) => cur ? { ...cur, value: e.target.value } : null)}
+            />
+          </form>
+        )}
+      </Modal>
       <LazyMountedFeature Component={UserManagementModal} isOpen={!desktopMode && isUserMgmtOpen} loadingLabel="Opening Team access…" isDesktop={desktopMode} onClose={() => setIsUserMgmtOpen(false)} authToken={authToken} currentUsername={currentUser?.username} currentUserId={currentUser?.id} onCurrentUserChange={setCurrentUser} />
+      {isDraggingFileOver && (
+        <div className="global-file-drop-overlay" aria-label="Drop file to import">
+          <div className="global-file-drop-card">
+            <div className="global-file-drop-icon">
+              <FileUp size={44} />
+            </div>
+            <h2>Import project or graph</h2>
+            <p>Drop <code>.arcproject</code> or <code>.arcgraph</code> to import into ARC Studio</p>
+          </div>
+        </div>
+      )}
       </div>
       <ToastContainer />
       <TooltipLayer />
@@ -8064,3 +8563,5 @@ function graphPin(node, direction, pinId, variables, graphLookup = null, connect
   if (direction === 'inputs') pins = [...pins, ...getNodeArgumentPins(node, pins, connections)];
   return pins.find((pin) => pin.id === pinId) || null;
 }
+
+// contributors: @paccman-0, @relentiousdragon
