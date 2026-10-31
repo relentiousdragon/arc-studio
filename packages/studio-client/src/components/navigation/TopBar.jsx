@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { getArcUiScale } from '../../core/uiScale.js';
 import { onPageBlur } from '../../core/pageFocus.js';
 import { getContrastTextColor } from '../../core/colorContrast.js';
@@ -145,7 +146,7 @@ export function TopBar({
         }} data-tooltip="New graph · right-click for quick actions" aria-label="New graph"><FilePlus2 size={16} />{tabs.length === 0 && <span>New</span>}</button>
       </div>
 
-      {newGraphMenu && <div ref={newGraphMenuRef} className="graph-context-menu new-graph-context-menu" style={{ left: newGraphMenu.x, top: newGraphMenu.y }} onPointerDown={(event) => event.stopPropagation()}>
+      {newGraphMenu && createPortal(<div ref={newGraphMenuRef} className="graph-context-menu new-graph-context-menu" style={{ left: newGraphMenu.x, top: newGraphMenu.y, transform: `scale(${uiScale})`, transformOrigin: 'top left' }} onPointerDown={(event) => event.stopPropagation()}>
         <button onClick={() => { onAddTab?.(); setNewGraphMenu(null); }}><FilePlus2 size={14} /> New graph</button>
         <button onClick={() => { onAddBlankGraph?.(); setNewGraphMenu(null); }}><FilePlus2 size={14} /> Create new blank graph</button>
         <button onClick={() => { onAddFunctionGraph?.(); setNewGraphMenu(null); }}><Calculator size={14} /> New function graph</button>
@@ -154,14 +155,14 @@ export function TopBar({
           <div className="context-menu-heading"><BookmarkPlus size={13} /> Templates</div>
           {graphTemplates.slice(0, 4).map((template) => <button key={template.id} onClick={() => { onUseTemplate?.(template); setNewGraphMenu(null); }}><FilePlus2 size={14} /><span className="context-menu-item-label">{template.name || 'Untitled template'}</span></button>)}
         </>}
-      </div>}
+      </div>, document.body)}
 
-      {tabMenu && <div ref={tabMenuRef} className="graph-context-menu tab-context-menu" style={{ left: tabMenu.x, top: tabMenu.y }} onPointerDown={(event) => event.stopPropagation()}>
+      {tabMenu && createPortal(<div ref={tabMenuRef} className="graph-context-menu tab-context-menu" style={{ left: tabMenu.x, top: tabMenu.y, transform: `scale(${uiScale})`, transformOrigin: 'top left' }} onPointerDown={(event) => event.stopPropagation()}>
         <button onClick={() => { onRenameGraph?.(tabMenu.tab); setTabMenu(null); }}><Pencil size={14} /> Rename graph</button>
         <button onClick={() => { onDuplicateGraph?.(tabMenu.tab); setTabMenu(null); }}><Copy size={14} /> Duplicate graph</button>
         <button onClick={() => { onSetDefault?.(tabMenu.tab); setTabMenu(null); }}><Star size={14} fill={defaultGraphId === tabMenu.tab.id ? 'currentColor' : 'none'} /> {defaultGraphId === tabMenu.tab.id ? 'Default for new graphs' : 'Set as new graph default'}</button>
         <button onClick={() => { onCloseTab?.(tabMenu.tab.id); setTabMenu(null); }}><X size={14} /> Close graph</button>
-      </div>}
+      </div>, document.body)}
 
       <div className="topbar-actions">
         <button className="topbar-icon-button history-action" onClick={onUndo} disabled={!canUndo} title={`Undo (${shortcutModifier} + Z)`} aria-label="Undo"><Undo2 size={15} /></button>
