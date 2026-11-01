@@ -46,7 +46,13 @@ function executePresenceNodeDirect(type, data = {}, client = null) {
   const logs = [];
   const handled = executePresenceNode({ type, data }, {
     resolveInput: (pinId, fallback) => data[pinId] ?? fallback,
-    context: client ? { client: { setPresence: (presence) => presences.push(presence) } } : {},
+    context: client ? { client: {
+      ...(typeof client === 'object' ? client : {}),
+      setPresence: (presence) => {
+        presences.push(presence);
+        if (typeof client === 'object') client.presence = { ...client.presence, ...presence };
+      }
+    } } : {},
     log: (message) => logs.push(message)
   });
   return { handled, presences, logs };
@@ -83,6 +89,16 @@ test('data node runtime preserves value conversion, path, and regex behavior', (
     fallback: 'blocked'
   }), { value: 'blocked', exists: false });
   assert.equal(evaluateDataNode('data_regex', { text: 'aaa', pattern: '(a+)+$', flags: 'g' }, {}).valid, false);
+});
+
+test('current timestamp returns matching Unix milliseconds and ISO time', () => {
+  const before = Date.now();
+  const result = evaluateDataNode('data_current_timestamp');
+  const after = Date.now();
+
+  assert.ok(Number.isInteger(result.timestamp_ms));
+  assert.ok(result.timestamp_ms >= before && result.timestamp_ms <= after);
+  assert.equal(result.iso, new Date(result.timestamp_ms).toISOString());
 });
 
 test('logic node runtime preserves boolean and dynamic XOR behavior', () => {
@@ -355,32 +371,32 @@ test('GraphRunner delegates simulated HTTP actions and preserves exec/debug outp
   assert.equal(step.outputs.find((output) => output.pinId === 'error').value, 'HTTP requests are disabled in the Offline Simulator.');
 });
 
-test('custom presence runtime builds bounded text and animated custom emoji payloads', () => {
-  const { handled, presences, logs } = executePresenceNodeDirect('action_set_custom_status', {
-    status_text: '  Hello   <a:party_time:12345678901234567>  '
+test('Set Presence supports optional custom status and both activity types', () => {
+  const { handled, presences } = executePresenceNodeDirect('action_set_presence', {
+    status: 'dnd',
+    activity_text: 'Building',
+    activity_type: 0,
+    custom_status_text: '  Hello   <a:party_time:12345678901234567>  '
   }, true);
 
   assert.equal(handled, true);
   assert.deepEqual(presences, [{
-    activities: [{
-      name: 'Custom Status',
-      type: 4,
-      state: 'Hello',
-      emoji: { name: 'party_time', id: '12345678901234567', animated: true }
-    }]
+    status: 'dnd',
+    activities: [
+      { name: 'Building', type: 0 },
+      { name: 'Custom Status', type: 4, state: 'Hello', emoji: { name: 'party_time', id: '12345678901234567', animated: true } }
+    ]
   }]);
-  assert.match(logs[0], /Updating custom status: Hello/);
-});
 
-test('custom presence runtime supports clearing and caps the custom status text', () => {
-  const cleared = executePresenceNodeDirect('action_set_custom_status', { status_text: '   ' }, true);
-  assert.deepEqual(cleared.presences, [{ activities: [] }]);
-  assert.match(cleared.logs[0], /custom status: cleared/);
-
-  const longStatus = executePresenceNodeDirect('action_set_custom_status', {
-    status_text: 'x'.repeat(140)
+  const customOnly = executePresenceNodeDirect('action_set_presence', {
+    activity_text: '',
+    custom_status_text: 'x'.repeat(140)
   }, true);
-  assert.equal(longStatus.presences[0].activities[0].state.length, 128);
+  assert.equal(customOnly.presences[0].activities.length, 1);
+  assert.equal(customOnly.presences[0].activities[0].state.length, 128);
+
+  const cleared = executePresenceNodeDirect('action_set_presence', { activity_text: '', custom_status_text: '   ' }, true);
+  assert.deepEqual(cleared.presences[0].activities, []);
 });
 
 test('bot presence runtime normalizes status and activity inputs and validates stream URLs', () => {
@@ -391,7 +407,7 @@ test('bot presence runtime normalizes status and activity inputs and validates s
   }, true);
   assert.deepEqual(normalized.presences, [{
     status: 'online',
-    activities: [{ name: 'ARC Studio', type: 0 }]
+    activities: []
   }]);
 
   const streaming = executePresenceNodeDirect('action_set_presence', {
@@ -413,6 +429,232 @@ test('bot presence runtime normalizes status and activity inputs and validates s
   }
 });
 
+test('deprecated custom status node warns and continues without changing presence', async () => {
+  const logs = [];
+  const presenceUpdates = [];
+  const nodes = [
+    { id: 'event', type: 'event_message_create' },
+    { id: 'legacy', type: 'action_set_custom_status', data: { status_text: 'Old status' } },
+    { id: 'next', type: 'action_console_log', data: { message: 'continued' } }
+  ];
+  const connections = [
+    { sourceNodeId: 'event', sourcePinId: 'exec', targetNodeId: 'legacy', targetPinId: 'exec' },
+    { sourceNodeId: 'legacy', sourcePinId: 'exec', targetNodeId: 'next', targetPinId: 'exec' }
+  ];
+  const result = await GraphRunner.execute({ id: 'legacy-custom-status', nodes, connections }, 'MESSAGE_CREATE', {}, {
+    client: { setPresence: (presence) => presenceUpdates.push(presence) },
+    log: (message, level) => logs.push({ message, level })
+  });
+
+  assert.equal(result.error, null);
+  assert.deepEqual(presenceUpdates, []);
+  assert.ok(logs.some((entry) => entry.level === 'WARN' && entry.message.includes('moved to Set Presence')));
+  assert.ok(logs.some((entry) => entry.message === 'continued' && entry.level === 'INFO'));
+});
+
+test('console log flow nodes emit their message at the matching level', async () => {
+  const logs = [];
+  const nodes = [
+    { id: 'event', type: 'event_message_create' },
+    { id: 'info', type: 'action_console_log', data: { message: 'Started' } },
+    { id: 'warn', type: 'action_console_warn', data: { message: 'Check this' } },
+    { id: 'error', type: 'action_console_error', data: { message: 'Failed' } }
+  ];
+  const connections = [
+    { sourceNodeId: 'event', sourcePinId: 'exec', targetNodeId: 'info', targetPinId: 'exec' },
+    { sourceNodeId: 'info', sourcePinId: 'exec', targetNodeId: 'warn', targetPinId: 'exec' },
+    { sourceNodeId: 'warn', sourcePinId: 'exec', targetNodeId: 'error', targetPinId: 'exec' }
+  ];
+  const result = await GraphRunner.execute({ id: 'console-flow', nodes, connections }, 'MESSAGE_CREATE', {}, {
+    log: (message, level) => logs.push({ message, level })
+  });
+
+  assert.equal(result.error, null);
+  assert.deepEqual(logs.filter((entry) => entry.level !== 'EXECUTION'), [
+    { message: 'Started', level: 'INFO' },
+    { message: 'Check this', level: 'WARN' },
+    { message: 'Failed', level: 'ERROR' }
+  ]);
+});
+
+test('function calls expose each named return value as a separate output', async () => {
+  const functionGraph = {
+    id: 'multi-return-function',
+    graphType: 'function',
+    nodes: [
+      { id: 'entry', type: 'function_input', data: { arguments: [] } },
+      { id: 'return', type: 'function_return', data: {
+        returns: [
+          { returnId: 'days', name: 'Days', valueType: 'number', defaultValue: 0 },
+          { returnId: 'unit', name: 'Unit', valueType: 'string', defaultValue: '' }
+        ],
+        return_days: 12,
+        return_unit: 'd'
+      } }
+    ],
+    connections: [{ sourceNodeId: 'entry', sourcePinId: 'exec', targetNodeId: 'return', targetPinId: 'exec' }]
+  };
+  const logs = [];
+  const mainGraph = {
+    id: 'multi-return-caller',
+    nodes: [
+      { id: 'event', type: 'event_message_create' },
+      { id: 'call', type: 'function_call', data: { graphId: functionGraph.id } },
+      { id: 'log-days', type: 'action_console_log', data: { message: '' } },
+      { id: 'log-unit', type: 'action_console_log', data: { message: '' } }
+    ],
+    connections: [
+      { sourceNodeId: 'event', sourcePinId: 'exec', targetNodeId: 'call', targetPinId: 'exec' },
+      { sourceNodeId: 'call', sourcePinId: 'exec', targetNodeId: 'log-days', targetPinId: 'exec' },
+      { sourceNodeId: 'call', sourcePinId: 'exec', targetNodeId: 'log-unit', targetPinId: 'exec' },
+      { sourceNodeId: 'call', sourcePinId: 'return_days', targetNodeId: 'log-days', targetPinId: 'message' },
+      { sourceNodeId: 'call', sourcePinId: 'return_unit', targetNodeId: 'log-unit', targetPinId: 'message' }
+    ]
+  };
+  const result = await GraphRunner.execute(mainGraph, 'MESSAGE_CREATE', {}, {
+    resolveFunctionGraph: (id) => id === functionGraph.id ? functionGraph : null,
+    log: (message, level) => logs.push({ message, level })
+  });
+
+  assert.equal(result.error, null);
+  assert.deepEqual(logs.filter((entry) => entry.level === 'INFO'), [
+    { message: '12', level: 'INFO' },
+    { message: 'd', level: 'INFO' }
+  ]);
+
+  const pureLogs = [];
+  const pureResult = await GraphRunner.execute({
+    id: 'pure-multi-return-caller',
+    nodes: [
+      { id: 'event', type: 'event_message_create' },
+      { id: 'call', type: 'function_call', data: { graphId: functionGraph.id } },
+      { id: 'log-days', type: 'action_console_log', data: { message: '' } },
+      { id: 'log-unit', type: 'action_console_log', data: { message: '' } }
+    ],
+    connections: [
+      { sourceNodeId: 'event', sourcePinId: 'exec', targetNodeId: 'log-days', targetPinId: 'exec' },
+      { sourceNodeId: 'event', sourcePinId: 'exec', targetNodeId: 'log-unit', targetPinId: 'exec' },
+      { sourceNodeId: 'call', sourcePinId: 'return_days', targetNodeId: 'log-days', targetPinId: 'message' },
+      { sourceNodeId: 'call', sourcePinId: 'return_unit', targetNodeId: 'log-unit', targetPinId: 'message' }
+    ]
+  }, 'MESSAGE_CREATE', {}, {
+    resolveFunctionGraph: (id) => id === functionGraph.id ? functionGraph : null,
+    log: (message, level) => pureLogs.push({ message, level })
+  });
+  assert.equal(pureResult.error, null);
+  assert.deepEqual(pureLogs.filter((entry) => entry.level === 'INFO'), [
+    { message: '12', level: 'INFO' },
+    { message: 'd', level: 'INFO' }
+  ]);
+
+  const legacyFunction = {
+    id: 'legacy-scalar-function',
+    graphType: 'function',
+    nodes: [
+      { id: 'entry', type: 'function_input', data: { arguments: [] } },
+      { id: 'return', type: 'function_return', data: { valueType: 'number', value: 42 } }
+    ],
+    connections: [{ sourceNodeId: 'entry', sourcePinId: 'exec', targetNodeId: 'return', targetPinId: 'exec' }]
+  };
+  const legacyLogs = [];
+  const legacyResult = await GraphRunner.execute({
+    id: 'legacy-scalar-caller',
+    nodes: [
+      { id: 'event', type: 'event_message_create' },
+      { id: 'call', type: 'function_call', data: { graphId: legacyFunction.id } },
+      { id: 'log', type: 'action_console_log', data: { message: '' } }
+    ],
+    connections: [
+      { sourceNodeId: 'event', sourcePinId: 'exec', targetNodeId: 'log', targetPinId: 'exec' },
+      { sourceNodeId: 'call', sourcePinId: 'result', targetNodeId: 'log', targetPinId: 'message' }
+    ]
+  }, 'MESSAGE_CREATE', {}, {
+    resolveFunctionGraph: (id) => id === legacyFunction.id ? legacyFunction : null,
+    log: (message, level) => legacyLogs.push({ message, level })
+  });
+  assert.equal(legacyResult.error, null);
+  assert.ok(legacyLogs.some((entry) => entry.message === '42' && entry.level === 'INFO'));
+});
+
+test('function calls reject graphs with multiple Return Value nodes', async () => {
+  const result = await GraphRunner.execute({
+    id: 'duplicate-return-function',
+    graphType: 'function',
+    nodes: [
+      { id: 'return-a', type: 'function_return' },
+      { id: 'return-b', type: 'function_return' }
+    ],
+    connections: []
+  }, 'FUNCTION_CALL', {}, { log: () => {} });
+
+  assert.match(result.error, /only one Return Value node/);
+
+  const pureResult = await GraphRunner.execute({
+    id: 'duplicate-return-pure-caller',
+    nodes: [
+      { id: 'event', type: 'event_message_create' },
+      { id: 'call', type: 'function_call', data: { graphId: 'duplicate-return-function' } },
+      { id: 'log', type: 'action_console_log', data: { message: '' } }
+    ],
+    connections: [
+      { sourceNodeId: 'event', sourcePinId: 'exec', targetNodeId: 'log', targetPinId: 'exec' },
+      { sourceNodeId: 'call', sourcePinId: 'result', targetNodeId: 'log', targetPinId: 'message' }
+    ]
+  }, 'MESSAGE_CREATE', {}, {
+    resolveFunctionGraph: (id) => id === 'duplicate-return-function' ? {
+      id,
+      graphType: 'function',
+      nodes: [{ id: 'return-a', type: 'function_return' }, { id: 'return-b', type: 'function_return' }],
+      connections: []
+    } : null,
+    log: () => {}
+  });
+  assert.match(pureResult.error, /only one Return Value node/);
+});
+
+test('pure function return sockets share one evaluation per call node', async () => {
+  const functionGraph = {
+    id: 'random-function',
+    graphType: 'function',
+    nodes: [
+      { id: 'entry', type: 'function_input', data: { arguments: [] } },
+      { id: 'random', type: 'math_random', data: { min: 0, max: 1 } },
+      { id: 'return', type: 'function_return', data: { returns: [
+        { returnId: 'first', name: 'First', valueType: 'number', defaultValue: 0 },
+        { returnId: 'second', name: 'Second', valueType: 'number', defaultValue: 0 }
+      ] } }
+    ],
+    connections: [
+      { sourceNodeId: 'entry', sourcePinId: 'exec', targetNodeId: 'return', targetPinId: 'exec' },
+      { sourceNodeId: 'random', sourcePinId: 'result', targetNodeId: 'return', targetPinId: 'return_first' },
+      { sourceNodeId: 'random', sourcePinId: 'result', targetNodeId: 'return', targetPinId: 'return_second' }
+    ]
+  };
+  const logs = [];
+  const result = await GraphRunner.execute({
+    id: 'random-function-caller',
+    nodes: [
+      { id: 'event', type: 'event_message_create' },
+      { id: 'call', type: 'function_call', data: { graphId: functionGraph.id } },
+      { id: 'log-first', type: 'action_console_log', data: { message: '' } },
+      { id: 'log-second', type: 'action_console_log', data: { message: '' } }
+    ],
+    connections: [
+      { sourceNodeId: 'event', sourcePinId: 'exec', targetNodeId: 'log-first', targetPinId: 'exec' },
+      { sourceNodeId: 'event', sourcePinId: 'exec', targetNodeId: 'log-second', targetPinId: 'exec' },
+      { sourceNodeId: 'call', sourcePinId: 'return_first', targetNodeId: 'log-first', targetPinId: 'message' },
+      { sourceNodeId: 'call', sourcePinId: 'return_second', targetNodeId: 'log-second', targetPinId: 'message' }
+    ]
+  }, 'MESSAGE_CREATE', {}, {
+    resolveFunctionGraph: (id) => id === functionGraph.id ? functionGraph : null,
+    log: (message, level) => { if (level === 'INFO') logs.push(message); }
+  });
+
+  assert.equal(result.error, null);
+  assert.equal(logs.length, 2);
+  assert.equal(logs[0], logs[1]);
+});
+
 test('presence runtime reports unsupported types and safely handles a missing gateway client', () => {
   const unsupported = executePresenceNodeDirect('action_unknown');
   assert.equal(unsupported.handled, false);
@@ -425,6 +667,7 @@ test('presence runtime reports unsupported types and safely handles a missing ga
   assert.equal(withoutClient.handled, true);
   assert.deepEqual(withoutClient.presences, []);
   assert.match(withoutClient.logs[0], /status: idle/);
+  assert.equal(isPresenceNodeType('action_set_custom_status'), false);
 });
 
 test('GraphRunner converts invalid streaming presence URLs into node errors', async () => {
