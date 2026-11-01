@@ -19,6 +19,8 @@ export default {
     { id: 'topic', label: 'Topic', type: 'string' },
     { id: 'nsfw', label: 'Age Restricted', type: 'boolean' },
     { id: 'last_message_id', label: 'Last Message ID', type: 'string' },
+    { id: 'flags', label: 'Channel Flags', type: 'number' },
+    { id: 'obfuscated', label: 'Metadata Obfuscated', type: 'boolean' },
     { id: 'success', label: 'Success', type: 'boolean' }
   ]
 };
