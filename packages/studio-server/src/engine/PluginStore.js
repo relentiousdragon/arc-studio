@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dataDir } from '../storage.js';
 import { NodeDefinitions, registerAdapterNodeDefinitions, registerFailedNodeTypes } from './NodeRegistry.js';
-import { FUNCTION_ARGUMENT_VALUE_TYPES, functionArgumentPinId, functionInputPinType, getFunctionGraphArguments, getFunctionInputArguments } from './FunctionGraphContract.js';
+import { FUNCTION_ARGUMENT_VALUE_TYPES, functionArgumentPinId, functionInputPinType, functionReturnInputPinId, functionReturnOutputPinId, getFunctionGraphArguments, getFunctionGraphReturnValues, getFunctionInputArguments, getFunctionReturnValues } from './FunctionGraphContract.js';
 import { inspectAdapterBytes, runWasmAdapter } from './WasmAdapterRuntime.js';
 import { CryptoEngine } from '../security/CryptoEngine.js';
 import { serverConfig } from '../config.js';
@@ -753,8 +753,19 @@ function validatePack(pack, entry) {
         }
       }
       if (node.type === 'function_return') returnCount += 1;
-      if (node.type === 'function_return' && !['string', 'number', 'boolean'].includes(node.data?.valueType || 'number')) {
-        throw new Error(`Function ${functionId} contains an unsupported function value type.`);
+      if (node.type === 'function_return') {
+        const returnValues = getFunctionReturnValues(node);
+        if (!returnValues.length || returnValues.some((value) => !FUNCTION_ARGUMENT_VALUE_TYPES.includes(value.valueType))) {
+          throw new Error(`Function ${functionId} contains an unsupported function return value.`);
+        }
+        const returnIds = new Set();
+        const returnNames = new Set();
+        for (const value of returnValues) {
+          if (!/^[A-Za-z0-9_-]{1,64}$/.test(value.returnId) || returnIds.has(value.returnId)) throw new Error(`Function ${functionId} contains an invalid or duplicate return ID.`);
+          if (!String(value.name || '').trim() || returnNames.has(value.name.toLowerCase())) throw new Error(`Function ${functionId} contains a missing or duplicate return name.`);
+          returnIds.add(value.returnId);
+          returnNames.add(value.name.toLowerCase());
+        }
       }
       if (node.type === 'function_call') {
         const calledId = node.data?.functionId || node.data?.graphId;
@@ -779,11 +790,14 @@ function validatePack(pack, entry) {
           const argument = getFunctionInputArguments(node).find((item) => item.legacy ? connection.sourcePinId === 'value' : functionArgumentPinId(item) === connection.sourcePinId);
           if (argument) return { id: connection.sourcePinId, type: functionInputPinType(argument) };
         }
-        if (node.type === 'function_return' && direction === 'inputs' && connection.targetPinId === 'value') return { id: 'value', type: node.data?.valueType || 'number' };
+        if (node.type === 'function_return' && direction === 'inputs') {
+          const returned = getFunctionReturnValues(node).find((value) => functionReturnInputPinId(value) === connection.targetPinId);
+          if (returned) return { id: connection.targetPinId, type: functionInputPinType(returned) };
+        }
         if (node.type === 'function_call' && called) {
-          if (direction === 'outputs' && connection.sourcePinId === 'result') {
-            const result = called.graph.nodes.find((candidate) => candidate.type === 'function_return');
-            return result ? { id: 'result', type: result.data?.valueType || 'number' } : null;
+          if (direction === 'outputs') {
+            const returned = getFunctionGraphReturnValues(called.graph).find((value) => functionReturnOutputPinId(value) === connection.sourcePinId);
+            if (returned) return { id: connection.sourcePinId, type: functionInputPinType(returned) };
           }
           if (direction === 'inputs') {
             const argument = getFunctionGraphArguments(called.graph).find((candidate) => functionArgumentPinId(candidate) === connection.targetPinId);
