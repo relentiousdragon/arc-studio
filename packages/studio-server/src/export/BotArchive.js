@@ -50,9 +50,10 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
   const usedTypes = new Set(safeGraphs.flatMap((graph) => graph.nodes.map((node) => node?.type).filter((type) => typeof type === 'string')));
   const requiredRuntimeModules = new Set(['builders.js', 'control_flow.js', 'data.js', 'logic.js']);
   const runtimeTypeGroups = [
+    [['action_console_log', 'action_console_warn', 'action_console_error'], 'console_log.js'],
     [['action_http_download', 'action_web_fetch', 'action_web_retry'], 'network.js'],
     [['action_websocket_connect', 'action_websocket_send', 'action_websocket_close'], 'websocket.js'],
-    [['action_set_custom_status', 'action_set_presence'], 'discord_presence.js'],
+    [['action_set_presence'], 'discord_presence.js'],
     [['action_send_message', 'action_edit_message', 'action_edit_components'], 'discord_messages.js'],
     [[
       'action_reply_interaction', 'action_defer_reply', 'action_defer_update',
@@ -60,6 +61,8 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
     ], 'discord_interactions.js'],
     [[
       'action_fetch_user', 'action_fetch_guild', 'action_fetch_member',
+      'action_get_guild_member_permissions', 'action_get_guild_role_permissions',
+      'action_get_channel_member_permissions', 'action_get_channel_role_permissions',
       'action_fetch_channel', 'action_fetch_channel_messages', 'action_fetch_message',
       'action_create_thread', 'action_start_thread_from_message',
       'action_create_channel', 'action_edit_channel', 'action_delete_channel',
