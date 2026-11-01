@@ -1,7 +1,7 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { AlertTriangle, FileCode2, Plus, Trash2, X } from 'lucide-react';
-import { functionArgumentPinId, functionInputPinType, getFunctionGraphArguments, getFunctionInputArguments, getNodeTemplateInputPins, getTextTemplateSlots, PinColors } from './nodeDefinitions.js';
+import { functionArgumentPinId, functionInputPinType, functionReturnInputPinId, getFunctionGraphArguments, getFunctionGraphReturnValues, getFunctionInputArguments, getFunctionReturnValues, getNodeTemplateInputPins, getTextTemplateSlots, PinColors } from './nodeDefinitions.js';
 import { bitfieldToPermissions, DISCORD_PERMISSIONS } from './permissionCatalog.js';
 import { AnimatedCheckbox, AnimatedDropdown } from '../ui/CustomControls.jsx';
 import { CharacterLimit } from '../ui/Inputs.jsx';
@@ -131,6 +131,7 @@ function CanvasNodeView({
   snappedPin = null, appEmojis = [], modalFieldOptions = [], componentsV2SourceConnected = false, onSelect, onDelete, onNodeDataChange, onPinStartConnect, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph
 }) {
   const nodeDef = definition || { label: node.label || node.type, color: '#778196', category: 'Node', inputs: [], outputs: [] };
+  const isDeprecated = Boolean(nodeDef.deprecationMessage);
   const execFirst = (pins = []) => [...pins].sort((left, right) => Number(right.type === 'exec') - Number(left.type === 'exec'));
   const inputs = loadFailed ? [] : execFirst(nodeDef.inputs);
   const outputs = loadFailed ? [] : execFirst(nodeDef.outputs);
@@ -185,7 +186,7 @@ function CanvasNodeView({
 
   return (
     <article
-      className={`canvas-node ${selected ? 'is-selected' : ''} ${illuminated ? 'is-illuminated' : ''} ${isLocked ? 'is-locked' : ''} ${loadFailed ? 'is-load-failed' : ''}`}
+      className={`canvas-node ${selected ? 'is-selected' : ''} ${illuminated ? 'is-illuminated' : ''} ${isLocked ? 'is-locked' : ''} ${loadFailed ? 'is-load-failed' : ''} ${isDeprecated ? 'is-deprecated' : ''}`}
       data-node-card-id={node.id}
       tabIndex={-1}
       style={{ '--node-accent': nodeDef.color, '--node-rows': rows }}
@@ -198,12 +199,13 @@ function CanvasNodeView({
         if (target) onOpenFunctionGraph?.(target);
       }}
       data-tooltip={loadFailed ? 'Failed to load this node' : node.type === 'function_call' && callableGraphs.some((graph) => graph.id === node.data?.graphId && graph.graphType === 'function') ? 'Double-click to open this function graph' : undefined}
-      aria-disabled={loadFailed || undefined}
+      aria-disabled={loadFailed || isDeprecated || undefined}
       aria-label={`${node.label || nodeDef.label} node`}
     >
       <header className="node-header">
         <span className="node-type-mark"><span /></span>
         <span className="node-category">{renderCanvasFindText(nodeDef.category, findOptions, isFindCurrent)}</span>
+        {isDeprecated && <span className="node-deprecated-icon" title={nodeDef.deprecationMessage} aria-label="Deprecated node"><AlertTriangle size={12} /></span>}
         {!isLocked && <button className="node-delete" onClick={(event) => { event.stopPropagation(); onDelete?.(node.id); }} title="Delete node" aria-label="Delete node" tabIndex={selected ? 0 : -1}><X size={13} /></button>}
       </header>
       <div className="node-title" data-tooltip={node.label && node.label !== nodeDef.label ? `Node type: ${nodeDef.label}` : undefined}>{renderCanvasFindText(node.label || nodeDef.label, findOptions, isFindCurrent)}</div>
@@ -211,8 +213,9 @@ function CanvasNodeView({
         <div className="node-pin-column node-pin-inputs">{inputs.map((pin, index) => renderPin(pin, 'input', index))}</div>
         <div className="node-pin-column node-pin-outputs">{outputs.map((pin, index) => renderPin(pin, 'output', index))}</div>
       </div>
-      {!loadFailed && !nodeDef.requiresGenericEditor && renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues, componentsV2SourceConnected)}
-      {!loadFailed && (nodeDef.requiresGenericEditor || nodeDef.editorOnlyInputs?.length > 0) && <div className="node-config node-config-stack node-schema-fallback">
+      {!loadFailed && isDeprecated && <div className="node-config node-deprecated-message" role="note"><AlertTriangle size={13} /><span>{nodeDef.deprecationMessage}</span></div>}
+      {!loadFailed && !isDeprecated && !nodeDef.requiresGenericEditor && renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues, componentsV2SourceConnected)}
+      {!loadFailed && !isDeprecated && (nodeDef.requiresGenericEditor || nodeDef.editorOnlyInputs?.length > 0) && <div className="node-config node-config-stack node-schema-fallback">
         {nodeDef.requiresGenericEditor && <span className="node-config-hint">This workspace schema differs from this client’s editor. These values are used by the workspace server.</span>}
         {nodeDef.editorOnlyInputs.filter((pin) => pin.type !== 'exec' && !connectedInputIds.has(pin.id)).map((pin) => {
           const value = node.data?.[pin.id] ?? pin.defaultValue;
@@ -222,7 +225,7 @@ function CanvasNodeView({
           return <FallbackField key={pin.id} label={pin.label}><input value={typeof value === 'string' || typeof value === 'number' ? value : JSON.stringify(value ?? '')} onChange={(event) => update(pin.id, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label={pin.label} /></FallbackField>;
         })}
       </div>}
-      {!loadFailed && !['build_embed', 'format_text'].includes(node.type) && nodeDef.inputs
+      {!loadFailed && !isDeprecated && !['build_embed', 'format_text'].includes(node.type) && nodeDef.inputs
         .filter((pin) => ['string', 'number', 'arg'].includes(pin.type) && !pin.id.startsWith('arg_') && !pin.id.startsWith('slot_') && !connectedInputIds.has(pin.id) && typeof node.data?.[pin.id] === 'string' && getTextTemplateSlots(node.data[pin.id]).length)
         .map((pin) => <TemplateVariableHints key={`template-hints-${pin.id}`} value={node.data[pin.id]} graphVariables={graphVariables} inputSlots={getNodeTemplateInputPins(node, nodeDef.inputs, graphVariables).filter((slot) => getTextTemplateSlots(node.data[pin.id]).some((name) => slot.id === `slot_${name}`))} connectedInputIds={connectedInputIds} templatePreviewValues={templatePreviewValues} />)}
     </article>
@@ -307,7 +310,7 @@ function functionSignature(graph) {
   const nodes = graph?.nodes || [];
   return JSON.stringify({
     inputs: getFunctionGraphArguments(graph).map((item) => [item.paramId, item.name, item.optional, item.valueType, item.defaultValue]),
-    returnType: nodes.find((item) => item.type === 'function_return')?.data?.valueType || null
+    returns: getFunctionGraphReturnValues(graph).map((item) => [item.returnId, item.name, item.valueType, item.defaultValue])
   });
 }
 
@@ -361,7 +364,7 @@ function renderCanvasFindText(value, findOptions, currentNode = false) {
 function renderSchemaControls(node, controls, update, connectedInputIds) {
   if (!Array.isArray(controls) || controls.length === 0) return null;
   const visibleControls = controls.filter((control) => {
-    if (control.hideWhenConnected && connectedInputIds.has(control.inputId || control.key)) return false;
+    if (connectedInputIds.has(control.inputId || control.key)) return false;
     if (!control.visibleWhen) return true;
     const { key, equals, orUnset } = control.visibleWhen;
     const value = node.data?.[key];
@@ -461,6 +464,24 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       aria-label={label}
     /></FallbackField>;
   };
+  const comparisonInput = (id, label) => {
+    const value = String(node.data?.[id] ?? '');
+    const valuePaths = graphVariables.flatMap((variable) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(variable.name || '') ? variableValuePaths(variable.initialValue, variable.name) : []);
+    const templateSuggestions = nodeDef.inputs.filter((pin) => /^arg_\d+$/.test(pin.id)).map((pin) => ({ name: pin.id.replace(/^arg_/, 'arg'), label: pin.label }));
+    return <DiscordTextField
+      value={value}
+      appEmojis={appEmojis}
+      graphVariables={graphVariables}
+      templateValuePaths={valuePaths}
+      templateSuggestions={templateSuggestions}
+      discordAutocomplete
+      templateAutocomplete
+      onChange={(event) => update(id, event.target.value)}
+      onPointerDown={(event) => event.stopPropagation()}
+      placeholder="Used when unconnected"
+      aria-label={label}
+    />;
+  };
   const valueTypes = [{ value: 'number', label: 'Number' }, { value: 'string', label: 'Text' }, { value: 'boolean', label: 'Boolean' }, { value: 'object', label: 'Object / Array' }];
   const functionArgumentTypes = [...valueTypes,
     { value: 'channel_id', label: 'Channel ID' }, { value: 'thread_id', label: 'Thread ID' }, { value: 'message_id', label: 'Message ID' },
@@ -537,10 +558,12 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     const activityTypes = [{ value: '0', label: 'Playing' }, { value: '1', label: 'Streaming' }, { value: '2', label: 'Listening' }, { value: '3', label: 'Watching' }, { value: '5', label: 'Competing' }];
     const statuses = [{ value: 'online', label: 'Online' }, { value: 'idle', label: 'Idle' }, { value: 'dnd', label: 'Do not disturb' }, { value: 'invisible', label: 'Invisible' }];
     return <div className="node-config node-config-stack">
-      {!isConnected('activity_text') && <FallbackField label="Activity text"><input value={node.data?.activity_text ?? 'ARC Studio'} maxLength={128} onChange={(event) => update('activity_text', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="ARC Studio" aria-label="Presence activity text" /></FallbackField>}
+      {!isConnected('activity_text') && <FallbackField label="Activity text"><input value={node.data?.activity_text ?? 'ARC Studio'} maxLength={128} onChange={(event) => update('activity_text', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave blank to clear activity" aria-label="Presence activity text" /></FallbackField>}
       {!isConnected('activity_type') && <FallbackField label="Activity type"><AnimatedDropdown value={String(node.data?.activity_type ?? 0)} options={activityTypes} onChange={(value) => update('activity_type', Number(value))} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Presence activity type" className="node-select" /></FallbackField>}
-      {Number(node.data?.activity_type) === 1 && !isConnected('stream_url') && <FallbackField label="Stream URL"><input type="url" value={node.data?.stream_url ?? ''} maxLength={2048} onChange={(event) => update('stream_url', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="https://twitch.tv/your-channel" aria-label="Streaming activity URL" /></FallbackField>}
+      {Number(node.data?.activity_type) === 1 && String(node.data?.activity_text ?? 'ARC Studio').trim() && !isConnected('stream_url') && <FallbackField label="Stream URL"><input type="url" value={node.data?.stream_url ?? ''} maxLength={2048} onChange={(event) => update('stream_url', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="https://twitch.tv/your-channel" aria-label="Streaming activity URL" /></FallbackField>}
       {!isConnected('status') && <FallbackField label="Status"><AnimatedDropdown value={node.data?.status ?? 'online'} options={statuses} onChange={(value) => update('status', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Bot presence status" className="node-select" /></FallbackField>}
+      {!isConnected('custom_status_text') && <FallbackField label="Custom status"><DiscordTextField value={node.data?.custom_status_text ?? ''} maxLength={128} appEmojis={appEmojis} discordAutocomplete onChange={(event) => update('custom_status_text', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave blank to clear" aria-label="Custom status text" /></FallbackField>}
+      <span className="node-config-hint">Custom status supports Unicode emoji and pasted Discord custom emoji.</span>
     </div>;
   }
   if (node.type === 'action_set_custom_status') {
@@ -599,9 +622,22 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     </div>;
   }
   if (node.type === 'function_return') {
-    const type = node.data?.valueType || 'number';
+    const returnValues = getFunctionReturnValues(node);
+    const writeReturnValues = (values) => update({
+      returns: values.map(({ returnId, name, valueType, defaultValue }) => ({ returnId, name, valueType, defaultValue })),
+      valueType: values[0]?.valueType || 'number'
+    });
+    const updateReturnValue = (index, patch) => writeReturnValues(returnValues.map((value, valueIndex) => valueIndex === index ? { ...value, ...patch } : value));
     return <div className="node-config node-config-stack function-node-config">
-      <AnimatedDropdown value={type} options={valueTypes} onChange={(value) => update('valueType', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Function return type" className="node-select" />
+      {returnValues.map((value, index) => <section className="function-input-argument" key={value.returnId}>
+        <div className="function-input-name-row">
+          <CharacterLimit value={value.name || ''} maxLength={32}><input value={value.name || ''} maxLength={32} onChange={(event) => updateReturnValue(index, { name: event.target.value })} onPointerDown={(event) => event.stopPropagation()} placeholder={`Output ${index + 1}`} aria-label={`Return output ${index + 1} name`} /></CharacterLimit>
+          <button type="button" className="icon-button compact is-danger" onPointerDown={(event) => event.stopPropagation()} onClick={() => writeReturnValues(returnValues.filter((_item, valueIndex) => valueIndex !== index))} disabled={returnValues.length <= 1 || connectedInputIds.has(functionReturnInputPinId(value))} aria-label={`Remove return output ${index + 1}`} title={connectedInputIds.has(functionReturnInputPinId(value)) ? 'Disconnect this output first' : 'Remove return output'}><Trash2 size={12} /></button>
+        </div>
+        {!value.name.trim() && <span className="node-config-warning" role="status"><AlertTriangle size={11} /><span>Name required</span></span>}
+        <AnimatedDropdown value={value.valueType} options={functionArgumentTypes} onChange={(nextType) => updateReturnValue(index, { valueType: nextType, defaultValue: defaultValueForType(functionInputPinType({ valueType: nextType })) })} onPointerDown={(event) => event.stopPropagation()} ariaLabel={`Type for ${value.name || `Output ${index + 1}`}`} className="node-select" />
+      </section>)}
+      <button type="button" className="node-config-action" onPointerDown={(event) => event.stopPropagation()} onClick={() => writeReturnValues([...returnValues, { returnId: `output_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, name: `Output ${returnValues.length + 1}`, valueType: 'string', defaultValue: '' }])} disabled={returnValues.length >= 50}><Plus size={12} /> Add output</button>
     </div>;
   }
   if (node.type === 'function_call') {
@@ -609,16 +645,19 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     const parameters = (target?.nodes || []).filter((item) => item.type === 'function_input');
     const requiredCount = parameters.filter((item) => item.data?.optional === false).length;
     const optionalCount = parameters.length - requiredCount;
-    const hasReturn = target?.nodes?.some((item) => item.type === 'function_return');
+    const returnValues = getFunctionGraphReturnValues(target);
+    const returnCount = (target?.nodes || []).filter((item) => item.type === 'function_return').length;
     return <div className="node-config node-config-stack function-node-config">
       <AnimatedDropdown value={node.data?.graphId || ''} options={callableGraphs.map((graph) => ({ value: graph.id, label: graph.name || 'Untitled graph' }))} onChange={(value) => {
         const selectedGraph = callableGraphs.find((graph) => graph.id === value);
         update({ graphId: value }, undefined, `Call ${selectedGraph?.name || 'Graph'}`);
       }} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Graph to call" placeholder={callableGraphs.length ? 'Select graph' : 'Save a graph first'} className="node-select" disabled={!callableGraphs.length} />
       {target && <span className="node-config-hint">{parameters.length ? `${requiredCount} required · ${optionalCount} optional input${parameters.length === 1 ? '' : 's'}` : 'No inputs'}</span>}
-      {target && hasReturn
-        ? <span className="node-config-hint">Returns {target.nodes.find((item) => item.type === 'function_return')?.data?.valueType || 'number'}</span>
-        : target && <span className="node-config-warning" role="status"><AlertTriangle size={12} /> This graph has no Return Value</span>}
+      {target && returnValues.length
+        ? <span className="node-config-hint">Returns {returnValues.map((value) => value.name || 'Output').join(', ')}</span>
+        : target && returnCount > 1
+          ? <span className="node-config-warning" role="status"><AlertTriangle size={12} /> Keep one Return Value node</span>
+          : target && <span className="node-config-warning" role="status"><AlertTriangle size={12} /> This graph has no Return Value</span>}
     </div>;
   }
   if (node.type === 'execute_graph') {
@@ -669,7 +708,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     return <div className="node-config node-config-stack">
       {!isConnected('path') && <FallbackField label="Property path (optional)"><input value={node.data?.path ?? ''} onChange={(event) => update('path', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="id or user.name; blank checks each item" aria-label="Array item property path" /></FallbackField>}
       {node.type === 'data_filter_array' && !isConnected('operator') && <FallbackField label="Comparison"><AnimatedDropdown value={node.data?.operator || 'equals'} options={comparisonOptions} onChange={(value) => update('operator', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Array filter comparison" className="node-select" /></FallbackField>}
-      {!isConnected('value') && !['exists', 'is_empty'].includes(node.data?.operator) && <FallbackField label="Match value"><input value={node.data?.value ?? ''} onChange={(event) => update('value', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Array match value" /></FallbackField>}
+      {!isConnected('value') && !['exists', 'is_empty'].includes(node.data?.operator) && <FallbackField label="Match value">{comparisonInput('value', 'Array match value')}</FallbackField>}
     </div>;
   }
   if (node.type === 'data_format_number') {
@@ -688,7 +727,10 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       {!isConnected('max') && <FallbackField label="Maximum"><NodeNumberInput allowEmpty step="any" value={node.data?.max ?? 1} onChange={(event) => update('max', numericNodeInputValue(event.target.value, { allowEmpty: true }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Random number maximum" /></FallbackField>}
     </div>;
   if (node.type === 'function_math') {
-    return <div className="node-config"><AnimatedDropdown value={node.data?.operation || 'add'} options={[{ value: 'add', label: 'A + B' }, { value: 'subtract', label: 'A − B' }, { value: 'multiply', label: 'A × B' }, { value: 'divide', label: 'A ÷ B' }, { value: 'modulo', label: 'A mod B' }]} onChange={(value) => update('operation', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Arithmetic operation" className="node-select" /></div>;
+    return <div className="node-config node-config-stack">
+      {nodeDef.inputs.filter((pin) => pin.type === 'number' && !isConnected(pin.id)).map((pin) => <FallbackField key={pin.id} label={pin.label}><NodeNumberInput step="any" value={node.data?.[pin.id] ?? pin.defaultValue ?? 0} onChange={(event) => update(pin.id, numericNodeInputValue(event.target.value, { fallback: Number(pin.defaultValue) || 0 }))} onPointerDown={(event) => event.stopPropagation()} aria-label={pin.label} /></FallbackField>)}
+      {!isConnected('operation') && <AnimatedDropdown value={node.data?.operation || 'add'} options={[{ value: 'add', label: 'A + B' }, { value: 'subtract', label: 'A − B' }, { value: 'multiply', label: 'A × B' }, { value: 'divide', label: 'A ÷ B' }, { value: 'modulo', label: 'A mod B' }]} onChange={(value) => update('operation', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Arithmetic operation" className="node-select" />}
+    </div>;
   }
   if (node.type === 'value_text') {
     const value = String(node.data?.value ?? 'Hello World');
@@ -978,8 +1020,8 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
   }
   if (node.type === 'compare_text') {
     return <div className="node-config node-config-stack compare-text-config">
-      {!isConnected('text_a') && <label className="node-config-fallback"><span>Text A</span><input value={node.data?.text_a ?? ''} onChange={(event) => update('text_a', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Text A" /></label>}
-      {!isConnected('text_b') && <label className="node-config-fallback"><span>Text B</span><input value={node.data?.text_b ?? ''} onChange={(event) => update('text_b', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Text B" /></label>}
+      {!isConnected('text_a') && <label className="node-config-fallback"><span>Text A</span>{comparisonInput('text_a', 'Text A')}</label>}
+      {!isConnected('text_b') && <label className="node-config-fallback"><span>Text B</span>{comparisonInput('text_b', 'Text B')}</label>}
       {!isConnected('operator') && <AnimatedDropdown value={node.data?.operator ?? 'equals'} onChange={(value) => update('operator', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Text comparison operator" options={[{ value: 'equals', label: 'Equals' }, { value: 'contains', label: 'Contains' }, { value: 'startsWith', label: 'Starts with' }, { value: 'endsWith', label: 'Ends with' }]} className="node-select" />}
     </div>;
   }
@@ -1011,7 +1053,16 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       {!isConnected('time') && <FallbackField label="Time (ISO or timestamp)"><input value={node.data?.time ?? ''} onChange={(event) => update('time', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="2026-10-17T12:00:00Z" aria-label="Time to continue" /></FallbackField>}
     </div>;
   }
-  return renderSchemaControls(node, nodeDef.editorControls, update, connectedInputIds);
+  const schemaControls = renderSchemaControls(node, nodeDef.editorControls, update, connectedInputIds);
+  if (node.type.startsWith('math_')) {
+    const numericInputs = nodeDef.inputs.filter((pin) => pin.type === 'number' && !isConnected(pin.id));
+    if (!numericInputs.length) return schemaControls;
+    return <div className="node-config node-config-stack">
+      {numericInputs.map((pin) => <FallbackField key={pin.id} label={pin.label}><NodeNumberInput step="any" value={node.data?.[pin.id] ?? pin.defaultValue ?? 0} onChange={(event) => update(pin.id, numericNodeInputValue(event.target.value, { fallback: Number(pin.defaultValue) || 0 }))} onPointerDown={(event) => event.stopPropagation()} aria-label={pin.label} /></FallbackField>)}
+      {schemaControls}
+    </div>;
+  }
+  return schemaControls;
 }
 
 function FallbackField({ label, children }) {
