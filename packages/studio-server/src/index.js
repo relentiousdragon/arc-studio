@@ -314,6 +314,7 @@ app.use(cors(desktopOrigins.length ? {
     else callback(new Error('This origin is not allowed to access the local Studio service.'));
   }
 } : undefined));
+app.use('/api/auth/passkeys', express.json({ limit: '64kb' }));
 app.use(express.json({ limit: '40mb' }));
 
 function broadcast(data) {
