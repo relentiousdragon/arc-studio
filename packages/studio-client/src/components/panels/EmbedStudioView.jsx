@@ -9,7 +9,7 @@ import { TemplateSyntaxHelp } from '../ui/TemplateSyntaxHelp.jsx';
 import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
 import { CustomEmoji } from '../ui/CustomEmoji.jsx';
-import { useStudioEscape } from './useStudioEscape.js';
+import { notifyStudioSwitchCancelled, useStudioEscape, useStudioSwitchClose } from './useStudioEscape.js';
 import { onPageBlur } from '../../core/pageFocus.js';
 
 const EMPTY_ATTACHMENTS = [];
@@ -568,6 +568,7 @@ export function EmbedStudioView({
     onClose?.();
   };
   useStudioEscape(closeStudio);
+  useStudioSwitchClose('embed', closeStudio);
 
   useEffect(() => {
     setPreviewTheme(theme === 'light' ? 'light' : 'dark');
@@ -1893,7 +1894,7 @@ export function EmbedStudioView({
         </aside>
       </div>
     </section>
-    <Modal isOpen={discardPromptOpen} onClose={() => setDiscardPromptOpen(false)} title="Discard studio changes?" subtitle="These edits have not been applied to the graph." footer={<><Button variant="secondary" onClick={() => setDiscardPromptOpen(false)}>Keep editing</Button><Button variant="danger" onClick={onClose}>Discard changes</Button></>}><p className="close-graph-copy">Your graph stays unchanged until you choose Apply.</p></Modal>
+    <Modal isOpen={discardPromptOpen} onClose={() => { setDiscardPromptOpen(false); notifyStudioSwitchCancelled(); }} title="Discard studio changes?" subtitle="These edits have not been applied to the graph." footer={<><Button variant="secondary" onClick={() => { setDiscardPromptOpen(false); notifyStudioSwitchCancelled(); }}>Keep editing</Button><Button variant="danger" onClick={onClose}>Discard changes</Button></>}><p className="close-graph-copy">Your graph stays unchanged until you choose Apply.</p></Modal>
     {thumbnailContextMenu && createPortal(
       <div className="canvas-context-menu embed-thumbnail-context-menu" role="menu" style={{ position: 'fixed', left: thumbnailContextMenu.x, top: thumbnailContextMenu.y, zIndex: 10000 }} onPointerDown={(event) => event.stopPropagation()}>
         <button role="menuitem" onClick={() => { window.open(thumbnailContextMenu.url, '_blank', 'noopener,noreferrer'); setThumbnailContextMenu(null); }}><ExternalLink size={14} /> Open image in browser</button>
