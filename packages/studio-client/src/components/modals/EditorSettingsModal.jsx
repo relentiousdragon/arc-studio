@@ -3,6 +3,7 @@ import { AlertTriangle, Download, ExternalLink, Github, Keyboard, RotateCcw, Sca
 import { Modal } from '../ui/Modal.jsx';
 import { Toggle, SelectInput, TextInput } from '../ui/Inputs.jsx';
 import { Button } from '../ui/Button.jsx';
+import { PasskeySettingsSection } from './PasskeySettingsSection.jsx';
 import { arcEvents } from '../../core/ArcEvents.js';
 import { DEFAULT_SHORTCUTS, formatShortcut, getDefaultShortcut, getShortcutReservation, normalizeShortcutBinding, shortcutFromEvent } from '../../core/shortcuts.js';
 import { apiUrl } from '../../core/api.js';
@@ -12,11 +13,11 @@ import chezcordPackage from '../../../../chezcord/package.json';
 const tabs = [
   { id: 'canvas', label: 'Canvas' },
   { id: 'interface', label: 'Interface' },
+  { id: 'security', label: 'Security' },
   { id: 'collaboration', label: 'Collaboration' },
   { id: 'discord', label: 'Discord RPC' },
   { id: 'shortcuts', label: 'Keyboard shortcuts' },
   { id: 'logs', label: 'Logs' },
-  { id: 'data', label: 'Local data' },
   { id: 'about', label: 'About' }
 ];
 const shortcutActions = [
@@ -48,7 +49,7 @@ function openExternal(event) {
   invoke('open_external_url', { url: event.currentTarget.href }).catch(() => {});
 }
 
-export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSettings, onAutoLayout, onExportGraph, onResetLocalData, themeChoice = 'system', onThemeChange, desktopMode = false, localWorkspace = false, externalWorkspace = false, canResetLocalWorkspace = false, canManageClientAccess = false, platform = '', appUpdate = null, serverUpdate = null, stableUpdateReady = null, downloadedUpdateReady = null, updateInstalling = false, releaseChannel = 'stable', onOpenStudioUpdate, networkOnline = true, authToken = '', activeProjectId = '', canManageLogRetention = false, canManageActivityWebhook = false, idleDisconnectMinutes = 15, canManageIdleDisconnect = false, onSetIdleDisconnectMinutes }) {
+export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSettings, onAutoLayout, onExportGraph, onResetLocalData, themeChoice = 'system', onThemeChange, desktopMode = false, localWorkspace = false, externalWorkspace = false, canResetLocalWorkspace = false, canManageClientAccess = false, platform = '', appUpdate = null, serverUpdate = null, stableUpdateReady = null, downloadedUpdateReady = null, updateInstalling = false, releaseChannel = 'stable', onOpenStudioUpdate, networkOnline = true, authToken = '', activeProjectId = '', workspaceOrigin = '', canManageLogRetention = false, canManageActivityWebhook = false, idleDisconnectMinutes = 15, canManageIdleDisconnect = false, onSetIdleDisconnectMinutes }) {
   const [activeTab, setActiveTab] = useState('canvas');
   const [recording, setRecording] = useState(null);
   const [shortcutCaptureError, setShortcutCaptureError] = useState('');
@@ -203,7 +204,8 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
   return <Modal isOpen={isOpen} onClose={onClose} title="Editor settings" subtitle="Customize your workspace" panelClassName="modal-editor-settings">
     <div className="settings-tabs" role="tablist" aria-label="Editor settings sections">
       {tabs.map((tab) => {
-        const disabled = (tab.id === 'shortcuts' || tab.id === 'discord' || tab.id === 'data') && !desktopMode;
+        const disabled = ((tab.id === 'shortcuts' || tab.id === 'discord') && !desktopMode)
+          || (tab.id === 'security' && !externalWorkspace);
         return <button key={tab.id} type="button" role="tab" aria-selected={!disabled && activeTab === tab.id} aria-disabled={disabled || undefined} disabled={disabled} className={`settings-tab ${activeTab === tab.id && !disabled ? 'is-active' : ''} ${disabled ? 'is-disabled' : ''}`} onClick={() => !disabled && setActiveTab(tab.id)}>{tab.label}{tab.id === 'about' && serverUpdate && <span className="update-indicator-dot" aria-label="Server update available" />}</button>;
       })}
     </div>
@@ -231,6 +233,14 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
       <SelectInput label="Color theme" value={themeChoice} options={[{ value: 'system', label: 'Use system setting' }, { value: 'dark', label: 'Dark' }, { value: 'light', label: 'Light' }]} onChange={onThemeChange} />
       <Toggle label="Interface sounds" description="Play subtle sounds for controls and notifications" checked={settings.uiSounds ?? false} onChange={(value) => update('uiSounds', value)} />
       <Toggle label="Compact context menus" description="Use tighter spacing in right-click menus" checked={settings.compactContextMenus ?? false} onChange={(value) => update('compactContextMenus', value)} />
+    </div>}
+
+    {activeTab === 'security' && externalWorkspace && <div className="settings-section settings-tab-content">
+      <PasskeySettingsSection
+        authToken={authToken}
+        desktopMode={desktopMode}
+        workspaceOrigin={workspaceOrigin}
+      />
     </div>}
 
     {activeTab === 'collaboration' && <div className="settings-section settings-tab-content">
@@ -338,25 +348,6 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
       <div className="settings-shortcut-actions"><small>Shortcuts are saved on this device. Press Esc while recording to cancel.</small><Button variant="secondary" onClick={() => update('shortcuts', { ...DEFAULT_SHORTCUTS, redo: getDefaultShortcut('redo', platform) })}>Restore defaults</Button></div>
     </div>}
 
-    {activeTab === 'data' && desktopMode && <div className="settings-section settings-tab-content">
-      <div className="settings-section-heading"><span>Reset Local Workspace</span></div>
-      <p className="settings-danger-copy">This removes local projects, graphs, credentials, plugins, snapshots, and editor settings, then restarts ARC Studio.</p>
-      {!localWorkspace && <p className="settings-danger-copy">Switch to Local Workspace to reset its data.</p>}
-      {localWorkspace && !canResetLocalWorkspace && <p className="settings-danger-copy">Only the Local Workspace owner can delete its data.</p>}
-      <form className="settings-reset-form" onSubmit={(event) => {
-        event.preventDefault();
-        if (!resetPassword || resetPending || !localWorkspace || !canResetLocalWorkspace) return;
-        setResetError('');
-        setConfirmResetOpen(true);
-      }}>
-        <TextInput label="ARC Studio password" type="password" autoComplete="current-password" value={resetPassword} onChange={(event) => { setResetPassword(event.target.value); setResetError(''); }} disabled={!canResetLocalWorkspace || resetPending} error={resetError} />
-        <Button type="submit" variant="danger" icon={RotateCcw} loading={resetPending} disabled={!canResetLocalWorkspace || !resetPassword || resetPending}>Delete all local data</Button>
-      </form>
-      <Modal isOpen={confirmResetOpen} onClose={() => !resetPending && setConfirmResetOpen(false)} onConfirm={confirmLocalReset} title="Delete all Local Workspace data?" subtitle="This cannot be undone." icon={AlertTriangle} footer={<><Button variant="secondary" disabled={resetPending} onClick={() => setConfirmResetOpen(false)}>Cancel</Button><Button variant="danger" icon={RotateCcw} loading={resetPending} onClick={confirmLocalReset}>Delete everything</Button></>}>
-        <p className="settings-danger-copy">This deletes every local project and its graphs, bot tokens, credentials, plugins, snapshots, variables, and editor settings. Projects without a backup somewhere else will be lost permanently.</p>
-        <p className="settings-danger-copy">ARC Studio will restart and return to first-time setup.</p>
-      </Modal>
-    </div>}
     {activeTab === 'about' && <div className="settings-section settings-tab-content settings-about-content">
       <div className="settings-about-brand">
         <img src="/arc.png" alt="" />
@@ -377,6 +368,25 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
           : appUpdate ? <a href={appUpdate.url} target="_blank" rel="noreferrer" onClick={openExternal}><Download size={14} /><span>{`${appUpdate.kind === 'major' ? 'Major' : appUpdate.kind === 'feature' ? 'Feature' : 'Maintenance'} update · v${appUpdate.version}`}</span><ExternalLink size={12} /></a>
           : !serverUpdate && !stableUpdateReady && !downloadedUpdateReady && <div className="settings-about-credit"><strong>{networkOnline ? 'No updates available' : 'Update check when online'}</strong></div>}
       </section>
+      <section className="settings-about-section" aria-labelledby="about-local-data-heading">
+        <h3 id="about-local-data-heading">Local data</h3>
+        {!desktopMode
+          ? <></>
+          : <>
+            <p className="settings-danger-copy">Reset Local Workspace removes local projects, graphs, credentials, plugins, snapshots, and editor settings, then restarts ARC Studio.</p>
+            {!localWorkspace && <p className="settings-danger-copy">Switch to Local Workspace to reset its data.</p>}
+            {localWorkspace && !canResetLocalWorkspace && <p className="settings-danger-copy">Only the Local Workspace owner can delete its data.</p>}
+            <form className="settings-reset-form" onSubmit={(event) => {
+              event.preventDefault();
+              if (!resetPassword || resetPending || !localWorkspace || !canResetLocalWorkspace) return;
+              setResetError('');
+              setConfirmResetOpen(true);
+            }}>
+              <TextInput label="ARC Studio password" type="password" autoComplete="current-password" value={resetPassword} onChange={(event) => { setResetPassword(event.target.value); setResetError(''); }} disabled={!canResetLocalWorkspace || resetPending} error={resetError} />
+              <Button type="submit" variant="danger" icon={RotateCcw} loading={resetPending} disabled={!canResetLocalWorkspace || !resetPassword || resetPending}>Delete all local data</Button>
+            </form>
+          </>}
+      </section>
       <section className="settings-about-section" aria-labelledby="about-project-heading">
         <h3 id="about-project-heading">Project</h3>
         <a href="https://github.com/relentiousdragon/arc-studio" target="_blank" rel="noreferrer" onClick={openExternal}><Github size={14} /><span>ARC Studio on GitHub</span><ExternalLink size={12} /></a>
@@ -392,6 +402,10 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
         <div><strong>Apache License 2.0</strong><span>© 2026 relentiousdragon</span></div>
         <a href="https://github.com/relentiousdragon/arc-studio/blob/main/LICENSE" target="_blank" rel="noreferrer" onClick={openExternal} aria-label="View the Apache License 2.0"><ExternalLink size={13} /></a>
       </section>
+      <Modal isOpen={confirmResetOpen} onClose={() => !resetPending && setConfirmResetOpen(false)} onConfirm={confirmLocalReset} title="Delete all Local Workspace data?" subtitle="This cannot be undone." icon={AlertTriangle} footer={<><Button variant="secondary" disabled={resetPending} onClick={() => setConfirmResetOpen(false)}>Cancel</Button><Button variant="danger" icon={RotateCcw} loading={resetPending} onClick={confirmLocalReset}>Delete everything</Button></>}>
+        <p className="settings-danger-copy">This deletes every local project and its graphs, bot tokens, credentials, plugins, snapshots, variables, and editor settings. Projects without a backup somewhere else will be lost permanently.</p>
+        <p className="settings-danger-copy">ARC Studio will restart and return to first-time setup.</p>
+      </Modal>
     </div>}
   </Modal>;
 }
