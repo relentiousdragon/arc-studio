@@ -17,6 +17,14 @@ export const GatewayOpcodes = Object.freeze({
   HEARTBEAT_ACK: 11
 });
 
+export const GatewayCapabilities = Object.freeze({
+  CHANNEL_OBFUSCATION: 1 << 15
+});
+
+export const ChannelFlags = Object.freeze({
+  CHANNEL_OBFUSCATED: 1 << 17
+});
+
 export const GatewayCloseCodes = Object.freeze({
   UNKNOWN_ERROR: 4000,
   UNKNOWN_OPCODE: 4001,
