@@ -162,9 +162,13 @@ export class UserStore extends EventEmitter {
     this.sessions.delete(token);
     const user = this.users.find((item) => item.id === userId);
     if (user && sessionId && user.activeSessionId === sessionId) {
+      user.authVersion = (Number.isInteger(user.authVersion) ? user.authVersion : 0) + 1;
       delete user.activeSessionId;
       delete user.activeSessionExpiresAt;
       delete user.activeSessionRememberMe;
+      for (const [existingToken, existingSession] of this.sessions) {
+        if (existingSession.userId === user.id) this.sessions.delete(existingToken);
+      }
       this.saveState();
     }
   }
@@ -299,6 +303,18 @@ export class UserStore extends EventEmitter {
       throw error;
     }
 
+    return this.createAuthenticatedSession(user, rememberMe);
+  }
+
+  loginWithPasskey(userId, rememberMe = false) {
+    if (!this.isSetupCompleted()) throw new Error('Setup has not been completed. Please run first-time setup.');
+    const user = this.users.find((item) => item.id === userId);
+    if (!user) throw new Error('Invalid passkey.');
+    if (user.mustChangePassword) throw new Error('Change your password before signing in with a passkey.');
+    return this.createAuthenticatedSession(user, rememberMe);
+  }
+
+  createAuthenticatedSession(user, rememberMe = false) {
     if (user.activeSessionId && Number(user.activeSessionExpiresAt) > Date.now()) {
       let pending = this.pendingSessionReplacements.get(user.id);
       if (!pending) {
