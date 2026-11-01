@@ -1,8 +1,8 @@
 export default {
-  "description": "Updates live app status and activity message",
+  "description": "Updates bot status, optional activity, and optional custom status",
   "type": "action_set_presence",
   "category": "Discord Actions",
-  "label": "Set Bot Presence",
+  "label": "Set Presence",
   "color": "#10b981",
   "inputs": [
     {
@@ -31,6 +31,12 @@ export default {
     {
       "id": "stream_url",
       "label": "Stream URL",
+      "type": "string",
+      "defaultValue": ""
+    },
+    {
+      "id": "custom_status_text",
+      "label": "Custom Status",
       "type": "string",
       "defaultValue": ""
     }
