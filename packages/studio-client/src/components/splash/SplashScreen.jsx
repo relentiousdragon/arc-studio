@@ -45,6 +45,7 @@ export function SplashScreen({
   onCreateFirstProject,
   projectStarters = [],
   onLocalSetupRequired,
+  workspaceSupportsPasskeys = false,
   canResetPrimaryAdminWithMasterKey = false
 }) {
   const desktopMode = Boolean(desktopConfig.desktop);
@@ -184,8 +185,9 @@ export function SplashScreen({
   }, [desktopMode, workspaceMode, needsSetup, credentialOrigin, rememberStorageKey]);
 
   useEffect(() => {
-    if (needsSetup) {
+    if (needsSetup || (desktopMode && workspaceMode === 'local')) {
       setRememberedProfile(null);
+      setValidatingRememberedUser(false);
       return undefined;
     }
     let candidate = '';
@@ -757,9 +759,10 @@ export function SplashScreen({
   const renderInlineError = (message) => isUnsupportedNodeCompatibilityError(message)
     ? <p className="form-error registry-compatibility-error" role="alert">{compatibilityDetailsLink(message)}</p>
     : <p className="form-error" role="alert">{message}</p>;
-  const webPasskeyAvailable = !desktopMode && isWebPasskeyAvailable();
-  const desktopPasskeyAvailable = desktopMode && workspaceMode === 'remote' && isDesktopPasskeyAvailable();
+  const webPasskeyAvailable = !desktopMode && workspaceSupportsPasskeys && isWebPasskeyAvailable();
+  const desktopPasskeyAvailable = desktopMode && workspaceMode === 'remote' && workspaceSupportsPasskeys && isDesktopPasskeyAvailable();
   const showPasskeySignIn = !needsSetup && !passwordChangeSession && (webPasskeyAvailable || desktopPasskeyAvailable);
+  const showRememberedUserCard = Boolean(rememberedProfile) && !needsSetup && !(desktopMode && workspaceMode === 'local');
 
   return (
     <main className={`auth-screen ${desktopMode ? 'is-desktop' : ''}`} data-initial-setup={needsSetup ? 'true' : undefined} data-low-power={lowPower ? 'true' : undefined}>
@@ -865,7 +868,7 @@ export function SplashScreen({
             <div key="setup-step-2" className="auth-step-pane">
               <form className="auth-form" noValidate onInvalidCapture={(event) => event.preventDefault()} onSubmit={handleSubmit}>
                 {needsSetup && !desktopMode && <><label className="field-label" htmlFor="workspace-name">Workspace name</label><div ref={(element) => { fieldRefs.current.workspaceName = element; }} className={`auth-input-wrap ${fieldErrors.workspaceName ? 'has-error' : ''}`}><input id="workspace-name" autoComplete="organization" autoCapitalize="none" autoCorrect="off" spellCheck="false" maxLength={35} value={serverWorkspaceName} onChange={updateField('workspaceName', setServerWorkspaceName)} placeholder="My Workspace" aria-invalid={Boolean(fieldErrors.workspaceName)} /></div><p className={`auth-field-hint ${fieldErrors.workspaceName ? 'has-error' : ''}`} role={fieldErrors.workspaceName ? 'alert' : undefined}>{fieldErrors.workspaceName || '2–35 characters · letters, numbers, spaces, - and _'} <span>{serverWorkspaceName.length}/35</span></p></>}
-                {!needsSetup && rememberedProfile ? (
+                {showRememberedUserCard ? (
                   <div className="auth-remembered-user-card">
                     <div className="auth-remembered-user-avatar" style={{ '--collaborator-color': rememberedColor, '--collaborator-text-color': rememberedTextColor, color: rememberedTextColor }}>
                       {rememberedProfile.avatar ? (
@@ -909,14 +912,14 @@ export function SplashScreen({
                   <>
                     <label className="field-label" htmlFor="username">{desktopMode && workspaceMode === 'local' && needsSetup ? 'Owner username' : 'Username'}</label>
                     <div ref={(element) => { fieldRefs.current.username = element; }} className={`auth-input-wrap ${fieldErrors.username ? 'has-error' : ''} ${desktopMode && workspaceMode === 'local' && !localUsernameEditable ? 'is-readonly' : ''}`}>
-                      <input id="username" name="username" autoFocus={!needsSetup} autoComplete="username" autoCapitalize="none" autoCorrect="off" spellCheck="false" value={username} disabled={desktopMode && workspaceMode === 'local' && !localUsernameEditable} onChange={(event) => { updateField('username', setUsername)(event); setOwnerResetPromptForUsername(''); if (desktopMode && workspaceMode === 'remote' && usernameStorageKey) { try { localStorage.setItem(usernameStorageKey, event.target.value); } catch {} } }} placeholder="Username" aria-invalid={Boolean(fieldErrors.username)} />
+                      <input id="username" name="username" autoFocus={!needsSetup && !(desktopMode && workspaceMode === 'local')} autoComplete="username" autoCapitalize="none" autoCorrect="off" spellCheck="false" value={username} disabled={desktopMode && workspaceMode === 'local' && !localUsernameEditable} onChange={(event) => { updateField('username', setUsername)(event); setOwnerResetPromptForUsername(''); if (desktopMode && workspaceMode === 'remote' && usernameStorageKey) { try { localStorage.setItem(usernameStorageKey, event.target.value); } catch {} } }} placeholder="Username" aria-invalid={Boolean(fieldErrors.username)} />
                       {desktopMode && workspaceMode === 'local' && <button className="auth-edit-username" type="button" onClick={() => setLocalUsernameEditable((editable) => !editable)} aria-label={localUsernameEditable ? 'Lock username field' : 'Edit username'} title={localUsernameEditable ? 'Done editing username' : 'Edit username'}>{localUsernameEditable ? 'Done' : <><Pencil size={13} /> Edit</>}</button>}
                     </div>
                     {fieldErrors.username && <p className="auth-field-error" role="alert">{fieldErrors.username}</p>}
                   </>
                 )}
                 <label className="field-label" htmlFor="password">Password</label>
-                <div ref={(element) => { fieldRefs.current.password = element; }} className={`auth-input-wrap ${fieldErrors.password ? 'has-error' : ''}`}><LockKeyhole size={16} /><input id="password" name="password" autoFocus={!needsSetup && Boolean(rememberedProfile)} type={showPassword ? 'text' : 'password'} autoComplete={needsSetup ? 'new-password' : 'current-password'} autoCapitalize="none" autoCorrect="off" spellCheck="false" value={password} onChange={(event) => { updateField('password', setPassword)(event); setOwnerResetPromptForUsername(''); }} placeholder="Password" aria-invalid={Boolean(fieldErrors.password)} /><button className="auth-reveal" type="button" onClick={() => setShowPassword((show) => !show)} aria-label={showPassword ? 'Hide password' : 'Show password'}>{showPassword ? <EyeOff size={15} /> : <Eye size={15} />}</button></div>
+                <div ref={(element) => { fieldRefs.current.password = element; }} className={`auth-input-wrap ${fieldErrors.password ? 'has-error' : ''}`}><LockKeyhole size={16} /><input id="password" name="password" type={showPassword ? 'text' : 'password'} autoFocus={!needsSetup && (showRememberedUserCard || (desktopMode && workspaceMode === 'local'))} autoComplete={needsSetup ? 'new-password' : 'current-password'} autoCapitalize="none" autoCorrect="off" spellCheck="false" value={password} onChange={(event) => { updateField('password', setPassword)(event); setOwnerResetPromptForUsername(''); }} placeholder="Password" aria-invalid={Boolean(fieldErrors.password)} /><button className="auth-reveal" type="button" onClick={() => setShowPassword((show) => !show)} aria-label={showPassword ? 'Hide password' : 'Show password'}>{showPassword ? <EyeOff size={15} /> : <Eye size={15} />}</button></div>
                 {fieldErrors.password && <p className="auth-field-error" role="alert">{fieldErrors.password}</p>}
                 {desktopMode && workspaceMode === 'remote' && <label className="remember-password"><input type="checkbox" checked={rememberPassword} onChange={(event) => { const checked = event.target.checked; setRememberPassword(checked); try { if (rememberStorageKey) localStorage.setItem(rememberStorageKey, String(checked)); } catch {} if (!checked && credentialOrigin) window.__TAURI_INTERNALS__?.invoke?.('delete_workspace_password', { origin: credentialOrigin }).catch(() => {}); }} /><span>Remember password on this device</span></label>}
                 {desktopMode && workspaceMode === 'local' && !needsSetup && <label className="remember-password"><input type="checkbox" checked={keepLocalSignedIn} onChange={(event) => { const checked = event.target.checked; setKeepLocalSignedIn(checked); try { localStorage.setItem('arc_local_keep_signed_in', String(checked)); if (!checked) localStorage.removeItem('arc_local_session_token'); } catch {} if (!checked) window.__TAURI_INTERNALS__?.invoke?.('delete_local_session_token').catch(() => {}); }} /><span>Keep me signed in</span></label>}
