@@ -55,6 +55,37 @@ test('guild runtime fetches users, servers, and members with normalized outputs'
   assert.equal(member.outputs.get('username'), 'Ada');
   assert.deepEqual(member.outputs.get('roles'), ['role-1']);
   assert.equal(member.outputs.get('deaf'), true);
+
+  const channel = createGuildHarness('action_fetch_channel', { channel_id: 'channel-1' }, {
+    rest: { getChannel: async () => ({ id: 'channel-1', flags: 1 << 17 }) }
+  });
+  await channel.execute();
+  assert.equal(channel.outputs.get('flags'), 1 << 17);
+  assert.equal(channel.outputs.get('obfuscated'), true);
+});
+
+test('guild runtime fetches member and role permission bitfields', async () => {
+  const calls = [];
+  const cases = [
+    ['action_get_guild_member_permissions', { guild_id: 'guild-1', user_id: 'user-1' }, 'getGuildMemberPermissions', ['guild-1', 'user-1']],
+    ['action_get_guild_role_permissions', { guild_id: 'guild-1', role_id: 'role-1' }, 'getGuildRolePermissions', ['guild-1', 'role-1']],
+    ['action_get_channel_member_permissions', { channel_id: 'channel-1', user_id: 'user-1', implicit: false }, 'getChannelMemberPermissions', ['channel-1', 'user-1', { implicit: false }]],
+    ['action_get_channel_role_permissions', { channel_id: 'channel-1', role_id: 'role-1' }, 'getChannelRolePermissions', ['channel-1', 'role-1', { implicit: true }]]
+  ];
+
+  for (const [type, data, method, expectedArgs] of cases) {
+    assert.equal(isDiscordGuildNodeType(type), true);
+    const node = createGuildHarness(type, data, {
+      rest: { [method]: async (...args) => {
+        calls.push([method, ...args]);
+        return { permissions: '12345678901234567890' };
+      } }
+    });
+    assert.equal(await node.execute(), true);
+    assert.equal(node.outputs.get('permissions'), '12345678901234567890');
+    assert.equal(node.outputs.get('success'), true);
+    assert.deepEqual(calls.at(-1), [method, ...expectedArgs]);
+  }
 });
 
 test('guild runtime creates channels and roles and applies role changes', async () => {
