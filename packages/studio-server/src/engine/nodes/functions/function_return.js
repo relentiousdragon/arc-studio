@@ -1,11 +1,12 @@
 export default {
-  "description": "Returns the connected value from this function graph",
+  "description": "Returns one or more named values from this function graph",
   "type": "function_return",
+  "dynamicPins": { "kind": "function-return-values", "version": 1 },
   "category": "Functions",
   "label": "Return Value",
   "color": "#a78bfa",
   "defaultData": {
-    "valueType": "number"
+    "returns": [{ "returnId": "output_1", "name": "Result", "valueType": "number", "defaultValue": 0 }]
   },
   "inputs": [
     {
