@@ -1298,7 +1298,8 @@ export class BotManager {
         throw new TypeError(`ARC no longer owns ${managedVariableName} in this project. Recreate it as a regular project variable.`);
       }
       if (managedVariable && !existingVariables.has(item.id) && !allowManagedVariableUpdate
-        && !(appLatencyVariable && allowAppLatencyUpdate)) throw new TypeError(`${managedVariableName} is managed by ARC.`);
+        && !(appLatencyVariable && allowAppLatencyUpdate)
+        && !(discordAppIdVariable && allowDiscordAppIdUpdate)) throw new TypeError(`${managedVariableName} is managed by ARC.`);
       const reservedManagedName = ['DISCORD_APP_ID', 'APP_LATENCY', 'GATEWAY_LATENCY', 'BOT_UPTIME', 'BOT_STATISTICS'].includes(name);
       const matchingManagedId = ({
         DISCORD_APP_ID: 'project_var_discord_app_id',
@@ -1789,7 +1790,7 @@ export class BotManager {
               this.log('ERROR', `Graph “${failure.graphName}” failed at node “${failure.nodeLabel}” (${failure.nodeId}): ${failure.error}`, { graphId: failure.graphId, nodeId: failure.nodeId, nodeLabel: failure.nodeLabel });
               this.broadcastWS({ type: 'GRAPH_NODE_ERROR', payload: failure });
             },
-            log: (message) => this.log('EXECUTION', message)
+            log: (message, level = 'EXECUTION') => this.log(level, message)
           });
           if (!graphController.signal.aborted && result.executedNodeIds.length > 0) {
             this.broadcastWS({ type: 'GRAPH_EXECUTION_PULSE', payload: { tabId: graph.id, nodeIds: result.executedNodeIds } });
@@ -1983,7 +1984,6 @@ export class BotManager {
               ...(application.flags_new !== undefined ? { flags_new: application.flags_new } : {})
             }
           };
-    this.webSocketDispatchGraphEvent = dispatchGraphEvent;
           this.botProfile.intentSummary = this.getIntentPlan();
           this.persistBotConfig();
           this.broadcastWS({ type: 'BOT_STATUS', payload: { status: this.status, user: this.botProfile } });
@@ -2108,7 +2108,7 @@ export class BotManager {
           debugSession.timer.unref?.();
         });
       } : undefined,
-      log: (msg) => this.log('MOCK', msg)
+      log: (message, level = 'EXECUTION') => this.log(level === 'EXECUTION' ? 'MOCK' : level, message)
     });
 
     const elapsed = Date.now() - startTime;
