@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { CanvasNode } from '../nodes/CanvasNode.jsx';
-import { BuiltInNodeDefinitions, functionArgumentPinId, functionInputPinType, getFunctionGraphArguments, getFunctionInputArguments, getNodeArgumentPins, getNodeTemplateInputPins, PinColors, getTextTemplateSlots, resolveDynamicNodePins } from '../nodes/nodeDefinitions.js';
+import { BuiltInNodeDefinitions, functionArgumentPinId, functionInputPinType, functionReturnInputPinId, functionReturnOutputPinId, getFunctionGraphArguments, getFunctionGraphReturnValues, getFunctionInputArguments, getFunctionReturnValues, getNodeArgumentPins, getNodeTemplateInputPins, PinColors, getTextTemplateSlots, resolveDynamicNodePins } from '../nodes/nodeDefinitions.js';
 import { ChevronDown, ChevronUp, FastForward, FileCode2, FolderTree, Hand, LockKeyhole, LockOpen, Maximize, Minus, MousePointer2, Plus, Scissors, Search, StepForward, Type, X } from 'lucide-react';
 import { embedBlockPins, getEmbedBlocks, getEmbedFieldSocketLabels } from '../nodes/EmbedNodeBuilder.jsx';
 import { getArcUiScale } from '../../core/uiScale.js';
@@ -9,8 +9,11 @@ import { DEFAULT_SHORTCUTS, formatShortcut, shortcutMatches } from '../../core/s
 import { getEffectiveCanvasQuality } from '../../core/canvasQuality.js';
 import { onPageBlur } from '../../core/pageFocus.js';
 import { readAppStorage, writeAppStorage } from '../../core/storage.js';
+import { arcEvents } from '../../core/ArcEvents.js';
 import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
+import { DiscordTextField } from '../ui/DiscordTextField.jsx';
+import { CustomEmoji } from '../ui/CustomEmoji.jsx';
 //
 const GRID_SIZE = 24;
 const NODE_WIDTH = 248;
@@ -26,6 +29,7 @@ const NODE_CULL_OVERSCAN_MAX = 1120;
 const PAN_CULL_REFRESH_DISTANCE = 560;
 const EMPTY_NODE_CONNECTIONS = Object.freeze({ incoming: [], outgoing: [], incident: [] });
 const textInputPopupOpen = () => typeof document !== 'undefined' && Boolean(document.querySelector('.arc-full-emoji-picker, .discord-emoji-suggestions'));
+const graphChatEmojiPattern = /^<(a?):([a-zA-Z0-9_~]{2,32}):(\d+)>$/;
 const getCanvasDisplayScale = (element) => {
   if (!element) return 1;
   const appRoot = element.closest('.app-root');
@@ -71,6 +75,20 @@ function equalNodeDefinitions(left, right) {
   return keys.every((key) => key === 'inputs' || key === 'outputs'
     ? equalPinLists(left[key] || [], right[key] || [])
     : Object.is(left[key], right[key]));
+}
+
+function renderGraphChatContent(content) {
+  return String(content || '').split(/(<a?:[a-zA-Z0-9_~]{2,32}:\d+>)/g).map((part, index) => {
+    const match = graphChatEmojiPattern.exec(part);
+    if (!match) return part;
+    const [, animated, name, id] = match;
+    return <CustomEmoji
+      key={`${id}-${index}`}
+      src={`https://cdn.discordapp.com/emojis/${encodeURIComponent(id)}.${animated ? 'gif' : 'webp'}?size=48`}
+      alt={`:${name}:`}
+      className="canvas-chat-bubble-emoji"
+    />;
+  });
 }
 
 function GraphChatBubble({ bubble, isOwn, zoom, displayScale, onMove }) {
@@ -127,7 +145,7 @@ function GraphChatBubble({ bubble, isOwn, zoom, displayScale, onMove }) {
     aria-label={`${bubble.username} says ${bubble.content}`}
   >
     <span className="canvas-chat-bubble-author"><i />{bubble.username}</span>
-    <span className="canvas-chat-bubble-message">{bubble.content}</span>
+    <span className="canvas-chat-bubble-message">{renderGraphChatContent(bubble.content)}</span>
   </div>;
 }
 
@@ -304,7 +322,7 @@ export function NodeCanvas({
       name: graph.name,
       nodes: (graph.nodes || []).filter((node) => node.type === 'function_input' || node.type === 'function_return').map((node) => node.type === 'function_input'
         ? [node.id, node.type, getFunctionInputArguments(node)]
-        : [node.id, node.type, node.data?.valueType])
+        : [node.id, node.type, getFunctionReturnValues(node)])
     }));
     const signature = JSON.stringify(signatureData);
     const previous = functionGraphDefinitionViewsRef.current;
@@ -547,7 +565,8 @@ export function NodeCanvas({
     if (!graphChatComposerOpen) return undefined;
     const frame = window.requestAnimationFrame(() => graphChatInputRef.current?.focus());
     const closeOnOutsidePointer = (event) => {
-      if (graphChatComposerRef.current?.contains(event.target)) return;
+      if (graphChatComposerRef.current?.contains(event.target)
+        || event.target instanceof Element && event.target.closest('.discord-emoji-picker, .discord-emoji-suggestions')) return;
       clearGraphChatTyping();
       setGraphChatComposerOpen(false);
       setGraphChatDraft('');
@@ -1179,19 +1198,25 @@ export function NodeCanvas({
       });
     }
     if (node.type === 'function_return') {
-      const type = node.data?.valueType || 'number';
+      const returnValues = getFunctionReturnValues(node);
       return withExecInputPins({
         ...definition,
         inputs: [
           { id: 'exec', label: 'Exec', type: 'exec' },
-          { id: 'value', label: 'Return', type, defaultValue: defaultForType(type) }
+          ...returnValues.map((value) => ({
+            id: functionReturnInputPinId(value),
+            label: value.name || `Output ${value.index + 1}`,
+            type: functionInputPinType(value),
+            defaultValue: value.defaultValue,
+            ...(value.valueType.endsWith('_id') || value.valueType === 'interaction_token' ? { semanticType: value.valueType } : {})
+          }))
         ]
       });
     }
     if (node.type === 'function_call') {
       const target = functionGraphDefinitionViews.find((graph) => graph.id === node.data?.graphId);
       const params = getFunctionGraphArguments(target);
-      const returnNode = target?.nodes?.find((item) => item.type === 'function_return');
+      const returnValues = getFunctionGraphReturnValues(target);
       return withExecInputPins({
         ...definition,
         inputs: [
@@ -1200,7 +1225,12 @@ export function NodeCanvas({
         ],
         outputs: [
           { id: 'exec', label: 'Exec', type: 'exec' },
-          ...(returnNode ? [{ id: 'result', label: 'Result', type: returnNode.data?.valueType || 'number' }] : [])
+          ...returnValues.map((value) => ({
+            id: functionReturnOutputPinId(value),
+            label: value.name || 'Result',
+            type: functionInputPinType(value),
+            ...(value.valueType.endsWith('_id') || value.valueType === 'interaction_token' ? { semanticType: value.valueType } : {})
+          }))
         ]
       });
     }
@@ -1689,13 +1719,13 @@ export function NodeCanvas({
     };
   }
 
-  function pasteNodes(source = clipboardRef.current) {
+  function pasteNodes(source = clipboardRef.current, requestedWorldOrigin = null) {
     if (!source) return;
     const fragment = Array.isArray(source.nodes) ? source : { nodes: [source], connections: [] };
     const bounds = containerRef.current?.getBoundingClientRect();
     const pointer = pointerPositionRef.current;
-    let pasteOrigin = null;
-    if (bounds && pointer && pointer.x >= bounds.left && pointer.x <= bounds.right && pointer.y >= bounds.top && pointer.y <= bounds.bottom) {
+    let pasteOrigin = requestedWorldOrigin;
+    if (!pasteOrigin && bounds && pointer && pointer.x >= bounds.left && pointer.x <= bounds.right && pointer.y >= bounds.top && pointer.y <= bounds.bottom) {
       const displayScale = getCanvasDisplayScale(containerRef.current);
       const currentViewport = viewportRef.current;
       pasteOrigin = { x: ((pointer.x - bounds.left) / displayScale - currentViewport.pan.x) / currentViewport.zoom, y: ((pointer.y - bounds.top) / displayScale - currentViewport.pan.y) / currentViewport.zoom };
@@ -1721,6 +1751,7 @@ export function NodeCanvas({
     onNodesChange?.([...nodes, ...pastedNodes]);
     onConnectionsChange?.([...connections, ...pastedConnections]);
     selectNodes(pastedNodes.map((node) => node.id), pastedNodes[pastedNodes.length - 1]?.id);
+    return pastedNodes;
   }
 
   function duplicateNode(nodeId) {
@@ -2226,12 +2257,13 @@ export function NodeCanvas({
     const finalNodeMoveX = finishedDraggingNode ? finalNodeX - finishedDraggingNode.initialX : 0;
     const finalNodeMoveY = finishedDraggingNode ? finalNodeY - finishedDraggingNode.initialY : 0;
     const nodeMoveStarted = Boolean(finishedDraggingNode && (finishedDraggingNode.historyStarted || Math.hypot(finalNodeDelta.x * zoom, finalNodeDelta.y * zoom) >= 2));
+    const cloneOnDrop = Boolean(!isLocked && nodeMoveStarted && finishedDraggingNode && (event.altKey || altDownRef.current || finishedDraggingNode.altKey));
     const finalNodePositions = nodeMoveStarted ? (finishedDraggingNode.nodeIds || [finishedDraggingNode.id]).map((id) => {
       const initial = finishedDraggingNode.initialPositions?.[id] || nodes.find((item) => item.id === id) || { x: 0, y: 0 };
       return { id, x: Math.round(initial.x + finalNodeMoveX), y: Math.round(initial.y + finalNodeMoveY) };
     }) : undefined;
-    const finishedNodePositions = collaborationMotionSupported ? finalNodePositions : undefined;
-    if (nodeMoveStarted && finalNodePositions?.length) {
+    let finishedNodePositions = collaborationMotionSupported && !cloneOnDrop ? finalNodePositions : undefined;
+    if (nodeMoveStarted && finalNodePositions?.length && !cloneOnDrop) {
       const finalPositionsById = new Map(finalNodePositions.map((position) => [position.id, position]));
       onNodesChange?.(nodes.map((node) => finalPositionsById.has(node.id) ? { ...node, ...finalPositionsById.get(node.id) } : node));
     }
@@ -2246,7 +2278,7 @@ export function NodeCanvas({
       const initial = draggingNote.initialPositions[id] || { x: note.x, y: note.y };
       return { id, x: initial.x + finalNoteDelta.x, y: initial.y + finalNoteDelta.y };
     }).filter(Boolean) : undefined;
-    if (!isLocked && finishedDraggingNode && (event.altKey || altDownRef.current || finishedDraggingNode.altKey)) {
+    if (!cloneOnDrop && !isLocked && finishedDraggingNode && (event.altKey || altDownRef.current || finishedDraggingNode.altKey)) {
       const selectedIds = [...new Set(finishedDraggingNode.nodeIds || [finishedDraggingNode.id])];
       const bounds = containerRef.current?.getBoundingClientRect();
       const displayScale = getCanvasDisplayScale(containerRef.current);
@@ -2317,6 +2349,27 @@ export function NodeCanvas({
     if (isPanning) setPan(viewportRef.current.pan);
     setIsPanning(false);
     setDraggingNode(null);
+    if (cloneOnDrop) {
+      const selectedIds = [...new Set(finishedDraggingNode.nodeIds || [finishedDraggingNode.id])];
+      const singletonNode = nodes.find((node) => selectedIds.includes(node.id) && ['function_input', 'function_return'].includes(node.type));
+      if (singletonNode) {
+        shakeNode(singletonNode.id);
+        arcEvents.emit('toast:notify', { title: 'Function node cannot be cloned', message: `${getNodeDefinition(singletonNode)?.label || singletonNode.type} is limited to one per function graph.`, type: 'warning' });
+      } else {
+        copyNodes(selectedIds);
+        const cloneOrigin = {
+          x: Math.min(...finalNodePositions.map((position) => position.x)),
+          y: Math.min(...finalNodePositions.map((position) => position.y))
+        };
+        const clones = pasteNodes(undefined, cloneOrigin) || [];
+        if (clones.length) {
+          finalSelectedNodeIds = clones.map((node) => node.id);
+          finalSelectedNoteIds = [];
+          finalSelectedArrowIds = [];
+          finishedNodePositions = collaborationMotionSupported ? clones.map(({ id, x, y }) => ({ id, x, y })) : undefined;
+        }
+      }
+    }
     if (draggingNote) {
       if (noteMoveStarted) {
         if (!draggingNote.historyStarted) onHistoryGroupStart?.();
@@ -2789,7 +2842,7 @@ export function NodeCanvas({
     return Boolean(collaborationOnline && lock && (lock.userId !== currentUser?.id || lock.clientId !== collaborationClientId));
   };
 
-  const gridSize = Math.max(12, GRID_SIZE * zoom);
+  const gridSize = GRID_SIZE;
   const inputConnectionByNodePin = connectionByNodePin.incoming;
   const tagGroupLayouts = useMemo(() => tagGroups.map((group) => {
     const members = nodes.filter((node) => (group.nodeIds || []).includes(node.id));
@@ -3675,7 +3728,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
             setGraphChatAnchor(null);
           }}
         >
-          <textarea
+          <DiscordTextField
             ref={graphChatInputRef}
             aria-label="Canvas message"
             placeholder="Send message to users in graph..."
@@ -3699,10 +3752,14 @@ const previewOutput = (node, outputId, seen = new Set()) => {
                 setGraphChatDraft('');
                 setGraphChatAnchor(null);
               } else if (event.key === 'Enter' && !event.shiftKey) {
+                if (document.querySelector('.discord-emoji-suggestions .discord-emoji-suggestion')) return;
                 event.preventDefault();
                 event.currentTarget.form?.requestSubmit();
               }
             }}
+            as="textarea"
+            discordAutocomplete
+            appEmojis={appEmojis}
           />
         </form>
       </div>}
