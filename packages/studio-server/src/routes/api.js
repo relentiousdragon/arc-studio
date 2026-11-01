@@ -310,6 +310,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       nodeRegistryRequiredFeatures: registry.requiredFeatures,
       chezcordVersion: serverConfig.chezcordVersion,
       collaborationFeatures: { transientCanvasMotion: true },
+      securityFeatures: { passkeys: !serverConfig.desktopMode },
       supportedNodeTypes: Object.values(NodeDefinitions).map((definition) => definition.type)
     });
   });
