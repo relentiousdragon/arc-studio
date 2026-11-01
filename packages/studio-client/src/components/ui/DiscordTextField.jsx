@@ -220,10 +220,11 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
     event.stopPropagation();
     setTextMenu({ x: Math.min(event.clientX, window.innerWidth - 210), y: Math.min(event.clientY, window.innerHeight - 54) });
   };
+  const showSuggestions = suggestions.length > 0 || (match?.kind !== 'template' && emojiEntries === null);
   return <>
     <Component {...fieldProps} ref={inputRef} className={className} value={value} onFocus={handleFocus} onChange={onInputChange} onKeyDown={handleKeyDown} onPointerDown={onPointerDown} onContextMenu={handleContextMenu} />
     {textMenu && <div className="discord-text-context-menu" style={{ left: textMenu.x, top: textMenu.y }} role="menu"><button type="button" role="menuitem" onPointerDown={(event) => event.preventDefault()} onClick={(event) => { event.stopPropagation(); setTextMenu(null); onOpenTextEditor?.(); }}>Open in text editor</button></div>}
-    {(discordAutocomplete || templateAutocomplete) && match && position && createPortal(<div ref={pickerRef} className="discord-emoji-suggestions" style={{ left: position.left, top: position.top, width: position.width, maxHeight: position.maxHeight, overflowY: 'auto' }} role="listbox" aria-label={match.kind === 'template' ? 'Template suggestions' : 'Emoji suggestions'}>
+    {(discordAutocomplete || templateAutocomplete) && match && position && showSuggestions && createPortal(<div ref={pickerRef} className="discord-emoji-suggestions" style={{ left: position.left, top: position.top, width: position.width, maxHeight: position.maxHeight, overflowY: 'auto' }} role="listbox" aria-label={match.kind === 'template' ? 'Template suggestions' : 'Emoji suggestions'}>
       <div className="discord-emoji-suggestion-heading">{match.kind === 'template' ? (match.filterStage ? 'FILTER' : match.pathStage ? 'VALUE PATH' : 'VARIABLE') : 'EMOJI'}{match.query ? ` · ${match.query}` : ''}</div>
       {suggestions.length ? suggestions.map((item, index) => <button type="button" role="option" aria-selected={index === selectedIndex} className={`discord-emoji-suggestion ${index === selectedIndex ? 'is-selected' : ''}`} key={item.key} onPointerDown={(event) => event.preventDefault()} onMouseEnter={() => setSelectedIndex(index)} onClick={() => selectSuggestion(item)}>
         {match.kind === 'template' ? <span className="discord-emoji-suggestion-glyph">{match.filterStage ? 'ƒ' : '{{'}</span> : item.isCustom ? <img src={item.image} alt="" /> : <span className="discord-emoji-suggestion-glyph">{item.emoji}</span>}
