@@ -377,6 +377,10 @@ export function evaluateDataNode(type, inputs = {}, data = {}) {
     const parts = text.split(search);
     return { text: parts.join(String(inputs.replacement ?? '')), replacements: parts.length - 1 };
   }
+  if (type === 'data_current_timestamp') {
+    const timestampMs = Date.now();
+    return { timestamp_ms: timestampMs, iso: new Date(timestampMs).toISOString() };
+  }
   if (type === 'data_format_time' || type === 'data_to_iso_time') {
     const raw = inputs.value;
     const date = typeof raw === 'number' || (typeof raw === 'string' && /^-?\d+(?:\.\d+)?$/.test(raw.trim()))
