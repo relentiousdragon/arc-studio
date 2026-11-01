@@ -220,9 +220,45 @@ function addSlashOptionEditorIds(options = [], nodeId, path = []) {
 }
 
 function stableJson(value) {
-  if (Array.isArray(value)) return `[${value.map((item) => item === undefined ? 'null' : stableJson(item)).join(',')}]`;
-  if (value && typeof value === 'object') return `{${Object.keys(value).sort().filter((key) => value[key] !== undefined).map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
-  return JSON.stringify(value);
+  const parts = [];
+  const ancestors = new WeakSet();
+  const stack = [{ kind: 'value', value }];
+  while (stack.length) {
+    const frame = stack.pop();
+    if (frame.kind === 'text') { parts.push(frame.text); continue; }
+    if (frame.kind === 'leave') { ancestors.delete(frame.value); continue; }
+    const current = frame.value;
+    if (Array.isArray(current)) {
+      if (ancestors.has(current)) throw new Error('The graph contains a circular reference and cannot be exported.');
+      ancestors.add(current);
+      parts.push('[');
+      stack.push({ kind: 'leave', value: current });
+      stack.push({ kind: 'text', text: ']' });
+      for (let index = current.length - 1; index >= 0; index -= 1) {
+        stack.push({ kind: 'value', value: current[index] });
+        if (index > 0) stack.push({ kind: 'text', text: ',' });
+      }
+      continue;
+    }
+    if (current && typeof current === 'object') {
+      if (ancestors.has(current)) throw new Error('The graph contains a circular reference and cannot be exported.');
+      ancestors.add(current);
+      const keys = Object.keys(current).sort().filter((key) => current[key] !== undefined);
+      parts.push('{');
+      stack.push({ kind: 'leave', value: current });
+      stack.push({ kind: 'text', text: '}' });
+      for (let index = keys.length - 1; index >= 0; index -= 1) {
+        const key = keys[index];
+        stack.push({ kind: 'value', value: current[key] });
+        stack.push({ kind: 'text', text: `${JSON.stringify(key)}:` });
+        if (index > 0) stack.push({ kind: 'text', text: ',' });
+      }
+      continue;
+    }
+    const encoded = JSON.stringify(current);
+    parts.push(encoded === undefined ? 'null' : encoded);
+  }
+  return parts.join('');
 }
 
 async function sha256Hex(value) {
@@ -717,6 +753,8 @@ export function App() {
   const [collaborationConnectionFlaky, setCollaborationConnectionFlaky] = useState(false);
   const [hasEstablishedCollaboration, setHasEstablishedCollaboration] = useState(false);
   const [transientCanvasMotionSupported, setTransientCanvasMotionSupported] = useState(false);
+//
+  const [workspaceSupportsPasskeys, setWorkspaceSupportsPasskeys] = useState(false);
   const remoteGraphConflictsRef = useRef(new Set());
   const deletedGraphsRef = useRef(new Set());
   const noteEditConflictToastRef = useRef(new Set());
@@ -2175,6 +2213,7 @@ export function App() {
         }
         if (typeof system.version === 'string' && system.version.trim()) setStudioServerVersion(system.version.trim());
         setTransientCanvasMotionSupported(system.collaborationFeatures?.transientCanvasMotion === true);
+        setWorkspaceSupportsPasskeys(system.securityFeatures?.passkeys === true);
         if (!desktopMode && typeof system.version === 'string' && system.version.trim()) setStudioVersion(system.version.trim());
         if (desktopMode && workspaceMode === 'local') {
           const ownerUsername = typeof system.localUsername === 'string' ? system.localUsername : '';
@@ -3290,6 +3329,7 @@ export function App() {
         } catch { /* malformed/unrelated socket messages. */ }
       };
       currentSocket.onclose = (event) => {
+        const closeReason = String(event?.reason || '');
         const authenticationClose = event?.code === 1008 && (
           !closeReason
           || closeReason.includes('authentication')
@@ -4002,10 +4042,15 @@ export function App() {
   }, [activeNodes, handleNodesChange, localDesktopWorkspace]);
 
   const handleExportGraph = useCallback(async (targetGraph = null) => {
-    const graph = targetGraph
-      ? tabs.find((tab) => tab.id === targetGraph.id) || targetGraph
+    const requestedGraph = targetGraph && typeof targetGraph === 'object' && Array.isArray(targetGraph.nodes) ? targetGraph : null;
+    const graph = requestedGraph
+      ? tabs.find((tab) => tab.id === requestedGraph.id) || requestedGraph
       : tabs.find((tab) => tab.id === activeTabId);
     if (!graph) return;
+    if (!Array.isArray(graph.nodes) || !graph.nodes.length) {
+      arcEvents.emit('toast:notify', { title: 'Nothing to export', message: 'Add a node to this graph before exporting it.', type: 'warning' });
+      return;
+    }
     const exportData = { ...graph };
     delete exportData.isDirty;
     let blob;
@@ -6367,6 +6412,7 @@ export function App() {
       try { localStorage.setItem('arc_remote_workspace_name', name); } catch {}
       activateWorkspace('remote', url);
       setTransientCanvasMotionSupported(status.collaborationFeatures?.transientCanvasMotion === true);
+      setWorkspaceSupportsPasskeys(status.securityFeatures?.passkeys === true);
       setSupportedWorkspaceNodeTypes(supportedNodeTypes);
       setWorkspaceCompatibilityNotice(compatibilityNotice);
       return { notice: compatibilityNotice };
@@ -6966,6 +7012,7 @@ export function App() {
             }
           }}
           onToggleTheme={toggleTheme}
+          workspaceSupportsPasskeys={workspaceSupportsPasskeys}
           canResetPrimaryAdminWithMasterKey={canResetPrimaryAdminWithMasterKey}
           onAuthComplete={async (...args) => { setWorkspaceSwitchOpen(false); return handleAuthComplete(...args); }} /></Suspense>
         <ToastContainer />
@@ -7043,7 +7090,7 @@ export function App() {
           <button className={`rail-button ${isPluginStoreOpen ? 'is-selected' : ''}`} onClick={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(false); setIsPluginStoreOpen((open) => !open); }} title="Plugin store" aria-label="Plugin store"><PackageOpen size={17} /></button>
           <button className="rail-button" onClick={() => setIsSettingsOpen(true)} title="Canvas settings" aria-label="Canvas settings"><SlidersHorizontal size={17} /></button>
           {localDesktopWorkspace && <button className="rail-button" onClick={handleAutoLayout} title="Arrange nodes" aria-label="Arrange nodes"><LayoutGrid size={17} /></button>}
-          <button className="rail-button" onClick={handleExportGraph} disabled={!activeGraph} title={activeGraph ? 'Export graph' : 'Open a graph to export it'} aria-label="Export graph"><Braces size={17} /></button>
+          <button className="rail-button" onClick={() => handleExportGraph()} disabled={!activeGraph?.nodes?.length} title={!activeGraph ? 'Open a graph to export it' : activeGraph.nodes?.length ? 'Export graph' : 'Add a node before exporting this graph'} aria-label="Export graph"><Braces size={17} /></button>
           <div className="rail-spacer" />
           {!desktopMode && currentUser?.role === 'admin' && <button className="rail-button" onClick={() => setIsUserMgmtOpen(true)} title="Team access" aria-label="Team access"><Users size={17} /></button>}
           <button className="rail-button" onClick={() => setIsShortcutsOpen(true)} title="Keyboard shortcuts" aria-label="Keyboard shortcuts"><CircleHelp size={17} /></button>
@@ -7432,6 +7479,7 @@ export function App() {
         desktopMode={desktopMode}
         localWorkspace={workspaceMode === 'local'}
         externalWorkspace={!desktopMode || workspaceMode === 'remote'}
+        passkeysSupported={workspaceSupportsPasskeys}
         canManageClientAccess={currentUser?.isPrimaryAdmin === true}
         canResetLocalWorkspace={desktopMode && workspaceMode === 'local' && currentUser?.isPrimaryAdmin === true}
         platform={shortcutPlatform}
