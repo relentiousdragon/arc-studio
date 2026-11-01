@@ -65,6 +65,34 @@ function TextField({ value, onChange, graphVariables, templateValuePaths, templa
   />;
 }
 
+function HexColorField({ label, value = '', onChange, fallback = '#5865F2' }) {
+  const trimmed = String(value || '').trim();
+  const validHex = /^#[0-9a-f]{6}$/i.test(trimmed) ? trimmed : '';
+  return <label className="v2-field">
+    <span>{label}</span>
+    <div className="embed-color-inputs">
+      <input
+        type="color"
+        className="embed-native-color-picker"
+        value={validHex || fallback}
+        onChange={(event) => onChange(event.target.value.toUpperCase())}
+        aria-label={`${label} picker`}
+        title="Pick color"
+      />
+      <input
+        type="text"
+        className="embed-hex-input"
+        value={value ?? ''}
+        maxLength={7}
+        placeholder={fallback}
+        onChange={(event) => onChange(event.target.value)}
+        aria-label={label}
+        spellCheck={false}
+      />
+    </div>
+  </label>;
+}
+
 export function ComponentsV2Builder({ value = [], focusedBlockId = null, focusedItemId = null, focusedSectionItem = null, focusedComponentId = null, onSelectComponent, focusOnly = false, onChange, onSelectBlock, graphVariables = [], templateValuePaths = [], templateSuggestions = [], appEmojis = [], attachments = [], componentBudget = 40, textBudget = 4000, maxRootBlocks = 40, insideContainer = false }) {
   const [expandedBlockId, setExpandedBlockId] = React.useState(null);
   const layout = Array.isArray(value) ? value : [];
@@ -174,7 +202,7 @@ export function ComponentsV2Builder({ value = [], focusedBlockId = null, focused
       {block.type === 'media_gallery' && (block.items || []).map((item, itemIndex) => focusedSectionItem?.kind === 'media' && focusedSectionItem.blockId === block.id && focusedSectionItem.index !== itemIndex ? null : <div className="v2-gallery-item" key={`${block.id}_${itemIndex}`}><div className="v2-gallery-item-heading"><strong>Media {itemIndex + 1}</strong><button className="v2-remove-item" type="button" title={`Remove media ${itemIndex + 1}`} aria-label={`Remove media ${itemIndex + 1}`} onClick={() => setBlock(block.id, { items: block.items.filter((_, i) => i !== itemIndex) })}><X size={15} /></button></div>{field('Media URL', item.url, (url) => setBlock(block.id, { items: block.items.map((entry, i) => i === itemIndex ? { ...entry, url } : entry) }), { maxLength: 2048, placeholder: 'https://… or attachment://image.png', attachmentKind: 'image', validationTarget: `${block.id}:media:${itemIndex}` })}{field('Description', item.description, (description) => setBlock(block.id, { items: block.items.map((entry, i) => i === itemIndex ? { ...entry, description } : entry) }), { maxLength: 1024 })}<label className="v2-check"><input type="checkbox" checked={Boolean(item.spoiler)} onChange={(event) => setBlock(block.id, { items: block.items.map((entry, i) => i === itemIndex ? { ...entry, spoiler: event.target.checked } : entry) })} />Spoiler media</label></div>)}
       {block.type === 'media_gallery' && <button type="button" disabled={(block.items || []).length >= 10} onClick={() => setBlock(block.id, { items: [...(block.items || []), { url: '', description: '', spoiler: false }] })}>Add media item</button>}
       {block.type === 'file' && <>{attachments.length > 0 && <label className="v2-field"><span>Use uploaded file</span><select value="" onChange={(event) => { if (event.target.value) setBlock(block.id, { url: `attachment://${event.target.value}` }); }}><option value="">Choose attachment…</option>{attachments.map((file) => <option key={file.filename} value={file.filename}>{file.filename}</option>)}</select></label>}{field('Attachment URL', block.url, (url) => setBlock(block.id, { url }), { maxLength: 2048, placeholder: 'attachment://filename.zip', attachmentKind: 'file' })}<label className="v2-check"><input type="checkbox" checked={Boolean(block.spoiler)} onChange={(event) => setBlock(block.id, { spoiler: event.target.checked })} />Spoiler file</label><span className="v2-help">Upload a file with the control above, then select it here.</span></>}
-      {block.type === 'container' && <><div className="v2-container-controls"><span>{(block.children || []).length} of 10 blocks</span></div>{field('Accent color', block.accentColor, (accentColor) => setBlock(block.id, { accentColor }), { placeholder: '#5865F2' })}<label className="v2-check"><input type="checkbox" checked={Boolean(block.spoiler)} onChange={(event) => setBlock(block.id, { spoiler: event.target.checked })} />Spoiler container</label><ComponentsV2Builder value={block.children || []} insideContainer maxRootBlocks={10} componentBudget={Math.max(0, componentBudget - (componentCount - countComponents(block.children || [])))} textBudget={Math.max(0, textBudget - (textCount - countTextCharacters(block.children || [])))} onChange={(children) => setBlock(block.id, { children })} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} appEmojis={appEmojis} attachments={attachments} /></>}
+      {block.type === 'container' && <><div className="v2-container-controls"><span>{(block.children || []).length} of 10 blocks</span></div><HexColorField label="Accent color" value={block.accentColor} onChange={(accentColor) => setBlock(block.id, { accentColor })} /><label className="v2-check"><input type="checkbox" checked={Boolean(block.spoiler)} onChange={(event) => setBlock(block.id, { spoiler: event.target.checked })} />Spoiler container</label><ComponentsV2Builder value={block.children || []} insideContainer maxRootBlocks={10} componentBudget={Math.max(0, componentBudget - (componentCount - countComponents(block.children || [])))} textBudget={Math.max(0, textBudget - (textCount - countTextCharacters(block.children || [])))} onChange={(children) => setBlock(block.id, { children })} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} appEmojis={appEmojis} attachments={attachments} /></>}
       {block.type === 'action_row' && <MessageComponentsBuilder rows={[{ id: block.id, components: block.components || [] }]} selectedComponentId={focusedComponentId} onSelectComponent={onSelectComponent} appEmojis={appEmojis} graphVariables={graphVariables} allowMultipleRows={false} canAddComponent={hasGlobalCapacity} onChange={(rows) => setBlock(block.id, { components: rows[0]?.components || [] })} />}
       </div>}
     </section>)}</div>
