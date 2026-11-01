@@ -5,6 +5,10 @@ on:
     branches: [main]
     paths:
       - README.md
+  fork:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: write
