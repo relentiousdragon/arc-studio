@@ -1,9 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { AlertTriangle, ArrowLeft, ArrowLeftRight, ArrowRight, Eye, EyeOff, Globe2, KeyRound, Laptop2, LoaderCircle, LockKeyhole, Moon, Pencil, ShieldCheck, Sun } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, ArrowLeftRight, ArrowRight, Eye, EyeOff, Fingerprint, Globe2, KeyRound, Laptop2, LoaderCircle, LockKeyhole, Moon, Pencil, ShieldCheck, Sun } from 'lucide-react';
 import { arcEvents } from '../../core/ArcEvents.js';
 import { apiUrl, normalizeWorkspaceUrl } from '../../core/api.js';
 import { getClientBuildInfo } from '../../core/clientBuildInfo.js';
 import { SetupNetworkWires } from './SetupNetworkWires.jsx';
+import { authenticateWithPasskey, describePasskeyError, isWebPasskeyAvailable } from '../../core/passkeys.js';
+import { beginDesktopPasskey, cancelDesktopPasskeyFlows, isDesktopPasskeyAvailable } from '../../core/desktopPasskeys.js';
 import { AuthGridCanvas } from './AuthGridCanvas.jsx';
 import { getContrastTextColor } from '../../core/colorContrast.js';
 import { Modal } from '../ui/Modal.jsx';
@@ -16,7 +18,7 @@ const getLocalUsername = () => {
   try { return localStorage.getItem('arc_local_username') || desktopConfig.localUsername || 'Admin'; }
   catch { return desktopConfig.localUsername || 'Admin'; }
 };
-const isUnsupportedNodeCompatibilityError = (message) => /node feature(?:s)? this desktop app does not support/i.test(String(message || ''));
+const isUnsupportedNodeCompatibilityError = (message) => /node registry protocol|unsupported features|node feature(?:s)? this desktop app does not support/i.test(String(message || ''));
 const xmasSnow = (date = new Date()) => date.getMonth() === 11 && date.getDate() >= 20;
 const halloweenFrills = (date = new Date()) => date.getMonth() === 9 && date.getDate() >= 15;
 //
@@ -90,6 +92,9 @@ export function SplashScreen({
   });
   const [loading, setLoading] = useState(false);
   const [sessionReplacementPending, setSessionReplacementPending] = useState(false);
+  const [passkeyBusy, setPasskeyBusy] = useState(false);
+  const [passkeyWaiting, setPasskeyWaiting] = useState(false);
+  const [passkeyError, setPasskeyError] = useState('');
   const [creatingFirstProject, setCreatingFirstProject] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [trustPrompt, setTrustPrompt] = useState(null);
@@ -105,6 +110,7 @@ export function SplashScreen({
   const [firstProjectError, setFirstProjectError] = useState('');
   const [connectError, setConnectError] = useState('');
   const [compatibilityNotice, setCompatibilityNotice] = useState('');
+  const [registryCompatibilityDetails, setRegistryCompatibilityDetails] = useState('');
   const [fieldErrors, setFieldErrors] = useState({});
   const [verifyingSetupKey, setVerifyingSetupKey] = useState(false);
   const [recoveryMode, setRecoveryMode] = useState('');
@@ -480,6 +486,7 @@ export function SplashScreen({
 
   const handleSubmit = async (event) => {
     event.preventDefault();
+    if (loading || passkeyBusy || passkeyWaiting) return;
     setError('');
     const localDesktopSetup = desktopMode && workspaceMode === 'local' && needsSetup;
     const nextErrors = {};
@@ -596,6 +603,62 @@ export function SplashScreen({
     }
   };
 
+  useEffect(() => {
+    if (!passkeyWaiting) return undefined;
+    return arcEvents.on('desktop-passkey:finished', (detail) => {
+      if (detail?.kind && detail.kind !== 'authentication') return;
+      setPasskeyWaiting(false);
+      if (detail?.ok) setPasskeyError('');
+      else setPasskeyError(detail?.error || 'The passkey request could not be completed.');
+    });
+  }, [passkeyWaiting]);
+
+  const handlePasskeySignIn = async () => {
+    if (loading || passkeyBusy || passkeyWaiting) return;
+    setPasskeyError('');
+    setError('');
+    setPasskeyBusy(true);
+    try {
+      if (desktopMode && workspaceMode === 'remote') {
+        const origin = normalizeWorkspaceUrl(remoteWorkspaceUrl || remoteUrl);
+        await beginDesktopPasskey({
+          kind: 'authentication',
+          workspaceOrigin: origin,
+          persistSession: rememberPassword
+        });
+        setPasskeyWaiting(true);
+        arcEvents.emit('toast:notify', {
+          title: 'Continue in your browser',
+          message: 'Finish signing in with your passkey, then return to ARC Studio.',
+          type: 'info',
+          duration: 8000
+        });
+        return;
+      }
+      const result = await authenticateWithPasskey({
+        rememberMe: false,
+        onReplacementPending: () => {
+          setSessionReplacementPending(true);
+          arcEvents.emit('toast:notify', { id: 'arc-login-session-wait', title: 'Please wait', message: 'Signing out the other session.', type: 'info', loading: true, persistent: true });
+        }
+      });
+      await onAuthComplete?.(result.token, result.user, true);
+      arcEvents.emit('toast:notify', { title: 'Welcome back', message: result.user?.username || '', type: 'success' });
+    } catch (error) {
+      setPasskeyError(describePasskeyError(error, 'Could not sign in with a passkey.'));
+    } finally {
+      setPasskeyBusy(false);
+      setSessionReplacementPending(false);
+      arcEvents.emit('toast:notify', { id: 'arc-login-session-wait', title: '', message: '', type: 'info', duration: 1, persistent: false });
+    }
+  };
+
+  const cancelPasskeySignIn = () => {
+    cancelDesktopPasskeyFlows();
+    setPasskeyWaiting(false);
+    setPasskeyError('');
+  };
+
   const handlePasswordRecovery = async (event) => {
     event.preventDefault();
     setError('');
@@ -687,6 +750,16 @@ export function SplashScreen({
   const desktopServerError = desktopMode && /\b500\b/.test(`${workspaceError} ${startupError || ''}`);
   const unsupportedNodeCompatibilityError = desktopMode && isUnsupportedNodeCompatibilityError(connectError || workspaceError);
   const activeWorkspaceName = desktopMode && workspaceMode === 'local' ? 'Local Workspace' : 'Private Workspace';
+  const compatibilityDetailsLink = (message) => <>
+    This workspace requires a compatible ARC Studio build.{' '}
+    <button type="button" className="compatibility-details-link" onClick={() => setRegistryCompatibilityDetails(String(message || ''))}>Details</button>
+  </>;
+  const renderInlineError = (message) => isUnsupportedNodeCompatibilityError(message)
+    ? <p className="form-error registry-compatibility-error" role="alert">{compatibilityDetailsLink(message)}</p>
+    : <p className="form-error" role="alert">{message}</p>;
+  const webPasskeyAvailable = !desktopMode && isWebPasskeyAvailable();
+  const desktopPasskeyAvailable = desktopMode && workspaceMode === 'remote' && isDesktopPasskeyAvailable();
+  const showPasskeySignIn = !needsSetup && !passwordChangeSession && (webPasskeyAvailable || desktopPasskeyAvailable);
 
   return (
     <main className={`auth-screen ${desktopMode ? 'is-desktop' : ''}`} data-initial-setup={needsSetup ? 'true' : undefined} data-low-power={lowPower ? 'true' : undefined}>
@@ -722,9 +795,9 @@ export function SplashScreen({
             <label className="field-label" htmlFor="workspace-url">Workspace URL</label>
             <div ref={(element) => { fieldRefs.current.remoteUrl = element; }} className={`auth-input-wrap ${(connectError || workspaceError) && !unsupportedNodeCompatibilityError ? 'has-error' : ''}`}><Globe2 size={15} /><input id="workspace-url" type="url" autoComplete="url" autoCapitalize="none" autoCorrect="off" spellCheck="false" value={remoteUrl} onChange={(event) => { setRemoteUrl(event.target.value); setConnectError(''); setCompatibilityNotice(''); }} placeholder="https://studio.example.com" aria-invalid={Boolean((connectError || workspaceError) && !unsupportedNodeCompatibilityError)} /></div>
             {trustedWorkspaces.length > 0 && <div className="saved-workspaces" aria-label="Saved workspaces"><span>Saved workspaces</span>{trustedWorkspaces.map((workspace) => <button key={workspace} type="button" onClick={() => { setRemoteUrl(workspace); setConnectError(''); }}>{workspace}</button>)}</div>}
-            {(connectError || workspaceError) && (unsupportedNodeCompatibilityError
-              ? <div className="workspace-connect-warning" role="alert"><AlertTriangle size={15} aria-hidden="true" /><span>{connectError || workspaceError}</span></div>
-              : <p className="form-error" role="alert">{connectError || workspaceError}</p>)}
+            {(connectError || workspaceError) && (isUnsupportedNodeCompatibilityError(connectError || workspaceError)
+              ? <div className="workspace-connect-warning" role="alert"><AlertTriangle size={15} aria-hidden="true" /><span>{compatibilityDetailsLink(connectError || workspaceError)}</span></div>
+              : renderInlineError(connectError || workspaceError))}
             <button className="workspace-connect-button" type="submit" disabled={!networkOnline || connecting || !remoteUrl.trim()}>{connecting ? <><LoaderCircle size={14} className="is-spinning" /> Connecting</> : <>Continue <ArrowRight size={14} /></>}</button>
             {workspaceMode === 'remote' && <button className="auth-back" type="button" onClick={() => { setShowWorkspaceUrl(false); setConnectError(''); setError(''); }}><ArrowLeft size={14} /> Back to sign in</button>}
           </form>}
@@ -753,7 +826,7 @@ export function SplashScreen({
               <div className="auth-input-wrap"><LockKeyhole size={16} /><input id="required-new-password" type="password" autoFocus autoComplete="new-password" autoCapitalize="none" autoCorrect="off" spellCheck="false" value={recoveryPassword} onChange={(event) => setRecoveryPassword(event.target.value)} placeholder="At least 6 characters" /></div>
               <label className="field-label" htmlFor="required-confirm-password">Confirm password</label>
               <div className="auth-input-wrap"><LockKeyhole size={16} /><input id="required-confirm-password" type="password" autoComplete="new-password" autoCapitalize="none" autoCorrect="off" spellCheck="false" value={recoveryConfirmPassword} onChange={(event) => setRecoveryConfirmPassword(event.target.value)} placeholder="Confirm password" /></div>
-              {error && <p className="form-error" role="alert">{error}</p>}
+              {error && renderInlineError(error)}
               <button className="auth-submit" type="submit" disabled={loading}>{loading ? 'Saving password' : 'Save password'} <ArrowRight size={16} /></button>
             </form>
           ) : needsProjectOnboarding ? (
@@ -773,7 +846,7 @@ export function SplashScreen({
                 <label className="field-label" htmlFor="setup-key">Setup key</label>
                 <div ref={(element) => { fieldRefs.current.masterKey = element; }} className={`auth-input-wrap ${fieldErrors.masterKey ? 'has-error' : ''}`}><KeyRound size={16} /><input id="setup-key" autoFocus type="password" autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck="false" value={masterKey} onChange={updateField('masterKey', setMasterKey)} placeholder="Enter setup key" aria-invalid={Boolean(fieldErrors.masterKey)} /></div>
                 {fieldErrors.masterKey && <p className="auth-field-error" role="alert">{fieldErrors.masterKey}</p>}
-                {error && <p className="form-error" role="alert">{error}</p>}
+                {error && renderInlineError(error)}
                 <button className="auth-submit" type="submit" disabled={verifyingSetupKey}>{verifyingSetupKey ? <><LoaderCircle size={16} className="is-spinning" /> Verifying</> : <>Continue <ArrowRight size={16} /></>}</button>
               </form>
             </div>
@@ -784,7 +857,7 @@ export function SplashScreen({
               <div className="auth-input-wrap"><LockKeyhole size={16} /><input id="recovery-new-password" type="password" autoFocus={recoveryMode === 'local'} autoComplete="new-password" autoCapitalize="none" autoCorrect="off" spellCheck="false" value={recoveryPassword} onChange={(event) => setRecoveryPassword(event.target.value)} placeholder="At least 6 characters" /></div>
               <label className="field-label" htmlFor="recovery-confirm-password">Confirm password</label>
               <div className="auth-input-wrap"><LockKeyhole size={16} /><input id="recovery-confirm-password" type="password" autoComplete="new-password" autoCapitalize="none" autoCorrect="off" spellCheck="false" value={recoveryConfirmPassword} onChange={(event) => setRecoveryConfirmPassword(event.target.value)} placeholder="Confirm password" /></div>
-              {error && <p className="form-error" role="alert">{error}</p>}
+              {error && renderInlineError(error)}
               <button className="auth-submit" type="submit" disabled={loading}>{loading ? 'Resetting password' : 'Reset password'} <ArrowRight size={16} /></button>
               <button className="auth-back" type="button" onClick={() => { setRecoveryMode(''); setError(''); setRecoveryMessage(''); }}>Back to sign in</button>
             </form>
@@ -852,12 +925,26 @@ export function SplashScreen({
                 {showMasterPasswordReset && <button className="auth-back" type="button" onClick={() => { setRecoveryMode('master'); setError(''); setRecoveryMessage(''); }}>Reset owner password with master key</button>}
                 {needsSetup && <><label className="field-label" htmlFor="confirm-password">Confirm password</label><div ref={(element) => { fieldRefs.current.confirmPassword = element; }} className={`auth-input-wrap ${fieldErrors.confirmPassword ? 'has-error' : ''}`}><LockKeyhole size={16} /><input id="confirm-password" type={showConfirmPassword ? 'text' : 'password'} autoComplete="new-password" autoCapitalize="none" autoCorrect="off" spellCheck="false" value={confirmPassword} onChange={updateField('confirmPassword', setConfirmPassword)} placeholder="Confirm password" aria-invalid={Boolean(fieldErrors.confirmPassword)} /><button className="auth-reveal" type="button" onClick={() => setShowConfirmPassword((show) => !show)} aria-label={showConfirmPassword ? 'Hide confirm password' : 'Show confirm password'}>{showConfirmPassword ? <EyeOff size={15} /> : <Eye size={15} />}</button></div>{fieldErrors.confirmPassword && <p className="auth-field-error" role="alert">{fieldErrors.confirmPassword}</p>}</>}
                 {needsSetup && desktopMode && workspaceMode === 'local' && <label className="remember-password"><input type="checkbox" checked={keepLocalSignedIn} onChange={(event) => { const checked = event.target.checked; setKeepLocalSignedIn(checked); try { localStorage.setItem('arc_local_keep_signed_in', String(checked)); if (!checked) localStorage.removeItem('arc_local_session_token'); } catch {} if (!checked) window.__TAURI_INTERNALS__?.invoke?.('delete_local_session_token').catch(() => {}); }} /><span>Keep me signed in</span></label>}
-                {error && <p className="form-error" role="alert">{error}</p>}
-                {workspaceError && <p className="form-error" role="alert">{workspaceError}</p>}
+                {error && renderInlineError(error)}
+                {workspaceError && renderInlineError(workspaceError)}
                 {workspaceError && !startupError && <button className="auth-retry" type="button" onClick={onRetryWorkspace}>Retry connection</button>}
-                <button className="auth-submit" type="submit" disabled={loading || remotePending || Boolean(workspaceError)}>
+                <button className="auth-submit" type="submit" disabled={loading || passkeyBusy || passkeyWaiting || remotePending || Boolean(workspaceError)}>
                   {loading ? <><LoaderCircle size={16} className="is-spinning" /> {sessionReplacementPending ? 'Please wait…' : needsSetup ? 'Creating account' : 'Signing in'}</> : <>{needsSetup ? 'Create account' : 'Continue'} <ArrowRight size={16} /></>}
                 </button>
+                {showPasskeySignIn && <div className="auth-passkey-block">
+                  <div className="auth-passkey-divider" aria-hidden="true"><span>or</span></div>
+                  <button
+                    className="auth-passkey-button"
+                    type="button"
+                    onClick={handlePasskeySignIn}
+                    disabled={passkeyBusy || passkeyWaiting || loading || remotePending || Boolean(workspaceError)}
+                  >
+                    {passkeyBusy ? <LoaderCircle size={16} className="is-spinning" /> : <Fingerprint size={16} />}
+                    <span>{passkeyWaiting ? 'Waiting for your browser…' : 'Sign in with a passkey'}</span>
+                  </button>
+                  {passkeyWaiting && <button className="auth-back" type="button" onClick={cancelPasskeySignIn}>Cancel passkey sign in</button>}
+                  {passkeyError && <p className="form-error" role="alert">{passkeyError}</p>}
+                </div>}
                 {needsSetup && !setupCredential && !(desktopMode && workspaceMode === 'local') && <button className="auth-back" type="button" onClick={() => { setSetupStep(1); setError(''); }}><ArrowLeft size={14} /> Back</button>}
               </form>
             </div>
@@ -877,7 +964,19 @@ export function SplashScreen({
           <p>This server is operated by someone else. It can access the credentials and project data you send to it. Continue only if you trust its operator.</p>
           <label className="workspace-trust-option"><input type="checkbox" checked={trustConfirmed} onChange={(event) => setTrustConfirmed(event.target.checked)} /><span><strong>I trust this workspace operator</strong><small>Required to connect. If unchecked, ARC Studio will not connect.</small></span></label>
           <label className="workspace-trust-option"><input type="checkbox" checked={rememberTrustedWorkspace} onChange={(event) => setRememberTrustedWorkspace(event.target.checked)} /><span><strong>{trustedWorkspaces.includes(trustPrompt) ? 'Keep in trusted workspaces' : 'Add to trusted workspaces'}</strong><small>Remember this server on this device. You will still be asked before connecting next time.</small></span></label>
-          {connectError && <p className="form-error" role="alert">{connectError}</p>}
+          {connectError && renderInlineError(connectError)}
+        </div>
+      </Modal>
+      <Modal
+        isOpen={Boolean(registryCompatibilityDetails)}
+        onClose={() => setRegistryCompatibilityDetails('')}
+        title="Workspace compatibility details"
+        subtitle="Update ARC Studio to a build that supports this workspace."
+        footer={<Button onClick={() => setRegistryCompatibilityDetails('')}>Close</Button>}
+      >
+        <div className="workspace-compatibility-details">
+          <p>This client cannot safely load every node feature required by the workspace.</p>
+          <pre>{registryCompatibilityDetails}</pre>
         </div>
       </Modal>
       <div className="splash-build-info" aria-label={`ARC Studio version ${studioVersion}, ${buildInfo}`}>
