@@ -396,6 +396,38 @@ export class RESTClient {
     return this.request('GET', `/guilds/${encodeURIComponent(serverId)}/members/${encodeURIComponent(memberId)}`);
   }
 
+  getGuildMemberPermissions(guildId, userId) {
+    const serverId = String(guildId || '').trim();
+    const memberId = String(userId || '').trim();
+    if (!serverId || !memberId) throw new TypeError('Server and user IDs are required.');
+    return this.request('GET', `/guilds/${encodeURIComponent(serverId)}/permissions/member/${encodeURIComponent(memberId)}`);
+  }
+
+  getGuildRolePermissions(guildId, roleId) {
+    const serverId = String(guildId || '').trim();
+    const targetRoleId = String(roleId || '').trim();
+    if (!serverId || !targetRoleId) throw new TypeError('Server and role IDs are required.');
+    return this.request('GET', `/guilds/${encodeURIComponent(serverId)}/permissions/role/${encodeURIComponent(targetRoleId)}`);
+  }
+
+  getChannelMemberPermissions(channelId, userId, { implicit = true } = {}) {
+    const targetChannelId = String(channelId || '').trim();
+    const memberId = String(userId || '').trim();
+    if (!targetChannelId || !memberId) throw new TypeError('Channel and user IDs are required.');
+    return this.request('GET', `/channels/${encodeURIComponent(targetChannelId)}/permissions/member/${encodeURIComponent(memberId)}`, {
+      query: { implicit: Boolean(implicit) }
+    });
+  }
+
+  getChannelRolePermissions(channelId, roleId, { implicit = true } = {}) {
+    const targetChannelId = String(channelId || '').trim();
+    const targetRoleId = String(roleId || '').trim();
+    if (!targetChannelId || !targetRoleId) throw new TypeError('Channel and role IDs are required.');
+    return this.request('GET', `/channels/${encodeURIComponent(targetChannelId)}/permissions/role/${encodeURIComponent(targetRoleId)}`, {
+      query: { implicit: Boolean(implicit) }
+    });
+  }
+
   getGuildChannels(guildId) {
     return this.request('GET', `/guilds/${guildId}/channels`);
   }
