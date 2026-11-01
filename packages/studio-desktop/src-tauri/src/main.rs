@@ -555,7 +555,6 @@ fn is_arc_project_path(path: &Path) -> bool {
     })
 }
 
-#[cfg(target_os = "macos")]
 fn notify_project_file_opened<R: tauri::Runtime>(app: &tauri::AppHandle<R>, path: &Path) {
     if !is_arc_project_path(path) && !is_arc_graph_path(path) { return; }
     let Some(window) = app.get_webview_window("main") else { return; };
@@ -914,6 +913,35 @@ fn open_external_url(url: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn open_passkey_auth_url(url: String) -> Result<(), String> {
+    let parsed = url::Url::parse(&url).map_err(|_| "Invalid workspace URL.".to_string())?;
+    let local_http = parsed.scheme() == "http"
+        && matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
+    if (parsed.scheme() != "https" && !local_http)
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return Err("Passkey sign in can only open an HTTPS workspace URL.".to_string());
+    }
+
+    let mut command = if cfg!(target_os = "macos") {
+        Command::new("open")
+    } else if cfg!(target_os = "windows") {
+        let mut command = Command::new("rundll32.exe");
+        command.arg("url.dll,FileProtocolHandler");
+        command
+    } else {
+        Command::new("xdg-open")
+    };
+    command.arg(parsed.as_str());
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("Could not open the workspace sign in page: {error}"))
+}
+
+#[tauri::command]
 fn open_macos_files_folders_settings() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -962,7 +990,28 @@ fn main() {
         return;
     }
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            for argument in argv.iter().skip(1) {
+                notify_project_file_opened(app, Path::new(argument));
+            }
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .setup(|app| {
+            #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                if let Err(error) = app.deep_link().register_all() {
+                    eprintln!("Could not register the passkey deep link scheme: {error}");
+                }
+            }
+            let _ = app;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_client_build_info,
             get_workspace_password,
@@ -978,6 +1027,7 @@ fn main() {
             open_project_window,
             reset_local_data,
             open_external_url,
+            open_passkey_auth_url,
             open_macos_files_folders_settings,
             check_channel_update,
             install_channel_update,
