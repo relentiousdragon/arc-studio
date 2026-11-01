@@ -42,6 +42,8 @@ const shortcutActions = [
   ['redo', 'Redo']
 ];
 
+const DISCORD_INVITE_URL = 'https://discord.gg/FMv3T6XSyq';
+
 function openExternal(event) {
   const invoke = window.__TAURI_INTERNALS__?.invoke;
   if (typeof invoke !== 'function') return;
@@ -49,7 +51,16 @@ function openExternal(event) {
   invoke('open_external_url', { url: event.currentTarget.href }).catch(() => {});
 }
 
-export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSettings, onAutoLayout, onExportGraph, onResetLocalData, themeChoice = 'system', onThemeChange, desktopMode = false, localWorkspace = false, externalWorkspace = false, canResetLocalWorkspace = false, canManageClientAccess = false, platform = '', appUpdate = null, serverUpdate = null, stableUpdateReady = null, downloadedUpdateReady = null, updateInstalling = false, releaseChannel = 'stable', onOpenStudioUpdate, networkOnline = true, authToken = '', activeProjectId = '', workspaceOrigin = '', canManageLogRetention = false, canManageActivityWebhook = false, idleDisconnectMinutes = 15, canManageIdleDisconnect = false, onSetIdleDisconnectMinutes }) {
+function openDiscordInvite() {
+  const invoke = window.__TAURI_INTERNALS__?.invoke;
+  if (typeof invoke === 'function') {
+    invoke('open_external_url', { url: DISCORD_INVITE_URL }).catch(() => {});
+    return;
+  }
+  window.open(DISCORD_INVITE_URL, '_blank', 'noopener,noreferrer');
+}
+
+export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSettings, onAutoLayout, onExportGraph, onResetLocalData, themeChoice = 'system', onThemeChange, desktopMode = false, localWorkspace = false, externalWorkspace = false, passkeysSupported = false, canResetLocalWorkspace = false, canManageClientAccess = false, platform = '', appUpdate = null, serverUpdate = null, stableUpdateReady = null, downloadedUpdateReady = null, updateInstalling = false, releaseChannel = 'stable', onOpenStudioUpdate, networkOnline = true, authToken = '', activeProjectId = '', workspaceOrigin = '', canManageLogRetention = false, canManageActivityWebhook = false, idleDisconnectMinutes = 15, canManageIdleDisconnect = false, onSetIdleDisconnectMinutes }) {
   const [activeTab, setActiveTab] = useState('canvas');
   const [recording, setRecording] = useState(null);
   const [shortcutCaptureError, setShortcutCaptureError] = useState('');
@@ -82,6 +93,10 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
       setConfirmResetOpen(false);
     }
   };
+
+  useEffect(() => {
+    if (activeTab === 'security' && (!externalWorkspace || !passkeysSupported)) setActiveTab('canvas');
+  }, [activeTab, externalWorkspace, passkeysSupported]);
 
   useEffect(() => {
     if (!recording || !isOpen) return undefined;
@@ -204,9 +219,12 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
   return <Modal isOpen={isOpen} onClose={onClose} title="Editor settings" subtitle="Customize your workspace" panelClassName="modal-editor-settings">
     <div className="settings-tabs" role="tablist" aria-label="Editor settings sections">
       {tabs.map((tab) => {
+        const securityDisabledReason = !externalWorkspace
+          ? 'Passkeys are available in hosted and external workspaces.'
+          : !passkeysSupported ? 'This workspace version does not support passkeys. Update the workspace server to add them.' : '';
         const disabled = ((tab.id === 'shortcuts' || tab.id === 'discord') && !desktopMode)
-          || (tab.id === 'security' && !externalWorkspace);
-        return <button key={tab.id} type="button" role="tab" aria-selected={!disabled && activeTab === tab.id} aria-disabled={disabled || undefined} disabled={disabled} className={`settings-tab ${activeTab === tab.id && !disabled ? 'is-active' : ''} ${disabled ? 'is-disabled' : ''}`} onClick={() => !disabled && setActiveTab(tab.id)}>{tab.label}{tab.id === 'about' && serverUpdate && <span className="update-indicator-dot" aria-label="Server update available" />}</button>;
+          || (tab.id === 'security' && Boolean(securityDisabledReason));
+        return <button key={tab.id} type="button" role="tab" aria-selected={!disabled && activeTab === tab.id} aria-disabled={disabled || undefined} disabled={disabled} title={tab.id === 'security' && securityDisabledReason ? securityDisabledReason : undefined} className={`settings-tab ${activeTab === tab.id && !disabled ? 'is-active' : ''} ${disabled ? 'is-disabled' : ''}`} onClick={() => !disabled && setActiveTab(tab.id)}>{tab.label}{tab.id === 'about' && serverUpdate && <span className="update-indicator-dot" aria-label="Server update available" />}</button>;
       })}
     </div>
 
@@ -235,7 +253,7 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
       <Toggle label="Compact context menus" description="Use tighter spacing in right-click menus" checked={settings.compactContextMenus ?? false} onChange={(value) => update('compactContextMenus', value)} />
     </div>}
 
-    {activeTab === 'security' && externalWorkspace && <div className="settings-section settings-tab-content">
+    {activeTab === 'security' && externalWorkspace && passkeysSupported && <div className="settings-section settings-tab-content">
       <PasskeySettingsSection
         authToken={authToken}
         desktopMode={desktopMode}
@@ -397,11 +415,16 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
         <a href="https://github.com/relentiousdragon" target="_blank" rel="noreferrer" onClick={openExternal}><span className="settings-about-credit-name">@relentiousdragon</span><ExternalLink size={12} /></a>
         <a href="https://github.com/relentiousdragon/arc-studio/graphs/contributors" target="_blank" rel="noreferrer" onClick={openExternal}><span>View Contributors</span><ExternalLink size={12} /></a>
       </section>
-      <section className="settings-about-license">
-        <Scale size={15} />
+      <a className="settings-about-license" href="https://github.com/relentiousdragon/arc-studio/blob/main/LICENSE" target="_blank" rel="noreferrer" onClick={openExternal}>
+        <Scale size={15} aria-hidden="true" />
         <div><strong>Apache License 2.0</strong><span>© 2026 relentiousdragon</span></div>
-        <a href="https://github.com/relentiousdragon/arc-studio/blob/main/LICENSE" target="_blank" rel="noreferrer" onClick={openExternal} aria-label="View the Apache License 2.0"><ExternalLink size={13} /></a>
-      </section>
+        <span className="settings-about-card-link"><ExternalLink size={13} aria-hidden="true" /></span>
+      </a>
+      <button type="button" className="settings-about-license settings-about-discord" onClick={openDiscordInvite}>
+        <svg viewBox="0 0 24 24" fill="currentColor" width={15} height={15} aria-hidden="true"><path d="M20.317 4.369a19.79 19.79 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.249a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.249.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.056 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128c.126-.094.252-.192.372-.291a.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.009c.12.099.246.198.373.292a.077.077 0 0 1-.006.127 12.3 12.3 0 0 1-1.873.891.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.029zM8.02 15.331c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z" /></svg>
+        <div><strong>Discord community</strong><span>Join the ARC Studio server</span></div>
+        <span className="settings-about-card-link"><ExternalLink size={13} aria-hidden="true" /></span>
+      </button>
       <Modal isOpen={confirmResetOpen} onClose={() => !resetPending && setConfirmResetOpen(false)} onConfirm={confirmLocalReset} title="Delete all Local Workspace data?" subtitle="This cannot be undone." icon={AlertTriangle} footer={<><Button variant="secondary" disabled={resetPending} onClick={() => setConfirmResetOpen(false)}>Cancel</Button><Button variant="danger" icon={RotateCcw} loading={resetPending} onClick={confirmLocalReset}>Delete everything</Button></>}>
         <p className="settings-danger-copy">This deletes every local project and its graphs, bot tokens, credentials, plugins, snapshots, variables, and editor settings. Projects without a backup somewhere else will be lost permanently.</p>
         <p className="settings-danger-copy">ARC Studio will restart and return to first-time setup.</p>
