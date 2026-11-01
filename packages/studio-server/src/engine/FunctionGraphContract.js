@@ -31,6 +31,46 @@ export function getFunctionGraphArguments(graph) {
   return (graph?.nodes || []).filter((node) => node?.type === 'function_input').flatMap(getFunctionInputArguments);
 }
 
+export function getFunctionReturnValues(node) {
+  if (!node || node.type !== 'function_return') return [];
+  if (Array.isArray(node.data?.returns)) {
+    return node.data.returns.map((value, index) => {
+      const returnId = String(value?.returnId || `output_${index + 1}`);
+      const valueType = String(value?.valueType || 'string');
+      return {
+        returnId,
+        name: typeof value?.name === 'string' ? value.name : (value?.name != null ? String(value.name) : `Output ${index + 1}`),
+        valueType,
+        defaultValue: value?.defaultValue ?? defaultValueForFunctionType(valueType),
+        index,
+        legacy: false
+      };
+    });
+  }
+  const valueType = String(node.data?.valueType || 'number');
+  return [{
+    returnId: 'legacy_result',
+    name: 'Result',
+    valueType,
+    defaultValue: node.data?.value ?? defaultValueForFunctionType(valueType),
+    index: 0,
+    legacy: true
+  }];
+}
+
+export function getFunctionGraphReturnValues(graph) {
+  const returnNodes = (graph?.nodes || []).filter((node) => node?.type === 'function_return');
+  return returnNodes.length === 1 ? getFunctionReturnValues(returnNodes[0]) : [];
+}
+
+export function functionReturnInputPinId(value) {
+  return value?.legacy ? 'value' : `return_${value.returnId}`;
+}
+
+export function functionReturnOutputPinId(value) {
+  return value?.legacy ? 'result' : `return_${value.returnId}`;
+}
+
 export function functionArgumentPinId(argument) {
   return `arg_${String(argument?.paramId || argument?.id || '')}`;
 }
