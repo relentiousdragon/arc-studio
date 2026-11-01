@@ -6,7 +6,7 @@ import { renderTextTemplate } from '../../../../studio-server/src/engine/Templat
 import { DiscordTextField } from '../ui/DiscordTextField.jsx';
 import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
-import { useStudioEscape } from './useStudioEscape.js';
+import { notifyStudioSwitchCancelled, useStudioEscape, useStudioSwitchClose } from './useStudioEscape.js';
 
 const CODE_TOKENS = /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\/\/.*|#.*|--.*|\b\d+(?:\.\d+)?\b|\b(?:const|let|var|function|return|if|else|for|while|class|new|this|import|from|export|default|async|await|try|catch|throw|true|false|null|undefined|None|True|False|def|print|interface|type|extends|implements|public|private|static|SELECT|FROM|WHERE|INSERT|UPDATE|DELETE|CREATE|TABLE|AS|AND|OR|NOT)\b|\b[A-Za-z_$][\w$]*(?=\s*\()|[{}()[\],.;:]|[=+*/<>!-]+)/gi;
 const MARKDOWN_TOKENS = /(`[^`]*`|\*\*[^*]+\*\*|__[^_]+__|~~[^~]+~~|\|\|[^|]+\|\||\*[^*]+\*|_[^_]+_|https?:\/\/[^\s]+)/g;
@@ -265,6 +265,7 @@ export function TextStudioView({ label, value = '', readOnly = false, sharedDraf
     if (!readOnly && draft !== String(value ?? '')) { setDiscardPromptOpen(true); return; }
     onClose?.();
   };
+  useStudioSwitchClose('text', close);
   useStudioEscape(() => {
     if (searchOpen) {
       setSearchOpen(false);
@@ -450,6 +451,6 @@ export function TextStudioView({ label, value = '', readOnly = false, sharedDraf
     </div>
     {containsTemplate && <div className="discord-text-studio-preview"><strong>Template preview</strong><pre>{templatePreview || '(empty)'}</pre></div>}
     <footer className="discord-text-studio-footer"><TemplateSyntaxHelp /><span>{characterCount.toLocaleString()}{maxLength ? ` / ${maxLength.toLocaleString()} characters` : ' characters'}</span><span>{jsonError ? <em className="text-editor-json-error" role="status">{jsonError}</em> : isJson ? 'Valid JSON' : `${lines.length.toLocaleString()} lines${blocks.length ? ` · ${blocks.length} code ${blocks.length === 1 ? 'block' : 'blocks'}` : ''}`}</span>{isJson && !readOnly && <button type="button" className="text-editor-format-json" disabled={Boolean(jsonError)} onClick={formatJson}>Format JSON</button>}</footer>
-    <Modal isOpen={discardPromptOpen} onClose={() => setDiscardPromptOpen(false)} title="Discard text changes?" subtitle="These edits have not been applied." footer={<><Button variant="secondary" onClick={() => setDiscardPromptOpen(false)}>Keep editing</Button><Button variant="danger" onClick={onClose}>Discard changes</Button></>}><p className="close-graph-copy">Your graph or variable stays unchanged until you choose Apply.</p></Modal>
+    <Modal isOpen={discardPromptOpen} onClose={() => { setDiscardPromptOpen(false); notifyStudioSwitchCancelled(); }} title="Discard text changes?" subtitle="These edits have not been applied." footer={<><Button variant="secondary" onClick={() => { setDiscardPromptOpen(false); notifyStudioSwitchCancelled(); }}>Keep editing</Button><Button variant="danger" onClick={onClose}>Discard changes</Button></>}><p className="close-graph-copy">Your graph or variable stays unchanged until you choose Apply.</p></Modal>
   </section>;
 }
