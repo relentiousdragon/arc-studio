@@ -1,8 +1,17 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { GraphRunner } from '../src/engine/GraphRunner.js';
+import { getTemplateReferences } from '../src/engine/TemplateExpressions.js';
 //
 describe('template inputs and streaming presence', () => {
+  it('does not create dynamic references from quoted string literals', () => {
+    const template = '{{arg1 > 0 ? arg1 + "d" : ""}}{{arg2 > 0 ? arg2 + "h" : ""}}{{arg3 > 0 ? arg3 + "m" : ""}}{{arg4 > 0 ? arg4 + "s" : ""}}';
+    const references = [...template.matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g)]
+      .flatMap((match) => getTemplateReferences(match[1]));
+
+    assert.deepEqual([...new Set(references)], ['arg1', 'arg2', 'arg3', 'arg4']);
+  });
+
   it('resolves an unrecognized template through a dynamic interaction reply socket', async () => {
     const replies = [];
     const graph = {
