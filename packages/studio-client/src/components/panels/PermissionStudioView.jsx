@@ -4,7 +4,7 @@ import { DISCORD_PERMISSION_GROUPS, bitfieldToPermissions, permissionsToBitfield
 import { AnimatedCheckbox, AnimatedDropdown } from '../ui/CustomControls.jsx';
 import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
-import { useStudioEscape } from './useStudioEscape.js';
+import { notifyStudioSwitchCancelled, useStudioEscape, useStudioSwitchClose } from './useStudioEscape.js';
 //
 const MAX_OVERWRITES = 100;
 const KNOWN_PERMISSION_MASK = DISCORD_PERMISSION_GROUPS.flatMap((group) => group.permissions).reduce((mask, [, , bit]) => mask | (1n << BigInt(bit)), 0n);
@@ -37,6 +37,7 @@ export function PermissionStudioView({ mode = 'role', nodeName = 'Permissions', 
   const hasUnappliedChanges = JSON.stringify(draft) !== JSON.stringify(data || {}) || targetCount !== Math.min(MAX_OVERWRITES, initialCount);
   const close = () => hasUnappliedChanges ? setDiscardPromptOpen(true) : onClose?.();
   useStudioEscape(close);
+  useStudioSwitchClose('permission', close);
   const query = search.trim().toLowerCase();
   const targetMatches = (index) => {
     if (!query) return true;
@@ -141,7 +142,7 @@ export function PermissionStudioView({ mode = 'role', nodeName = 'Permissions', 
       </div> : <article className="permission-role-card"><div className="permission-bitfield-grid role-bitfield"><BitfieldField label={isCommand ? 'Command permission bitfield' : 'Role permission BigInt'} value={draft.permissions || ''} invalid={canonicalBitfield(draft.permissions) === null} copied={copiedField === 'permissions'} onChange={(value) => setDraft((current) => ({ ...current, permissions: value }))} onCopy={() => copyBitfield('permissions')} /><span>Decimal or hexadecimal (`0x…`). Unknown permission bits are preserved when you toggle named permissions.</span></div>{isCommand && <label className="slash-command-choice"><AnimatedCheckbox checked={String(draft.permissions ?? '').trim() === '0'} label="Administrators only" onChange={(checked) => setDraft((current) => ({ ...current, permissions: checked ? '0' : '' }))} /><span>Administrators only. This sets Discord’s default permissions to 0.</span></label>}<PermissionList roleMode groups={groups} query={query} allow={selectedFor(0).allow} deny={[]} onChange={(key, state) => setPermission(0, key, state)} /><footer>{selectedFor(0).allow.length} known permissions selected · BigInt {draft.permissions || '0'}</footer></article>}
       {!groups.length && !(isOverwrite && Array.from({ length: targetCount }, (_, index) => targetMatches(index + 1)).some(Boolean)) && <p className="permission-empty">No permissions or targets match “{search}”.</p>}
     </div>
-    <Modal isOpen={discardPromptOpen} onClose={() => setDiscardPromptOpen(false)} title="Discard permission changes?" subtitle="These edits have not been applied to the graph." footer={<><Button variant="secondary" onClick={() => setDiscardPromptOpen(false)}>Keep editing</Button><Button variant="danger" onClick={onClose}>Discard changes</Button></>}><p className="close-graph-copy">Your graph is unchanged until you choose Apply.</p></Modal>
+    <Modal isOpen={discardPromptOpen} onClose={() => { setDiscardPromptOpen(false); notifyStudioSwitchCancelled(); }} title="Discard permission changes?" subtitle="These edits have not been applied to the graph." footer={<><Button variant="secondary" onClick={() => { setDiscardPromptOpen(false); notifyStudioSwitchCancelled(); }}>Keep editing</Button><Button variant="danger" onClick={onClose}>Discard changes</Button></>}><p className="close-graph-copy">Your graph is unchanged until you choose Apply.</p></Modal>
   </section>;
 }
 
