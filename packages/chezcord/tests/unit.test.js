@@ -2,6 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   GatewayIntents,
+  GatewayCapabilities,
   GatewayOpcodes,
   ButtonStyles,
   ComponentTypes,
@@ -13,6 +14,7 @@ import {
   InteractionAlreadyAcknowledgedError,
   InteractionSecurity,
   Client,
+  GatewayShard,
   CDN
 } from '../src/index.js';
 import crypto from 'node:crypto';
@@ -32,6 +34,33 @@ describe('Constants & Bitfields', () => {
     assert.equal(GatewayOpcodes.IDENTIFY, 2);
     assert.equal(GatewayOpcodes.HELLO, 10);
     assert.equal(GatewayOpcodes.HEARTBEAT_ACK, 11);
+  });
+
+  test('Gateway channel obfuscation capability is opt in on IDENTIFY', () => {
+    const OriginalWebSocket = globalThis.WebSocket;
+    const sent = [];
+    class MockWebSocket {
+      static OPEN = 1;
+      constructor() { this.readyState = MockWebSocket.OPEN; }
+      send(message) { sent.push(JSON.parse(message)); }
+      close() { this.readyState = 3; }
+    }
+    globalThis.WebSocket = MockWebSocket;
+    try {
+      const defaultShard = new GatewayShard({ token: 'default-capabilities' });
+      defaultShard.ws = new MockWebSocket();
+      defaultShard.sendIdentify();
+      assert.equal(Object.hasOwn(sent[0].d, 'capabilities'), false);
+      defaultShard.destroy();
+
+      const optedInShard = new GatewayShard({ token: 'obfuscation-capability', capabilities: GatewayCapabilities.CHANNEL_OBFUSCATION });
+      optedInShard.ws = new MockWebSocket();
+      optedInShard.sendIdentify();
+      assert.equal(sent[1].d.capabilities, 1 << 15);
+      optedInShard.destroy();
+    } finally {
+      globalThis.WebSocket = OriginalWebSocket;
+    }
   });
 
   test('CDN helper funcs', () => {
@@ -150,6 +179,41 @@ describe('Client & RESTClient', () => {
       });
       assert.throws(() => rest.createThread('channel-1', { name: 'Bad type', type: 'forum' }), /public or private/);
       assert.throws(() => rest.createThread('channel-1', { name: 'Bad duration', autoArchiveDuration: 10 }), /auto archive duration/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('gets guild and channel member and role permissions', async () => {
+    const originalFetch = globalThis.fetch;
+    const calls = [];
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url: String(url), init });
+      return new Response(JSON.stringify({ permissions: '12345678901234567890' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      });
+    };
+    try {
+      const rest = new RESTClient({ token: 'test-token', apiBase: 'https://discord.test/api/v10' });
+      const results = await Promise.all([
+        rest.getGuildMemberPermissions('guild-1', 'user-1'),
+        rest.getGuildRolePermissions('guild-1', 'role-1'),
+        rest.getChannelMemberPermissions('channel-1', 'user-1', { implicit: false }),
+        rest.getChannelRolePermissions('channel-1', 'role-1')
+      ]);
+
+      assert.deepEqual(results, Array.from({ length: 4 }, () => ({ permissions: '12345678901234567890' })));
+      assert.deepEqual(calls.map(({ url }) => new URL(url).pathname), [
+        '/api/v10/guilds/guild-1/permissions/member/user-1',
+        '/api/v10/guilds/guild-1/permissions/role/role-1',
+        '/api/v10/channels/channel-1/permissions/member/user-1',
+        '/api/v10/channels/channel-1/permissions/role/role-1'
+      ]);
+      assert.equal(new URL(calls[2].url).searchParams.get('implicit'), 'false');
+      assert.equal(new URL(calls[3].url).searchParams.get('implicit'), 'true');
+      assert.throws(() => rest.getGuildMemberPermissions('', 'user-1'), /IDs are required/);
+      assert.throws(() => rest.getChannelRolePermissions('channel-1', ''), /IDs are required/);
     } finally {
       globalThis.fetch = originalFetch;
     }
