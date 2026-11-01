@@ -106,6 +106,30 @@ test('restoreBuiltInProjectVariable restores deleted system variable or reports 
   }
 });
 
+test('DISCORD_APP_ID is created from the connected app and can be restored after deletion', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-discord-app-id-test-'));
+  try {
+    const { manager, messages } = makeStatisticsManager(directory);
+    const applicationId = '123456789012345678';
+    manager.botProfile = { application: { id: applicationId } };
+
+    assert.equal(manager.ensureDiscordAppIdVariable(applicationId), true);
+    assert.equal(manager.projectVariables.find((variable) => variable.id === 'project_var_discord_app_id')?.initialValue, applicationId);
+    assert.equal(manager.projectVariableStates.get('project_var_discord_app_id'), applicationId);
+
+    manager.setProjectVariables([]);
+    assert.equal(manager.disabledBuiltInProjectVariables.has('DISCORD_APP_ID'), true);
+
+    const restored = manager.restoreBuiltInProjectVariable('DISCORD_APP_ID');
+    assert.equal(restored.success, true);
+    assert.equal(restored.variables.find((variable) => variable.id === 'project_var_discord_app_id')?.initialValue, applicationId);
+    assert.equal(manager.disabledBuiltInProjectVariables.has('DISCORD_APP_ID'), false);
+    assert.ok(messages.some((message) => message.type === 'PROJECT_VARIABLES_UPDATED'));
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('one function input can drive Discord actions without a return node', async () => {
   const sentMessages = [];
   const mockRest = {
