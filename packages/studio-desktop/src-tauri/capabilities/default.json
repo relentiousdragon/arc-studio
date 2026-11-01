@@ -5,8 +5,10 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
+    "core:event:default",
     "core:window:allow-start-dragging",
     "core:window:allow-toggle-maximize",
+    "deep-link:default",
     "updater:default"
   ]
 }
