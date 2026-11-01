@@ -94,7 +94,13 @@ test('standalone bot export updates gateway latency on heartbeat and uptime whil
 test('standalone bot export includes modular node schemas and their runtime dependencies', () => {
   const archive = buildBotArchive([{
     id: 'network-export',
-    nodes: [{ id: 'request', type: 'action_web_retry', data: {} }],
+    nodes: [
+      { id: 'request', type: 'action_web_retry', data: {} },
+      { id: 'guild-member-permissions', type: 'action_get_guild_member_permissions', data: {} },
+      { id: 'guild-role-permissions', type: 'action_get_guild_role_permissions', data: {} },
+      { id: 'channel-member-permissions', type: 'action_get_channel_member_permissions', data: {} },
+      { id: 'channel-role-permissions', type: 'action_get_channel_role_permissions', data: {} }
+    ],
     connections: []
   }]);
   const entries = listZipEntries(archive);
@@ -104,6 +110,7 @@ test('standalone bot export includes modular node schemas and their runtime depe
   const nodeIndex = readZipEntry(archive, 'src/engine/nodes/index.js');
   const networkRuntime = readZipEntry(archive, 'src/engine/nodes/runtime/network.js');
   const dataRuntime = readZipEntry(archive, 'src/engine/nodes/runtime/data.js');
+  const guildRuntime = readZipEntry(archive, 'src/engine/nodes/runtime/discord_guild.js');
   const retrySchema = readZipEntry(archive, 'src/engine/nodes/web-network/action_web_retry.js');
 
   assert.match(graphRunner, /import\('\.\/nodes\/runtime\/network\.js'\)/);
@@ -111,7 +118,15 @@ test('standalone bot export includes modular node schemas and their runtime depe
   assert.match(nodeIndex, /web-network\/action_web_retry\.js/);
   assert.match(networkRuntime, /SafeHttpRequest\.js/);
   assert.match(dataRuntime, /export function evaluateDataNode/);
+  assert.match(guildRuntime, /getGuildMemberPermissions/);
+  assert.match(guildRuntime, /getGuildRolePermissions/);
+  assert.match(guildRuntime, /getChannelMemberPermissions/);
+  assert.match(guildRuntime, /getChannelRolePermissions/);
   assert.ok(entries.has('src/engine/SafeHttpRequest.js'));
+  for (const type of [
+    'action_get_guild_member_permissions', 'action_get_guild_role_permissions',
+    'action_get_channel_member_permissions', 'action_get_channel_role_permissions'
+  ]) assert.ok(entries.has(`src/engine/nodes/discord-actions/${type}.js`));
   assert.ok(!entries.has('src/engine/nodes/runtime/crypto.js'));
   assert.ok(!entries.has('src/security/CryptoEngine.js'));
   assert.match(retrySchema, /"type": "action_web_retry"/);
@@ -129,13 +144,23 @@ test('standalone bot export packages only runtime modules required by graph node
     assert.ok(entries.has(`src/engine/nodes/runtime/${module}`), `${module} is required by the core runtime`);
   }
   for (const module of [
-    'crypto.js', 'network.js', 'discord_presence.js', 'discord_messages.js',
+    'crypto.js', 'network.js', 'console_log.js', 'discord_presence.js', 'discord_messages.js',
     'discord_interactions.js', 'discord_guild.js'
   ]) {
     assert.ok(!entries.has(`src/engine/nodes/runtime/${module}`), `${module} is unused by this graph`);
   }
   assert.ok(!entries.has('src/engine/SafeHttpRequest.js'));
   assert.ok(!entries.has('src/security/CryptoEngine.js'));
+});
+
+test('standalone bot export includes the console log runtime when its nodes are used', () => {
+  const archive = buildBotArchive([{
+    id: 'console-export',
+    nodes: [{ id: 'warn', type: 'action_console_warn', data: { message: 'Warning' } }],
+    connections: []
+  }]);
+
+  assert.ok(listZipEntries(archive).has('src/engine/nodes/runtime/console_log.js'));
 });
 
 test('standalone bot export stores graph and node IDs without display names', () => {
