@@ -6,13 +6,16 @@ const MAX_DPR = 2;
 //
 export function AuthGridCanvas({ reducedMotion = false }) {
   const canvasRef = useRef(null);
+  const cardCanvasRef = useRef(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
+    const cardCanvas = cardCanvasRef.current;
     if (!canvas) return undefined;
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return undefined;
+    const cardCtx = cardCanvas?.getContext('2d') || null;
 
     const themeRoot = canvas.closest('[data-theme]') || document.documentElement;
 
@@ -23,11 +26,11 @@ export function AuthGridCanvas({ reducedMotion = false }) {
     let isDark = true;
     let frameCount = 0;
 
-    let baseDotColor = 'rgba(160, 175, 205, 0.24)';
+    let baseDotColor = 'rgba(163, 178, 208, 0.34)';
     let activeDotColor = 'rgba(168, 85, 247, 0.95)';
     let activeGlowColor = 'rgba(168, 85, 247, 0.48)';
 
-    let cardDotColor = 'rgba(150, 160, 175, 0.085)';
+    let cardDotColor = 'rgba(150, 160, 175, 0.14)';
     let cardActiveColor = 'rgba(205, 215, 230, 0.26)';
     let cardActiveGlow = 'rgba(180, 195, 215, 0.12)';
 
@@ -35,17 +38,17 @@ export function AuthGridCanvas({ reducedMotion = false }) {
       const attr = themeRoot?.getAttribute('data-theme') || document.documentElement.getAttribute('data-theme') || 'dark';
       isDark = attr !== 'light';
       if (isDark) {
-        baseDotColor = 'rgba(160, 175, 205, 0.24)';
+        baseDotColor = 'rgba(163, 178, 208, 0.34)';
         activeDotColor = 'rgba(168, 85, 247, 0.95)';
         activeGlowColor = 'rgba(168, 85, 247, 0.48)';
-        cardDotColor = 'rgba(150, 160, 175, 0.085)';
+        cardDotColor = 'rgba(150, 160, 175, 0.14)';
         cardActiveColor = 'rgba(205, 215, 230, 0.26)';
         cardActiveGlow = 'rgba(180, 195, 215, 0.12)';
       } else {
-        baseDotColor = 'rgba(80, 95, 120, 0.36)';
+        baseDotColor = 'rgba(74, 88, 112, 0.46)';
         activeDotColor = 'rgba(115, 80, 200, 0.92)';
         activeGlowColor = 'rgba(115, 80, 200, 0.40)';
-        cardDotColor = 'rgba(90, 105, 125, 0.095)';
+        cardDotColor = 'rgba(90, 105, 125, 0.16)';
         cardActiveColor = 'rgba(75, 90, 110, 0.28)';
         cardActiveGlow = 'rgba(85, 100, 120, 0.12)';
       }
@@ -148,20 +151,22 @@ export function AuthGridCanvas({ reducedMotion = false }) {
     const renderStaticFrame = () => {
       updateCardRect();
       ctx.clearRect(0, 0, width, height);
+      cardCtx?.clearRect(0, 0, width, height);
       for (const dot of dots) {
         const inCard = isPointInCard(dot.baseX, dot.baseY);
         if (inCard && isOverExcluded(dot.baseX, dot.baseY)) {
           continue;
         }
-        ctx.beginPath();
+        const target = inCard ? (cardCtx || ctx) : ctx;
+        target.beginPath();
         if (inCard) {
-          ctx.arc(dot.baseX, dot.baseY, 0.9, 0, Math.PI * 2);
-          ctx.fillStyle = cardDotColor;
+          target.arc(dot.baseX, dot.baseY, 0.9, 0, Math.PI * 2);
+          target.fillStyle = cardDotColor;
         } else {
-          ctx.arc(dot.baseX, dot.baseY, 1.0, 0, Math.PI * 2);
-          ctx.fillStyle = baseDotColor;
+          target.arc(dot.baseX, dot.baseY, 1.0, 0, Math.PI * 2);
+          target.fillStyle = baseDotColor;
         }
-        ctx.fill();
+        target.fill();
       }
     };
 
@@ -173,6 +178,11 @@ export function AuthGridCanvas({ reducedMotion = false }) {
       canvas.width = Math.round(width * dpr);
       canvas.height = Math.round(height * dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      if (cardCanvas) {
+        cardCanvas.width = Math.round(width * dpr);
+        cardCanvas.height = Math.round(height * dpr);
+        cardCtx?.setTransform(dpr, 0, 0, dpr, 0, 0);
+      }
 
       updateCardRect();
 
@@ -333,6 +343,7 @@ export function AuthGridCanvas({ reducedMotion = false }) {
       }
 
       ctx.clearRect(0, 0, width, height);
+      cardCtx?.clearRect(0, 0, width, height);
 
       const twoPi = Math.PI * 2;
 
@@ -360,40 +371,41 @@ export function AuthGridCanvas({ reducedMotion = false }) {
 
         const drawY = dot.baseY + dot.currentLift;
         const hasGlow = dot.glow > 0.04;
+        const target = inCard ? (cardCtx || ctx) : ctx;
 
-        ctx.beginPath();
+        target.beginPath();
         if (hasGlow) {
           if (inCard) {
             const size = 0.9 + dot.glow * 0.65;
-            ctx.arc(dot.baseX, drawY, size, 0, twoPi);
-            ctx.fillStyle = cardActiveColor;
+            target.arc(dot.baseX, drawY, size, 0, twoPi);
+            target.fillStyle = cardActiveColor;
             if (!isLowPerf) {
-              ctx.shadowColor = cardActiveGlow;
-              ctx.shadowBlur = dot.glow * 4.5;
+              target.shadowColor = cardActiveGlow;
+              target.shadowBlur = dot.glow * 4.5;
             }
           } else {
             const size = 1.0 + dot.glow * 1.3;
-            ctx.arc(dot.baseX, drawY, size, 0, twoPi);
-            ctx.fillStyle = activeDotColor;
+            target.arc(dot.baseX, drawY, size, 0, twoPi);
+            target.fillStyle = activeDotColor;
             if (!isLowPerf) {
-              ctx.shadowColor = activeGlowColor;
-              ctx.shadowBlur = dot.glow * 8;
+              target.shadowColor = activeGlowColor;
+              target.shadowBlur = dot.glow * 8;
             }
           }
-          ctx.fill();
+          target.fill();
           if (!isLowPerf) {
-            ctx.shadowColor = 'transparent';
-            ctx.shadowBlur = 0;
+            target.shadowColor = 'transparent';
+            target.shadowBlur = 0;
           }
         } else {
           if (inCard) {
-            ctx.arc(dot.baseX, drawY, 0.9, 0, twoPi);
-            ctx.fillStyle = cardDotColor;
+            target.arc(dot.baseX, drawY, 0.9, 0, twoPi);
+            target.fillStyle = cardDotColor;
           } else {
-            ctx.arc(dot.baseX, drawY, 1.0, 0, twoPi);
-            ctx.fillStyle = baseDotColor;
+            target.arc(dot.baseX, drawY, 1.0, 0, twoPi);
+            target.fillStyle = baseDotColor;
           }
-          ctx.fill();
+          target.fill();
         }
       }
 
@@ -417,19 +429,34 @@ export function AuthGridCanvas({ reducedMotion = false }) {
   }, [reducedMotion]);
 
   return (
-    <canvas
-      ref={canvasRef}
-      className="auth-grid-canvas"
-      aria-hidden="true"
-      style={{
-        position: 'absolute',
-        inset: 0,
-        width: '100%',
-        height: '100%',
-        pointerEvents: 'none',
-        zIndex: 2
-      }}
-    />
+    <>
+      <canvas
+        ref={canvasRef}
+        className="auth-grid-canvas"
+        aria-hidden="true"
+        style={{
+          position: 'absolute',
+          inset: 0,
+          width: '100%',
+          height: '100%',
+          pointerEvents: 'none',
+          zIndex: 0
+        }}
+      />
+      <canvas
+        ref={cardCanvasRef}
+        className="auth-grid-canvas auth-grid-card-canvas"
+        aria-hidden="true"
+        style={{
+          position: 'absolute',
+          inset: 0,
+          width: '100%',
+          height: '100%',
+          pointerEvents: 'none',
+          zIndex: 2
+        }}
+      />
+    </>
   );
 }
 
