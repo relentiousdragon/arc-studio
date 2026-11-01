@@ -7,6 +7,8 @@ import { getNodeRegistryCompatibility, getNodeRegistryRequiredFeatures, NODE_REG
 import { MockGateway } from '../engine/MockGateway.js';
 import { StartupDiagnostics } from '../engine/StartupDiagnostics.js';
 import { CryptoEngine } from '../security/CryptoEngine.js';
+import { PasskeyService } from '../security/PasskeyService.js';
+import { PasskeyStore } from '../security/PasskeyStore.js';
 import { buildBotArchive, verifyBotArchiveIntegrity } from '../export/BotArchive.js';
 import { PluginStore } from '../engine/PluginStore.js';
 import { downloadSafeHttpFile } from '../engine/SafeHttpRequest.js';
@@ -93,6 +95,70 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
   const publishBotExport = (projectId, payload) => broadcastProject(projectId, { type: 'BOT_EXPORT_PROGRESS', payload: { projectId, ...payload } });
   const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
   const authMiddleware = createAuthMiddleware(userStore);
+  const passkeyRoutesEnabled = !serverConfig.desktopMode;
+  const passkeyStore = new PasskeyStore();
+  const passkeyService = new PasskeyService({ userStore, passkeyStore });
+  const passkeyAttempts = new Map();
+  const allowPasskeyAttempt = (req, res, bucket, { limit = 40, windowMs = 5 * 60 * 1000 } = {}) => {
+    const now = Date.now();
+    const key = `${bucket}:${req.ip || 'local'}`;
+    const previous = passkeyAttempts.get(key);
+    if (previous && now - previous.startedAt < windowMs && previous.count >= limit) {
+      res.status(429).json({ error: 'Too many passkey attempts. Wait a few minutes and try again.', code: 'PASSKEY_RATE_LIMITED' });
+      return false;
+    }
+    const attempt = !previous || now - previous.startedAt >= windowMs ? { startedAt: now, count: 0 } : previous;
+    attempt.count += 1;
+    passkeyAttempts.set(key, attempt);
+    if (passkeyAttempts.size > 2048) {
+      for (const [attemptKey, value] of passkeyAttempts) {
+        if (now - value.startedAt >= windowMs) passkeyAttempts.delete(attemptKey);
+      }
+      while (passkeyAttempts.size > 2048) passkeyAttempts.delete(passkeyAttempts.keys().next().value);
+    }
+    return true;
+  };
+  const isLoopbackPasskeyOrigin = (origin) => /^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(String(origin || ''));
+  const passkeyClientAllowed = (req, res, { desktop = false } = {}) => {
+    const clientBuild = req.body?.clientBuild;
+    if (!clientBuild || typeof clientBuild.version !== 'string'
+      || !isArcStudioClientVersionAllowed(clientBuild.version, serverConfig.minimumClientVersion)) {
+      res.status(426).json({ error: `Update ARC Studio to ${serverConfig.minimumClientVersion} or newer to use passkeys.`, code: 'CLIENT_VERSION_BLOCKED', minimumVersion: serverConfig.minimumClientVersion, nodeSchemaVersion: NODE_SCHEMA_VERSION });
+      return null;
+    }
+    if (clientBuild.protocolVersion !== CLIENT_PROTOCOL_VERSION) {
+      res.status(426).json({ error: 'This client does not support the workspace client protocol.', code: 'CLIENT_PROTOCOL_INCOMPATIBLE', requiredProtocolVersion: CLIENT_PROTOCOL_VERSION });
+      return null;
+    }
+    const registryCheck = registryCompatibility(clientBuild);
+    if (!registryCheck.compatible) {
+      res.status(426).json({ error: 'This workspace uses node registry features that this client cannot display safely. Update ARC Studio to a compatible build.', code: 'NODE_REGISTRY_INCOMPATIBLE', minimumVersion: serverConfig.minimumClientVersion, nodeRegistryProtocolVersion: NODE_REGISTRY_PROTOCOL_VERSION, unsupportedFeatures: registryCheck.unsupportedFeatures });
+      return null;
+    }
+    const knownClient = isArcStudioClientIdentity(clientBuild)
+      && (isArcStudioOrigin(req.headers.origin, req.headers) || (desktop && isLoopbackPasskeyOrigin(req.headers.origin)));
+    if (desktop && !isArcStudioClientIdentity(clientBuild)) {
+      res.status(403).json({ error: 'Passkey desktop requests must come from ARC Studio.', code: 'CLIENT_NOT_ALLOWED' });
+      return null;
+    }
+    if (!knownClient && readClientAccessSettings().allowUnknownClients !== true) {
+      res.status(403).json({ error: 'This workspace only accepts ARC Studio clients. Ask the workspace owner to allow unknown clients if you need to connect with other software.', code: 'CLIENT_NOT_ALLOWED' });
+      return null;
+    }
+    return clientBuild;
+  };
+  const rejectPasskey = (res, error, status = 400) => {
+    if (res.headersSent) return;
+    res.status(status).json({ error: error instanceof Error ? error.message : String(error), code: 'PASSKEY_FAILED' });
+  };
+  const recordPasskeySignIn = (user, clientBuild, method) => {
+    recordTeamActivity({ user }, 'account.signed_in', 'Signed in to the workspace', {
+      method,
+      ...(typeof clientBuild?.version === 'string' && /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/.test(clientBuild.version) ? { clientVersion: clientBuild.version } : {}),
+      ...(clientBuild?.platform === 'Windows' || clientBuild?.platform === 'Linux' || clientBuild?.platform === 'macOS' ? { clientPlatform: clientBuild.platform } : {}),
+      ...(['x64', 'x86', 'arm64', 'arm'].includes(clientBuild?.architecture) ? { clientArchitecture: clientBuild.architecture } : {})
+    });
+  };
   const registryFeatures = () => getNodeRegistryRequiredFeatures(Object.values(NodeDefinitions));
   const registryRevision = () => getNodeRegistryPayload().registryRevision;
   const registryCompatibility = (client) => getNodeRegistryCompatibility(client, registryFeatures());
@@ -436,9 +502,139 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     if (!owner) return res.status(404).json({ error: 'The owner account could not be found.' });
     try {
       userStore.resetPassword(owner.id, password, { requireChange: true });
+      let passkeysRevoked = true;
+      try { passkeyStore.removeUser(owner.id); }
+      catch (error) {
+        passkeysRevoked = false;
+        logger.log('ERROR', `The owner password was reset but its passkeys could not be revoked: ${error.message}`);
+      }
       resetPasswordAttempts.delete(req.ip || 'local');
-      res.json({ success: true });
+      res.json({ success: true, passkeysRevoked });
     } catch (error) { res.status(400).json({ error: error.message }); }
+  });
+
+  router.post('/auth/passkeys/authentication/options', async (req, res) => {
+    if (!passkeyRoutesEnabled) return res.status(404).json({ error: 'Route not found.' });
+    if (!allowPasskeyAttempt(req, res, 'authentication-options')) return;
+    const clientBuild = passkeyClientAllowed(req, res);
+    if (!clientBuild) return;
+    try {
+      const ceremony = await passkeyService.authenticationOptions(req, { clientBuild });
+      res.json({ success: true, ...ceremony });
+    } catch (error) { rejectPasskey(res, error); }
+  });
+
+  router.post('/auth/passkeys/authentication/verify', async (req, res) => {
+    if (!passkeyRoutesEnabled) return res.status(404).json({ error: 'Route not found.' });
+    if (!allowPasskeyAttempt(req, res, 'authentication-verify', { limit: 30 })) return;
+    try {
+      const result = await passkeyService.verifyAuthentication(req, req.body?.ceremonyId, req.body?.response, req.body?.rememberMe === true);
+      if (result.replacementPending) return res.status(202).json({ replacementPending: true, pendingId: result.pendingId, retryAt: result.retryAt });
+      logger.info(`User signed in with a passkey: ${result.user.username} (role: ${result.user.role})`);
+      recordPasskeySignIn(result.user, req.body?.clientBuild || null, 'passkey');
+      res.json({ success: true, ...result });
+    } catch (error) { rejectPasskey(res, error); }
+  });
+
+  router.post('/auth/passkeys/authentication/continue', (req, res) => {
+    if (!passkeyRoutesEnabled) return res.status(404).json({ error: 'Route not found.' });
+    if (!allowPasskeyAttempt(req, res, 'authentication-continue', { limit: 60 })) return;
+    try {
+      const result = passkeyService.continueAuthenticatedLogin(req.body?.pendingId);
+      if (result.replacementPending) return res.status(202).json({ replacementPending: true, pendingId: result.pendingId, retryAt: result.retryAt });
+      logger.info(`User signed in with a passkey: ${result.user.username} (role: ${result.user.role})`);
+      recordPasskeySignIn(result.user, req.body?.clientBuild || null, 'passkey');
+      res.json({ success: true, ...result });
+    } catch (error) { rejectPasskey(res, error); }
+  });
+
+  router.post('/auth/passkeys/desktop/login/start', (req, res) => {
+    if (!passkeyRoutesEnabled) return res.status(404).json({ error: 'Route not found.' });
+    if (!allowPasskeyAttempt(req, res, 'desktop-login-start', { limit: 20 })) return;
+    if (!passkeyClientAllowed(req, res, { desktop: true })) return;
+    try {
+      const flow = passkeyService.createDesktopFlow({
+        workspaceOrigin: req.body?.workspaceOrigin,
+        state: req.body?.state,
+        codeChallenge: req.body?.codeChallenge,
+        clientBuild: req.body?.clientBuild,
+        rememberMe: req.body?.rememberMe === true,
+        purpose: 'authentication'
+      });
+      res.json({ success: true, ...flow });
+    } catch (error) { rejectPasskey(res, error); }
+  });
+
+  router.post('/auth/passkeys/desktop/login/options', async (req, res) => {
+    if (!passkeyRoutesEnabled) return res.status(404).json({ error: 'Route not found.' });
+    if (!allowPasskeyAttempt(req, res, 'desktop-login-options', { limit: 30 })) return;
+    try {
+      const ceremony = await passkeyService.desktopAuthenticationOptions(req, req.body?.state);
+      res.json({ success: true, ...ceremony });
+    } catch (error) { rejectPasskey(res, error); }
+  });
+
+  router.post('/auth/passkeys/desktop/login/verify', async (req, res) => {
+    if (!passkeyRoutesEnabled) return res.status(404).json({ error: 'Route not found.' });
+    if (!allowPasskeyAttempt(req, res, 'desktop-login-verify', { limit: 30 })) return;
+    try {
+      const result = await passkeyService.completeDesktopAuthentication(req, req.body?.state, req.body?.ceremonyId, req.body?.response);
+      if (result.replacementPending) return res.status(202).json({ replacementPending: true, retryAfter: result.retryAfter });
+      res.json(result);
+    } catch (error) { rejectPasskey(res, error); }
+  });
+
+  router.post('/auth/passkeys/desktop/login/continue', (req, res) => {
+    if (!passkeyRoutesEnabled) return res.status(404).json({ error: 'Route not found.' });
+    if (!allowPasskeyAttempt(req, res, 'desktop-login-continue', { limit: 60 })) return;
+    try {
+      const result = passkeyService.continueDesktopAuthentication(req, req.body?.state);
+      if (result.replacementPending) return res.status(202).json({ replacementPending: true, retryAfter: result.retryAfter });
+      res.json(result);
+    } catch (error) { rejectPasskey(res, error); }
+  });
+
+  router.post('/auth/passkeys/desktop/register/options', async (req, res) => {
+    if (!passkeyRoutesEnabled) return res.status(404).json({ error: 'Route not found.' });
+    if (!allowPasskeyAttempt(req, res, 'desktop-register-options', { limit: 20 })) return;
+    try {
+      const flow = passkeyService.getDesktopFlow(req, req.body?.state);
+      if (!flow || flow.purpose !== 'registration') throw new Error('This desktop passkey request has expired. Start again from ARC Studio.');
+      const user = userStore.users.find((item) => item.id === flow.userId);
+      if (!user) throw new Error('This passkey account is no longer available.');
+      const ceremony = await passkeyService.desktopRegistrationOptions(req, req.body?.state, user);
+      res.json({ success: true, ...ceremony });
+    } catch (error) { rejectPasskey(res, error); }
+  });
+
+  router.post('/auth/passkeys/desktop/register/verify', async (req, res) => {
+    if (!passkeyRoutesEnabled) return res.status(404).json({ error: 'Route not found.' });
+    if (!allowPasskeyAttempt(req, res, 'desktop-register-verify', { limit: 20 })) return;
+    try {
+      const flow = passkeyService.getDesktopFlow(req, req.body?.state);
+      if (!flow || flow.purpose !== 'registration') throw new Error('This desktop passkey request has expired. Start again from ARC Studio.');
+      const user = userStore.users.find((item) => item.id === flow.userId);
+      if (!user) throw new Error('This passkey account is no longer available.');
+      const result = await passkeyService.completeDesktopRegistration(req, req.body?.state, req.body?.ceremonyId, user, req.body?.response);
+      logger.info(`Passkey added for "${user.username}" from the desktop app`);
+      res.json(result);
+    } catch (error) { rejectPasskey(res, error); }
+  });
+
+  router.post('/auth/passkeys/desktop/redeem', (req, res) => {
+    if (!passkeyRoutesEnabled) return res.status(404).json({ error: 'Route not found.' });
+    if (!allowPasskeyAttempt(req, res, 'desktop-redeem', { limit: 20 })) return;
+    if (!isArcStudioOrigin(req.headers.origin, req.headers) && !isLoopbackPasskeyOrigin(req.headers.origin)) {
+      return res.status(403).json({ error: 'Desktop passkey responses must come from ARC Studio.', code: 'CLIENT_NOT_ALLOWED' });
+    }
+    try {
+      const result = passkeyService.redeemDesktopTicket({ state: req.body?.state, ticket: req.body?.ticket, codeVerifier: req.body?.codeVerifier });
+      if (result.kind === 'authentication') {
+        logger.info(`User signed in with a passkey from the desktop app: ${result.user.username} (role: ${result.user.role})`);
+        recordPasskeySignIn(result.user, req.body?.clientBuild || null, 'passkey-desktop');
+      }
+      res.json({ success: true, ...result });
+    } catch (error) { rejectPasskey(res, error); }
   });
 //
   router.use(authMiddleware);
@@ -500,6 +696,73 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     } catch (error) {
       res.status(error.retryAfterMs ? 429 : 400).json({ error: error.message, ...(error.retryAfterMs ? { retryAfterMs: error.retryAfterMs, availableAt: error.availableAt } : {}) });
     }
+  });
+
+  router.get('/auth/passkeys', (req, res) => {
+    if (!passkeyRoutesEnabled) return res.status(404).json({ error: 'Route not found.' });
+    res.json({ passkeys: passkeyStore.listForUser(req.user.id) });
+  });
+
+  router.post('/auth/passkeys/registration/options', async (req, res) => {
+    if (!passkeyRoutesEnabled) return res.status(404).json({ error: 'Route not found.' });
+    if (!allowPasskeyAttempt(req, res, 'registration-options', { limit: 20 })) return;
+    if (!passkeyClientAllowed(req, res)) return;
+    const user = userStore.users.find((item) => item.id === req.user.id);
+    if (!user || !req.body?.password || !userStore.verifyPassword(String(req.body.password), user)) {
+      return res.status(401).json({ error: 'Your current password is required to add a passkey.', code: 'PASSKEY_PASSWORD_REQUIRED' });
+    }
+    try {
+      const ceremony = await passkeyService.registrationOptions(req.user, req);
+      res.json({ success: true, ...ceremony });
+    } catch (error) { rejectPasskey(res, error); }
+  });
+
+  router.post('/auth/passkeys/registration/verify', async (req, res) => {
+    if (!passkeyRoutesEnabled) return res.status(404).json({ error: 'Route not found.' });
+    if (!allowPasskeyAttempt(req, res, 'registration-verify', { limit: 20 })) return;
+    if (!passkeyClientAllowed(req, res)) return;
+    try {
+      const result = await passkeyService.verifyRegistration(req.user, req, req.body?.ceremonyId, req.body?.response, req.body?.name);
+      logger.info(`Passkey added for "${req.user.username}"`);
+      recordTeamActivity(req, 'account.passkey_added', 'Added a passkey', {});
+      res.json(result);
+    } catch (error) { rejectPasskey(res, error); }
+  });
+
+  router.delete('/auth/passkeys/:recordId', (req, res) => {
+    if (!passkeyRoutesEnabled) return res.status(404).json({ error: 'Route not found.' });
+    if (!allowPasskeyAttempt(req, res, 'passkey-remove', { limit: 30 })) return;
+    try {
+      const removed = passkeyStore.removeForUser(req.user.id, String(req.params.recordId || ''));
+      if (!removed) return res.status(404).json({ error: 'That passkey is no longer available.', code: 'PASSKEY_NOT_FOUND' });
+      logger.info(`Passkey removed for "${req.user.username}"`);
+      recordTeamActivity(req, 'account.passkey_removed', 'Removed a passkey', {});
+      res.json({ success: true, passkeys: passkeyStore.listForUser(req.user.id) });
+    } catch (error) { rejectPasskey(res, error); }
+  });
+
+  router.post('/auth/passkeys/desktop/register/start', (req, res) => {
+    if (!passkeyRoutesEnabled) return res.status(404).json({ error: 'Route not found.' });
+    if (!allowPasskeyAttempt(req, res, 'desktop-register-start', { limit: 10 })) return;
+    if (!passkeyClientAllowed(req, res, { desktop: true })) return;
+    const user = userStore.users.find((item) => item.id === req.user.id);
+    if (!user || !req.body?.password || !userStore.verifyPassword(String(req.body.password), user)) {
+      return res.status(401).json({ error: 'Your current password is required to add a passkey.', code: 'PASSKEY_PASSWORD_REQUIRED' });
+    }
+    try {
+      const flow = passkeyService.createDesktopFlow({
+        workspaceOrigin: req.body?.workspaceOrigin,
+        state: req.body?.state,
+        codeChallenge: req.body?.codeChallenge,
+        clientBuild: req.body?.clientBuild,
+        rememberMe: true,
+        purpose: 'registration',
+        userId: req.user.id,
+        passkeyName: req.body?.name
+      });
+      logger.info(`Desktop passkey registration started for "${req.user.username}"`);
+      res.json({ success: true, ...flow });
+    } catch (error) { rejectPasskey(res, error); }
   });
 
   router.get('/projects', requirePermission('graphs:read'), (_req, res) => {
@@ -689,8 +952,14 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       if (password !== confirmPassword) return res.status(400).json({ error: 'Passwords do not match.' });
       try {
         const user = userStore.resetPassword(req.params.id, password, { requireChange: true });
-        recordTeamActivity(req, 'account.password_reset', `Reset the password for ${user.username}`, { username: user.username });
-        res.json({ success: true, user });
+        let passkeysRevoked = true;
+        try { passkeyStore.removeUser(user.id); }
+        catch (error) {
+          passkeysRevoked = false;
+          logger.log('ERROR', `The password for ${user.username} was reset but its passkeys could not be revoked: ${error.message}`);
+        }
+        recordTeamActivity(req, 'account.password_reset', `Reset the password for ${user.username}`, { username: user.username, passkeysRevoked });
+        res.json({ success: true, user, passkeysRevoked });
       } catch (error) { res.status(400).json({ error: error.message }); }
     });
 
@@ -725,6 +994,8 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
         const target = userStore.listUsers().find((user) => user.id === req.params.id);
         if (target && !target.isPrimaryAdmin) recordTeamActivity(req, 'account.removed', `Removed ${target.username} from the workspace`, { username: target.username });
         userStore.deleteUser(req.params.id);
+        try { passkeyStore.removeUser(req.params.id); }
+        catch (error) { logger.log('ERROR', `The account was removed but its passkeys could not be deleted: ${error.message}`); }
         logger.info(`Deleted sub-user ${req.params.id}`);
         res.json({ success: true });
       } catch (err) {
