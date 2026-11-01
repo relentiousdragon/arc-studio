@@ -3,7 +3,7 @@ import { ArrowLeft, Check, Moon, Sun, X } from 'lucide-react';
 import { ModalNodeBuilder } from '../nodes/ModalNodeBuilder.jsx';
 import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
-import { useStudioEscape } from './useStudioEscape.js';
+import { notifyStudioSwitchCancelled, useStudioEscape, useStudioSwitchClose } from './useStudioEscape.js';
 //
 function validateModal(modal) {
   const title = String(modal?.title || '').trim();
@@ -74,6 +74,7 @@ export function PopupModalStudioView({ graphName, nodeName, theme = 'dark', moda
   const hasChanges = JSON.stringify(modal) !== initialDraft.current;
   const requestClose = () => hasChanges ? setDiscardOpen(true) : onClose?.();
   useStudioEscape(requestClose);
+  useStudioSwitchClose('popup-modal', requestClose);
   useEffect(() => setPreviewTheme(theme === 'light' ? 'light' : 'dark'), [theme]);
 
   return <section className="popup-modal-studio" aria-label="Popup Modal Builder">
@@ -127,6 +128,6 @@ export function PopupModalStudioView({ graphName, nodeName, theme = 'dark', moda
         </div>
       </aside>
     </div>
-    <Modal isOpen={discardOpen} onClose={() => setDiscardOpen(false)} title="Discard modal edits?" subtitle="Your changes have not been applied to the graph." footer={<><Button variant="secondary" onClick={() => setDiscardOpen(false)}>Keep editing</Button><Button variant="danger" onClick={onClose}>Discard</Button></>}><p className="close-graph-copy">Apply the modal to keep these edits in this graph.</p></Modal>
+    <Modal isOpen={discardOpen} onClose={() => { setDiscardOpen(false); notifyStudioSwitchCancelled(); }} title="Discard modal edits?" subtitle="Your changes have not been applied to the graph." footer={<><Button variant="secondary" onClick={() => { setDiscardOpen(false); notifyStudioSwitchCancelled(); }}>Keep editing</Button><Button variant="danger" onClick={onClose}>Discard</Button></>}><p className="close-graph-copy">Apply the modal to keep these edits in this graph.</p></Modal>
   </section>;
 }
