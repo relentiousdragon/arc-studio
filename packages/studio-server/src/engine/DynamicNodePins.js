@@ -1,5 +1,5 @@
 import { flattenSlashParameters, isValidSlashName } from './SlashCommandOptions.js';
-import { functionArgumentPinId, functionInputPinType, getFunctionInputArguments } from './FunctionGraphContract.js';
+import { functionArgumentPinId, functionInputPinType, functionReturnInputPinId, getFunctionInputArguments, getFunctionReturnValues } from './FunctionGraphContract.js';
 //
 export const NODE_SCHEMA_VERSION = 2;
 export const MAX_NODE_ARGUMENTS = 50;
@@ -86,6 +86,17 @@ export function resolveDynamicNodePins(definition, node, connections = []) {
       ...(argument.valueType.endsWith('_id') || argument.valueType === 'interaction_token' ? { semanticType: argument.valueType } : {})
     }));
     return { outputs: [...(definition.outputs || []).filter((pin) => pin.id === 'exec'), ...outputs] };
+  }
+  if (rule.kind === 'function-return-values') {
+    if (!Array.isArray(node.data?.returns)) return null;
+    const inputs = getFunctionReturnValues(node).map((value) => ({
+      id: functionReturnInputPinId(value),
+      label: value.name?.trim() || `Output ${value.index + 1}`,
+      type: functionInputPinType(value),
+      defaultValue: value.defaultValue,
+      ...(value.valueType.endsWith('_id') || value.valueType === 'interaction_token' ? { semanticType: value.valueType } : {})
+    }));
+    return { inputs: [...(definition.inputs || []).filter((pin) => pin.id === 'exec'), ...inputs] };
   }
   if (rule.kind === 'connected-output-arguments') {
     const highest = connections.reduce((value, connection) => connection.sourceNodeId === node.id
