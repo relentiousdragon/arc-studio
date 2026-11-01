@@ -35,6 +35,7 @@ export function SelectionContextMenu() {
   useEffect(() => {
     const onContextMenu = (event) => {
       if (event.altKey) return;
+      if (event.target instanceof Element && event.target.closest('[data-node-card-id]')) return;
       const text = readSelectedText(event.target);
       if (!text) return;
       event.preventDefault();
