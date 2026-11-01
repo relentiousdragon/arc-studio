@@ -23,7 +23,7 @@ export default {
     },
     {
       "type": "hint",
-      "text": "Five-field cron. Runs once per matching minute; use an IANA time zone."
+      "text": "Five-field cron. Runs once per matching minute, use an IANA time zone."
     }
   ],
   "inputs": [],
