@@ -182,8 +182,36 @@ export function applyTemplateTransforms(value, transforms = []) {
 
 export function getTemplateReferences(source) {
   const refs = new Set(); const parts = splitTemplatePipeline(source); const expr = parts[0] || '';
-  const matches = expr.matchAll(/(^|[^\w$.])([A-Za-z_$][A-Za-z0-9_$-]*)\b(?!\s*\()/g);
-  for (const match of matches) if (!['true', 'false', 'null', 'undefined', 'pi', 'tau', 'e'].includes(match[2].toLowerCase())) refs.add(match[2]);
+  const constants = new Set(['true', 'false', 'null', 'undefined', 'pi', 'tau', 'e']);
+  let quote = '';
+  let escaped = false;
+  for (let index = 0; index < expr.length;) {
+    const character = expr[index];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === quote) quote = '';
+      index += 1;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      index += 1;
+      continue;
+    }
+    const identifier = /^[A-Za-z_$][A-Za-z0-9_$-]*/.exec(expr.slice(index));
+    if (!identifier) {
+      index += 1;
+      continue;
+    }
+    const name = identifier[0];
+    let next = index + name.length;
+    while (/\s/.test(expr[next] || '')) next += 1;
+    let previous = index - 1;
+    while (previous >= 0 && /\s/.test(expr[previous])) previous -= 1;
+    if (expr[previous] !== '.' && expr[next] !== '(' && !constants.has(name.toLowerCase())) refs.add(name);
+    index += name.length;
+  }
   return [...refs];
 }
 
