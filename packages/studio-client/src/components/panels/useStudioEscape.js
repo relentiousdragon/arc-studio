@@ -19,3 +19,20 @@ export function useStudioEscape(onEscape) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 }
+
+export function useStudioSwitchClose(kind, onRequestClose) {
+  const callbackRef = useRef(onRequestClose);
+  callbackRef.current = onRequestClose;
+
+  useEffect(() => {
+    const requestClose = (event) => {
+      if (event.detail?.kind === kind) callbackRef.current?.();
+    };
+    window.addEventListener('arc:studio-request-close', requestClose);
+    return () => window.removeEventListener('arc:studio-request-close', requestClose);
+  }, [kind]);
+}
+
+export function notifyStudioSwitchCancelled() {
+  window.dispatchEvent(new Event('arc:studio-switch-cancelled'));
+}
