@@ -366,12 +366,16 @@ button:disabled { cursor: not-allowed !important; opacity: .48; }
 .settings-update-explainer { display: grid !important; justify-content: initial !important; align-items: start !important; gap: 5px !important; padding: 9px 10px !important; border: 1px solid var(--line-soft); background: var(--panel-raised); line-height: 1.5; }
 .settings-update-explainer span { font-size: calc((9px) * var(--arc-font-scale, 1)); }
 .settings-about-section .settings-about-credit-name { color: var(--accent); }
-.settings-about-license { display: flex; align-items: center; gap: 8px; margin-top: 1px; padding: 9px; border: 1px solid var(--line-soft); border-radius: 6px; color: var(--accent); background: var(--panel); }
+.settings-about-license.settings-about-discord { width: 100%; font: inherit; text-align: left; cursor: pointer; }
+.settings-about-license.settings-about-discord > svg:first-child { color: var(--accent); }
+.settings-about-license .settings-about-card-link { display: grid; place-items: center; width: 26px; height: 26px; margin-left: auto; border-radius: 4px; color: var(--muted); }
+.settings-about-license:hover .settings-about-card-link { color: var(--text); }
+.settings-about-license { display: flex; align-items: center; gap: 8px; margin-top: 1px; padding: 9px; border: 1px solid var(--line-soft); border-radius: 6px; color: var(--accent); background: var(--panel); text-decoration: none; transition: border-color .16s ease, background .16s ease; }
+.settings-about-license:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line-soft)); background: var(--panel-raised); }
 .settings-about-license > div { display: grid; gap: 2px; }
 .settings-about-license strong { color: var(--text); font-size: calc((9px) * var(--arc-font-scale, 1)); font-weight: 600; }
 .settings-about-license span { color: var(--muted); font-size: calc((8px) * var(--arc-font-scale, 1)); }
-.settings-about-license a { display: grid; place-items: center; width: 26px; height: 26px; margin-left: auto; border-radius: 4px; color: var(--muted); }
-.settings-about-license a:hover { color: var(--text); background: var(--panel-hover); }
+
 .project-switcher-copy { min-width: 0; display: grid; gap: 2px; }
 .project-switcher-copy strong { overflow: hidden; color: inherit; text-overflow: ellipsis; white-space: nowrap; font-size: calc((10px) * var(--arc-font-scale, 1)); font-weight: 600; }
 .project-switcher-copy small { color: var(--muted); font-size: calc((8px) * var(--arc-font-scale, 1)); }
