@@ -3,7 +3,7 @@ import { ArrowLeft, Check, ChevronDown, ChevronUp, Plus, Redo2, Trash2, Undo2 } 
 import { AnimatedCheckbox, AnimatedDropdown } from '../ui/CustomControls.jsx';
 import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
-import { useStudioEscape } from './useStudioEscape.js';
+import { notifyStudioSwitchCancelled, useStudioEscape, useStudioSwitchClose } from './useStudioEscape.js';
 import { validateSlashCommandOptions } from '../../../../studio-server/src/engine/SlashCommandOptions.js';
 
 const MAX_OPTIONS = 25;
@@ -75,6 +75,7 @@ export function SlashCommandStudioView({
   const issue = validateSlashCommandOptions(draft, commandName)[0] || '';
   const requestClose = () => changed ? setDiscardOpen(true) : onClose?.();
   useStudioEscape(requestClose);
+  useStudioSwitchClose('arguments', requestClose);
 
   if (draft.length) {
     const seen = new Set();
@@ -239,6 +240,6 @@ export function SlashCommandStudioView({
       </section>
       {issue && <p className="slash-command-studio-error" role="alert">{issue}</p>}
     </div>
-    <Modal isOpen={discardOpen} onClose={() => setDiscardOpen(false)} title="Discard option changes?" subtitle="These edits have not been applied to the graph." footer={<><Button variant="secondary" onClick={() => setDiscardOpen(false)}>Keep editing</Button><Button variant="danger" onClick={onClose}>Discard changes</Button></>}><p className="close-graph-copy">The command will keep its current options until you choose Apply.</p></Modal>
+    <Modal isOpen={discardOpen} onClose={() => { setDiscardOpen(false); notifyStudioSwitchCancelled(); }} title="Discard option changes?" subtitle="These edits have not been applied to the graph." footer={<><Button variant="secondary" onClick={() => { setDiscardOpen(false); notifyStudioSwitchCancelled(); }}>Keep editing</Button><Button variant="danger" onClick={onClose}>Discard changes</Button></>}><p className="close-graph-copy">The command will keep its current options until you choose Apply.</p></Modal>
   </section>;
 }
