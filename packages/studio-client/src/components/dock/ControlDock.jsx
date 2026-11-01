@@ -89,6 +89,7 @@ export function ControlDock({
   const logContainerRef = useRef(null);
   const [filterLevel, setFilterLevel] = useState('ALL');
   const [searchQuery, setSearchQuery] = useState('');
+  const [showDebugLogs, setShowDebugLogs] = useState(() => readAppStorage('arc_console_show_debug_logs') === 'true');
   const [logFiles, setLogFiles] = useState([]);
   const [selectedFile, setSelectedFile] = useState('');
   const [fileContent, setFileContent] = useState(null);
@@ -510,9 +511,10 @@ export function ControlDock({
 
   const filteredLogs = useMemo(() => logs.filter((log) => {
     const levelMatches = filterLevel === 'ALL' || log.level === filterLevel;
+    const debugMatches = showDebugLogs || String(log.level).toUpperCase() !== 'DEBUG';
     const queryMatches = !searchQuery || `${log.message} ${log.level}`.toLowerCase().includes(searchQuery.toLowerCase());
-    return levelMatches && queryMatches;
-  }), [logs, filterLevel, searchQuery]);
+    return levelMatches && debugMatches && queryMatches;
+  }), [logs, filterLevel, searchQuery, showDebugLogs]);
 
   const openTab = (tab) => { setActiveTab(tab); setIsOpen(true); };
 
@@ -868,6 +870,7 @@ export function ControlDock({
     <div className="console-toolbar">
       <div className="console-filters">{['ALL', 'INFO', 'GATEWAY', 'EXECUTION', 'MOCK', 'WARN', 'ERROR'].map((level) => <button key={level} className={filterLevel === level ? 'is-active' : ''} onClick={() => setFilterLevel(level)}>{level}</button>)}</div>
       <div className="console-actions">
+        <label className="console-debug-toggle"><input type="checkbox" checked={showDebugLogs} onChange={(event) => { const enabled = event.target.checked; setShowDebugLogs(enabled); writeAppStorage('arc_console_show_debug_logs', String(enabled)); }} />Debug logs</label>
         <label className="console-search"><Search size={14} /><input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Filter output" aria-label="Filter console" /></label>
         <button className="dock-icon-button" onClick={fetchLogFiles} title="Browse saved logs" aria-label="Browse saved logs"><Archive size={15} /></button>
         <button className="dock-icon-button" onClick={consolePopupRoot ? closeConsolePopup : openConsolePopup} title={consolePopupRoot ? 'Return console to the editor' : 'Pop out console'} aria-label={consolePopupRoot ? 'Return console to the editor' : 'Pop out console'}><PictureInPicture2 size={15} /></button>
