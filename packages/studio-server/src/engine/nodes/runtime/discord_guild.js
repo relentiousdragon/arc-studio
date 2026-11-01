@@ -1,7 +1,10 @@
 import { evaluateDataNode } from './data.js';
+import { ChannelFlags } from 'chezcord';
 
 const GUILD_NODE_TYPES = new Set([
   'action_fetch_user', 'action_fetch_guild', 'action_fetch_member',
+  'action_get_guild_member_permissions', 'action_get_guild_role_permissions',
+  'action_get_channel_member_permissions', 'action_get_channel_role_permissions',
   'action_fetch_channel', 'action_fetch_channel_messages', 'action_fetch_message',
   'action_create_thread', 'action_start_thread_from_message',
   'action_create_channel', 'action_edit_channel', 'action_delete_channel',
@@ -67,6 +70,52 @@ export async function executeDiscordGuildNode(node, {
           log(`[Get Server Member] Fetched member ${user.id || userId} in server ${guildId}.`);
           setOutput('success', true);
           return true;
+        } else if (node.type === 'action_get_guild_member_permissions') {
+          const guildId = String(resolveInput('guild_id', node.data?.guild_id || '')).trim();
+          const userId = String(resolveInput('user_id', node.data?.user_id || '')).trim();
+          if (!guildId || !userId) throw new TypeError('Get Guild Member Permissions needs a Server ID and User ID.');
+          if (typeof rest?.getGuildMemberPermissions !== 'function') throw new Error('Get Guild Member Permissions requires a connected Discord REST client.');
+          const result = await rest.getGuildMemberPermissions(guildId, userId);
+          if (!result || typeof result.permissions !== 'string') throw new Error('Discord did not return a valid permissions bitfield.');
+          setOutput('permissions', result.permissions);
+          log(`[Get Guild Member Permissions] Fetched permissions for member ${userId} in server ${guildId}.`);
+          setOutput('success', true);
+          return true;
+        } else if (node.type === 'action_get_guild_role_permissions') {
+          const guildId = String(resolveInput('guild_id', node.data?.guild_id || '')).trim();
+          const roleId = String(resolveInput('role_id', node.data?.role_id || '')).trim();
+          if (!guildId || !roleId) throw new TypeError('Get Guild Role Permissions needs a Server ID and Role ID.');
+          if (typeof rest?.getGuildRolePermissions !== 'function') throw new Error('Get Guild Role Permissions requires a connected Discord REST client.');
+          const result = await rest.getGuildRolePermissions(guildId, roleId);
+          if (!result || typeof result.permissions !== 'string') throw new Error('Discord did not return a valid permissions bitfield.');
+          setOutput('permissions', result.permissions);
+          log(`[Get Guild Role Permissions] Fetched permissions for role ${roleId} in server ${guildId}.`);
+          setOutput('success', true);
+          return true;
+        } else if (node.type === 'action_get_channel_member_permissions') {
+          const channelId = String(resolveInput('channel_id', node.data?.channel_id || '')).trim();
+          const userId = String(resolveInput('user_id', node.data?.user_id || '')).trim();
+          const implicit = Boolean(resolveInput('implicit', node.data?.implicit ?? true));
+          if (!channelId || !userId) throw new TypeError('Get Channel Member Permissions needs a Channel ID and User ID.');
+          if (typeof rest?.getChannelMemberPermissions !== 'function') throw new Error('Get Channel Member Permissions requires a connected Discord REST client.');
+          const result = await rest.getChannelMemberPermissions(channelId, userId, { implicit });
+          if (!result || typeof result.permissions !== 'string') throw new Error('Discord did not return a valid permissions bitfield.');
+          setOutput('permissions', result.permissions);
+          log(`[Get Channel Member Permissions] Fetched permissions for member ${userId} in channel ${channelId}.`);
+          setOutput('success', true);
+          return true;
+        } else if (node.type === 'action_get_channel_role_permissions') {
+          const channelId = String(resolveInput('channel_id', node.data?.channel_id || '')).trim();
+          const roleId = String(resolveInput('role_id', node.data?.role_id || '')).trim();
+          const implicit = Boolean(resolveInput('implicit', node.data?.implicit ?? true));
+          if (!channelId || !roleId) throw new TypeError('Get Channel Role Permissions needs a Channel ID and Role ID.');
+          if (typeof rest?.getChannelRolePermissions !== 'function') throw new Error('Get Channel Role Permissions requires a connected Discord REST client.');
+          const result = await rest.getChannelRolePermissions(channelId, roleId, { implicit });
+          if (!result || typeof result.permissions !== 'string') throw new Error('Discord did not return a valid permissions bitfield.');
+          setOutput('permissions', result.permissions);
+          log(`[Get Channel Role Permissions] Fetched permissions for role ${roleId} in channel ${channelId}.`);
+          setOutput('success', true);
+          return true;
         } else if (node.type === 'action_fetch_channel') {
           const channelId = String(resolveInput('channel_id', node.data?.channel_id || '')).trim();
           if (!channelId) throw new TypeError('Get Channel Info needs a Channel ID.');
@@ -76,7 +125,9 @@ export async function executeDiscordGuildNode(node, {
           for (const [pinId, value] of Object.entries({
             channel, channel_id_out: channel.id || channelId, name: channel.name || '', type: Number(channel.type) || 0,
             guild_id: channel.guild_id || '', parent_id: channel.parent_id || '', topic: channel.topic || '',
-            nsfw: Boolean(channel.nsfw), last_message_id: channel.last_message_id || ''
+            nsfw: Boolean(channel.nsfw), last_message_id: channel.last_message_id || '',
+            flags: Number(channel.flags) || 0,
+            obfuscated: ((Number(channel.flags) || 0) & ChannelFlags.CHANNEL_OBFUSCATED) !== 0
           })) setOutput(pinId, value);
           log(`[Get Channel Info] Fetched channel ${channel.id || channelId}.`);
           setOutput('success', true);
