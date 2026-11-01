@@ -10,6 +10,7 @@ export class Client extends EventEmitter {
   /**
    * @param {object} [options]
    * @param {number} [options.intents]
+  * @param {number} [options.capabilities]
    * @param {string} [options.token]
    */
   constructor(options = {}) {
@@ -21,6 +22,7 @@ export class Client extends EventEmitter {
       GatewayIntents.MESSAGE_CONTENT |
       GatewayIntents.GUILD_EMOJIS_AND_STICKERS
     );
+    this.capabilities = options.capabilities ?? 0;
 
     this.rest = new RESTClient({ token: this.token });
     /** @type {GatewayShard|null} */
@@ -45,7 +47,8 @@ export class Client extends EventEmitter {
 
     const shard = new GatewayShard({
       token: this.token,
-      intents: this.intents
+      intents: this.intents,
+      capabilities: this.capabilities
     });
     this.ws = shard;
     const listen = (eventName, listener) => {
