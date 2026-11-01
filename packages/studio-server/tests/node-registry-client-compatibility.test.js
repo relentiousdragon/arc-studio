@@ -79,7 +79,9 @@ test('declarative editor controls have valid metadata and supply node defaults',
   assert.deepEqual(functionInputData.arguments.map(({ name, valueType, optional, defaultValue }) => ({ name, valueType, optional, defaultValue })), [
     { name: 'Input', valueType: 'string', optional: false, defaultValue: '' }
   ]);
-  assert.deepEqual(createDefaultNodeData('function_return'), { valueType: 'number' });
+  assert.deepEqual(createDefaultNodeData('function_return'), {
+    returns: [{ returnId: 'output_1', name: 'Result', valueType: 'number', defaultValue: 0 }]
+  });
   assert.deepEqual(createDefaultNodeData('function_math'), { operation: 'add' });
   assert.deepEqual(createDefaultNodeData('build_embed'), { blocks: [], components: [] });
   assert.deepEqual(createDefaultNodeData('build_modal'), { modal: { customId: 'arc_modal', title: 'Tell us more', components: [{ type: 'text', customId: 'details', label: 'Details', style: 2, required: true, minLength: 1, maxLength: 1000 }] } });
