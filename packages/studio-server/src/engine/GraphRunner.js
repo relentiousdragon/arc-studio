@@ -1,6 +1,6 @@
 import { NodeDefinitions } from './NodeRegistry.js';
 import { getNodeArgumentPins, resolveDynamicNodePins } from './DynamicNodePins.js';
-import { defaultValueForFunctionType, functionArgumentPinId, getFunctionGraphArguments, getFunctionInputArguments } from './FunctionGraphContract.js';
+import { defaultValueForFunctionType, functionArgumentPinId, functionInputPinType, functionReturnInputPinId, functionReturnOutputPinId, getFunctionGraphArguments, getFunctionGraphReturnValues, getFunctionInputArguments, getFunctionReturnValues } from './FunctionGraphContract.js';
 import { flattenSlashParameters, slashOptionPinId } from './SlashCommandOptions.js';
 import { evaluateDataNode } from './nodes/runtime/data.js';
 import { evaluateLogicNode } from './nodes/runtime/logic.js';
@@ -17,12 +17,25 @@ import { getTemplateReferences, renderTextTemplate } from './TemplateExpressions
 //
 const DISCORD_GUILD_NODE_TYPES = new Set([
   'action_fetch_user', 'action_fetch_guild', 'action_fetch_member',
+  'action_get_guild_member_permissions', 'action_get_guild_role_permissions',
+  'action_get_channel_member_permissions', 'action_get_channel_role_permissions',
   'action_fetch_channel', 'action_fetch_channel_messages', 'action_fetch_message',
   'action_create_thread', 'action_start_thread_from_message',
   'action_create_channel', 'action_edit_channel', 'action_delete_channel',
   'action_create_role', 'action_member_role', 'action_moderate_member',
   'action_voice_channel_status', 'action_voice_state'
 ]);
+
+function resolveFunctionReturnResult(returnNode, resolveInput) {
+  const returnValues = getFunctionReturnValues(returnNode);
+  if (returnValues.length === 1 && returnValues[0].legacy) {
+    return resolveInput(returnNode, 'value', returnValues[0].defaultValue);
+  }
+  return Object.fromEntries(returnValues.map((value) => [
+    value.returnId,
+    resolveInput(returnNode, functionReturnInputPinId(value), value.defaultValue)
+  ]));
+}
 const DISCORD_INTERACTION_NODE_TYPES = new Set([
   'action_reply_interaction', 'action_defer_reply', 'action_defer_update',
   'action_edit_interaction_reply', 'action_show_modal', 'action_respond_autocomplete'
@@ -98,6 +111,9 @@ export class GraphRunner {
     const executedNodeIds = [];
     const traces = [];
     const debugSteps = [];
+    if (eventName === 'FUNCTION_CALL' && nodes.filter((node) => node.type === 'function_return').length > 1) {
+      return { executedNodeIds, traces, debugSteps, result: undefined, error: 'A function graph can have only one Return Value node.' };
+    }
     const repeatLoopStack = [];
     let functionReturnValue;
     const recordExecutedNode = (nodeId) => {
@@ -105,6 +121,7 @@ export class GraphRunner {
       if (executedNodeIds.length > 500) executedNodeIds.shift();
     };
     const dataCache = new Map(); // `${nodeId}:${pinId}` -> value
+    const functionCallResultCache = new Map();
     const declaredGraphVariables = Array.isArray(graph.variables) ? graph.variables.filter((variable) => variable && typeof variable.id === 'string') : [];
     const inferReferencedVariableType = (node, seen = new Set()) => {
       if (!node || seen.has(node.id)) return null;
@@ -293,7 +310,7 @@ export class GraphRunner {
       }
       return false;
     };
-    const log = (msg) => {
+    const log = (msg, level = 'EXECUTION') => {
       msg = redactSecretText(msg);
       const loop = repeatLoopStack.at(-1);
       if (loop && loop.iteration > 1) {
@@ -305,7 +322,7 @@ export class GraphRunner {
       }
       traces.push(msg);
       if (traces.length > 2000) traces.shift();
-      if (context.log) context.log(msg);
+      if (context.log) context.log(msg, level);
     };
 
     const debugValue = (value, pinId = '') => {
@@ -481,6 +498,12 @@ export class GraphRunner {
         if (dataCache.has(cacheKey)) return dataCache.get(cacheKey);
         const targetGraph = context.resolveFunctionGraph?.(sourceNode.data?.graphId);
         if (!targetGraph) return undefined;
+        if ((targetGraph.nodes || []).filter((node) => node.type === 'function_return').length > 1) throw new Error('A function graph can have only one Return Value node.');
+        const returnValue = getFunctionGraphReturnValues(targetGraph).find((item) => functionReturnOutputPinId(item) === pinId);
+        if (!returnValue) return undefined;
+        let functionResult;
+        if (functionCallResultCache.has(sourceNode.id)) functionResult = functionCallResultCache.get(sourceNode.id);
+        else {
         const parameters = getFunctionGraphArguments(targetGraph);
         const missingParameter = parameters.find((parameter) => parameter.optional === false
           && !connections.some((wire) => wire.targetNodeId === sourceNode.id && wire.targetPinId === functionArgumentPinId(parameter)));
@@ -489,7 +512,7 @@ export class GraphRunner {
           const value = resolveDataInput(sourceNode, functionArgumentPinId(parameter), parameter.defaultValue ?? defaultValueForFunctionType(parameter.valueType), seen);
           return [parameter.paramId, value];
         }));
-        const result = evaluateFunctionGraph(targetGraph, argumentValues, {
+        functionResult = evaluateFunctionGraph(targetGraph, argumentValues, {
           ...context,
           resolveFunctionVariable: (variableId, scope, functionGraph) => {
             if (scope === 'project') return getVariableValue(variableId, 'project');
@@ -502,6 +525,9 @@ export class GraphRunner {
               : state.get(variableId);
           }
         }, []);
+        functionCallResultCache.set(sourceNode.id, functionResult);
+        }
+        const result = returnValue.legacy ? functionResult : functionResult?.[returnValue.returnId];
         dataCache.set(cacheKey, result);
         return result;
       }
@@ -1088,10 +1114,12 @@ export class GraphRunner {
           }
           currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
         } else if (targetNode.type === 'function_return') {
-          const returnValue = resolveDataInput(targetNode, 'value', defaultValueForType(targetNode.data?.valueType));
-          functionReturnValue = returnValue;
-          dataCache.set(`${targetNode.id}:value`, returnValue);
-          log('[Function Return] Returned value.');
+          functionReturnValue = resolveFunctionReturnResult(targetNode, resolveDataInput);
+          for (const returnValue of getFunctionReturnValues(targetNode)) {
+            const value = returnValue.legacy ? functionReturnValue : functionReturnValue?.[returnValue.returnId];
+            dataCache.set(`${targetNode.id}:${functionReturnInputPinId(returnValue)}`, value);
+          }
+          log(`[Function Return] Returned ${getFunctionReturnValues(targetNode).length} value${getFunctionReturnValues(targetNode).length === 1 ? '' : 's'}.`);
         } else if (targetNode.type === 'function_call') {
           const targetGraph = context.resolveFunctionGraph?.(targetNode.data?.graphId);
           if (!targetGraph) throw new Error('Call Function node requires a valid function graph selected.');
@@ -1118,7 +1146,10 @@ export class GraphRunner {
           });
           if (nestedResult.error) throw Object.assign(new Error(nestedResult.error), context.signal?.aborted ? { name: 'AbortError' } : {});
           if (Array.isArray(nestedResult.executedNodeIds)) executedNodeIds.push(...nestedResult.executedNodeIds);
-          dataCache.set(`${targetNode.id}:result`, nestedResult.result);
+          for (const returnValue of getFunctionGraphReturnValues(targetGraph)) {
+            const value = returnValue.legacy ? nestedResult.result : nestedResult.result?.[returnValue.returnId];
+            dataCache.set(`${targetNode.id}:${functionReturnOutputPinId(returnValue)}`, value);
+          }
           currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
         } else if (targetNode.type === 'execute_graph') {
           const targetGraph = context.resolveFunctionGraph?.(targetNode.data?.graphId);
@@ -1240,7 +1271,18 @@ export class GraphRunner {
             setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value)
           });
           currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-        } else if (targetNode.type === 'action_set_custom_status' || targetNode.type === 'action_set_presence') {
+        } else if (['action_console_log', 'action_console_warn', 'action_console_error'].includes(targetNode.type)) {
+          const { executeConsoleLogNode } = await import('./nodes/runtime/console_log.js');
+          executeConsoleLogNode(targetNode, {
+            resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
+            log
+          });
+          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+        } else if (targetNode.type === 'action_set_custom_status') {
+          log('Set Custom Status moved to Set Presence. Configure Custom Status there, then delete this node.', 'WARN');
+          dataCache.set(`${targetNode.id}:success`, false);
+          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+        } else if (targetNode.type === 'action_set_presence') {
           const { executePresenceNode } = await import('./nodes/runtime/discord_presence.js');
           executePresenceNode(targetNode, {
             resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
@@ -1296,7 +1338,7 @@ export class GraphRunner {
     if (eventName === 'FUNCTION_CALL' && functionReturnValue === undefined) {
       const returnNode = nodes.find((node) => node.type === 'function_return');
       if (returnNode) {
-        functionReturnValue = resolveDataInput(returnNode, 'value', defaultValueForType(returnNode.data?.valueType));
+        functionReturnValue = resolveFunctionReturnResult(returnNode, resolveDataInput);
         recordExecutedNode(returnNode.id);
       }
     }
@@ -1308,9 +1350,11 @@ export class GraphRunner {
 function evaluateFunctionGraph(graph, argumentValues, context, callStack) {
   if (!graph || callStack.length >= 24 || callStack.includes(graph.id)) return undefined;
   const nodes = graph.nodes || [];
+  if (nodes.filter((node) => node.type === 'function_return').length > 1) throw new Error('A function graph can have only one Return Value node.');
   const connections = graph.connections || [];
   const nextStack = [...callStack, graph.id];
   const cache = new Map();
+  const functionCallResultCache = new Map();
   const findNode = (id) => nodes.find((node) => node.id === id);
   const inputWire = (nodeId, pinId) => connections.find((wire) => wire.targetNodeId === nodeId && wire.targetPinId === pinId);
 
@@ -1377,6 +1421,11 @@ function evaluateFunctionGraph(graph, argumentValues, context, callStack) {
     } else if (node.type === 'function_call') {
       const nestedGraph = context.resolveFunctionGraph?.(node.data?.graphId);
       if (nestedGraph) {
+        const returnValue = getFunctionGraphReturnValues(nestedGraph).find((item) => functionReturnOutputPinId(item) === pinId);
+        if (!returnValue) return undefined;
+        let functionResult;
+        if (functionCallResultCache.has(node.id)) functionResult = functionCallResultCache.get(node.id);
+        else {
         const nestedParams = getFunctionGraphArguments(nestedGraph);
         const missingParameter = nestedParams.find((parameter) => parameter.optional === false
           && !inputWire(node.id, functionArgumentPinId(parameter)));
@@ -1384,7 +1433,10 @@ function evaluateFunctionGraph(graph, argumentValues, context, callStack) {
         const nestedValues = new Map(nestedParams.map((parameter) => {
           return [parameter.paramId, resolveInput(node, functionArgumentPinId(parameter), parameter.defaultValue ?? defaultValueForFunctionType(parameter.valueType))];
         }));
-        result = evaluateFunctionGraph(nestedGraph, nestedValues, context, nextStack);
+        functionResult = evaluateFunctionGraph(nestedGraph, nestedValues, context, nextStack);
+        functionCallResultCache.set(node.id, functionResult);
+        }
+        result = returnValue.legacy ? functionResult : functionResult?.[returnValue.returnId];
       }
     }
     cache.set(key, result);
@@ -1401,7 +1453,7 @@ function evaluateFunctionGraph(graph, argumentValues, context, callStack) {
   }
 
   const returnNode = nodes.find((node) => node.type === 'function_return');
-  return returnNode ? resolveInput(returnNode, 'value', defaultValueForType(returnNode.data?.valueType)) : undefined;
+  return returnNode ? resolveFunctionReturnResult(returnNode, resolveInput) : undefined;
 }
 
 function defaultValueForType(type) {
