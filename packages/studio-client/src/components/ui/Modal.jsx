@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ChevronDown, X } from 'lucide-react';
 //
 export function Modal({ isOpen, onClose, onConfirm, title, subtitle, icon: Icon, iconClassName = '', headerMeta, children, footer, maxWidth, panelClassName = '', shake = false, showScrollCue = false }) {
@@ -86,7 +87,7 @@ export function Modal({ isOpen, onClose, onConfirm, title, subtitle, icon: Icon,
 
   if (!isOpen) return null;
   const widthClass = String(maxWidth || '').includes('2xl') ? 'modal-wide' : String(maxWidth || '').includes('lg') ? 'modal-medium' : '';
-  return <div className="dialog-scrim" onMouseDown={(event) => event.target === event.currentTarget && onClose?.()}>
+  const modal = <div className="dialog-scrim" onMouseDown={(event) => event.target === event.currentTarget && onClose?.()}>
     <section ref={dialogRef} className={`modal-panel ${widthClass} ${panelClassName} ${shake ? 'is-shaking' : ''}`} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1}>
       <header className="modal-header">
         {Icon && <div className={`modal-title-icon ${iconClassName}`}><Icon size={17} /></div>}
@@ -99,4 +100,6 @@ export function Modal({ isOpen, onClose, onConfirm, title, subtitle, icon: Icon,
       {footer && <footer className="modal-footer">{footer}</footer>}
     </section>
   </div>;
+  const modalRoot = typeof document === 'undefined' ? null : document.querySelector('.app-root') || document.body;
+  return modalRoot ? createPortal(modal, modalRoot) : modal;
 }
