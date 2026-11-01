@@ -104,6 +104,9 @@ import node_wait_until_time from './logic-flow/wait_until_time.js';
 import node_parallel from './logic-flow/parallel.js';
 import node_parallel_join from './logic-flow/parallel_join.js';
 import node_utility_wire_extender from './logic-flow/utility_wire_extender.js';
+import node_action_console_log from './logic-flow/action_console_log.js';
+import node_action_console_warn from './logic-flow/action_console_warn.js';
+import node_action_console_error from './logic-flow/action_console_error.js';
 // Discord Actions
 import node_action_send_message from './discord-actions/action_send_message.js';
 import node_action_edit_message from './discord-actions/action_edit_message.js';
@@ -119,6 +122,10 @@ import node_action_set_custom_status from './discord-actions/action_set_custom_s
 import node_action_fetch_user from './discord-actions/action_fetch_user.js';
 import node_action_fetch_guild from './discord-actions/action_fetch_guild.js';
 import node_action_fetch_member from './discord-actions/action_fetch_member.js';
+import node_action_get_guild_member_permissions from './discord-actions/action_get_guild_member_permissions.js';
+import node_action_get_guild_role_permissions from './discord-actions/action_get_guild_role_permissions.js';
+import node_action_get_channel_member_permissions from './discord-actions/action_get_channel_member_permissions.js';
+import node_action_get_channel_role_permissions from './discord-actions/action_get_channel_role_permissions.js';
 import node_action_fetch_channel from './discord-actions/action_fetch_channel.js';
 import node_action_fetch_channel_messages from './discord-actions/action_fetch_channel_messages.js';
 import node_action_fetch_message from './discord-actions/action_fetch_message.js';
@@ -167,6 +174,7 @@ import node_data_text_titlecase from './values-data/data_text_titlecase.js';
 import node_data_text_trim from './values-data/data_text_trim.js';
 import node_data_format_time from './values-data/data_format_time.js';
 import node_data_to_iso_time from './values-data/data_to_iso_time.js';
+import node_data_current_timestamp from './values-data/data_current_timestamp.js';
 import node_data_permission_overwrites from './values-data/data_permission_overwrites.js';
 import node_format_text from './values-data/format_text.js';
 import node_build_embed from './values-data/build_embed.js';
@@ -289,6 +297,9 @@ export const nodeDefinitions = [
   node_parallel,
   node_parallel_join,
   node_utility_wire_extender,
+  node_action_console_log,
+  node_action_console_warn,
+  node_action_console_error,
   node_action_send_message,
   node_action_edit_message,
   node_action_edit_components,
@@ -303,6 +314,10 @@ export const nodeDefinitions = [
   node_action_fetch_user,
   node_action_fetch_guild,
   node_action_fetch_member,
+  node_action_get_guild_member_permissions,
+  node_action_get_guild_role_permissions,
+  node_action_get_channel_member_permissions,
+  node_action_get_channel_role_permissions,
   node_action_fetch_channel,
   node_action_fetch_channel_messages,
   node_action_fetch_message,
@@ -350,6 +365,7 @@ export const nodeDefinitions = [
   node_data_text_trim,
   node_data_format_time,
   node_data_to_iso_time,
+  node_data_current_timestamp,
   node_data_permission_overwrites,
   node_format_text,
   node_build_embed,
