@@ -368,11 +368,11 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
           : appUpdate ? <a href={appUpdate.url} target="_blank" rel="noreferrer" onClick={openExternal}><Download size={14} /><span>{`${appUpdate.kind === 'major' ? 'Major' : appUpdate.kind === 'feature' ? 'Feature' : 'Maintenance'} update · v${appUpdate.version}`}</span><ExternalLink size={12} /></a>
           : !serverUpdate && !stableUpdateReady && !downloadedUpdateReady && <div className="settings-about-credit"><strong>{networkOnline ? 'No updates available' : 'Update check when online'}</strong></div>}
       </section>
-      <section className="settings-about-section" aria-labelledby="about-local-data-heading">
-        <h3 id="about-local-data-heading">Local data</h3>
         {!desktopMode
           ? <></>
           : <>
+                <section className="settings-about-section" aria-labelledby="about-local-data-heading">
+        <h3 id="about-local-data-heading">Local data</h3>
             <p className="settings-danger-copy">Reset Local Workspace removes local projects, graphs, credentials, plugins, snapshots, and editor settings, then restarts ARC Studio.</p>
             {!localWorkspace && <p className="settings-danger-copy">Switch to Local Workspace to reset its data.</p>}
             {localWorkspace && !canResetLocalWorkspace && <p className="settings-danger-copy">Only the Local Workspace owner can delete its data.</p>}
@@ -385,8 +385,8 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
               <TextInput label="ARC Studio password" type="password" autoComplete="current-password" value={resetPassword} onChange={(event) => { setResetPassword(event.target.value); setResetError(''); }} disabled={!canResetLocalWorkspace || resetPending} error={resetError} />
               <Button type="submit" variant="danger" icon={RotateCcw} loading={resetPending} disabled={!canResetLocalWorkspace || !resetPassword || resetPending}>Delete all local data</Button>
             </form>
+             </section>
           </>}
-      </section>
       <section className="settings-about-section" aria-labelledby="about-project-heading">
         <h3 id="about-project-heading">Project</h3>
         <a href="https://github.com/relentiousdragon/arc-studio" target="_blank" rel="noreferrer" onClick={openExternal}><Github size={14} /><span>ARC Studio on GitHub</span><ExternalLink size={12} /></a>
