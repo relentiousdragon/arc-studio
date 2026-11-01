@@ -21,6 +21,7 @@ export class GatewayShard extends EventEmitter {
    * @param {object} options
    * @param {string} options.token
    * @param {number} [options.intents]
+  * @param {number} [options.capabilities]
    * @param {number} [options.shardId=0]
    * @param {number} [options.totalShards=1]
    */
@@ -28,6 +29,7 @@ export class GatewayShard extends EventEmitter {
     super();
     this.token = options.token;
     this.intents = options.intents ?? (GatewayIntents.GUILDS | GatewayIntents.GUILD_MESSAGES | GatewayIntents.MESSAGE_CONTENT);
+    this.capabilities = options.capabilities ?? 0;
     this.shardId = options.shardId ?? 0;
     this.totalShards = options.totalShards ?? 1;
 
@@ -265,6 +267,7 @@ export class GatewayShard extends EventEmitter {
     this.send(GatewayOpcodes.IDENTIFY, {
       token: this.token,
       intents: this.intents,
+      ...(this.capabilities ? { capabilities: this.capabilities } : {}),
       properties: {
         os: process.platform,
         browser: 'chezcord',
