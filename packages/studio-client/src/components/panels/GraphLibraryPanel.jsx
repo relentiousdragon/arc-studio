@@ -4,7 +4,7 @@ import { getArcUiScale } from '../../core/uiScale.js';
 import { arcEvents } from '../../core/ArcEvents.js';
 import { readAppStorage, writeAppStorage } from '../../core/storage.js';
 import { onPageBlur } from '../../core/pageFocus.js';
-import { AlertCircle, AlertTriangle, BookmarkPlus, Braces, Calculator, ChevronDown, ChevronRight, Clock3, Copy, Database, FileCode2, FileUp, FolderTree, GitCompare, Layers, MoreHorizontal, PackageOpen, Pencil, Play, Plus, Puzzle, RotateCcw, Save, Search, Sparkles, Star, Trash2, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, BookmarkPlus, Braces, Calculator, ChevronDown, ChevronRight, Clock3, Copy, Database, Download, FileCode2, FileUp, FolderTree, GitCompare, Layers, MoreHorizontal, PackageOpen, Pencil, Play, Plus, Puzzle, RotateCcw, Save, Search, Sparkles, Star, Trash2, X } from 'lucide-react';
 import { BuiltInNodeDefinitions, createDefaultNodeData, getVisibleNewNodeDefinitions, isNodeDefinitionNew, markNewNodeDefinitionsSeen } from '../nodes/nodeDefinitions.js';
 import { NodeTypeIcon } from '../nodes/NodeTypeIcon.jsx';
 import { CharacterLimit } from '../ui/Inputs.jsx';
@@ -26,7 +26,7 @@ function readLibraryExpansion() {
 }
 
 export function GraphLibraryPanel({
-  graphs = [], graphValidationReports = new Map(), templates = [], snapshots = [], nodePrefabs = [], embedAssets = [], graphVariables = [], graphActivity = [], definitions = BuiltInNodeDefinitions, newNodesUserKey = 'anonymous', defaultGraphId, activeGraph, openGraphIds = [], activeTabId, usageScope = 'default', desktopMode = false, canImportGraph = true, sidebarWidth = 320, activeSection: activeSectionProp, onActiveSectionChange, onSidebarResize, onClose, onOpenGraph, onOpenGraphReview, onImportGraph, onUseTemplate, onCreateFunction, onDeleteGraph, onDeleteGraphs, onDuplicateGraph, onRenameGraph, onSaveTemplate, onDeleteTemplate, onSetDefault, onExportBot, exportInProgress = false, onAddNode, onAddPrefab, onDeletePrefab, onCreateEmbed, onCreateComponentsV2, onOpenEmbed, onDeleteEmbed, onManageVariables, onCreateSnapshot, onDeleteSnapshot, onRestoreSnapshot
+  graphs = [], graphValidationReports = new Map(), templates = [], snapshots = [], nodePrefabs = [], embedAssets = [], graphVariables = [], graphActivity = [], definitions = BuiltInNodeDefinitions, newNodesUserKey = 'anonymous', defaultGraphId, activeGraph, openGraphIds = [], activeTabId, usageScope = 'default', desktopMode = false, canImportGraph = true, sidebarWidth = 320, activeSection: activeSectionProp, onActiveSectionChange, onSidebarResize, onClose, onOpenGraph, onOpenGraphReview, onImportGraph, onUseTemplate, onCreateFunction, onDeleteGraph, onDeleteGraphs, onDuplicateGraph, onRenameGraph, onSaveTemplate, onDeleteTemplate, onSetDefault, onExportGraph, onExportBot, exportInProgress = false, onAddNode, onAddPrefab, onDeletePrefab, onCreateEmbed, onCreateComponentsV2, onOpenEmbed, onDeleteEmbed, onManageVariables, onCreateSnapshot, onDeleteSnapshot, onRestoreSnapshot
 }) {
   const uiScale = getArcUiScale();
   const [query, setQuery] = useState('');
@@ -565,6 +565,7 @@ export function GraphLibraryPanel({
         <button onClick={() => { onRenameGraph?.(contextMenu.graph); setContextMenu(null); }}><Pencil size={14} /> Rename graph</button>
         <button onClick={() => { onSetDefault?.(contextMenu.graph); setContextMenu(null); }}><Star size={14} fill={defaultGraphId === contextMenu.graph.id ? 'currentColor' : 'none'} /> {defaultGraphId === contextMenu.graph.id ? 'Default for new graphs' : 'Set as new graph default'}</button>
         <button onClick={() => { onSaveTemplate?.(contextMenu.graph); setContextMenu(null); }}><BookmarkPlus size={14} /> Save as template</button>
+        <button onClick={() => { onExportGraph?.(contextMenu.graph); setContextMenu(null); }}><Download size={14} /> Export graph</button>
         <button className="is-danger" onClick={() => {
           const selectedGraphs = (contextMenu.graphKeys || [graphSelectionKey(contextMenu.graph)]).map((key) => graphs.find((graph) => graphSelectionKey(graph) === key)).filter(Boolean);
           if (selectedGraphs.length > 1) onDeleteGraphs?.(selectedGraphs);
