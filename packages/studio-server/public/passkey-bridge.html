@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#12151b">
+    <meta name="robots" content="noindex">
+    <meta name="description" content="Finish signing in to ARC Studio with your passkey.">
+    <title>ARC Studio</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-synthesis: none; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; --page: #12151b; --panel: #191d25; --panel-raised: #202530; --line: #2b323e; --text: #eef1f6; --muted: #9ca6b4; --faint: #687384; --accent: #72a9ff; --accent-soft: rgb(87 145 255 / 13%); --glow: rgb(67 114 220 / 18%); --danger: #e46f6f; }
+      :root[data-theme="light"] { color-scheme: light; --page: #f1f3f7; --panel: #fff; --panel-raised: #f7f8fa; --line: #dfe3e9; --text: #202632; --muted: #626d7c; --faint: #87909c; --accent: #356fd0; --accent-soft: rgb(53 111 208 / 9%); --glow: rgb(72 118 208 / 13%); --danger: #c14444; }
+      :root[data-channel="nightly"] { --accent: #c79aff; --accent-soft: rgb(177 114 245 / 13%); --glow: rgb(156 97 232 / 17%); }
+      :root[data-channel="nightly"][data-theme="light"] { --accent: #8245c3; --accent-soft: rgb(130 69 195 / 9%); --glow: rgb(130 69 195 / 12%); }
+      * { box-sizing: border-box; }
+      html, body { width: 100%; min-width: 320px; min-height: 100%; margin: 0; }
+      body { min-height: 100vh; color: var(--text); background-color: var(--page); background-image: radial-gradient(circle, color-mix(in srgb, var(--muted) 31%, transparent) 1px, transparent 1.1px), radial-gradient(ellipse at 17% 32%, var(--glow), transparent 42%); background-position: 0 0, center; background-size: 32px 32px, auto; background-repeat: repeat, no-repeat; }
+      .bridge-screen { display: grid; min-height: 100vh; align-content: center; justify-items: center; gap: 22px; padding: 40px 20px 30px; }
+      .brand { display: inline-flex; align-items: center; gap: 11px; color: var(--text); font-size: 12px; font-weight: 760; letter-spacing: .13em; text-decoration: none; }
+      .brand img { width: 34px; height: 34px; object-fit: contain; }
+      .brand b { color: var(--muted); font-size: 10px; font-weight: 620; }
+      .card { display: grid; width: min(430px, 100%); gap: 13px; padding: clamp(22px, 4vw, 32px); border: 1px solid var(--line); border-radius: 11px; background: color-mix(in srgb, var(--panel) 94%, transparent); box-shadow: 0 24px 80px rgb(0 0 0 / 14%); }
+      .card h1 { margin: 0; font-size: 21px; font-weight: 620; letter-spacing: -.035em; }
+      .copy { margin: -4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
+      .status { display: flex; align-items: center; gap: 9px; min-height: 30px; margin: 0; color: var(--muted); font-size: 12px; }
+      .status[hidden] { display: none; }
+      .status svg { flex: 0 0 auto; color: var(--accent); }
+      .status svg.is-spinning { animation: spin 1.1s linear infinite; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      .error { margin: 0; color: var(--danger); font-size: 12px; line-height: 1.6; }
+      .error[hidden] { display: none; }
+      .submit { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 38px; margin-top: 3px; padding: 0 16px; border: 0; border-radius: 6px; background: var(--accent); color: var(--page); font-size: 12px; font-weight: 650; text-decoration: none; cursor: pointer; transition: background .16s ease, opacity .16s ease; }
+      .submit:hover { background: color-mix(in srgb, var(--accent) 86%, #fff); }
+      .submit[hidden] { display: none; }
+      .submit svg { width: 14px; height: 14px; }
+      .note { margin: 9px 0 0; padding: 11px 0 0; border-top: 1px solid var(--line); color: var(--faint); font-size: 10px; line-height: 1.6; }
+      @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
+    </style>
+  </head>
+  <body>
+    <main class="bridge-screen">
+      <header class="brand"><img src="__LOGO__" alt=""><span>ARC <b>STUDIO</b></span></header>
+      <section class="card" aria-labelledby="bridge-title">
+        <h1 id="bridge-title">Finish signing in to ARC Studio</h1>
+        <p class="copy" id="bridge-copy">The desktop app is waiting. Use Touch ID, Windows Hello, a phone, or a security key to approve this sign in.</p>
+        <p class="error" id="bridge-error" role="alert" hidden></p>
+        <p class="status" id="bridge-status" role="status" hidden><svg class="is-spinning" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" width="15" height="15"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg><span id="bridge-status-text">Waiting for your passkey…</span></p>
+        <button class="submit" id="bridge-primary" type="button" hidden><span id="bridge-primary-text">Continue with passkey</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></button>
+        <a class="submit" id="bridge-return" href="#" hidden aria-live="polite"><span>Return to ARC Studio</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></a>
+        <p class="note">ARC never receives your fingerprint, face, or device PIN. This browser only shares a signed confirmation with the workspace.</p>
+      </section>
+    </main>
+    <script>
+      (() => {
+        const STATE_PATTERN = /^[A-Za-z0-9_-]{43,128}$/
+        const TICKET_PATTERN = /^[A-Za-z0-9_-]{32,128}$/
+        const CALLBACK_ROUTE = 'passkey/callback'
+        const root = document.documentElement
+        const themeColor = document.querySelector('meta[name="theme-color"]')
+        const channel = '__RELEASE_CHANNEL__'
+        root.dataset.channel = channel
+        const light = window.matchMedia('(prefers-color-scheme: light)')
+        const applyTheme = () => {
+          const theme = light.matches ? 'light' : 'dark'
+          root.dataset.theme = theme
+          if (themeColor) themeColor.content = theme === 'light' ? '#f1f3f7' : '#12151b'
+        }
+        applyTheme()
+        light.addEventListener?.('change', applyTheme)
+
+        const params = new URLSearchParams(window.location.search)
+        const state = params.get('arc_passkey_state') || ''
+        const purpose = params.get('arc_passkey_purpose') === 'registration' ? 'registration' : 'authentication'
+        const embedded = params.get('arc_passkey_embedded') === '1'
+        const registration = purpose === 'registration'
+        const validState = STATE_PATTERN.test(state)
+
+        const title = document.getElementById('bridge-title')
+        const copy = document.getElementById('bridge-copy')
+        const errorLine = document.getElementById('bridge-error')
+        const status = document.getElementById('bridge-status')
+        const statusText = document.getElementById('bridge-status-text')
+        const primary = document.getElementById('bridge-primary')
+        const primaryText = document.getElementById('bridge-primary-text')
+        const returnLink = document.getElementById('bridge-return')
+
+        function setBusy(message) {
+          statusText.textContent = message
+          status.hidden = !message
+          primary.disabled = Boolean(message)
+          errorLine.hidden = true
+        }
+
+        function fail(message) {
+          status.hidden = true
+          primary.disabled = false
+          errorLine.textContent = message
+          errorLine.hidden = false
+        }
+
+        function renderInvalidScreen() {
+          title.textContent = 'This link cannot be used'
+          copy.textContent = 'Open ARC Studio and start the passkey request again from the sign in screen.'
+          status.hidden = true
+          primary.hidden = true
+          returnLink.hidden = true
+        }
+
+        function renderErrorScreen(message) {
+          title.textContent = registration ? 'Passkey setup was interrupted' : 'Passkey sign in was interrupted'
+          copy.textContent = 'Nothing was changed. Start the request again from ARC Studio when you are ready.'
+          fail(message)
+          primaryText.textContent = 'Try again'
+          primary.hidden = false
+          returnLink.hidden = true
+        }
+
+        function renderReadyScreen() {
+          title.textContent = registration ? 'Add a passkey to ARC Studio' : 'Finish signing in to ARC Studio'
+          copy.textContent = registration
+            ? 'The desktop app is waiting. Use Touch ID, Windows Hello, a phone, or a security key to add a passkey to this account.'
+            : 'The desktop app is waiting. Use Touch ID, Windows Hello, a phone, or a security key to approve this sign in.'
+          errorLine.hidden = true
+          status.hidden = true
+          primaryText.textContent = registration ? 'Add passkey' : 'Continue with passkey'
+          primary.hidden = false
+          returnLink.hidden = true
+        }
+
+        function showComplete(callbackUrl) {
+          title.textContent = registration ? 'Passkey added' : 'Passkey verified'
+          copy.textContent = embedded ? 'Return to ARC Studio to continue.' : 'Return to the ARC Studio desktop app to continue.'
+          status.hidden = true
+          errorLine.hidden = true
+          primary.hidden = true
+          if (embedded) return
+          returnLink.hidden = false
+          returnLink.href = callbackUrl
+          window.setTimeout(() => {
+            window.location.href = callbackUrl
+          }, 900)
+        }
+
+        function webAuthnSupported() {
+          return typeof window.PublicKeyCredential === 'function' && Boolean(navigator.credentials)
+        }
+
+        function base64URLStringToBuffer(value) {
+          const standard = String(value).replace(/-/g, '+').replace(/_/g, '/')
+          const padded = standard.padEnd(standard.length + ((4 - (standard.length % 4)) % 4), '=')
+          const binary = atob(padded)
+          const bytes = new Uint8Array(binary.length)
+          for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+          return bytes.buffer
+        }
+
+        function bufferToBase64URLString(buffer) {
+          const bytes = new Uint8Array(buffer)
+          let binary = ''
+          for (const byte of bytes) binary += String.fromCharCode(byte)
+          return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
+        }
+
+        function authenticatorAttachment(attachment) {
+          return attachment === 'cross-platform' || attachment === 'platform' ? attachment : undefined
+        }
+
+        function ceremonyError(error, fallback) {
+          if (error?.name === 'NotAllowedError') return new Error(fallback)
+          if (error?.name === 'InvalidStateError') return new Error('This passkey is already registered on this device.')
+          if (error?.name === 'SecurityError') return new Error('Passkeys need HTTPS or localhost. Check the workspace address.')
+          if (error?.name === 'NotSupportedError') return new Error('This browser or device does not support passkeys.')
+          if (error?.name === 'ConstraintError') return new Error('This device could not create a passkey with the required security settings.')
+          if (error?.message) return error
+          return new Error(fallback)
+        }
+
+        async function bridgeRequest(path, body) {
+          let response
+          try {
+            response = await fetch(path, {
+              method: 'POST',
+              cache: 'no-store',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(body)
+            })
+          } catch {
+            throw new Error('Could not reach the workspace. Check the connection and try again.')
+          }
+          const payload = await response.json().catch(() => ({}))
+          if (!response.ok) throw new Error(payload?.error || 'The workspace could not complete this passkey request.')
+          return payload
+        }
+
+        function credentialDescriptors(list) {
+          return (list || []).map((item) => ({ ...item, id: base64URLStringToBuffer(item.id), transports: item.transports, type: item.type }))
+        }
+
+        async function runAssertion(options) {
+          const publicKey = { ...options, challenge: base64URLStringToBuffer(options.challenge) }
+          if (options.allowCredentials?.length) publicKey.allowCredentials = credentialDescriptors(options.allowCredentials)
+          else delete publicKey.allowCredentials
+          let credential
+          try { credential = await navigator.credentials.get({ publicKey }) }
+          catch (error) { throw ceremonyError(error, 'Passkey sign in was cancelled or timed out.') }
+          if (!credential) throw new Error('Passkey sign in was cancelled or timed out.')
+          const response = credential.response
+          return {
+            id: credential.id,
+            rawId: bufferToBase64URLString(credential.rawId),
+            response: {
+              authenticatorData: bufferToBase64URLString(response.authenticatorData),
+              clientDataJSON: bufferToBase64URLString(response.clientDataJSON),
+              signature: bufferToBase64URLString(response.signature),
+              ...(response.userHandle ? { userHandle: bufferToBase64URLString(response.userHandle) } : {})
+            },
+            type: credential.type,
+            clientExtensionResults: credential.getClientExtensionResults(),
+            authenticatorAttachment: authenticatorAttachment(credential.authenticatorAttachment)
+          }
+        }
+
+        async function runAttestation(options) {
+          const publicKey = {
+            ...options,
+            challenge: base64URLStringToBuffer(options.challenge),
+            user: { ...(options.user || {}), id: base64URLStringToBuffer(options.user.id) }
+          }
+          if (options.excludeCredentials?.length) publicKey.excludeCredentials = credentialDescriptors(options.excludeCredentials)
+          else delete publicKey.excludeCredentials
+          let credential
+          try { credential = await navigator.credentials.create({ publicKey }) }
+          catch (error) { throw ceremonyError(error, 'Passkey setup was cancelled or timed out.') }
+          if (!credential) throw new Error('Passkey setup was cancelled or timed out.')
+          const response = credential.response
+          const result = {
+            id: credential.id,
+            rawId: bufferToBase64URLString(credential.rawId),
+            response: {
+              attestationObject: bufferToBase64URLString(response.attestationObject),
+              clientDataJSON: bufferToBase64URLString(response.clientDataJSON),
+              transports: undefined,
+              publicKeyAlgorithm: undefined,
+              publicKey: undefined,
+              authenticatorData: undefined
+            },
+            type: credential.type,
+            clientExtensionResults: credential.getClientExtensionResults(),
+            authenticatorAttachment: authenticatorAttachment(credential.authenticatorAttachment)
+          }
+          if (typeof response.getTransports === 'function') result.response.transports = response.getTransports()
+          if (typeof response.getPublicKeyAlgorithm === 'function') {
+            try { result.response.publicKeyAlgorithm = response.getPublicKeyAlgorithm() } catch {}
+          }
+          if (typeof response.getPublicKey === 'function') {
+            try {
+              const publicKeyCopy = response.getPublicKey()
+              if (publicKeyCopy) result.response.publicKey = bufferToBase64URLString(publicKeyCopy)
+            } catch {}
+          }
+          if (typeof response.getAuthenticatorData === 'function') {
+            try { result.response.authenticatorData = bufferToBase64URLString(response.getAuthenticatorData()) } catch {}
+          }
+          return result
+        }
+
+        function validCallbackUrl(value) {
+          try {
+            const url = new URL(String(value || ''))
+            if (url.protocol !== 'arcstudio:') return ''
+            const route = `${url.hostname}/${url.pathname}`.replace(/\/+/g, '/').replace(/^\//, '').toLowerCase()
+            if (route !== CALLBACK_ROUTE) return ''
+            if (url.searchParams.get('state') !== state) return ''
+            if (!TICKET_PATTERN.test(url.searchParams.get('ticket') || '')) return ''
+            return url.toString()
+          } catch {
+            return ''
+          }
+        }
+
+        async function finish() {
+          if (primary.disabled) return
+          try {
+            setBusy('Waiting for your passkey…')
+            if (!webAuthnSupported()) throw new Error('This browser or device does not support passkeys.')
+            const launch = registration ? runAttestation : runAssertion
+            const ceremony = await bridgeRequest(registration ? '/api/auth/passkeys/desktop/register/options' : '/api/auth/passkeys/desktop/login/options', { state })
+            if (!ceremony?.ceremonyId || !ceremony?.options) throw new Error('The workspace returned an invalid passkey request.')
+            const credential = await launch(ceremony.options)
+            setBusy('Verifying with the workspace…')
+            let result = await bridgeRequest(registration ? '/api/auth/passkeys/desktop/register/verify' : '/api/auth/passkeys/desktop/login/verify', {
+              state,
+              ceremonyId: ceremony.ceremonyId,
+              response: credential
+            })
+            for (let attempt = 0; result?.replacementPending && attempt < 12; attempt += 1) {
+              setBusy('Signing out the other session…')
+              const retryAfter = Number(result.retryAfter)
+              await new Promise((resolve) => window.setTimeout(resolve, Math.max(250, Math.min(1500, Number.isFinite(retryAfter) ? retryAfter : 500))))
+              result = await bridgeRequest('/api/auth/passkeys/desktop/login/continue', { state })
+            }
+            if (result?.replacementPending) throw new Error('The other session did not sign out in time. Try again.')
+            const callbackUrl = validCallbackUrl(result?.callbackUrl)
+            if (!callbackUrl) throw new Error('The workspace returned an invalid passkey response.')
+            showComplete(callbackUrl)
+          } catch (error) {
+            renderErrorScreen(error?.message || 'The passkey request could not be completed.')
+          }
+        }
+
+        primary.addEventListener('click', finish)
+        renderReadyScreen()
+        setBusy('')
+        if (!validState) renderInvalidScreen()
+      })()
+    </script>
+  </body>
+</html>
