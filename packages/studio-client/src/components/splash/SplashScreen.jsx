@@ -129,6 +129,7 @@ export function SplashScreen({
   const [halloween] = useState(() => halloweenFrills());
   const [typedIntro, setTypedIntro] = useState(() => needsSetup ? '' : SETUP_TAGLINE);
   const fieldRefs = useRef({});
+  const lastLocalUsernameRef = useRef('');
   const snowCanvasRef = useRef(null);
   const halloweenCanvasRef = useRef(null);
 
@@ -185,7 +186,7 @@ export function SplashScreen({
   }, [desktopMode, workspaceMode, needsSetup, credentialOrigin, rememberStorageKey]);
 
   useEffect(() => {
-    if (needsSetup || (desktopMode && workspaceMode === 'local')) {
+    if (needsSetup || (desktopMode && (workspaceMode === 'local' || workspaceChoice === 'local'))) {
       setRememberedProfile(null);
       setValidatingRememberedUser(false);
       return undefined;
@@ -237,6 +238,7 @@ export function SplashScreen({
   const handleSwitchAccount = () => {
     setRememberedProfile(null);
     setUsername('');
+    lastLocalUsernameRef.current = '';
     setPassword('');
     setError('');
     setFieldErrors({});
@@ -483,7 +485,21 @@ export function SplashScreen({
     setCompatibilityNotice('');
     setWorkspaceChoice('local');
     setConnectError('');
+    setShowWorkspaceUrl(false);
+    setError('');
+    setFieldErrors({});
+    if (desktopMode && workspaceMode === 'local') {
+      setUsername(lastLocalUsernameRef.current || localAccountUsername || getLocalUsername());
+      setLocalUsernameEditable(false);
+    }
     onSelectWorkspace?.('local');
+  };
+
+  const handleSelectRemote = () => {
+    if (desktopMode && workspaceChoice === 'local') lastLocalUsernameRef.current = username;
+    setWorkspaceChoice('remote');
+    setShowWorkspaceUrl(true);
+    setConnectError('');
   };
 
   const handleSubmit = async (event) => {
@@ -630,8 +646,8 @@ export function SplashScreen({
         });
         setPasskeyWaiting(true);
         arcEvents.emit('toast:notify', {
-          title: 'Continue in your browser',
-          message: 'Finish signing in with your passkey, then return to ARC Studio.',
+          title: 'Finish with your passkey',
+          message: 'Approve the passkey request in the browser ARC Studio opened.',
           type: 'info',
           duration: 8000
         });
@@ -745,7 +761,7 @@ export function SplashScreen({
   const resetPassRequested = !desktopMode && (resetPassParams.get('reset_pass') === 'true' || resetPassParams.get('resetPass') === 'true');
   const showMasterPasswordReset = !desktopMode && !needsSetup && canResetPrimaryAdminWithMasterKey
     && (resetPassRequested || Boolean(ownerResetPromptForUsername && ownerResetPromptForUsername === username.trim().toLowerCase()));
-  const remotePending = desktopMode && workspaceChoice === 'remote' && (showWorkspaceUrl || workspaceMode !== 'remote' || remoteUrl.trim().replace(/\/$/, '') !== remoteWorkspaceUrl.trim().replace(/\/$/, ''));
+  const remotePending = desktopMode && workspaceChoice === 'remote';
   const startupError = desktopMode && workspaceMode === 'local' ? desktopConfig.startupError : null;
   const documentsPermissionRequired = String(startupError || '').startsWith('ARC_DOCUMENTS_PERMISSION_REQUIRED:');
   const startupErrorMessage = documentsPermissionRequired ? String(startupError).slice('ARC_DOCUMENTS_PERMISSION_REQUIRED:'.length) : startupError;
@@ -790,11 +806,11 @@ export function SplashScreen({
           {!needsProjectOnboarding && desktopMode && <div className="workspace-switcher" role="tablist" aria-label="Workspace type">
             {localSessionAvailable && <button type="button" className="workspace-back-editor" onClick={onBackToEditor}><ArrowLeft size={14} /> Back to editor</button>}
             {!localSessionAvailable && <button type="button" role="tab" aria-selected={workspaceChoice === 'local'} className={workspaceChoice === 'local' ? 'is-active' : ''} onClick={handleSelectLocal}><Laptop2 size={14} /> Local</button>}
-            <button type="button" role="tab" aria-selected={workspaceChoice === 'remote'} className={workspaceChoice === 'remote' ? 'is-active' : ''} disabled={!networkOnline} title={!networkOnline ? 'External workspaces are unavailable offline' : undefined} onClick={() => { setWorkspaceChoice('remote'); setShowWorkspaceUrl(true); setConnectError(''); }}><Globe2 size={14} /> Connect to workspace</button>
+            <button type="button" role="tab" aria-selected={workspaceChoice === 'remote'} className={workspaceChoice === 'remote' ? 'is-active' : ''} disabled={!networkOnline} title={!networkOnline ? 'External workspaces are unavailable offline' : undefined} onClick={handleSelectRemote}><Globe2 size={14} /> Connect to workspace</button>
           </div>}
           {desktopMode && !networkOnline && <p className="workspace-offline-note" role="status">Offline. You can continue with the Local Workspace.</p>}
           {desktopMode && (compatibilityNotice || workspaceCompatibilityNotice) && <p className="workspace-compatibility-note" role="status">{compatibilityNotice || workspaceCompatibilityNotice}</p>}
-          {!needsProjectOnboarding && desktopMode && workspaceChoice === 'remote' && showWorkspaceUrl && <form className="workspace-connect" noValidate onSubmit={handleConnectWorkspace}>
+          {!needsProjectOnboarding && desktopMode && workspaceChoice === 'remote' && <form className="workspace-connect" noValidate onSubmit={handleConnectWorkspace}>
             <label className="field-label" htmlFor="workspace-url">Workspace URL</label>
             <div ref={(element) => { fieldRefs.current.remoteUrl = element; }} className={`auth-input-wrap ${(connectError || workspaceError) && !unsupportedNodeCompatibilityError ? 'has-error' : ''}`}><Globe2 size={15} /><input id="workspace-url" type="url" autoComplete="url" autoCapitalize="none" autoCorrect="off" spellCheck="false" value={remoteUrl} onChange={(event) => { setRemoteUrl(event.target.value); setConnectError(''); setCompatibilityNotice(''); }} placeholder="https://studio.example.com" aria-invalid={Boolean((connectError || workspaceError) && !unsupportedNodeCompatibilityError)} /></div>
             {trustedWorkspaces.length > 0 && <div className="saved-workspaces" aria-label="Saved workspaces"><span>Saved workspaces</span>{trustedWorkspaces.map((workspace) => <button key={workspace} type="button" onClick={() => { setRemoteUrl(workspace); setConnectError(''); }}>{workspace}</button>)}</div>}
@@ -939,8 +955,8 @@ export function SplashScreen({
                   <button
                     className="auth-passkey-button"
                     type="button"
-                    onClick={handlePasskeySignIn}
-                    disabled={passkeyBusy || passkeyWaiting || loading || remotePending || Boolean(workspaceError)}
+                    onClick={passkeyWaiting ? cancelPasskeySignIn : handlePasskeySignIn}
+                    disabled={passkeyWaiting || passkeyBusy || loading || remotePending || Boolean(workspaceError)}
                   >
                     {passkeyBusy ? <LoaderCircle size={16} className="is-spinning" /> : <Fingerprint size={16} />}
                     <span>{passkeyWaiting ? 'Waiting for your browser…' : 'Sign in with a passkey'}</span>
