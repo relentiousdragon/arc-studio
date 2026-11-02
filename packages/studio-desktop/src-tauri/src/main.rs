@@ -813,6 +813,19 @@ struct DiscordPresence {
     client: Mutex<Option<DiscordIpcClient>>,
     started_at_ms: Mutex<Option<i64>>,
 }
+struct AppState {
+    surface: Mutex<String>,
+}
+impl AppState {
+    fn new() -> Self {
+        AppState { surface: Mutex::new("splash".to_string()) }
+    }
+    fn set_surface(&self, surface: String) {
+        *self.surface.lock().unwrap() = surface;
+    }
+    fn surface(&self) -> String {
+        self.surface.lock().unwrap().clone()
+    }}
 struct WindowSizeState(Arc<Mutex<WindowDimensions>>);
 #[derive(Clone, Copy)]
 struct WindowDimensions { width: f64, height: f64, maximized: bool }
@@ -942,6 +955,14 @@ fn open_passkey_auth_url(url: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn set_menu_context(app: tauri::AppHandle, surface: String) -> Result<(), String> {
+    app.state::<AppState>().set_surface(surface.clone());
+    let menu = build_menu(&app, &surface).map_err(|e| e.to_string())?;
+    app.set_menu(menu).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 fn open_macos_files_folders_settings() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -976,6 +997,62 @@ fn clear_discord_presence_inner(presence: &DiscordPresence) {
 
 fn presence_text(value: &str) -> String {
     value.chars().filter(|character| !character.is_control()).take(128).collect()
+}
+
+
+fn build_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>, surface: &str) -> tauri::Result<tauri::menu::Menu<R>> {
+    use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
+    let in_editor = surface == "workspace";
+    let new_graph = MenuItemBuilder::with_id("file.new-graph", "New Graph").accelerator("CmdOrCtrl+T").enabled(in_editor).build(handle)?;
+    let new_blank_graph = MenuItemBuilder::with_id("file.new-blank-graph", "New Blank Graph").accelerator("CmdOrCtrl+Shift+T").enabled(in_editor).build(handle)?;
+    let open_graph = MenuItemBuilder::with_id("file.open-graph", "Open Graph File…").accelerator("CmdOrCtrl+O").build(handle)?;
+    let open_project = MenuItemBuilder::with_id("file.open-project", "Import Project File…").build(handle)?;
+    let save_graph = MenuItemBuilder::with_id("file.save-graph", "Save Graph").accelerator("CmdOrCtrl+S").enabled(in_editor).build(handle)?;
+    let export_graph = MenuItemBuilder::with_id("file.export-graph", "Export Graph…").enabled(in_editor).build(handle)?;
+    let export_project = MenuItemBuilder::with_id("file.export-project", "Export Project…").enabled(in_editor).build(handle)?;
+    let file_menu = SubmenuBuilder::new(handle, "File")
+        .item(&new_graph).item(&new_blank_graph).separator().item(&open_graph).item(&open_project)
+        .separator().item(&save_graph).item(&export_graph).item(&export_project).build()?;
+
+    let undo = MenuItemBuilder::with_id("edit.undo", "Undo").accelerator("CmdOrCtrl+Z").enabled(in_editor).build(handle)?;
+    let redo_accelerator = if cfg!(target_os = "macos") { "CmdOrCtrl+Shift+Z" } else { "CmdOrCtrl+Y" };
+    let redo = MenuItemBuilder::with_id("edit.redo", "Redo").accelerator(redo_accelerator).enabled(in_editor).build(handle)?;
+    let cut = PredefinedMenuItem::cut(handle, None)?;
+    let copy = PredefinedMenuItem::copy(handle, None)?;
+    let paste = PredefinedMenuItem::paste(handle, None)?;
+    let select_all = PredefinedMenuItem::select_all(handle, None)?;
+    let edit_menu = SubmenuBuilder::new(handle, "Edit")
+        .item(&undo).item(&redo).separator().item(&cut).item(&copy).item(&paste).separator().item(&select_all).build()?;
+
+    let library = MenuItemBuilder::with_id("view.library", "Toggle Library").accelerator("Shift+L").enabled(in_editor).build(handle)?;
+    let console = MenuItemBuilder::with_id("view.console", "Open Console").accelerator("CmdOrCtrl+Shift+J").build(handle)?;
+    let settings = MenuItemBuilder::with_id("view.settings", "Editor Settings…").build(handle)?;
+    let view_menu = SubmenuBuilder::new(handle, "View")
+        .item(&library).item(&console).separator().item(&settings).build()?;
+
+    let minimize = PredefinedMenuItem::minimize(handle, None)?;
+    let maximize = PredefinedMenuItem::maximize(handle, None)?;
+    let close = PredefinedMenuItem::close_window(handle, None)?;
+    let window_menu = SubmenuBuilder::new(handle, "Window")
+        .item(&minimize).item(&maximize).item(&close).build()?;
+
+    let help_shortcuts = MenuItemBuilder::with_id("help.shortcuts", "Keyboard Shortcuts").build(handle)?;
+    let github = MenuItemBuilder::with_id("help.github", "ARC Studio on GitHub").build(handle)?;
+    let discord = MenuItemBuilder::with_id("help.discord", "ARC Studio Discord Server").build(handle)?;
+    let help_menu = SubmenuBuilder::new(handle, "Help").item(&help_shortcuts).separator().item(&github).item(&discord).build()?;
+    let menu_builder = MenuBuilder::new(handle);
+    #[cfg(target_os = "macos")]
+    let menu_builder = {
+        let about = PredefinedMenuItem::about(handle, None, None)?;
+        let hide = PredefinedMenuItem::hide(handle, None)?;
+        let hide_others = PredefinedMenuItem::hide_others(handle, None)?;
+        let quit = PredefinedMenuItem::quit(handle, None)?;
+        let app_menu = SubmenuBuilder::new(handle, "ARC Studio")
+            .item(&about).separator().item(&hide).item(&hide_others).separator().item(&quit).build()?;
+        menu_builder.item(&app_menu)
+    };
+    let menu = menu_builder.item(&file_menu).item(&edit_menu).item(&view_menu).item(&window_menu).item(&help_menu).build()?;
+    Ok(menu)
 }
 
 fn main() {
@@ -1028,6 +1105,7 @@ fn main() {
             reset_local_data,
             open_external_url,
             open_passkey_auth_url,
+            set_menu_context,
             open_macos_files_folders_settings,
             check_channel_update,
             install_channel_update,
@@ -1036,7 +1114,7 @@ fn main() {
             mark_update_healthy,
             update_discord_presence,
             clear_discord_presence,
-            restart_app
+            restart_app,
         ])
         .on_menu_event(|app, event| {
             let action = event.id().as_ref();
@@ -1053,62 +1131,13 @@ fn main() {
             }
         })
         .manage(StudioServer { child: Mutex::new(None), port: Mutex::new(None) })
-        .manage(DiscordPresence {
-            client: Mutex::new(None),
-            started_at_ms: Mutex::new(None),
-        })
+        .manage(DiscordPresence { client: Mutex::new(None), started_at_ms: Mutex::new(None) })
+        .manage(AppState::new())
         .setup(|app| {
             mark_update_starting(app.handle());
-            use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
             let handle = app.handle();
-            let new_graph = MenuItemBuilder::with_id("file.new-graph", "New Graph").accelerator("CmdOrCtrl+T").build(handle)?;
-            let new_blank_graph = MenuItemBuilder::with_id("file.new-blank-graph", "New Blank Graph").accelerator("CmdOrCtrl+Shift+T").build(handle)?;
-            let open_graph = MenuItemBuilder::with_id("file.open-graph", "Open Graph File…").accelerator("CmdOrCtrl+O").build(handle)?;
-            let open_project = MenuItemBuilder::with_id("file.open-project", "Import Project File…").build(handle)?;
-            let save_graph = MenuItemBuilder::with_id("file.save-graph", "Save Graph").accelerator("CmdOrCtrl+S").build(handle)?;
-            let export_graph = MenuItemBuilder::with_id("file.export-graph", "Export Graph…").build(handle)?;
-            let export_project = MenuItemBuilder::with_id("file.export-project", "Export Project…").build(handle)?;
-            let file_menu = SubmenuBuilder::new(handle, "File")
-                .item(&new_graph).item(&new_blank_graph).separator().item(&open_graph).item(&open_project)
-                .separator().item(&save_graph).item(&export_graph).item(&export_project).build()?;
-
-            let undo = MenuItemBuilder::with_id("edit.undo", "Undo").accelerator("CmdOrCtrl+Z").build(handle)?;
-            let redo_accelerator = if cfg!(target_os = "macos") { "CmdOrCtrl+Shift+Z" } else { "CmdOrCtrl+Y" };
-            let redo = MenuItemBuilder::with_id("edit.redo", "Redo").accelerator(redo_accelerator).build(handle)?;
-            let cut = PredefinedMenuItem::cut(handle, None)?;
-            let copy = PredefinedMenuItem::copy(handle, None)?;
-            let paste = PredefinedMenuItem::paste(handle, None)?;
-            let select_all = PredefinedMenuItem::select_all(handle, None)?;
-            let edit_menu = SubmenuBuilder::new(handle, "Edit")
-                .item(&undo).item(&redo).separator().item(&cut).item(&copy).item(&paste).separator().item(&select_all).build()?;
-
-            let library = MenuItemBuilder::with_id("view.library", "Toggle Library").accelerator("Shift+L").build(handle)?;
-            let console = MenuItemBuilder::with_id("view.console", "Open Console").accelerator("CmdOrCtrl+Shift+J").build(handle)?;
-            let settings = MenuItemBuilder::with_id("view.settings", "Editor Settings…").build(handle)?;
-            let view_menu = SubmenuBuilder::new(handle, "View")
-                .item(&library).item(&console).separator().item(&settings).build()?;
-
-            let minimize = PredefinedMenuItem::minimize(handle, None)?;
-            let maximize = PredefinedMenuItem::maximize(handle, None)?;
-            let close = PredefinedMenuItem::close_window(handle, None)?;
-            let window_menu = SubmenuBuilder::new(handle, "Window")
-                .item(&minimize).item(&maximize).item(&close).build()?;
-
-            let help_shortcuts = MenuItemBuilder::with_id("help.shortcuts", "Keyboard Shortcuts").build(handle)?;
-            let github = MenuItemBuilder::with_id("help.github", "ARC Studio on GitHub").build(handle)?;
-            let help_menu = SubmenuBuilder::new(handle, "Help").item(&help_shortcuts).separator().item(&github).build()?;
-            let menu_builder = MenuBuilder::new(handle);
-            #[cfg(target_os = "macos")]
-            let menu_builder = {
-                let about = PredefinedMenuItem::about(handle, None, None)?;
-                let hide = PredefinedMenuItem::hide(handle, None)?;
-                let hide_others = PredefinedMenuItem::hide_others(handle, None)?;
-                let quit = PredefinedMenuItem::quit(handle, None)?;
-                let app_menu = SubmenuBuilder::new(handle, "ARC Studio")
-                    .item(&about).separator().item(&hide).item(&hide_others).separator().item(&quit).build()?;
-                menu_builder.item(&app_menu)
-            };
-            let menu = menu_builder.item(&file_menu).item(&edit_menu).item(&view_menu).item(&window_menu).item(&help_menu).build()?;
+            let surface = app.state::<AppState>().surface();
+            let menu = build_menu(handle, &surface)?;
             app.set_menu(menu)?;
             let window_config = app
                 .config()
