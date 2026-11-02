@@ -2,9 +2,11 @@ import React, { useMemo, useState } from 'react';
 import { FileCode2, Plus, Trash2 } from 'lucide-react';
 import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
+import { AnimatedDropdown } from '../ui/CustomControls.jsx';
 
 const EMPTY_SCHEMA = { type: 'object', properties: {}, required: [], additionalProperties: false };
 const TYPES = ['string', 'number', 'integer', 'boolean', 'object', 'array'];
+const schemaTypeOptions = TYPES.map((type) => ({ value: type, label: type }));
 //
 function parseSchema(value) {
   try {
@@ -19,9 +21,7 @@ function PropertyRow({ name, definition, required, onRename, onEdit, onRequired,
   React.useEffect(() => setDraft(name), [name]);
   return <div className="json-schema-property" key={name}>
     <input aria-label="Property name" value={draft} onChange={(event) => setDraft(event.target.value)} onBlur={() => { if (!draft.trim() || onRename(name, draft) === false) setDraft(name); }} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} onPointerDown={(event) => event.stopPropagation()} />
-    <select aria-label={`${name} type`} value={TYPES.includes(definition?.type) ? definition.type : 'string'} onChange={(event) => onEdit(name, { type: event.target.value })} onPointerDown={(event) => event.stopPropagation()}>
-      {TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
-    </select>
+    <AnimatedDropdown ariaLabel={`${name} type`} value={TYPES.includes(definition?.type) ? definition.type : 'string'} options={schemaTypeOptions} onChange={(type) => onEdit(name, { type })} onPointerDown={(event) => event.stopPropagation()} />
     <label><input type="checkbox" checked={required.includes(name)} onChange={(event) => onRequired(name, event.target.checked)} />Required</label>
     <button type="button" title={`Remove ${name}`} aria-label={`Remove ${name}`} onClick={() => onRemove(name)}><Trash2 size={14} /></button>
   </div>;
