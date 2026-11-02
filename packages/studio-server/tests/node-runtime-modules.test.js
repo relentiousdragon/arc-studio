@@ -384,7 +384,7 @@ test('Set Presence supports optional custom status and both activity types', () 
     status: 'dnd',
     activities: [
       { name: 'Building', type: 0 },
-      { name: 'Custom Status', type: 4, state: 'Hello', emoji: { name: 'party_time', id: '12345678901234567', animated: true } }
+      { name: 'Custom Status', type: 4, state: 'Hello' }
     ]
   }]);
 
