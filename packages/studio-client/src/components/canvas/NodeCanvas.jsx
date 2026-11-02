@@ -1058,6 +1058,15 @@ export function NodeCanvas({
       inputs = inputs.map(resolveInputPinColor);
       const execPin = inputs.find((pin) => pin.type === 'exec');
       if (!execPin) return { ...nextDefinition, inputs };
+      if (node.type === 'parallel') {
+        const connectedIds = nodeConnections.outgoing.map((wire) => wire.sourcePinId);
+        const highest = connectedIds.reduce((value, id) => Math.max(value, Number(id.match(/^branch_(\d+)_exec$/)?.[1] || (id === 'branch_a_exec' ? 1 : id === 'branch_b_exec' ? 2 : 0))), 2);
+        const outputs = [...(nextDefinition.outputs || [])];
+        for (let index = 3; index <= Math.min(16, highest + 1); index += 1) outputs.push({ id: `branch_${index}_exec`, label: `Branch ${index}`, type: 'exec' });
+        return { ...nextDefinition, inputs, outputs };
+      }
+      if (node.type === 'parallel_join') return { ...nextDefinition, inputs };
+      if (!(nextDefinition.outputs || []).some((pin) => pin.type === 'exec' && pin.id === 'exec')) return { ...nextDefinition, inputs };
       const baseId = execPin.id;
       const highestConnected = nodeConnections.incoming.reduce((highest, wire) => {
         if (wire.targetPinId === baseId) return Math.max(highest, 1);
@@ -1065,7 +1074,13 @@ export function NodeCanvas({
         return match ? Math.max(highest, Number(match[1])) : highest;
       }, 0);
       const count = Math.min(16, Math.max(1, highestConnected + 1));
-      return { ...nextDefinition, inputs: [...inputs, ...Array.from({ length: count - 1 }, (_, index) => ({ ...execPin, id: `${baseId}_${index + 2}`, label: `Exec ${index + 2}` }))] };
+      const dynamicPins = Array.from({ length: count - 1 }, (_, index) => ({ ...execPin, id: `${baseId}_${index + 2}`, label: `Exec ${index + 2}` }));
+      const outputs = [...(nextDefinition.outputs || [])];
+      for (const pin of [execPin, ...dynamicPins]) {
+        if (pin.id === baseId) continue;
+        if (!outputs.some((item) => item.id === pin.id)) outputs.push({ ...pin, label: pin.label, direction: undefined });
+      }
+      return { ...nextDefinition, inputs: [...inputs, ...dynamicPins], outputs };
     };
     const schemaPins = resolveDynamicNodePins(definition, node, nodeConnections.incident);
     if (node.type === 'utility_wire_extender') {
