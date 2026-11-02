@@ -130,6 +130,7 @@ Discord is a trademark of Discord Inc. This project only uses the public Discord
 
 ARC Studio and Chezcord are licensed under the [Apache License 2.0](LICENSE). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the licenses of bundled third party packages.
 
+## More
 
 [ARC Studio Community Discord Server](https://discord.gg/FMv3T6XSyq)
 
