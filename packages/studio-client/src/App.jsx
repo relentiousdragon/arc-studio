@@ -66,7 +66,7 @@ import { ReleaseNotes } from './components/ui/ReleaseNotes.jsx';
 import { arcEvents } from './core/ArcEvents.js';
 import { listen as listenTauriEvent } from '@tauri-apps/api/event';
 import { apiUrl, normalizeWorkspaceUrl, studioWebSocketUrl } from './core/api.js';
-import { parseDesktopPasskeyCallback, peekDesktopPasskeyFlow, redeemDesktopPasskey, subscribeDesktopPasskeyCallbacks } from './core/desktopPasskeys.js';
+import { parseDesktopPasskeyCallback, peekDesktopPasskeyFlow, redeemDesktopPasskey, subscribeDesktopPasskeyCallbacks, subscribeDesktopPasskeyTickets } from './core/desktopPasskeys.js';
 import { probeInternetConnectivity } from './core/networkConnectivity.js';
 import { xhrJson } from './core/xhrJson.js';
 import { readAppStorage, removeAppStorage, writeAppStorage } from './core/storage.js';
@@ -5861,6 +5861,7 @@ export function App() {
         case 'view.console': setConsoleOpenRequest((request) => request + 1); break;
         case 'view.settings': setIsSettingsOpen(true); break;
         case 'help.shortcuts': setIsShortcutsOpen(true); break;
+        case 'help.discord': window.open('https://discord.gg/FMv3T6XSyq', '_blank', 'noopener'); break;
         default: break;
       }
     };
@@ -6431,6 +6432,7 @@ export function App() {
     if (!desktopMode) return undefined;
     let disposed = false;
     let unsubscribe = () => {};
+    let unsubscribeTickets = () => {};
     let queue = Promise.resolve();
     const finishDesktopPasskey = async ({ state, ticket }) => {
       const flow = peekDesktopPasskeyFlow(state);
@@ -6477,8 +6479,29 @@ export function App() {
       if (disposed) cleanup();
       else unsubscribe = cleanup;
     });
-    return () => { disposed = true; unsubscribe(); };
+    unsubscribeTickets = subscribeDesktopPasskeyTickets((notice) => {
+      if (!notice || notice.ended) {
+        arcEvents.emit('toast:notify', {
+          title: 'Passkey request ended',
+          message: 'The passkey request ended before it was approved. Start again from ARC Studio.',
+          type: 'info',
+          duration: 6000
+        });
+        arcEvents.emit('desktop-passkey:finished', { ok: false, kind: notice?.kind || 'authentication', error: 'The passkey request ended before it was approved.' });
+        return;
+      }
+      queue = queue.then(() => finishDesktopPasskey({ state: notice.state, ticket: notice.ticket }));
+      return queue;
+    });
+    return () => { disposed = true; unsubscribe(); unsubscribeTickets(); };
   }, [desktopMode]);
+
+  useEffect(() => {
+    if (!desktopMode) return undefined;
+    const surface = (workspaceSwitchOpen || needsSetup || needsProjectOnboarding || !authToken || !currentUser) ? 'splash' : 'workspace';
+    try { window.__TAURI_INTERNALS__?.invoke?.('set_menu_context', { surface })?.catch?.(() => {}); } catch {}
+    return undefined;
+  }, [authToken, currentUser, desktopMode, needsProjectOnboarding, needsSetup, workspaceSwitchOpen]);
 
   const handleSelectWorkspace = (mode) => {
     if (mode === 'local' && workspaceMode !== 'local') activateWorkspace('local');
