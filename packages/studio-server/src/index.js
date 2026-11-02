@@ -62,6 +62,19 @@ const collaborationLastSeen = new CollaborationLastSeen();
 
 const app = express();
 const server = http.createServer(app);
+let reportedListenError = false;
+server.on('error', (error) => {
+  if (reportedListenError) return;
+  reportedListenError = true;
+  if (error?.code === 'EADDRINUSE') {
+    logger.log('ERROR', `Port ${serverConfig.port} is already in use on ${serverConfig.host}. Stop the other process or set a different PORT in .env.`);
+    console.error(`[ARC Studio] Port ${serverConfig.port} is already in use on ${serverConfig.host}. Stop the other process or set a different PORT in .env.`);
+  } else {
+    logger.log('ERROR', `HTTP server could not listen: ${error?.message || error}`);
+    console.error(`[ARC Studio] HTTP server could not listen: ${error?.message || error}`);
+  }
+  process.exitCode = 1;
+});
 let websocketProxyWarningLogged = false;
 server.on('upgrade', (request, socket) => {
   let pathname = '';
@@ -73,6 +86,13 @@ server.on('upgrade', (request, socket) => {
   if (pathname && pathname !== '/ws') socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
 });
 const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 40 * 1024 * 1024 });
+wss.on('error', (error) => {
+  if (reportedListenError) return;
+  reportedListenError = true;
+  logger.log('ERROR', `WebSocket server could not start: ${error?.message || error}`);
+  console.error(`[ARC Studio] WebSocket server could not start: ${error?.message || error}`);
+  process.exitCode = 1;
+});
 //
 const liveGraphStates = new Map();
 const liveGraphAutosaveTimers = new Map();
