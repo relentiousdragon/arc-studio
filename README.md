@@ -132,5 +132,7 @@ ARC Studio and Chezcord are licensed under the [Apache License 2.0](LICENSE). Se
 
 
 [ARC Studio Community Discord Server](https://discord.gg/FMv3T6XSyq)
+
 [Termux Labs Discord Server](https://discord.gg/Cet9px5ZnZ) (Application only)
+
 2 November 2026
