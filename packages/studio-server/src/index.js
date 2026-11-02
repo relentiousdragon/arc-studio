@@ -13,6 +13,7 @@ import { UserStore } from './security/UserStore.js';
 import { StartupDiagnostics } from './engine/StartupDiagnostics.js';
 import { BotManager } from './engine/BotManager.js';
 import { createApiRouter } from './routes/api.js';
+import { createDesktopPasskeyBridgeHandler, isDesktopPasskeyBridgeRequest } from './routes/desktopPasskeyBridge.js';
 import { createBotManagerProxy } from './engine/RequestBotManager.js';
 import { CollaborationLastSeen } from './storage/CollaborationLastSeen.js';
 import { isArcStudioClientVersionAllowed } from './versioning/arcProjectCompatibility.js';
@@ -618,13 +619,19 @@ if (!serverOnlyMode && fs.existsSync(clientDistPath)) {
       next(error);
     }
   };
-  app.get('/', sendServerOnlyPage);
+  const nightlyRelease = String(serverConfig.version).includes('-');
+  const sendDesktopPasskeyPage = createDesktopPasskeyBridgeHandler({
+    logo: nightlyRelease ? '/nightly-icon.png' : '/arc.png',
+    releaseChannel: nightlyRelease ? 'nightly' : 'stable'
+  });
+  const sendWorkspacePage = (req, res, next) => (isDesktopPasskeyBridgeRequest(req.query) ? sendDesktopPasskeyPage(req, res, next) : sendServerOnlyPage(req, res, next));
+  app.get('/', sendWorkspacePage);
   app.get('/service-worker.js', sendStaticFile(serviceWorkerPath, 'javascript', 'no-cache'));
   app.get('/offline.html', sendStaticFile(offlineHtmlPath, 'html', 'no-cache'));
   app.get('/arc.png', sendStaticFile(resolve(clientPublicPath, 'arc.png'), 'png', 'public, max-age=86400'));
   app.get('/nightly-icon.png', sendStaticFile(resolve(clientPublicPath, 'nightly-icon.png'), 'png', 'public, max-age=86400'));
   app.get('*', (req, res, next) => {
-    if (!req.path.startsWith('/api') && !req.path.startsWith('/ws')) return sendServerOnlyPage(req, res, next);
+    if (!req.path.startsWith('/api') && !req.path.startsWith('/ws')) return sendWorkspacePage(req, res, next);
     return next();
   });
 }
