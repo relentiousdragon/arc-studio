@@ -176,6 +176,40 @@ test('desktop tickets reject a different state verifier origin or expired answer
   );
 });
 
+test('desktop wait exposes the issued ticket once and stops after redemption', () => {
+  const clock = { now: 6_000_000 };
+  const service = desktopService(clock);
+  const { state, codeVerifier } = startDesktopFlow(service);
+  assert.equal(service.peekDesktopTicket(state), null);
+  assert.equal(service.peekDesktopTicket(base64url()), null);
+  assert.equal(service.peekDesktopTicket('short'), null);
+
+  const flow = service.getDesktopFlow({ headers: { origin: 'https://studio.example.com' } }, state);
+  const ticket = callbackTicket(service, flow, state);
+  assert.deepEqual(service.peekDesktopTicket(state), {
+    ticket,
+    kind: 'authentication',
+    expiresAt: clock.now + 60 * 1000
+  });
+
+  assert.deepEqual(service.redeemDesktopTicket({ state, ticket, codeVerifier }), {
+    kind: 'authentication',
+    token: 'session-token',
+    user: { id: 'admin_1', username: 'owner' }
+  });
+  assert.equal(service.peekDesktopTicket(state), null);
+
+  const registrationFlow = (() => {
+    const value = startDesktopFlow(service);
+    const record = service.getDesktopFlow({ headers: { origin: 'https://studio.example.com' } }, value.state);
+    service.issueDesktopTicket(record, 'registration', { passkeys: [] });
+    return value.state;
+  })();
+  assert.deepEqual(service.peekDesktopTicket(registrationFlow).kind, 'registration');
+  clock.now += 60 * 1000 + 1;
+  assert.equal(service.peekDesktopTicket(registrationFlow), null);
+});
+
 test('desktop flow validation rejects unsafe origins and weak state values', () => {
   const clock = { now: 4_000_000 };
   const service = desktopService(clock);
