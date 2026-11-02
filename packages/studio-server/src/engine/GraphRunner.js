@@ -88,7 +88,13 @@ function getNodeBaseInputs(node, connections = []) {
 
 function getNodeOutputs(node, connections = []) {
   const schemaPins = resolveDynamicNodePins(NodeDefinitions[node?.type], node, connections);
-  return schemaPins?.outputs || NodeDefinitions[node?.type]?.outputs || [];
+  const outputs = schemaPins?.outputs || NodeDefinitions[node?.type]?.outputs || [];
+  if (node?.type === 'parallel') {
+    const connected = connections.filter((wire) => wire.sourceNodeId === node.id).map((wire) => wire.sourcePinId);
+    const highest = connected.reduce((value, id) => Math.max(value, Number(id.match(/^branch_(\d+)_exec$/)?.[1] || (id === 'branch_a_exec' ? 1 : id === 'branch_b_exec' ? 2 : 0))), 2);
+    return [...outputs, ...Array.from({ length: Math.max(0, Math.min(16, highest + 1) - 2) }, (_, index) => ({ id: `branch_${index + 3}_exec`, label: `Branch ${index + 3}`, type: 'exec' }))];
+  }
+  return outputs;
 }
 
 export class GraphRunner {
@@ -369,6 +375,10 @@ export class GraphRunner {
 
     const findExecOutputs = (nodeId, pinId = 'exec') => {
       return connections.filter((c) => c.sourceNodeId === nodeId && c.sourcePinId === pinId);
+    };
+    const findExecContinuation = (nodeId, inputPinId = 'exec') => {
+      const outputPinId = inputPinId === 'exec' ? 'exec' : inputPinId;
+      return findExecOutputs(nodeId, outputPinId);
     };
 
     const invalidateDataDependencies = (nodeId, pinId, seen = new Set()) => {
@@ -968,13 +978,18 @@ export class GraphRunner {
     const runExecWires = async (currentExecWires, inParallelBranch = false, parallelDepth = 0) => {
       if (context.signal?.aborted) return { error: 'Graph execution cancelled.' };
       if (parallelDepth > 16) return { error: 'Parallel graph nesting exceeded 16 levels.' };
+      let reachedJoinId = null;
       while (currentExecWires.length > 0) {
       if (context.signal?.aborted) return { error: 'Graph execution cancelled.' };
       if (++flowStepCount > 10000) return { error: 'Graph execution stopped after reaching the 10,000 step safety limit.' };
       const wire = currentExecWires.shift();
       const targetNode = nodes.find((n) => n.id === wire.targetNodeId);
       if (!targetNode) continue;
-      if (targetNode.type === 'parallel_join' && inParallelBranch) return { joinId: targetNode.id };
+      if (targetNode.type === 'parallel_join' && inParallelBranch) {
+        if (reachedJoinId && reachedJoinId !== targetNode.id) return { error: 'A Parallel branch reached more than one Join node.' };
+        reachedJoinId = targetNode.id;
+        continue;
+      }
           if (targetNode.type === 'parallel_join' && !wire.__releasedJoin) return { error: 'Join synchronizes branches started by a Parallel node. For If/Else paths, connect each path directly to the same action node.' };
 
       recordExecutedNode(targetNode.id);
@@ -1008,7 +1023,7 @@ export class GraphRunner {
             dataCache.set(`${targetNode.id}:value`, createdValue);
             log(`[Variable] Created or updated ${name} (${definition.valueType}).`);
           }
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+          currentExecWires.push(...findExecContinuation(targetNode.id, wire.targetPinId));
         } else if (targetNode.type === 'variable_set') {
           const reference = resolveDataInput(targetNode, 'variable', variableReference(targetNode.data?.variableId, targetNode.data?.scope));
           const variableId = reference?.__arcVariableRef ? reference.variableId : targetNode.data?.variableId;
@@ -1022,7 +1037,7 @@ export class GraphRunner {
             setVariableValue(variableId, variableScope, value, definition);
             log(`[Variable] Set ${definition.name}`);
           }
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+          currentExecWires.push(...findExecContinuation(targetNode.id, wire.targetPinId));
         } else if (targetNode.type === 'branch_if') {
           const decision = selectIfBranch(resolveDataInput(targetNode, 'condition', false));
           log(decision.logMessage);
@@ -1049,7 +1064,7 @@ export class GraphRunner {
           const ms = validateDelayDuration(resolveDataInput(targetNode, 'ms', targetNode.data?.ms ?? 1000));
           log(`[Delay] Sleeping for ${ms}ms...`);
           await waitFor(ms, context.signal);
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+          currentExecWires.push(...findExecContinuation(targetNode.id, wire.targetPinId));
         } else if (targetNode.type === 'loop_count') {
           const count = validateLoopCount(resolveDataInput(targetNode, 'count', targetNode.data?.count ?? 1));
           const bodyWires = findExecOutputs(targetNode.id, 'body_exec');
@@ -1112,7 +1127,7 @@ export class GraphRunner {
           } else {
             log('[Wait Until Time] The specified time has already passed, continuing now.');
           }
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+          currentExecWires.push(...findExecContinuation(targetNode.id, wire.targetPinId));
         } else if (targetNode.type === 'function_return') {
           functionReturnValue = resolveFunctionReturnResult(targetNode, resolveDataInput);
           for (const returnValue of getFunctionReturnValues(targetNode)) {
@@ -1150,7 +1165,7 @@ export class GraphRunner {
             const value = returnValue.legacy ? nestedResult.result : nestedResult.result?.[returnValue.returnId];
             dataCache.set(`${targetNode.id}:${functionReturnOutputPinId(returnValue)}`, value);
           }
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+          currentExecWires.push(...findExecContinuation(targetNode.id, wire.targetPinId));
         } else if (targetNode.type === 'execute_graph') {
           const targetGraph = context.resolveFunctionGraph?.(targetNode.data?.graphId);
           if (!targetGraph || targetGraph.graphType === 'function') throw new Error('Run Event Graph needs a saved event graph selected.');
@@ -1165,9 +1180,10 @@ export class GraphRunner {
           });
           if (nestedResult.error) throw Object.assign(new Error(nestedResult.error), context.signal?.aborted ? { name: 'AbortError' } : {});
           if (!nestedResult.executedNodeIds.length) throw new Error(`“${targetGraph.name || 'Target graph'}” has no trigger matching ${eventName}.`);
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+          currentExecWires.push(...findExecContinuation(targetNode.id, wire.targetPinId));
         } else if (targetNode.type === 'parallel') {
-          const branches = ['branch_a_exec', 'branch_b_exec'].map((pinId) => findExecOutputs(targetNode.id, pinId));
+          const branchPins = getNodeOutputs(targetNode, connections).filter((pin) => pin.type === 'exec').map((pin) => pin.id).filter((id) => id.startsWith('branch_') && findExecOutputs(targetNode.id, id).length);
+          const branches = branchPins.map((pinId) => findExecOutputs(targetNode.id, pinId));
           const joinId = await executeParallelBranches(
             branches,
             (branch) => runExecWires(branch, true, parallelDepth + 1),
@@ -1176,7 +1192,7 @@ export class GraphRunner {
           );
           currentExecWires.push({ sourceNodeId: targetNode.id, sourcePinId: 'exec', targetNodeId: joinId, __releasedJoin: true });
         } else if (targetNode.type === 'parallel_join') {
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+          currentExecWires.push(...findExecContinuation(targetNode.id, wire.targetPinId));
         } else if (NodeDefinitions[targetNode.type]?.pluginAdapter) {
           const definition = NodeDefinitions[targetNode.type];
           if (context.mock && definition.hostAdapter) throw new Error(`${definition.category} nodes are disabled in Offline Simulator to prevent live database changes.`);
@@ -1187,7 +1203,7 @@ export class GraphRunner {
           const outputs = await PluginStore.executeAdapter(targetNode.type, inputs, { projectDir: context.projectDir });
           for (const [pinId, value] of Object.entries(outputs)) dataCache.set(`${targetNode.id}:${pinId}`, value);
           log(`[Plugin Adapter] ${definition.label} completed in its isolated WebAssembly worker.`);
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+          currentExecWires.push(...findExecContinuation(targetNode.id, wire.targetPinId));
         } else if (DISCORD_GUILD_NODE_TYPES.has(targetNode.type)) {
           const { executeDiscordGuildNode } = await import('./nodes/runtime/discord_guild.js');
           const result = await executeDiscordGuildNode(targetNode, {
@@ -1198,7 +1214,7 @@ export class GraphRunner {
             setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value),
             log
           });
-          if (result !== false) currentExecWires.push(...findExecOutputs(targetNode.id, result === 'failure' ? 'failure_exec' : 'exec'));
+          if (result !== false) currentExecWires.push(...(result === 'failure' ? findExecOutputs(targetNode.id, 'failure_exec') : findExecContinuation(targetNode.id, wire.targetPinId)));
         } else if (['action_send_message', 'action_edit_message', 'action_edit_components'].includes(targetNode.type)) {
           const { executeDiscordMessageNode } = await import('./nodes/runtime/discord_messages.js');
           await executeDiscordMessageNode(targetNode, {
@@ -1212,7 +1228,7 @@ export class GraphRunner {
             setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value),
             log
           });
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+          currentExecWires.push(...findExecContinuation(targetNode.id, wire.targetPinId));
         } else if (targetNode.type === 'action_deploy_slash_commands') {
           if (typeof context.deploySlashCommands !== 'function') throw new Error('Slash command deployment is available while the bot is connected, not in simulation or exported runtime.');
           const interactionToken = String(eventPayload?.token || '');
@@ -1253,7 +1269,7 @@ export class GraphRunner {
           dataCache.set(`${targetNode.id}:error`, deploymentError);
           if (deploymentError) log(`[Deploy Slash Commands] ${deploymentError}`);
           else log(`[Deploy Slash Commands] Deployed ${deployedCount} command(s).`);
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+          currentExecWires.push(...findExecContinuation(targetNode.id, wire.targetPinId));
         } else if (DISCORD_INTERACTION_NODE_TYPES.has(targetNode.type)) {
           const { executeDiscordInteractionNode } = await import('./nodes/runtime/discord_interactions.js');
           await executeDiscordInteractionNode(targetNode, {
@@ -1270,18 +1286,18 @@ export class GraphRunner {
             nodes,
             setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value)
           });
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+          currentExecWires.push(...findExecContinuation(targetNode.id, wire.targetPinId));
         } else if (['action_console_log', 'action_console_warn', 'action_console_error'].includes(targetNode.type)) {
           const { executeConsoleLogNode } = await import('./nodes/runtime/console_log.js');
           executeConsoleLogNode(targetNode, {
             resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
             log
           });
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+          currentExecWires.push(...findExecContinuation(targetNode.id, wire.targetPinId));
         } else if (targetNode.type === 'action_set_custom_status') {
           log('Set Custom Status moved to Set Presence. Configure Custom Status there, then delete this node.', 'WARN');
           dataCache.set(`${targetNode.id}:success`, false);
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+          currentExecWires.push(...findExecContinuation(targetNode.id, wire.targetPinId));
         } else if (targetNode.type === 'action_set_presence') {
           const { executePresenceNode } = await import('./nodes/runtime/discord_presence.js');
           executePresenceNode(targetNode, {
@@ -1290,7 +1306,7 @@ export class GraphRunner {
             setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value),
             log
           });
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+          currentExecWires.push(...findExecContinuation(targetNode.id, wire.targetPinId));
         } else if (NETWORK_NODE_TYPES.has(targetNode.type)) {
           const { executeNetworkNode } = await import('./nodes/runtime/network.js');
           await executeNetworkNode(targetNode, {
@@ -1299,7 +1315,7 @@ export class GraphRunner {
             context,
             log
           });
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+          currentExecWires.push(...findExecContinuation(targetNode.id, wire.targetPinId));
         } else if (WEBSOCKET_NODE_TYPES.has(targetNode.type)) {
           const { executeWebSocketNode } = await import('./nodes/runtime/websocket.js');
           const result = await executeWebSocketNode(targetNode, {
@@ -1308,7 +1324,7 @@ export class GraphRunner {
             context,
             log
           });
-          currentExecWires.push(...findExecOutputs(targetNode.id, result === 'failure' ? 'failure_exec' : 'exec'));
+          currentExecWires.push(...(result === 'failure' ? findExecOutputs(targetNode.id, 'failure_exec') : findExecContinuation(targetNode.id, wire.targetPinId)));
         } else if (CRYPTO_NODE_TYPES.has(targetNode.type)) {
           const { executeCryptoNode } = await import('./nodes/runtime/crypto.js');
           executeCryptoNode(targetNode, {
@@ -1316,7 +1332,7 @@ export class GraphRunner {
             setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value),
             log
           });
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+          currentExecWires.push(...findExecContinuation(targetNode.id, wire.targetPinId));
         }
         await recordDebugStep(targetNode, debugInputs);
       } catch (nodeErr) {
@@ -1329,8 +1345,8 @@ export class GraphRunner {
         if (context.debug) await recordDebugStep(targetNode, [], 'error', safeError);
         return { error: safeError };
       }
-    }
-      return null;
+      }
+      return reachedJoinId ? { joinId: reachedJoinId } : null;
     };
 
     const executionError = await runExecWires(findExecOutputs(startNode.id, 'exec'));
