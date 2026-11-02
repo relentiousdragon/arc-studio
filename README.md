@@ -25,7 +25,7 @@ Create your Discord bot then export code to run it anywhere on the node.js runti
 - Collaborate on projects and edit graphs live with your team
 - Export project as a standalone bot that can run anywhere with node.js runtime
 
-ARC Studio is in development. Submit an issue for bugs or pull request to contribute.
+ARC Studio is in development. Submit an issue for bugs or pull request to contribute (Read [CONTRIBUTING.md]).
 
 ![A Discord command graph in ARC Studio](docs/screenshots/graph-editor.png)
 
@@ -128,7 +128,7 @@ Discord is a trademark of Discord Inc. This project only uses the public Discord
 
 ## License
 
-ARC Studio and Chezcord are licensed under the [Apache License 2.0](LICENSE). Third party packages keep their own licenses.
+ARC Studio and Chezcord are licensed under the [Apache License 2.0](LICENSE). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the licenses of bundled third party packages.
 
 
 [ARC Studio Community Discord Server](https://discord.gg/FMv3T6XSyq)
