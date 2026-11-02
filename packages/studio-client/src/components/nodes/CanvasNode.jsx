@@ -13,7 +13,6 @@ import { DiscordLongTextField, LONG_TEXT_THRESHOLD } from '../ui/DiscordLongText
 import { apiUrl } from '../../core/api.js';
 import { onPageBlur } from '../../core/pageFocus.js';
 import { resolveVariableReference } from '../../core/projectVariables.js';
-import dayjs from 'dayjs';
 import { getInputDefault } from '../../../../studio-server/src/engine/NodeSchemaDefinitions.js';
 //
 const slashCommandNamePattern = /^[-_'\p{L}\p{N}\p{sc=Deva}\p{sc=Thai}]{1,32}$/u;
