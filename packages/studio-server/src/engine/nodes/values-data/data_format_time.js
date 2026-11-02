@@ -21,7 +21,7 @@ export default {
       "id": "style",
       "label": "Date Format",
       "type": "string",
-      "defaultValue": "dd/MM/yyyy - HH:mm:ss"
+      "defaultValue": "DD/MM/YYYY - HH:mm:ss"
     },
     {
       "id": "duration",
