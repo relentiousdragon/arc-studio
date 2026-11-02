@@ -349,6 +349,7 @@ button:disabled { cursor: not-allowed !important; opacity: .48; }
 .settings-about-brand span { color: var(--muted); font-size: calc((9px) * var(--arc-font-scale, 1)); }
 .settings-about-brand .settings-about-versions { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; margin-left: auto; color: var(--muted); font-size: calc((8px) * var(--arc-font-scale, 1)); white-space: nowrap; }
 .settings-about-brand .settings-about-versions code { color: var(--text-secondary); font: calc(8px * var(--arc-font-scale, 1)) "DM Mono", ui-monospace, monospace; }
+.settings-about-disclaimer { display: block; margin: 6px 1px 0; color: var(--muted); font-size: calc((8px) * var(--arc-font-scale, 1)); line-height: 1.65; }
 .settings-about-section { display: grid; gap: 3px; }
 .settings-about-section h3 { margin: 1px 0 2px; color: var(--muted); font-size: calc((8px) * var(--arc-font-scale, 1)); font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }
 .settings-about-section h3 .update-indicator-dot { margin-left: 6px; vertical-align: middle; }
@@ -3393,6 +3394,8 @@ body.is-resizing-sidebar .popup-modal-studio, body.is-resizing-dock .popup-modal
 .passkey-safety-note { display: flex; align-items: flex-start; gap: 8px; padding: 9px 10px; border: 1px solid var(--line-soft); border-radius: 7px; color: var(--muted); background: color-mix(in srgb, var(--panel-raised) 58%, transparent); }
 .passkey-safety-note svg { flex: 0 0 auto; margin-top: 1px; color: var(--accent); }
 .passkey-safety-note p { margin: 0; font-size: calc((8.5px) * var(--arc-font-scale, 1)); line-height: 1.55; }
+.passkey-remove-copy { margin: 0 0 12px; color: var(--text-secondary); font-size: calc((12px) * var(--arc-font-scale, 1)); line-height: 1.5; }
+.passkey-remove-copy strong { color: var(--text); user-select: text; }
 
 @media (max-width: 760px) {
   .passkey-bridge-layout { grid-template-columns: minmax(0, 1fr); width: min(100% - 36px, 520px); gap: 26px; }
