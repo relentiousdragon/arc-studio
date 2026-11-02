@@ -11,6 +11,7 @@ const CEREMONY_TTL_MS = 3 * 60 * 1000;
 const PENDING_LOGIN_TTL_MS = 60 * 1000;
 const DESKTOP_FLOW_TTL_MS = 5 * 60 * 1000;
 const DESKTOP_TICKET_TTL_MS = 60 * 1000;
+const DESKTOP_HEARTBEAT_LIVENESS_MS = 90 * 1000;
 const MAX_PENDING_CEREMONIES = 2048;
 const MAX_PENDING_LOGINS = 256;
 const MAX_DESKTOP_FLOWS = 512;
@@ -324,6 +325,7 @@ export class PasskeyService {
       stateHash: flow.stateHash,
       codeChallenge: flow.codeChallenge,
       kind,
+      ticket,
       result,
       createdAt: this.now(),
       expiresAt: this.now() + DESKTOP_TICKET_TTL_MS
@@ -334,6 +336,49 @@ export class PasskeyService {
       success: true,
       callbackUrl: `arcstudio://passkey/callback?state=${encodeURIComponent(flow.state)}&ticket=${encodeURIComponent(ticket)}`
     };
+  }
+
+  findDesktopTicket(stateHash) {
+    for (const record of this.desktopTickets.values()) {
+      if (record.stateHash !== stateHash || record.expiresAt <= this.now()) continue;
+      return record;
+    }
+    return null;
+  }
+
+  peekDesktopTicket(state) {
+    const stateValue = String(state || '');
+    if (!PKCE_PATTERN.test(stateValue)) return null;
+    const record = this.findDesktopTicket(digest(stateValue));
+    if (!record) return null;
+    return { ticket: record.ticket, kind: record.kind, expiresAt: record.expiresAt };
+  }
+
+  touchDesktopFlow(state) {
+    const stateValue = String(state || '');
+    if (!PKCE_PATTERN.test(stateValue)) throw new Error('The desktop passkey state is invalid.');
+    const stateHash = digest(stateValue);
+    const now = this.now();
+    if (this.findDesktopTicket(stateHash)) return { pending: false };
+    const flow = this.desktopFlows.get(stateHash);
+    if (!flow || flow.expiresAt <= now) return { pending: false };
+    flow.browserSeenAt = now;
+    return { pending: true, expiresInSeconds: Math.max(1, Math.ceil((flow.expiresAt - now) / 1000)) };
+  }
+
+  describeDesktopFlow(state) {
+    const stateValue = String(state || '');
+    if (!PKCE_PATTERN.test(stateValue)) return { pending: false, expired: true };
+    const stateHash = digest(stateValue);
+    const now = this.now();
+    const ticketRecord = this.findDesktopTicket(stateHash);
+    if (ticketRecord) return { pending: false, ticket: ticketRecord.ticket, kind: ticketRecord.kind };
+    const flow = this.desktopFlows.get(stateHash);
+    if (!flow || flow.expiresAt <= now) return { pending: false, expired: true };
+    if (flow.browserSeenAt && now - flow.browserSeenAt > DESKTOP_HEARTBEAT_LIVENESS_MS) {
+      return { pending: false, expired: true };
+    }
+    return { pending: true, expiresInSeconds: Math.max(1, Math.ceil((flow.expiresAt - now) / 1000)) };
   }
 
   redeemDesktopTicket({ state, ticket, codeVerifier }) {
