@@ -7,6 +7,10 @@ const MAX_PENDING_FLOWS = 4;
 const STATE_PATTERN = /^[A-Za-z0-9_-]{43,128}$/;
 const TICKET_PATTERN = /^[A-Za-z0-9_-]{32,128}$/;
 const CALLBACK_PROTOCOL = 'arcstudio:';
+const WAIT_POLL_INTERVAL_MS = 1500;
+const WAIT_POLL_MAX_MS = 6.5 * 60 * 1000;
+const waitPoll = { state: '', timer: 0, startedAt: 0 };
+const ticketListeners = new Set();
 
 function isDesktopRuntime() {
   return Boolean(window.__ARC_STUDIO_CONFIG__?.desktop)
@@ -84,7 +88,67 @@ export function removeDesktopPasskeyFlow(state) {
 }
 
 export function cancelDesktopPasskeyFlows() {
+  stopDesktopPasskeyWaitPoller();
   try { sessionStorage.removeItem(STORAGE_KEY); } catch {}
+}
+
+function stopDesktopPasskeyWaitPoller() {
+  if (waitPoll.timer) window.clearTimeout(waitPoll.timer);
+  waitPoll.timer = 0;
+  waitPoll.state = '';
+  waitPoll.startedAt = 0;
+}
+
+function startDesktopPasskeyWaitPoller(state) {
+  stopDesktopPasskeyWaitPoller();
+  waitPoll.state = state;
+  waitPoll.startedAt = Date.now();
+  const poll = async () => {
+    if (waitPoll.state !== state) return;
+    const flow = peekDesktopPasskeyFlow(state);
+    if (!flow) return stopDesktopPasskeyWaitPoller();
+    let payload = null;
+    try {
+      const clientBuild = await getClientBuildInfo();
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 12000);
+      try {
+        const response = await fetch(`${flow.origin}/api/auth/passkeys/desktop/wait`, {
+          method: 'POST',
+          cache: 'no-store',
+          signal: controller.signal,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ state, clientBuild })
+        });
+        payload = await response.json().catch(() => null);
+      } finally { window.clearTimeout(timeout); }
+    } catch {}
+    if (waitPoll.state !== state) return;
+    if (payload && payload.pending === false && typeof payload.ticket === 'string' && TICKET_PATTERN.test(payload.ticket)) {
+      stopDesktopPasskeyWaitPoller();
+      await emitDesktopPasskeyNotice({ state, ticket: payload.ticket });
+      return;
+    }
+    if ((payload?.expired === true) || Date.now() - waitPoll.startedAt >= WAIT_POLL_MAX_MS) {
+      stopDesktopPasskeyWaitPoller();
+      await emitDesktopPasskeyNotice({ state, ended: true });
+      return;
+    }
+    waitPoll.timer = window.setTimeout(poll, WAIT_POLL_INTERVAL_MS);
+  };
+  waitPoll.timer = window.setTimeout(poll, WAIT_POLL_INTERVAL_MS);
+}
+
+async function emitDesktopPasskeyNotice(notice) {
+  try {
+    for (const handler of Array.from(ticketListeners)) await handler(notice);
+  } catch {}
+}
+
+export function subscribeDesktopPasskeyTickets(handler) {
+  if (typeof handler !== 'function') return () => {};
+  ticketListeners.add(handler);
+  return () => ticketListeners.delete(handler);
 }
 
 export async function beginDesktopPasskey({ kind, workspaceOrigin, authToken = '', password = '', name = '', persistSession = true }) {
@@ -163,6 +227,7 @@ export async function beginDesktopPasskey({ kind, workspaceOrigin, authToken = '
     removeDesktopPasskeyFlow(state);
     throw new Error(error?.message || 'Could not open your browser for the passkey request.');
   }
+  startDesktopPasskeyWaitPoller(state);
   return { state };
 }
 
