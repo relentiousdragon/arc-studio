@@ -1,10 +1,5 @@
 export function createAuthMiddleware(userStore) {
   return function requireAuth(req, res, next) {
-    const publicPaths = ['/api/health', '/api/auth/verify', '/api/auth/login'];
-    if (publicPaths.includes(req.path)) {
-      return next();
-    }
-
     const token =
       req.headers['x-arc-token'] ||
       req.headers['x-arc-setup-key'] ||
