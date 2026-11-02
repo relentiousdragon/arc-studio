@@ -3,10 +3,17 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { inflateRawSync } from 'node:zlib';
+import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { buildBotArchive } from '../src/export/BotArchive.js';
 //
+const require = createRequire(import.meta.url);
+function installedPackageRoot(name) {
+  let directory = path.dirname(require.resolve(name));
+  while (!fs.existsSync(path.join(directory, 'package.json'))) directory = path.dirname(directory);
+  return directory;
+}
 function readZipEntry(archive, targetName) {
   let offset = 0;
   while (offset + 30 <= archive.length && archive.readUInt32LE(offset) === 0x04034b50) {
@@ -215,8 +222,13 @@ test('selectively exported GraphRunner loads and executes its included action ru
 
   try {
     extractZipEntries(archive, directory);
-    fs.mkdirSync(path.join(directory, 'node_modules'), { recursive: true });
-    fs.symlinkSync(path.join(directory, 'chezcord'), path.join(directory, 'node_modules/chezcord'), 'dir');
+    const manifest = JSON.parse(fs.readFileSync(path.join(directory, 'package.json'), 'utf8'));
+    const moduleDirectory = path.join(directory, 'node_modules');
+    fs.mkdirSync(moduleDirectory, { recursive: true });
+    for (const name of Object.keys(manifest.dependencies)) {
+      const source = name === 'chezcord' ? path.join(directory, 'chezcord') : installedPackageRoot(name);
+      fs.symlinkSync(source, path.join(moduleDirectory, name), 'dir');
+    }
     const { GraphRunner } = await import(pathToFileURL(path.join(directory, 'src/engine/GraphRunner.js')).href);
     const presences = [];
     const result = await GraphRunner.execute({
