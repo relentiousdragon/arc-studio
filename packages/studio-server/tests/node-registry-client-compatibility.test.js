@@ -75,10 +75,7 @@ test('declarative editor controls have valid metadata and supply node defaults',
   assert.deepEqual(createDefaultNodeData('data_array_get'), { index: 0 });
   assert.deepEqual(createDefaultNodeData('repeat_while'), { condition: true, interval_ms: 500 });
   const functionInputData = createDefaultNodeData('function_input');
-  assert.match(functionInputData.arguments[0].paramId, /^param_\d+_[a-z0-9]+$/);
-  assert.deepEqual(functionInputData.arguments.map(({ name, valueType, optional, defaultValue }) => ({ name, valueType, optional, defaultValue })), [
-    { name: 'Input', valueType: 'string', optional: false, defaultValue: '' }
-  ]);
+  assert.deepEqual(functionInputData.arguments, []);
   assert.deepEqual(createDefaultNodeData('function_return'), {
     returns: [{ returnId: 'output_1', name: 'Result', valueType: 'number', defaultValue: 0 }]
   });
