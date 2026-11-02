@@ -50,10 +50,7 @@ export function studioWebSocketUrl() {
   const base = getApiBaseUrl();
   if (!base) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.hostname === 'localhost'
-      ? `127.0.0.1${window.location.port ? `:${window.location.port}` : ''}`
-      : window.location.host;
-    return `${protocol}//${host}/ws`;
+    return `${protocol}//${window.location.host}/ws`;
   }
   const url = new URL('/ws', base);
   if (url.hostname === 'localhost') url.hostname = '127.0.0.1';
