@@ -4,6 +4,7 @@ import { arcEvents } from '../../core/ArcEvents.js';
 import { describePasskeyError, isWebPasskeyAvailable, listPasskeys, registerWebPasskey, removePasskey } from '../../core/passkeys.js';
 import { beginDesktopPasskey, cancelDesktopPasskeyFlows } from '../../core/desktopPasskeys.js';
 import { Button } from '../ui/Button.jsx';
+import { Modal } from '../ui/Modal.jsx';
 import { TextInput } from '../ui/Inputs.jsx';
 //
 function formatDate(value) {
@@ -32,7 +33,8 @@ export function PasskeySettingsSection({ authToken, desktopMode = false, workspa
   const nameRef = useRef(null);
   const [desktopWaiting, setDesktopWaiting] = useState(false);
   const [removingId, setRemovingId] = useState('');
-  const [confirmRemoveId, setConfirmRemoveId] = useState('');
+  const [confirmRemoveOpen, setConfirmRemoveOpen] = useState(false);
+  const [confirmRemoveRecord, setConfirmRemoveRecord] = useState(null);
   const webSupported = !desktopMode && isWebPasskeyAvailable();
   const canAdd = Boolean(authToken) && (desktopMode ? Boolean(workspaceOrigin) : webSupported);
   const shakeField = (ref) => {
@@ -132,6 +134,35 @@ export function PasskeySettingsSection({ authToken, desktopMode = false, workspa
     setError('');
   };
 
+  const openRemoveConfirm = (record) => {
+    setError('');
+    setConfirmRemoveRecord(record);
+    setConfirmRemoveOpen(true);
+  };
+
+  const closeRemoveConfirm = () => {
+    setConfirmRemoveOpen(false);
+    setConfirmRemoveRecord(null);
+    setError('');
+  };
+
+  const confirmRemove = async () => {
+    const record = confirmRemoveRecord;
+    if (!authToken || removingId || !record) return;
+    const recordId = record.id;
+    closeRemoveConfirm();
+    setRemovingId(recordId);
+    try {
+      const next = await removePasskey(authToken, recordId);
+      setPasskeys(next);
+      arcEvents.emit('toast:notify', { title: 'Passkey removed', message: 'It can no longer sign in to this account.', type: 'success' });
+    } catch (requestError) {
+      setError(describePasskeyError(requestError, 'Could not remove this passkey.'));
+    } finally {
+      setRemovingId('');
+    }
+  };
+
   const remove = async (recordId) => {
     if (!authToken || removingId) return;
     setRemovingId(recordId);
@@ -139,7 +170,6 @@ export function PasskeySettingsSection({ authToken, desktopMode = false, workspa
     try {
       const next = await removePasskey(authToken, recordId);
       setPasskeys(next);
-      setConfirmRemoveId('');
       arcEvents.emit('toast:notify', { title: 'Passkey removed', message: 'It can no longer sign in to this account.', type: 'success' });
     } catch (requestError) {
       setError(describePasskeyError(requestError, 'Could not remove this passkey.'));
@@ -164,14 +194,27 @@ export function PasskeySettingsSection({ authToken, desktopMode = false, workspa
             <strong>{passkey.name || 'Passkey'}</strong>
             <span>{deviceLabel(passkey)} · Added {formatDate(passkey.createdAt)}{passkey.lastUsedAt ? ` · Last used ${formatDate(passkey.lastUsedAt)}` : ''}</span>
           </div>
-          {confirmRemoveId === passkey.id ? <div className="passkey-row-confirm" role="group" aria-label="Confirm passkey removal">
-            <span>Remove?</span>
-            <Button size="sm" variant="danger" loading={removingId === passkey.id} onClick={() => remove(passkey.id)}>Remove</Button>
-            <Button size="sm" variant="secondary" disabled={removingId === passkey.id} onClick={() => setConfirmRemoveId('')}>Cancel</Button>
-          </div> : <button type="button" className="passkey-remove-button" onClick={() => setConfirmRemoveId(passkey.id)} aria-label={`Remove passkey ${passkey.name || ''}`} title="Remove passkey"><Trash2 size={15} /></button>}
+          {removingId === passkey.id ? <button type="button" className="passkey-remove-button passkey-remove-button-loading" disabled aria-label={`Removing ${passkey.name || 'passkey'}`} title="Removing…"><LoaderCircle size={12} /></button> : <button type="button" className="passkey-remove-button" onClick={() => openRemoveConfirm(passkey)} aria-label={`Remove passkey ${passkey.name || ''}`} title="Remove passkey"><Trash2 size={15} /></button>}
         </li>)}
       </ul>}
     </section>
+
+    <Modal
+      isOpen={confirmRemoveOpen}
+      onClose={closeRemoveConfirm}
+      title="Remove passkey?"
+      subtitle="Confirm passkey removal"
+      icon={Trash2}
+      footer={
+        <>
+          <Button variant="secondary" onClick={closeRemoveConfirm} disabled={removingId === confirmRemoveRecord?.id}>Cancel</Button>
+          <Button variant="danger" loading={removingId === confirmRemoveRecord?.id} onClick={confirmRemove} disabled={!confirmRemoveRecord || removingId === confirmRemoveRecord?.id}>Remove</Button>
+        </>
+      }>
+      <p className="passkey-remove-copy">Removing <strong>{confirmRemoveRecord?.name}</strong> will delete it from this account.</p>
+      <p className="passkey-remove-copy">You will not be able to sign in with this passkey again.</p>
+      {error && <p className="field-error" role="alert">{error}</p>}
+    </Modal>
 
     <form className="passkey-add-form" onSubmit={addPasskey}>
       <div className="settings-section-heading"><span>Add a passkey</span></div>
@@ -185,7 +228,7 @@ export function PasskeySettingsSection({ authToken, desktopMode = false, workspa
         <TextInput
           label="Current password"
           type="password"
-          autoComplete="current-password"
+          autoComplete="off"
           value={password}
           onChange={(event) => { setPassword(event.target.value); setError(''); setPasswordError(''); }}
           placeholder="Confirm your password"
@@ -199,7 +242,7 @@ export function PasskeySettingsSection({ authToken, desktopMode = false, workspa
           value={name}
           maxLength={64}
           onChange={(event) => setName(event.target.value)}
-          placeholder="e.g. My MacBook"
+          placeholder="Work, Home, Phone, Laptop…"
           helper="Optional"
           inputRef={nameRef}
           disabled={!canAdd || adding}
