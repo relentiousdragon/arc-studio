@@ -25,7 +25,7 @@ Create your Discord bot then export code to run it anywhere on the node.js runti
 - Collaborate on projects and edit graphs live with your team
 - Export project as a standalone bot that can run anywhere with node.js runtime
 
-ARC Studio is in development. Submit an issue for bugs or pull request to contribute (Read [CONTRIBUTING.md]).
+ARC Studio is in development. Submit an issue for bugs or pull request to contribute (Read [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ![A Discord command graph in ARC Studio](docs/screenshots/graph-editor.png)
 
