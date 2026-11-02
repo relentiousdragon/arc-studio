@@ -637,6 +637,22 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       res.json({ success: true, ...result });
     } catch (error) { rejectPasskey(res, error); }
   });
+  router.post('/auth/passkeys/desktop/wait', (req, res) => {
+    if (!passkeyRoutesEnabled) return res.status(404).json({ error: 'Route not found.' });
+    if (!allowPasskeyAttempt(req, res, 'desktop-wait', { limit: 300 })) return;
+    if (!passkeyClientAllowed(req, res, { desktop: true })) return;
+    try {
+      const state = String(req.body?.state || '');
+      if (!PKCE_PATTERN.test(state)) return res.json({ success: true, pending: false });
+      const touched = passkeyService.touchDesktopFlow(state);
+      if (!touched || touched.pending === false) {
+        return res.json({ success: true, pending: false, expired: Boolean(touched?.expired) });
+      }
+      const issued = passkeyService.peekDesktopTicket(state);
+      if (!issued) return res.json({ success: true, pending: true });
+      res.json({ success: true, pending: false, ticket: issued.ticket, kind: issued.kind });
+    } catch (error) { rejectPasskey(res, error); }
+  });
 //
   router.use(authMiddleware);
   router.use((req, res, next) => {
