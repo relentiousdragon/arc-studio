@@ -30,6 +30,7 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [textMenu, setTextMenu] = useState(null);
   const [emojiEntries, setEmojiEntries] = useState(null);
+  const skipAutocompleteRef = useRef(false);
   const onOpenTextEditor = props.onOpenTextEditor;
   const { onOpenTextEditor: _onOpenTextEditor, ...fieldProps } = props;
   useImperativeHandle(forwardedRef, () => inputRef.current);
@@ -145,6 +146,11 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
 
   const onInputChange = (event) => {
     onChange?.(event);
+    if (skipAutocompleteRef.current) {
+      skipAutocompleteRef.current = false;
+      setMatch(null);
+      return;
+    }
     const textBeforeCaret = event.target.value.slice(0, event.target.selectionStart ?? event.target.value.length);
     if (templateAutocomplete) {
       const token = /\{\{([^{}]*)$/.exec(textBeforeCaret);
@@ -181,8 +187,11 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
       : item.emoji;
     const next = insertAtSelection(element, currentValue, match.start, match.end, insert);
     if (Number.isFinite(Number(props.maxLength)) && next.value.length > Number(props.maxLength)) return;
-    onChange?.({ target: { value: next.value, selectionStart: next.caret, selectionEnd: next.caret } });
     setMatch(null);
+    skipAutocompleteRef.current = true;
+    const prototype = element.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(prototype, 'value')?.set?.call(element, next.value);
+    element.dispatchEvent(new Event('input', { bubbles: true }));
     requestAnimationFrame(() => {
       element.focus();
       element.setSelectionRange?.(next.caret, next.caret);
