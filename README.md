@@ -70,7 +70,7 @@ In another terminal, run the web client:
 npm run dev:client
 ```
 
-Open the address Vite prints in the terminal. Change `ARC_SETUP_KEY` in `.env` before you start. The first person to sign in creates the workspace admin account.
+Open the address Vite prints in the terminal. Change `ARC_SETUP_KEY` in `.env` before you start. The first person to sign in creates the workspace owner account.
 
 ## Host it for your team
 
@@ -120,6 +120,12 @@ To work on the desktop app, run `npm run dev:desktop`. See [how the desktop app 
 
 Join the community Discord server to learn more about the current state of the project.
 
+## Disclaimer
+
+ARC Studio is an independent, open source project. It is not affiliated with, endorsed by, sponsored by, or maintained by Discord Inc. or any of its partners.
+
+Discord is a trademark of Discord Inc. This project only uses the public Discord API and Gateway endpoints through the bundled Chezcord library, on behalf of your bot token. Discord can change its platform at any time and any ban or account action falls on the bot owner, not this project.
+
 ## License
 
 ARC Studio and Chezcord are licensed under the [Apache License 2.0](LICENSE). Third party packages keep their own licenses.
@@ -127,4 +133,4 @@ ARC Studio and Chezcord are licensed under the [Apache License 2.0](LICENSE). Th
 
 [ARC Studio Community Discord Server](https://discord.gg/FMv3T6XSyq)
 [Termux Labs Discord Server](https://discord.gg/Cet9px5ZnZ) (Application only)
-1 November 2026
+2 November 2026
