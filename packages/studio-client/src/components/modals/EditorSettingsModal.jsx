@@ -375,6 +375,7 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
           <span>Chezcord <code>v{chezcordPackage.version}</code></span>
         </div>
       </div>
+      <p className="settings-about-disclaimer">ARC Studio is an independent, open source project. It is not affiliated with, endorsed by, or sponsored by Discord Inc. Discord and its logo are trademarks of Discord Inc.</p>
       <section className="settings-about-section" aria-labelledby="about-updates-heading">
         <h3 id="about-updates-heading">Updates{serverUpdate && <span className="update-indicator-dot" aria-label="Server update available" />}</h3>
         <Toggle label="Check for updates automatically" description={desktopMode ? 'Checks for ARC Studio releases when you’re online.' : undefined} checked={settings.autoUpdateChecks !== false} onChange={(value) => update('autoUpdateChecks', value)} />
