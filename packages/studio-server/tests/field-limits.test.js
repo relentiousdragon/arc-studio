@@ -24,6 +24,18 @@ test('warns when a resolved id or number does not match its field', () => {
   assert.equal(fieldLimitWarning({ nodeType: 'action_send_message', pin: channelPin, value: '' }), '');
 });
 
+test('does not warn on dynamic or flexibly typed sockets', () => {
+  const argPin = { id: 'arg_3', label: 'arg3', type: 'arg' };
+  const slotPin = { id: 'slot_name', label: 'name slot', type: 'any' };
+  const numberSlotPin = { id: 'value_4', label: 'Value', type: 'number' };
+  const argumentPin = { id: 'argument_2', label: 'Legal Argument 2', type: 'object' };
+  for (const pin of [argPin, slotPin, numberSlotPin, argumentPin]) {
+    assert.equal(fieldLimitWarning({ nodeType: 'action_send_message', pin, value: 'not a channel id at all' }), '');
+  }
+  assert.equal(fieldLimitWarning({ nodeType: 'action_send_message', pin: { id: 'item_7', label: 'Item 7', type: 'any' }, value: 'x'.repeat(3000) }), '');
+  assert.equal(fieldLimitWarning({ nodeType: 'action_send_message', pin: { id: 'anything', label: 'F', type: 'variable' }, value: 'general' }), '');
+});
+
 test('graph runs log a warning when a resolved value breaks a field rule', async () => {
   const lines = [];
   const graph = {
