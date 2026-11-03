@@ -2,7 +2,7 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 're
 import { createPortal } from 'react-dom';
 import {
   Activity, AlertTriangle, Archive, Check, ChevronDown, ChevronLeft, ChevronUp, CircleCheck, CircleX, ClipboardCopy, Cpu, FileText,
-  GitCompare, PictureInPicture2, Play, Save, Search, ShieldCheck, Smile, Square, StepForward, Terminal, Trash2, Upload, X
+  GitCompare, PictureInPicture2, Play, Plus, Save, Search, ShieldCheck, Smile, Square, StepForward, Terminal, Trash2, Upload, X
 } from 'lucide-react';
 import { arcEvents } from '../../core/ArcEvents.js';
 import { apiUrl } from '../../core/api.js';
@@ -227,6 +227,30 @@ export function ControlDock({
     }
   }, [simulationModals, selectedModalNodeId]);
   const nodeDefinitionByType = useMemo(() => new Map(nodeDefinitions.map((definition) => [definition.type, definition])), [nodeDefinitions]);
+  const tracePathEntries = useMemo(() => {
+    const executions = simResult?.executedNodeIds || [];
+    const labels = executions.map((id) => {
+      const node = traceNodeById.get(id);
+      return node?.label || nodeDefinitionByType.get(node?.type)?.label || 'Unknown node';
+    });
+    const totals = new Map();
+    for (const label of labels) totals.set(label, (totals.get(label) || 0) + 1);
+    const nodeTotals = new Map();
+    for (const id of executions) nodeTotals.set(id, (nodeTotals.get(id) || 0) + 1);
+    const occurrences = new Map();
+    const nodeOccurrences = new Map();
+    return executions.map((id, index) => {
+      const label = labels[index];
+      const occurrence = (occurrences.get(label) || 0) + 1;
+      occurrences.set(label, occurrence);
+      const visit = (nodeOccurrences.get(id) || 0) + 1;
+      nodeOccurrences.set(id, visit);
+      const displayLabel = nodeTotals.get(id) > 1
+        ? `${label} ↻${visit}`
+        : totals.get(label) > 1 ? `${label} · ${occurrence}` : label;
+      return { id, label, displayLabel };
+    });
+  }, [simResult?.executedNodeIds, traceNodeById, nodeDefinitionByType]);
   useEffect(() => {
     setTracePathExpanded(false);
     setTraceOutputsExpanded(false);
@@ -953,12 +977,10 @@ export function ControlDock({
             </> : <div className="dock-empty simulation-empty"><Cpu size={18} /><span>Starting debug run…</span></div> : !simResult ? <div className="dock-empty simulation-empty"><Cpu size={18} /><span>Results will appear here</span></div> : <>
               <div className="simulation-summary"><CircleCheck size={16} /><span>Completed</span><small>{simResult.elapsedMs} ms</small></div>
               {selectedEvent === 'MODAL_SUBMIT' && modalSubmissionSnapshot.length > 0 && <section className="modal-submission-preview" aria-label="Submitted modal fields"><strong>Submitted fields</strong>{modalSubmissionSnapshot.map((field) => <div className="modal-submission-row" key={field.customId}><div><span>{field.label}</span><code>{field.customId}</code></div><pre>{field.displayValue}</pre></div>)}</section>}
-              <div className={`simulation-path-scroll ${tracePathExpanded ? 'is-expanded' : ''}`} aria-label="Executed nodes"><div className="simulation-path">{(tracePathExpanded ? simResult.executedNodeIds || [] : (simResult.executedNodeIds || []).slice(0, 16)).map((id, index, visibleNodes) => {
-                const node = traceNodeById.get(id);
-                const label = node?.label || nodeDefinitionByType.get(node?.type)?.label || 'Unknown node';
-                return <React.Fragment key={`${id}-${index}`}><code aria-label={`${label}, node ${index + 1}`}>{label}</code>{index < visibleNodes.length - 1 && <span>→</span>}</React.Fragment>;
+              <div className={`simulation-path-scroll ${tracePathExpanded ? 'is-expanded' : ''}`} aria-label="Executed nodes"><div className="simulation-path">{(tracePathExpanded ? tracePathEntries : tracePathEntries.slice(0, 16)).map((entry, index, visibleNodes) => {
+                return <React.Fragment key={`${entry.id}-${index}`}><code title={`Node ID: ${entry.id}`} aria-label={`${entry.displayLabel}, node ${index + 1}, ID ${entry.id}`}>{entry.displayLabel}</code>{index < visibleNodes.length - 1 && <span>→</span>}</React.Fragment>;
               })}</div></div>
-              {(simResult.executedNodeIds || []).length > 16 && <button type="button" className="simulation-show-more" onClick={() => setTracePathExpanded((expanded) => !expanded)}>{tracePathExpanded ? <ChevronUp size={12} /> : <Plus size={12} />}{tracePathExpanded ? 'Show fewer nodes' : `Show ${simResult.executedNodeIds.length - 16} more nodes`}</button>}
+              {tracePathEntries.length > 16 && <button type="button" className="simulation-show-more" onClick={() => setTracePathExpanded((expanded) => !expanded)}>{tracePathExpanded ? <ChevronUp size={12} /> : <Plus size={12} />}{tracePathExpanded ? 'Show fewer nodes' : `Show ${tracePathEntries.length - 16} more nodes`}</button>}
               <div className={`simulation-actions-scroll ${traceOutputsExpanded ? 'is-expanded' : ''}`} aria-label="Simulation outputs"><div className="simulation-actions">{(traceOutputsExpanded ? simResult.interceptedOutputs || [] : (simResult.interceptedOutputs || []).slice(0, 3)).map((action, index) => {
                 const outputId = `${action.type}-${index}`;
                 const output = JSON.stringify(action.payload || action.responseData, null, 2) ?? 'No output data';
@@ -1031,7 +1053,7 @@ export function ControlDock({
           </div>
         </div>}
       </div>
-      {modalRoot && consoleContextMenu && createPortal(<div className="canvas-context-menu console-context-menu" role="menu" style={{ left: consoleContextMenu.x, top: consoleContextMenu.y, transform: `scale(${getArcUiScale()})`, transformOrigin: 'top left' }} onPointerDown={(event) => event.stopPropagation()}>
+      {modalRoot && consoleContextMenu && createPortal(<div className="canvas-context-menu console-context-menu" role="menu" style={{ left: consoleContextMenu.x, top: consoleContextMenu.y }} onPointerDown={(event) => event.stopPropagation()}>
         <button role="menuitem" onClick={() => copyConsoleText(consoleContextLog?.message)}><ClipboardCopy size={13} />Copy message</button>
         <button role="menuitem" onClick={() => copyConsoleText(`${formatTime(consoleContextLog?.timestamp)}  ${consoleContextLog?.level || 'INFO'}  ${consoleContextLog?.message || ''}`)}><ClipboardCopy size={13} />Copy full line</button>
         <button role="menuitem" onClick={() => copyConsoleText(filteredLogs.map((log) => `${formatTime(log.timestamp)}  ${log.level || 'INFO'}  ${log.message}`).join('\n'))}><FileText size={13} />Copy visible output</button>
@@ -1185,7 +1207,7 @@ function ModalSimulationField({ field, value, onChange }) {
   const options = (Array.isArray(field.options) ? field.options : []).map((option) => ({ value: String(option.value ?? option.label), label: String(option.label ?? option.value) }));
   return <label className="dock-field-label modal-simulation-field"><span>{field.label || 'Modal field'} <code>{field.customId}</code></span>
     {field.type === 'checkbox' ? <span className="modal-simulation-checkbox"><input type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(event.target.checked)} /> Checked</span>
-      : options.length ? <select className="studio-field" multiple={multiple} value={multiple ? (Array.isArray(value) ? value.map(String) : []) : String(value ?? '')} onChange={(event) => onChange(multiple ? [...event.target.selectedOptions].map((option) => option.value) : event.target.value)}>{!multiple && <option value="">Choose a value</option>}{options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
+      : options.length ? <AnimatedDropdown multiple={multiple} value={multiple ? (Array.isArray(value) ? value.map(String) : []) : String(value ?? '')} options={options} onChange={onChange} ariaLabel={field.label || 'Modal field'} placeholder={multiple ? 'Choose values' : 'Choose a value'} />
         : <input className="studio-field" value={Array.isArray(value) ? value.join(', ') : String(value ?? '')} onChange={(event) => onChange(multiple ? event.target.value.split(',').map((item) => item.trim()).filter(Boolean) : event.target.value)} placeholder={multiple ? 'Enter values separated by commas' : 'Sample response'} />}
   </label>;
 }
