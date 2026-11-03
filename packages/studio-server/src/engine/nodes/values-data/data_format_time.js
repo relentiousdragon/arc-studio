@@ -7,33 +7,27 @@ export default {
   "inputs": [
     {
       "id": "value",
-      "label": "Date / timestamp",
-      "type": "string",
+      "label": "Date / Timestamp",
+      "type": "arg",
       "defaultValue": ""
     },
     {
-      "id": "locale",
-      "label": "Locale",
-      "type": "string",
-      "defaultValue": "en-US"
-    },
-    {
-      "id": "timeZone",
+      "id": "timezone",
       "label": "Time zone",
       "type": "string",
       "defaultValue": "UTC"
     },
     {
-      "id": "dateStyle",
-      "label": "Date style",
+      "id": "style",
+      "label": "Date Format",
       "type": "string",
-      "defaultValue": "medium"
+      "defaultValue": "DD/MM/YYYY - HH:mm:ss"
     },
     {
-      "id": "timeStyle",
-      "label": "Time style",
-      "type": "string",
-      "defaultValue": "short"
+      "id": "duration",
+      "label": "Is Duration",
+      "type": "boolean",
+      "defaultValue": false
     }
   ],
   "outputs": [

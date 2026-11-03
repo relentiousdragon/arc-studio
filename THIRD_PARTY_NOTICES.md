@@ -29,6 +29,7 @@ client, server, and desktop shell builds.
 | `react-dom` | 18.3.1 | MIT |
 | `vite` | 6.4.4 | MIT |
 | `ws` | 8.22.0 | MIT |
+| `dayjs` | 1.11.23 | MIT |
 
 ## Rust packages
 

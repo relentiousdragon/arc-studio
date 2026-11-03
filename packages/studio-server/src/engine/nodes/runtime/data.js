@@ -1,3 +1,11 @@
+import dayjs from 'dayjs';
+import duration from 'dayjs/plugin/duration.js';
+import utc from 'dayjs/plugin/utc.js';
+import timezone from 'dayjs/plugin/timezone.js';
+dayjs.extend(duration);
+dayjs.extend(utc);
+dayjs.extend(timezone);
+
 function regexSafetyError(pattern) {
   if (pattern.length > 256) return 'Regex pattern is limited to 256 characters.';
   if (/\\(?:[1-9]|k<)/.test(pattern)) return 'Regex backreferences are disabled because they can cause very slow matches.';
@@ -388,13 +396,12 @@ export function evaluateDataNode(type, inputs = {}, data = {}) {
     if (!Number.isFinite(date.getTime())) return { text: '', valid: false };
     if (type === 'data_to_iso_time') return { text: date.toISOString(), valid: true };
     try {
-      const options = { timeZone: String(inputs.timeZone || 'UTC') };
-      const dateStyle = String(inputs.dateStyle || 'medium');
-      const timeStyle = String(inputs.timeStyle || 'short');
-      if (dateStyle !== 'none') options.dateStyle = dateStyle;
-      if (timeStyle !== 'none') options.timeStyle = timeStyle;
-      if (!options.dateStyle && !options.timeStyle) options.dateStyle = 'medium';
-      return { text: new Intl.DateTimeFormat(String(inputs.locale || 'en-US'), options).format(date), valid: true };
+      if (inputs.duration) {
+        const ms = Number(inputs.value);
+        if (!Number.isFinite(ms)) return { text: '', valid: false };
+        return { text: dayjs.duration(ms).format(inputs.style), valid: true };
+      }
+      return { text: dayjs(date).tz(inputs.timezone || "UTC").format(inputs.style), valid: true };
     } catch { return { text: '', valid: false }; }
   }
   return {};

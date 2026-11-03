@@ -30,3 +30,7 @@ export const NodeDefinitions = Object.fromEntries(nodeDefinitions.map((definitio
     ? { ...pin, semanticType: SEMANTIC_STRING_PIN_TYPES[pin.id] }
     : pin)
 }]));
+
+export function getInputDefault(node, pin) {
+  return NodeDefinitions[node]?.inputs?.find(input => input.id === pin)?.defaultValue;
+}

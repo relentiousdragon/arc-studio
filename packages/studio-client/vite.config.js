@@ -23,7 +23,7 @@ function retainRecentHashedAssets() {
       for (const entry of entries) {
         if (!entry.isFile() || !/-[\w-]{8,}\.(?:js|css)$/.test(entry.name)) continue;
         const assetPath = join(assetsDirectory, entry.name);
-        try { if (statSync(assetPath).mtimeMs < cutoff) rmSync(assetPath); } catch {}
+        try { if (statSync(assetPath).mtimeMs < cutoff) rmSync(assetPath); } catch { }
       }
     }
   };

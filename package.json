@@ -32,5 +32,8 @@
   },
   "devDependencies": {
     "concurrently": "^9.1.2"
+  },
+  "dependencies": {
+    "dayjs": "^1.11.23"
   }
 }

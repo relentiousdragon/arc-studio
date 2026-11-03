@@ -13,6 +13,7 @@ import { DiscordLongTextField, LONG_TEXT_THRESHOLD } from '../ui/DiscordLongText
 import { apiUrl } from '../../core/api.js';
 import { onPageBlur } from '../../core/pageFocus.js';
 import { resolveVariableReference } from '../../core/projectVariables.js';
+import { getInputDefault } from '../../../../studio-server/src/engine/NodeSchemaDefinitions.js';
 import { attachTemplateAutocomplete } from '../../core/templateFieldAutocomplete.js';
 //
 const slashCommandNamePattern = /^[-_'\p{L}\p{N}\p{sc=Deva}\p{sc=Thai}]{1,32}$/u;
@@ -53,7 +54,7 @@ function VariableJSONFallback({ type, value, onChange }) {
   try {
     const parsed = JSON.parse(text);
     valid = type === 'array' ? Array.isArray(parsed) : Boolean(parsed && typeof parsed === 'object' && !Array.isArray(parsed));
-  } catch {}
+  } catch { }
   return <div className="node-config-stack">
     <textarea rows={3} value={text} onChange={(event) => {
       const nextText = event.target.value;
@@ -62,7 +63,7 @@ function VariableJSONFallback({ type, value, onChange }) {
         const parsed = JSON.parse(nextText);
         const rightShape = type === 'array' ? Array.isArray(parsed) : parsed && typeof parsed === 'object' && !Array.isArray(parsed);
         if (rightShape) onChange(parsed);
-      } catch {}
+      } catch { }
     }} onBlur={() => { if (valid) setDraft(null); }} onPointerDown={(event) => event.stopPropagation()} placeholder={type === 'array' ? '[]' : '{}'} aria-label="Variable fallback JSON value" />
     {!valid && <small className="node-config-hint">Enter a valid JSON {type === 'array' ? 'array' : 'object'}.</small>}
   </div>;
@@ -515,10 +516,10 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
   };
   const valueTypes = [{ value: 'number', label: 'Number' }, { value: 'string', label: 'Text' }, { value: 'boolean', label: 'Boolean' }, { value: 'object', label: 'Object / Array' }];
   const functionArgumentTypes = [...valueTypes,
-    { value: 'channel_id', label: 'Channel ID' }, { value: 'thread_id', label: 'Thread ID' }, { value: 'message_id', label: 'Message ID' },
-    { value: 'interaction_id', label: 'Interaction ID' }, { value: 'application_id', label: 'Application ID' },
-    { value: 'guild_id', label: 'Server ID' }, { value: 'user_id', label: 'User ID' }, { value: 'role_id', label: 'Role ID' },
-    { value: 'interaction_token', label: 'Interaction Token' }
+  { value: 'channel_id', label: 'Channel ID' }, { value: 'thread_id', label: 'Thread ID' }, { value: 'message_id', label: 'Message ID' },
+  { value: 'interaction_id', label: 'Interaction ID' }, { value: 'application_id', label: 'Application ID' },
+  { value: 'guild_id', label: 'Server ID' }, { value: 'user_id', label: 'User ID' }, { value: 'role_id', label: 'Role ID' },
+  { value: 'interaction_token', label: 'Interaction Token' }
   ];
   if (node.type === 'data_get_modal_value') {
     const fieldId = String(node.data?.custom_id ?? '');
@@ -548,7 +549,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
         ? selectedCommandPermissions[0]
         : selectedCommandPermissions.length > 1
           ? `${selectedCommandPermissions.length} permissions`
-        : 'Everyone';
+          : 'Everyone';
     const usesAppDefaults = !Array.isArray(node.data?.integrationTypes) && !Array.isArray(node.data?.contexts);
     const integrationTypes = Array.isArray(node.data?.integrationTypes) ? node.data.integrationTypes : [];
     const commandContexts = Array.isArray(node.data?.contexts) ? node.data.contexts : [];
@@ -646,8 +647,8 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
         {argument.optional && (argument.valueType === 'object'
           ? <span className="node-config-hint">Default is an empty object. Connect an array or object node to supply data.</span>
           : argument.valueType === 'boolean'
-          ? <div className="function-input-default"><span>Default value</span><AnimatedCheckbox checked={Boolean(argument.defaultValue)} label="Default value" onChange={(value) => updateArgument(index, { defaultValue: value })} onPointerDown={(event) => event.stopPropagation()} /></div>
-          : <label className="function-input-default"><span>Default value</span><input type={argument.valueType === 'number' ? 'number' : 'text'} step={argument.valueType === 'number' ? 'any' : undefined} value={argument.valueType === 'number' ? (Number.isFinite(Number(argument.defaultValue)) ? Number(argument.defaultValue) : 0) : argument.defaultValue} onChange={(event) => updateArgument(index, { defaultValue: argument.valueType === 'number' ? (Number.isFinite(Number(event.target.value)) ? Number(event.target.value) : 0) : event.target.value })} onPointerDown={(event) => event.stopPropagation()} aria-label={`Optional ${argument.name || 'function input'} default value`} />{argument.valueType === 'channel_id' && <small>Must be a valid Discord ID when the function runs.</small>}</label>)}
+            ? <div className="function-input-default"><span>Default value</span><AnimatedCheckbox checked={Boolean(argument.defaultValue)} label="Default value" onChange={(value) => updateArgument(index, { defaultValue: value })} onPointerDown={(event) => event.stopPropagation()} /></div>
+            : <label className="function-input-default"><span>Default value</span><input type={argument.valueType === 'number' ? 'number' : 'text'} step={argument.valueType === 'number' ? 'any' : undefined} value={argument.valueType === 'number' ? (Number.isFinite(Number(argument.defaultValue)) ? Number(argument.defaultValue) : 0) : argument.defaultValue} onChange={(event) => updateArgument(index, { defaultValue: argument.valueType === 'number' ? (Number.isFinite(Number(event.target.value)) ? Number(event.target.value) : 0) : event.target.value })} onPointerDown={(event) => event.stopPropagation()} aria-label={`Optional ${argument.name || 'function input'} default value`} />{argument.valueType === 'channel_id' && <small>Must be a valid Discord ID when the function runs.</small>}</label>)}
       </section>)}
       <button type="button" className="node-config-action" onPointerDown={(event) => event.stopPropagation()} onClick={() => writeArguments([...argumentsList, { paramId: `param_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, name: `Input ${argumentsList.length + 1}`, valueType: 'string', optional: false, defaultValue: '' }])}><Plus size={12} /> Add argument</button>
     </div>;
@@ -753,10 +754,10 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     </div>;
   }
   if (node.type === 'math_random') return <div className="node-config node-config-stack">
-      {!isConnected('min') && <FallbackField label="Minimum"><NodeNumberInput allowEmpty step="any" value={node.data?.min ?? 0} onChange={(event) => update('min', numericNodeInputValue(event.target.value, { allowEmpty: true }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Random number minimum" />
-      </FallbackField>}
-      {!isConnected('max') && <FallbackField label="Maximum"><NodeNumberInput allowEmpty step="any" value={node.data?.max ?? 1} onChange={(event) => update('max', numericNodeInputValue(event.target.value, { allowEmpty: true }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Random number maximum" /></FallbackField>}
-    </div>;
+    {!isConnected('min') && <FallbackField label="Minimum"><NodeNumberInput allowEmpty step="any" value={node.data?.min ?? 0} onChange={(event) => update('min', numericNodeInputValue(event.target.value, { allowEmpty: true }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Random number minimum" />
+    </FallbackField>}
+    {!isConnected('max') && <FallbackField label="Maximum"><NodeNumberInput allowEmpty step="any" value={node.data?.max ?? 1} onChange={(event) => update('max', numericNodeInputValue(event.target.value, { allowEmpty: true }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Random number maximum" /></FallbackField>}
+  </div>;
   if (node.type === 'function_math') {
     return <div className="node-config node-config-stack">
       {nodeDef.inputs.filter((pin) => pin.type === 'number' && !isConnected(pin.id)).map((pin) => <FallbackField key={pin.id} label={pin.label}><NodeNumberInput step="any" value={node.data?.[pin.id] ?? pin.defaultValue ?? 0} onChange={(event) => update(pin.id, numericNodeInputValue(event.target.value, { fallback: Number(pin.defaultValue) || 0 }))} onPointerDown={(event) => event.stopPropagation()} aria-label={pin.label} /></FallbackField>)}
@@ -766,13 +767,31 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
   if (node.type === 'value_text') {
     return <div className="node-config node-config-stack">{textEditor('value', 'Text value', 2000, 'Hello World')}</div>;
   }
-  if (node.type === 'data_format_time') {
-    const styleOptions = [{ value: 'none', label: 'None' }, { value: 'short', label: 'Short' }, { value: 'medium', label: 'Medium' }, { value: 'long', label: 'Long' }, { value: 'full', label: 'Full' }];
-    return <div className="node-config node-config-stack">
-      <label className="math-precision"><span>Locale</span><input value={node.data?.locale ?? 'en-US'} onChange={(event) => update('locale', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="en-US" /></label>
-      <label className="math-precision"><span>Time zone</span><input value={node.data?.timeZone ?? 'UTC'} onChange={(event) => update('timeZone', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="America/New_York" /></label>
-      <div className="node-config"><AnimatedDropdown value={node.data?.dateStyle ?? 'medium'} options={styleOptions} onChange={(value) => update('dateStyle', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Date style" className="node-select" /><AnimatedDropdown value={node.data?.timeStyle ?? 'short'} options={styleOptions} onChange={(value) => update('timeStyle', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Time style" className="node-select" /></div>
-    </div>;
+  if (node.type === "data_format_time") {
+    const tz = node.data?.timezone ?? getInputDefault(node.type, "timezone");
+    const style = node.data?.style ?? getInputDefault(node.type, "style");
+    let isTzValid = !!tz;
+    if (isTzValid) try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); } catch { isTzValid = false; }
+    return (
+      <div className="node-config node-config-stack">
+        {(!isConnected('timezone') && !(node.data?.duration ?? getInputDefault(node.type, "duration"))) && (
+          <label className="node-config-fallback">
+            <span>Time Zone</span>
+            <input value={tz} onChange={(event) => update('timezone', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Time Zone" className={`variable-name ${!isTzValid ? 'is-invalid' : ''}`} />
+          </label>
+        )}
+        {!isConnected('style') && (
+          <label className="node-config-fallback">
+            <span>Date Format</span>
+            <input value={style} onChange={(event) => update('style', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Date Format" />
+            <span className="node-config-hint">See <a href="https://day.js.org/docs/en/parse/string-format#list-of-all-available-parsing-tokens" target="_blank" rel="noopener noreferrer">day.js.org</a> for formatting options.</span>
+          </label>
+        )}
+        {!isConnected('duration') && (
+          <FallbackCheckbox label="Format as duration" checked={node.data?.duration ?? getInputDefault(node.type, "duration")} onChange={(value) => update('duration', value)} />
+        )}
+      </div>
+    );
   }
   if (node.type === 'value_number') {
     return <div className="node-config"><NodeNumberInput value={node.data?.value ?? 0} onChange={(event) => update('value', numericNodeInputValue(event.target.value))} onPointerDown={(event) => event.stopPropagation()} aria-label="Number value" /></div>;
@@ -989,14 +1008,14 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
           {!isConnected('auto_archive_duration') && <FallbackField label="Auto archive"><AnimatedDropdown value={String(node.data?.auto_archive_duration ?? '')} onChange={(value) => update('auto_archive_duration', value === '' ? '' : Number(value))} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Thread auto archive duration" options={[{ value: '', label: 'Leave unchanged' }, ...[60, 1440, 4320, 10080].map((value) => ({ value: String(value), label: `${value >= 1440 ? `${value / 1440} day${value > 1440 ? 's' : ''}` : `${value} minutes`}` }))]} className="node-select" /></FallbackField>}
         </> : <>
           {textField('channel_id', 'Channel ID')}{textField('name', 'New name')}{textField('topic', 'Description / topic')}{textField('parent_id', 'New category ID')}
-        {!isConnected('rate_limit_per_user') && <FallbackField label="Slowmode (seconds)"><NodeNumberInput allowEmpty min="0" max="21600" value={node.data?.rate_limit_per_user ?? ''} onChange={(event) => update('rate_limit_per_user', numericNodeInputValue(event.target.value, { min: 0, max: 21600, allowEmpty: true }))} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave unchanged" /><small className="node-config-hint">0–21,600 seconds · blank keeps the current value</small></FallbackField>}
-        {!isConnected('nsfw') && <FallbackCheckbox label="Age restricted" checked={Boolean(node.data?.nsfw)} onChange={(value) => update('nsfw', value)} />}
-        {!isConnected('permission_overwrites') && <button type="button" className="node-config-action node-config-studio-action" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onOpenPermissionStudio?.({ ...node, type: 'data_permission_overwrites', label: 'Channel Permission Overwrites' }); }}><Plus size={12} /> Edit channel permissions</button>}
-        {!isConnected('bitrate') && <FallbackField label="Voice bitrate (bits/sec)"><NodeNumberInput allowEmpty min="8000" max="384000" step="1" value={node.data?.bitrate ?? ''} onChange={(event) => update('bitrate', numericNodeInputValue(event.target.value, { min: 8000, max: 384000, allowEmpty: true }))} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave unchanged" /><small className="node-config-hint">Custom values: 8,000–384,000. The server tier sets the actual cap; Stage channels cap at 64,000.</small></FallbackField>}
-        {!isConnected('user_limit') && <FallbackField label="User limit (0 = unlimited)"><NodeNumberInput allowEmpty min="0" max="10000" step="1" value={node.data?.user_limit ?? ''} onChange={(event) => update('user_limit', numericNodeInputValue(event.target.value, { min: 0, max: 10000, integer: true, allowEmpty: true }))} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave unchanged" /><small className="node-config-hint">Voice channels: 0–99 · Stage channels: up to 10,000</small></FallbackField>}
-        {textField('rtc_region', 'Voice region (blank = automatic)')}
-        {!isConnected('video_quality_mode') && <FallbackField label="Voice video quality"><AnimatedDropdown value={String(node.data?.video_quality_mode ?? '')} onChange={(value) => update('video_quality_mode', value === '' ? '' : Number(value))} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Voice video quality" options={[{ value: '', label: 'Leave unchanged' }, { value: '1', label: 'Automatic' }, { value: '2', label: '720p' }]} className="node-select" /></FallbackField>}
-        {!isConnected('default_auto_archive_duration') && <FallbackField label="Default thread archive"><AnimatedDropdown value={String(node.data?.default_auto_archive_duration ?? '')} onChange={(value) => update('default_auto_archive_duration', value === '' ? '' : Number(value))} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Default thread archive duration" options={[{ value: '', label: 'Leave unchanged' }, ...[60, 1440, 4320, 10080].map((value) => ({ value: String(value), label: `${value >= 1440 ? value / 1440 + ' day' + (value > 1440 ? 's' : '') : value + ' minutes'}` }))]} className="node-select" /></FallbackField>}
+          {!isConnected('rate_limit_per_user') && <FallbackField label="Slowmode (seconds)"><NodeNumberInput allowEmpty min="0" max="21600" value={node.data?.rate_limit_per_user ?? ''} onChange={(event) => update('rate_limit_per_user', numericNodeInputValue(event.target.value, { min: 0, max: 21600, allowEmpty: true }))} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave unchanged" /><small className="node-config-hint">0–21,600 seconds · blank keeps the current value</small></FallbackField>}
+          {!isConnected('nsfw') && <FallbackCheckbox label="Age restricted" checked={Boolean(node.data?.nsfw)} onChange={(value) => update('nsfw', value)} />}
+          {!isConnected('permission_overwrites') && <button type="button" className="node-config-action node-config-studio-action" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onOpenPermissionStudio?.({ ...node, type: 'data_permission_overwrites', label: 'Channel Permission Overwrites' }); }}><Plus size={12} /> Edit channel permissions</button>}
+          {!isConnected('bitrate') && <FallbackField label="Voice bitrate (bits/sec)"><NodeNumberInput allowEmpty min="8000" max="384000" step="1" value={node.data?.bitrate ?? ''} onChange={(event) => update('bitrate', numericNodeInputValue(event.target.value, { min: 8000, max: 384000, allowEmpty: true }))} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave unchanged" /><small className="node-config-hint">Custom values: 8,000–384,000. The server tier sets the actual cap; Stage channels cap at 64,000.</small></FallbackField>}
+          {!isConnected('user_limit') && <FallbackField label="User limit (0 = unlimited)"><NodeNumberInput allowEmpty min="0" max="10000" step="1" value={node.data?.user_limit ?? ''} onChange={(event) => update('user_limit', numericNodeInputValue(event.target.value, { min: 0, max: 10000, integer: true, allowEmpty: true }))} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave unchanged" /><small className="node-config-hint">Voice channels: 0–99 · Stage channels: up to 10,000</small></FallbackField>}
+          {textField('rtc_region', 'Voice region (blank = automatic)')}
+          {!isConnected('video_quality_mode') && <FallbackField label="Voice video quality"><AnimatedDropdown value={String(node.data?.video_quality_mode ?? '')} onChange={(value) => update('video_quality_mode', value === '' ? '' : Number(value))} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Voice video quality" options={[{ value: '', label: 'Leave unchanged' }, { value: '1', label: 'Automatic' }, { value: '2', label: '720p' }]} className="node-select" /></FallbackField>}
+          {!isConnected('default_auto_archive_duration') && <FallbackField label="Default thread archive"><AnimatedDropdown value={String(node.data?.default_auto_archive_duration ?? '')} onChange={(value) => update('default_auto_archive_duration', value === '' ? '' : Number(value))} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Default thread archive duration" options={[{ value: '', label: 'Leave unchanged' }, ...[60, 1440, 4320, 10080].map((value) => ({ value: String(value), label: `${value >= 1440 ? value / 1440 + ' day' + (value > 1440 ? 's' : '') : value + ' minutes'}` }))]} className="node-select" /></FallbackField>}
         </>}
         {reason}
       </>}
@@ -1065,9 +1084,9 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
           ? <JsonSchemaEditor value={node.data?.[pin.id] ?? pin.defaultValue ?? '{}'} onChange={(value) => update(pin.id, value)} onOpenTextEditor={() => onOpenTextStudio?.(node, pin.id, pin.label, String(node.data?.[pin.id] ?? pin.defaultValue ?? '{}'), 12000)} label={pin.label} />
           : pin.editor === 'json'
             ? <div className="plugin-json-editor"><button type="button" className="node-config-editor-button" aria-label={`Edit ${pin.label} JSON`} onClick={(event) => { event.stopPropagation(); onOpenTextStudio?.(node, pin.id, pin.label, String(node.data?.[pin.id] ?? pin.defaultValue ?? '{}'), 12000); }}><FileCode2 size={13} />Edit JSON</button></div>
-          : pin.id === 'svg'
-          ? <textarea rows={4} value={node.data?.[pin.id] ?? pin.defaultValue ?? ''} onChange={(event) => update(pin.id, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Paste SVG markup" aria-label={pin.label} />
-          : <input value={node.data?.[pin.id] ?? pin.defaultValue ?? ''} onChange={(event) => update(pin.id, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label={pin.label} />;
+            : pin.id === 'svg'
+              ? <textarea rows={4} value={node.data?.[pin.id] ?? pin.defaultValue ?? ''} onChange={(event) => update(pin.id, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Paste SVG markup" aria-label={pin.label} />
+              : <input value={node.data?.[pin.id] ?? pin.defaultValue ?? ''} onChange={(event) => update(pin.id, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label={pin.label} />;
         return <FallbackField key={pin.id} label={pin.label}>{input}</FallbackField>;
       })}
     </div>;
@@ -1217,7 +1236,7 @@ function AttachmentPicker({ files = [], authToken = '', onChange }) {
     if (files.length >= 10) { setError('Choose up to 10 files.'); return; }
     const pathName = parsed.pathname.split('/').filter(Boolean).pop() || 'attachment.bin';
     let inferredName = pathName;
-    try { inferredName = decodeURIComponent(pathName); } catch {}
+    try { inferredName = decodeURIComponent(pathName); } catch { }
     const cleanName = String(filename.trim() || inferredName).replace(/[\\/\0-\x1f]/g, '_').slice(0, 100) || 'attachment.bin';
     if (files.some((file) => String(file.filename || file.name || '').toLowerCase() === cleanName.toLowerCase())) { setError('Each attachment needs a unique filename.'); return; }
     setError('');
@@ -1229,7 +1248,7 @@ function AttachmentPicker({ files = [], authToken = '', onChange }) {
         body: JSON.stringify({ url: parsed.href, filename: cleanName })
       });
       let result = {};
-      try { result = await response.json(); } catch {}
+      try { result = await response.json(); } catch { }
       if (!response.ok || !result.file?.data) throw new Error(result.error || 'Could not download this attachment.');
       const currentBytes = files.reduce((total, file) => total + Math.floor(String(file.data || '').split(',').pop().length * 3 / 4), 0);
       const addedBytes = Math.floor(String(result.file.data).split(',').pop().length * 3 / 4);
@@ -1243,28 +1262,28 @@ function AttachmentPicker({ files = [], authToken = '', onChange }) {
   };
   return <>
     <div className="node-attachment-picker" onPointerDown={(event) => event.stopPropagation()}>
-    <div className="node-attachment-heading"><span>Attachments</span><span>{files.length} / 10 · 20 MiB each</span></div>
-    <button className="node-attachment-choose" type="button" onClick={() => fileInputRef.current?.click()} onContextMenu={openContextMenu}>Choose files</button>
-    <input ref={fileInputRef} className="node-attachment-file-input" type="file" multiple onChange={onFiles} />
-    {files.length > 0 && <div className="node-attachment-list">{files.map((file, index) => {
-      const image = String(file.contentType || '').toLowerCase().startsWith('image/') || /^data:image\//i.test(String(file.data || '')) || /\.(apng|avif|bmp|gif|jpe?g|png|svg|webp)$/i.test(String(file.filename || file.name || ''));
-      const source = typeof file.data === 'string' && file.data.startsWith('data:image/') ? file.data : '';
-      return <div className="node-attachment-item" key={`${file.filename}-${index}`}>
-        {image && source && <button className="node-attachment-open-image" type="button" aria-label={`Preview ${file.filename}`} title="Open image preview" onClick={() => { setImagePreview({ filename: file.filename, source }); setImageZoomed(false); }}><img src={source} alt="" /></button>}
-        <span title={file.url || undefined}>{file.filename}{file.url ? ' · URL' : ''}</span>
-        <button className="node-attachment-remove" type="button" onClick={() => remove(index)} aria-label={`Remove ${file.filename}`} title={`Remove ${file.filename}`}><X size={12} /></button>
-      </div>;
-    })}</div>}
-    {urlEntryOpen && <form className="node-attachment-url-form" onSubmit={addUrl}>
-      <input type="url" value={url} onChange={(event) => { setUrl(event.target.value); setError(''); }} onPointerDown={(event) => event.stopPropagation()} placeholder="https://example.com/image.png" aria-label="Attachment URL" autoCapitalize="none" autoCorrect="off" spellCheck="false" required disabled={urlLoading} />
-      <input value={filename} onChange={(event) => setFilename(event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Filename (optional)" aria-label="Attachment filename" maxLength={100} autoCapitalize="none" autoCorrect="off" spellCheck="false" disabled={urlLoading} />
-      <div><button type="button" disabled={urlLoading} onClick={() => { setUrlEntryOpen(false); setError(''); }}>Cancel</button><button type="submit" disabled={urlLoading}>{urlLoading ? 'Downloading…' : 'Add URL'}</button></div>
-    </form>}
-    <small>24 MiB total per message. URL files are downloaded into the graph and included in exports. Embed images can use attachment://filename.</small>
-    {error && <small className="node-attachment-error" role="alert">{error}</small>}
-    {contextMenu && createPortal(<div ref={contextMenuRef} className="canvas-context-menu attachment-context-menu" role="menu" style={{ left: contextMenu.left, top: contextMenu.top }} onPointerDown={(event) => event.stopPropagation()}>
-      <button role="menuitem" onClick={() => { setUrlEntryOpen(true); setContextMenu(null); setError(''); }}><span>Use URL</span></button>
-    </div>, document.body)}
+      <div className="node-attachment-heading"><span>Attachments</span><span>{files.length} / 10 · 20 MiB each</span></div>
+      <button className="node-attachment-choose" type="button" onClick={() => fileInputRef.current?.click()} onContextMenu={openContextMenu}>Choose files</button>
+      <input ref={fileInputRef} className="node-attachment-file-input" type="file" multiple onChange={onFiles} />
+      {files.length > 0 && <div className="node-attachment-list">{files.map((file, index) => {
+        const image = String(file.contentType || '').toLowerCase().startsWith('image/') || /^data:image\//i.test(String(file.data || '')) || /\.(apng|avif|bmp|gif|jpe?g|png|svg|webp)$/i.test(String(file.filename || file.name || ''));
+        const source = typeof file.data === 'string' && file.data.startsWith('data:image/') ? file.data : '';
+        return <div className="node-attachment-item" key={`${file.filename}-${index}`}>
+          {image && source && <button className="node-attachment-open-image" type="button" aria-label={`Preview ${file.filename}`} title="Open image preview" onClick={() => { setImagePreview({ filename: file.filename, source }); setImageZoomed(false); }}><img src={source} alt="" /></button>}
+          <span title={file.url || undefined}>{file.filename}{file.url ? ' · URL' : ''}</span>
+          <button className="node-attachment-remove" type="button" onClick={() => remove(index)} aria-label={`Remove ${file.filename}`} title={`Remove ${file.filename}`}><X size={12} /></button>
+        </div>;
+      })}</div>}
+      {urlEntryOpen && <form className="node-attachment-url-form" onSubmit={addUrl}>
+        <input type="url" value={url} onChange={(event) => { setUrl(event.target.value); setError(''); }} onPointerDown={(event) => event.stopPropagation()} placeholder="https://example.com/image.png" aria-label="Attachment URL" autoCapitalize="none" autoCorrect="off" spellCheck="false" required disabled={urlLoading} />
+        <input value={filename} onChange={(event) => setFilename(event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Filename (optional)" aria-label="Attachment filename" maxLength={100} autoCapitalize="none" autoCorrect="off" spellCheck="false" disabled={urlLoading} />
+        <div><button type="button" disabled={urlLoading} onClick={() => { setUrlEntryOpen(false); setError(''); }}>Cancel</button><button type="submit" disabled={urlLoading}>{urlLoading ? 'Downloading…' : 'Add URL'}</button></div>
+      </form>}
+      <small>24 MiB total per message. URL files are downloaded into the graph and included in exports. Embed images can use attachment://filename.</small>
+      {error && <small className="node-attachment-error" role="alert">{error}</small>}
+      {contextMenu && createPortal(<div ref={contextMenuRef} className="canvas-context-menu attachment-context-menu" role="menu" style={{ left: contextMenu.left, top: contextMenu.top }} onPointerDown={(event) => event.stopPropagation()}>
+        <button role="menuitem" onClick={() => { setUrlEntryOpen(true); setContextMenu(null); setError(''); }}><span>Use URL</span></button>
+      </div>, document.body)}
     </div>
     {imagePreview && createPortal(<div className={`discord-gallery-lightbox${imageZoomed ? ' is-image-zoomed' : ''}`} role="dialog" aria-modal="true" aria-label={`Image preview: ${imagePreview.filename}`} onClick={(event) => { if (event.target === event.currentTarget) { setImagePreview(null); setImageZoomed(false); } }}>
       <button type="button" className="discord-gallery-lightbox-close" aria-label="Close image viewer" title="Close image viewer" onClick={() => { setImagePreview(null); setImageZoomed(false); }}><X size={20} /></button>
