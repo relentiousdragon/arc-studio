@@ -21,6 +21,10 @@ export function TemplateSyntaxHelp({ connectedArguments = [] }) {
       <div className="template-syntax-help-content">
         <p>Insert a variable with double braces. Variables resolve from the current graph and event data.</p>
         <pre>{'{{username}}'}</pre>
+        <h3>Literal braces</h3>
+        <p>Put a backslash before the braces to print the template as written. The backslash is removed and the braces stay in the output, so the token is never resolved.</p>
+        <pre>{'\\{{username}}'}</pre>
+        <p>That prints <code>{'{{username}}'}</code>. The backslash only affects the token directly after it.</p>
         <h3>Expressions</h3>
         <p>Expressions use a safe, built-in evaluator. Use parentheses to make the order clear, division or remainder by zero returns 0.</p>
         <pre>{'{{1 + 1}}\n{{score + bonus}}\n{{round((score + bonus) / 3, 2)}}\n{{toString(round(toNumber(score), 2))}}'}</pre>
