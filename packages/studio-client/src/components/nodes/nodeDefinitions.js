@@ -1,4 +1,4 @@
-import { getTemplateReferences, renderTextTemplate } from '../../../../studio-server/src/engine/TemplateExpressions.js';
+import { getTemplateReferences, renderTextTemplate, validateTemplateFunctionName } from '../../../../studio-server/src/engine/TemplateExpressions.js';
 import { functionArgumentPinId, functionInputPinType, functionReturnInputPinId, functionReturnOutputPinId, getFunctionGraphArguments, getFunctionGraphReturnValues, getFunctionInputArguments, getFunctionReturnValues } from '../../../../studio-server/src/engine/FunctionGraphContract.js';
 import { getNodeArgumentPins, MAX_NODE_ARGUMENTS, NODE_SCHEMA_VERSION, resolveDynamicNodePins } from '../../../../studio-server/src/engine/DynamicNodePins.js';
 import {
@@ -7,7 +7,7 @@ import {
 import { NodeCategories as BundledNodeCategories, NodeDefinitions } from '../../../../studio-server/src/engine/NodeSchemaDefinitions.js';
 //
 export let NodeCategories = Object.freeze({});
-export { renderTextTemplate };
+export { renderTextTemplate, validateTemplateFunctionName };
 export { NODE_SCHEMA_VERSION };
 export { CLIENT_PROTOCOL_VERSION, NODE_REGISTRY_PROTOCOL_VERSION, SUPPORTED_NODE_REGISTRY_FEATURES, getNodeRegistryCompatibility };
 
@@ -61,10 +61,7 @@ export function createDefaultNodeData(type) {
     .map((control) => [control.key, control.defaultValue]));
   const nodeDefaults = definition?.defaultData || {};
   if (type === 'function_input') {
-    return {
-      ...nodeDefaults,
-      arguments: [{ paramId: `param_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`, name: 'Input', valueType: 'string', optional: false, defaultValue: '' }]
-    };
+    return { ...nodeDefaults, arguments: [] };
   }
   const pluginDefinition = definition?.pluginAdapter ? definition : null;
   if (pluginDefinition) return {
