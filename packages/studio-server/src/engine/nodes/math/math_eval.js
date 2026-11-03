@@ -4,7 +4,25 @@ export default {
   "category": "Math",
   "label": "Evaluate",
   "color": "#38bdf8",
-  "inputs": [],
+  "editorControls": [
+    {
+      "type": "text",
+      "key": "expression",
+      "inputId": "expression",
+      "label": "Expression",
+      "placeholder": "Used when unconnected",
+      "defaultValue": "",
+      "hideWhenConnected": true
+    }
+  ],
+  "inputs": [
+    {
+      "id": "expression",
+      "label": "Expression",
+      "type": "string",
+      "defaultValue": ""
+    }
+  ],
   "outputs": [
     {
       "id": "result",

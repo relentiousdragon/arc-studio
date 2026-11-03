@@ -1,3 +1,6 @@
+import { Parser } from "expr-eval";
+const parser = new Parser();
+
 const number = (value) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -69,6 +72,15 @@ export function evaluateMathNode(type, inputs, data = {}) {
       const lower = Math.min(number(inputs.min), number(inputs.max));
       const upper = Math.max(number(inputs.min), number(inputs.max));
       result = lower + Math.random() * (upper - lower);
+      break;
+    }
+    case 'math_eval': {
+      try {
+
+        const expr = parser.parse(inputs.expression);
+        const result = expr.evaluate();
+        return { result: result, valid: Number.isFinite(result) }
+      } catch { return { result: 0, valid: false } }
       break;
     }
     default: return 0;
