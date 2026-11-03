@@ -84,11 +84,15 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
     Object.assign(dependencies, plugin.dependencies || {});
     environment.push(...(plugin.environment || []));
     permissionSections.push(plugin.permissionSection);
-    if (plugin.kind === 'wasm-adapter') pluginFiles.push(plugin.file);
-    else pluginFiles.push(...plugin.files);
+    if (plugin.kind === 'wasm-adapter') {
+      pluginFiles.push(plugin.file);
+      if (plugin.extraFiles) pluginFiles.push(...plugin.extraFiles);
+    } else {
+      pluginFiles.push(...plugin.files);
+    }
   }
   const pluginStoreSource = createExportPluginStore(exports);
-  const readme = `${baseReadme}\n${exports.length ? `This export includes ${exports.map((plugin) => `${plugin.name} ${plugin.version}`).join(', ')} adapter${exports.length === 1 ? '' : 's'}. See PLUGIN-PERMISSIONS.md for declared capabilities and plugin notices.\n` : ''}`;
+  const readme = `${baseReadme}\nSee THIRD-PARTY-LICENSES.md for third party component and plugin licenses.\n${exports.length ? `This export includes ${exports.map((plugin) => `${plugin.name} ${plugin.version}`).join(', ')} adapter${exports.length === 1 ? '' : 's'}. See PLUGIN-PERMISSIONS.md for declared capabilities.\n` : ''}`;
   const seenEnvironmentNames = new Set(['DISCORD_BOT_TOKEN', 'ARC_CRYPTO_SECRET', 'ARC_LOG_RETENTION_DAYS']);
   const environmentExamples = environment.filter((item) => {
     if (seenEnvironmentNames.has(item.name)) return false;
@@ -140,6 +144,8 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
     { name: 'src/engine/DynamicNodePins.js', data: readText('src/engine/DynamicNodePins.js') },
     { name: 'src/engine/SlashCommandOptions.js', data: readText('src/engine/SlashCommandOptions.js') },
     { name: 'src/engine/TemplateExpressions.js', data: readText('src/engine/TemplateExpressions.js') },
+    { name: 'src/engine/EventTemplatePaths.js', data: readText('src/engine/EventTemplatePaths.js') },
+    { name: 'src/engine/FieldLimits.js', data: readText('src/engine/FieldLimits.js') },
     { name: 'src/engine/MathOperations.js', data: readText('src/engine/MathOperations.js') },
     { name: 'src/engine/CronSchedule.js', data: readText('src/engine/CronSchedule.js') },
     { name: 'src/engine/PluginStore.js', data: pluginStoreSource },
@@ -147,7 +153,8 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
     { name: 'src/engine/NodeSchemaDefinitions.js', data: readText('src/engine/NodeSchemaDefinitions.js') },
     { name: 'src/engine/NodeRegistryContract.js', data: readText('src/engine/NodeRegistryContract.js') },
     { name: 'src/storage/Integrity.js', data: readText('src/storage/Integrity.js') },
-    { name: 'LICENSE', data: readText('LICENSE', repoRoot) }
+    { name: 'LICENSE', data: readText('LICENSE', repoRoot) },
+    { name: 'THIRD-PARTY-LICENSES.md', data: generateThirdPartyLicenses({ exports, dependencies }) }
   ];
   if (requiredRuntimeModules.has('network.js')) {
     entries.push({ name: 'src/engine/SafeHttpRequest.js', data: readText('src/engine/SafeHttpRequest.js') });
@@ -179,14 +186,16 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
   if (permissionSections.length) entries.push({ name: 'PLUGIN-PERMISSIONS.md', data: `# Plugin permissions\n\nThe exported process runs outside ARC Studio's per-project permission enforcement. Review each plugin's declared capabilities and restrict its external credentials accordingly.\n\n${permissionSections.join('\n\n')}\n` });
   for (const file of walk(path.resolve(repoRoot, 'packages/chezcord'))) {
     const relative = path.relative(path.resolve(repoRoot, 'packages/chezcord'), file).split(path.sep).join('/');
-    if (relative === 'package.json' || relative.startsWith('src/')) {
+    if (relative === 'package.json' || relative === 'LICENSE' || relative.startsWith('src/')) {
       entries.push({ name: `chezcord/${relative}`, data: fs.readFileSync(file) });
     }
   }
-  const integrityFiles = Object.fromEntries(entries.map((entry) => {
-    const bytes = Buffer.isBuffer(entry.data) ? entry.data : Buffer.from(String(entry.data));
-    return [entry.name, createHash('sha256').update(bytes).digest('hex')];
-  }));
+  const integrityFiles = Object.fromEntries(entries
+    .filter((entry) => entry.name !== '.env')
+    .map((entry) => {
+      const bytes = Buffer.isBuffer(entry.data) ? entry.data : Buffer.from(String(entry.data));
+      return [entry.name, createHash('sha256').update(bytes).digest('hex')];
+    }));
   entries.push({ name: 'integrity.json', data: JSON.stringify({ format: 'arc-bot-integrity', version: 1, algorithm: 'sha256', files: integrityFiles }, null, 2) });
   return zip(entries);
 }
@@ -218,12 +227,90 @@ export function verifyBotArchiveIntegrity(archive) {
   const manifest = JSON.parse(integrityBytes.toString('utf8'));
   if (manifest?.format !== 'arc-bot-integrity' || manifest?.algorithm !== 'sha256' || !manifest.files || typeof manifest.files !== 'object') throw new Error('The bot export has an invalid SHA-256 integrity manifest.');
   const expectedNames = Object.keys(manifest.files);
-  if (expectedNames.length !== extracted.size - 1) throw new Error('The bot export integrity manifest does not cover every ZIP file.');
+  const coveredExtracted = [...extracted.keys()].filter((name) => name !== 'integrity.json' && name !== '.env');
+  if (expectedNames.length !== coveredExtracted.length) throw new Error('The bot export integrity manifest does not cover every ZIP file.');
   for (const name of expectedNames) {
     const bytes = extracted.get(name);
     if (!bytes || createHash('sha256').update(bytes).digest('hex') !== manifest.files[name]) throw new Error(`SHA-256 integrity check failed for ${name}.`);
   }
   return true;
+}
+
+export const PLUGIN_LICENSE_FILENAMES = ['LICENSE', 'LICENCE.md', 'LICENCE.txt'];
+
+export function findPluginLicense(directory) {
+  if (!directory) return null;
+  for (const name of PLUGIN_LICENSE_FILENAMES) {
+    const candidate = path.resolve(directory, name);
+    if (!candidate.startsWith(`${path.resolve(directory)}${path.sep}`)) continue;
+    if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+      return { filename: name, content: fs.readFileSync(candidate, 'utf8') };
+    }
+  }
+  return null;
+}
+
+export function generateThirdPartyLicenses({ exports = [], dependencies = {} } = {}) {
+  const lines = [
+    '# Third-Party Licenses and Notices',
+    '',
+    'This standalone bot export includes software components, bundled libraries, and plugins subject to separate license terms.',
+    '',
+    '## Bundled Workspace Packages',
+    '',
+    '### Chezcord',
+    '- Source: `chezcord/`',
+    '- License: Apache-2.0',
+    '- Copyright: Copyright 2026 relentiousdragon',
+    '- Description: Discord API v10 and Gateway client library bundled with this bot.'
+  ];
+
+  const externalDependencies = Object.entries(dependencies || {}).filter(([name]) => name !== 'chezcord');
+  if (externalDependencies.length) {
+    lines.push('', '## Runtime Dependencies', '', 'The following dependencies are declared in package.json and installed via npm:');
+    for (const [name, version] of externalDependencies) {
+      if (name === 'ws') {
+        lines.push(`- **ws** (${version}) (License: MIT, Copyright (c) 2011 Einar Otto Stangvik, Luigi Pinca, and contributors)`);
+      } else {
+        lines.push(`- **${name}** (${version})`);
+      }
+    }
+  }
+
+  lines.push('', '## Plugins and Adapters');
+  if (Array.isArray(exports) && exports.length) {
+    for (const plugin of exports) {
+      const heading = `### ${plugin.name || plugin.id}${plugin.version ? ` v${plugin.version}` : ''} (${plugin.id})`;
+      lines.push(
+        '',
+        heading,
+        `- Author: ${plugin.author || 'Unspecified'}`,
+        `- License: ${plugin.license || 'Unspecified'}`,
+        `- Kind: ${plugin.kind}`,
+        ...(plugin.sourceUrl ? [`- Source: ${plugin.sourceUrl}`] : [])
+      );
+      if (plugin.licenseFile?.content) {
+        lines.push(
+          '',
+          `#### License (${plugin.licenseFile.filename})`,
+          '```',
+          plugin.licenseFile.content.trim(),
+          '```'
+        );
+      }
+      if (Array.isArray(plugin.thirdPartyNotices) && plugin.thirdPartyNotices.length) {
+        lines.push('', '#### Third-Party Notices');
+        for (const notice of plugin.thirdPartyNotices) {
+          lines.push(`- **${notice.name} ${notice.version || ''}** (${notice.license || 'Unspecified'})${notice.sourceUrl ? ` ([source](${notice.sourceUrl}))` : ''}`);
+          if (notice.notice) lines.push(`  ${notice.notice.trim()}`);
+        }
+      }
+    }
+  } else {
+    lines.push('', 'No external plugins are bundled in this export.');
+  }
+  lines.push('');
+  return lines.join('\n');
 }
 
 function normalizePluginExports(pluginAdapters, usedTypes) {
@@ -245,9 +332,14 @@ function normalizePluginExports(pluginAdapters, usedTypes) {
       const modulePath = path.resolve(directory, manifest.wasmArtifact);
       if (!modulePath.startsWith(`${path.resolve(directory)}${path.sep}`) || !fs.existsSync(modulePath) || !fs.statSync(modulePath).isFile()) throw new Error(`${manifest.name || id} WebAssembly module is unavailable.`);
       const file = { name: `src/plugins/${id}/${manifest.version}/adapter.wasm`, data: fs.readFileSync(modulePath) };
-      const notices = (manifest.thirdPartyNotices || []).map((notice) => `- **${notice.name} ${notice.version}** — ${notice.license}${notice.sourceUrl ? ` ([source](${notice.sourceUrl}))` : ''}${notice.notice ? `\n  ${notice.notice}` : ''}`).join('\n');
-      const permissionSection = `## ${manifest.name || id} ${manifest.version || ''}\n\nAuthor: ${manifest.author || 'Unspecified'} · License: ${manifest.license || 'Unspecified'}\n\nThis adapter runs in an isolated WebAssembly worker without host permissions.${notices ? `\n\n### Third-party notices\n\n${notices}` : ''}`;
-      result.push({ kind: 'wasm-adapter', id, name: String(manifest.name || id), version: String(manifest.version || ''), nodes, limits: manifest.limits, file, permissionSection });
+      const licenseFile = findPluginLicense(directory);
+      const extraFiles = [];
+      if (licenseFile) {
+        extraFiles.push({ name: `plugins/${id}/${licenseFile.filename}`, data: Buffer.from(licenseFile.content) });
+      }
+      const notices = (manifest.thirdPartyNotices || []).map((notice) => `- **${notice.name} ${notice.version}** (${notice.license})${notice.sourceUrl ? ` ([source](${notice.sourceUrl}))` : ''}${notice.notice ? `\n  ${notice.notice}` : ''}`).join('\n');
+      const permissionSection = `## ${manifest.name || id} ${manifest.version || ''}\n\nAuthor: ${manifest.author || 'Unspecified'} · License: ${manifest.license || 'Unspecified'}\n\nThis adapter runs in an isolated WebAssembly worker without host permissions.${notices ? `\n\n### Third party notices\n\n${notices}` : ''}`;
+      result.push({ kind: 'wasm-adapter', id, name: String(manifest.name || id), version: String(manifest.version || ''), nodes, limits: manifest.limits, file, extraFiles, permissionSection, license: manifest.license, author: manifest.author, sourceUrl: manifest.sourceUrl || manifest.repositoryUrl, licenseFile, thirdPartyNotices: manifest.thirdPartyNotices || [] });
       continue;
     }
     const runtime = manifest.runtime;
@@ -282,17 +374,23 @@ function normalizePluginExports(pluginAdapters, usedTypes) {
     const runtimePath = path.resolve(directory, runtime.module);
     if (!runtimePath.startsWith(`${path.resolve(directory)}${path.sep}`) || !fs.existsSync(runtimePath) || !fs.statSync(runtimePath).isFile()) throw new Error(`${manifest.name || id} export runtime file is unavailable.`);
     files.push({ name: `src/plugins/${id}/${runtime.module}`, data: fs.readFileSync(runtimePath) });
+    const declaredExportFiles = new Set();
     for (const relative of exportInfo.files || []) {
       if (typeof relative !== 'string' || path.isAbsolute(relative) || relative.split(/[\\/]/).some((part) => part === '..' || part === '')) throw new Error(`${manifest.name || id} declares an unsafe export file path.`);
       const sourcePath = path.resolve(directory, relative);
       if (!sourcePath.startsWith(`${path.resolve(directory)}${path.sep}`) || !fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isFile()) throw new Error(`${manifest.name || id} export file “${relative}” is unavailable.`);
       files.push({ name: `plugins/${id}/${relative.split(path.sep).join('/')}`, data: fs.readFileSync(sourcePath) });
+      declaredExportFiles.add(path.normalize(relative));
+    }
+    const licenseFile = findPluginLicense(directory);
+    if (licenseFile && !declaredExportFiles.has(path.normalize(licenseFile.filename))) {
+      files.push({ name: `plugins/${id}/${licenseFile.filename}`, data: Buffer.from(licenseFile.content) });
     }
     const usedPermissions = new Set(nodes.map((node) => node.requiredPermission || node.permission).filter(Boolean));
     const permissions = (manifest.permissions || []).filter((permission) => usedPermissions.has(permission.id));
-    const notices = (manifest.thirdPartyNotices || []).map((notice) => `- **${notice.name} ${notice.version}** — ${notice.license}${notice.sourceUrl ? ` ([source](${notice.sourceUrl}))` : ''}${notice.notice ? `\n  ${notice.notice}` : ''}`).join('\n');
-    const permissionSection = `## ${manifest.name || id} ${manifest.version || ''}\n\nAuthor: ${manifest.author || 'Unspecified'} · License: ${manifest.license || 'Unspecified'}\n\n${permissions.length ? permissions.map((permission) => `- **${permission.name || permission.id}** (${permission.id}): ${permission.description || 'No description provided.'}`).join('\n') : 'This graph uses no declared permissions.'}${notices ? `\n\n### Third-party notices\n\n${notices}` : ''}`;
-    result.push({ kind: 'host-adapter', id, name: String(manifest.name || id), version: String(manifest.version || ''), runtime, config, nodes, dependencies, environment, files, permissionSection });
+    const notices = (manifest.thirdPartyNotices || []).map((notice) => `- **${notice.name} ${notice.version}** (${notice.license})${notice.sourceUrl ? ` ([source](${notice.sourceUrl}))` : ''}${notice.notice ? `\n  ${notice.notice}` : ''}`).join('\n');
+    const permissionSection = `## ${manifest.name || id} ${manifest.version || ''}\n\nAuthor: ${manifest.author || 'Unspecified'} · License: ${manifest.license || 'Unspecified'}\n\n${permissions.length ? permissions.map((permission) => `- **${permission.name || permission.id}** (${permission.id}): ${permission.description || 'No description provided.'}`).join('\n') : 'This graph uses no declared permissions.'}${notices ? `\n\n### Third party notices\n\n${notices}` : ''}`;
+    result.push({ kind: 'host-adapter', id, name: String(manifest.name || id), version: String(manifest.version || ''), runtime, config, nodes, dependencies, environment, files, permissionSection, license: manifest.license, author: manifest.author, sourceUrl: manifest.sourceUrl || manifest.repositoryUrl, licenseFile, thirdPartyNotices: manifest.thirdPartyNotices || [] });
   }
   const missing = [...usedTypes].filter((type) => type.startsWith('arc.') && !coveredTypes.has(type));
   if (missing.length) throw new Error(`The export is missing installed host adapter files for: ${missing.slice(0, 5).join(', ')}.`);
@@ -462,12 +560,14 @@ function verifyExportIntegrity() {
     if (manifest?.format !== 'arc-bot-integrity' || manifest?.algorithm !== 'sha256' || !manifest.files || typeof manifest.files !== 'object') throw new Error('Unsupported integrity manifest.');
     const mismatches = [];
     for (const [name, expected] of Object.entries(manifest.files)) {
+      if (name === '.env') continue;
       const filePath = path.resolve(exportRoot, name);
       if (!filePath.startsWith(exportRoot + path.sep) || typeof expected !== 'string') { mismatches.push(name); continue; }
       if (!fs.existsSync(filePath) || createHash('sha256').update(fs.readFileSync(filePath)).digest('hex') !== expected) mismatches.push(name);
     }
+    const checkedCount = Object.keys(manifest.files).filter((name) => name !== '.env').length;
     if (mismatches.length) console.error('[Integrity] Export files failed SHA-256 verification and may be corrupted: ' + mismatches.slice(0, 10).join(', '));
-    else console.log('[Integrity] SHA-256 checks passed for ' + Object.keys(manifest.files).length + ' exported files.');
+    else console.log('[Integrity] SHA-256 checks passed for ' + checkedCount + ' exported files.');
   } catch (error) {
     console.warn('[Integrity] File verification could not run: ' + (error?.message || 'unknown error'));
   }
@@ -592,6 +692,7 @@ const appLatencyVariable = projectVariables.find((variable) => variable.id === '
 if (appLatencyVariable) projectVariableValues.set(appLatencyVariable.id, appLatency);
 const gatewayLatencyVariable = projectVariables.find((variable) => variable.id === 'project_var_gateway_latency');
 if (gatewayLatencyVariable) projectVariableValues.set(gatewayLatencyVariable.id, 0);
+let botUptimeStartedAt = null;
 const botUptimeVariable = projectVariables.find((variable) => variable.id === 'project_var_bot_uptime');
 if (botUptimeVariable) projectVariableValues.set(botUptimeVariable.id, 0);
 const botStatisticsVariable = projectVariables.find((variable) => variable.id === 'project_var_bot_statistics');
@@ -614,7 +715,6 @@ function updateBotStatistics() {
   }
 }
 if (botStatisticsVariable) updateBotStatistics();
-let botUptimeStartedAt = null;
 let appLatencyProbeInFlight = false;
 const appLatencyInterval = setInterval(async () => {
   if (appLatencyProbeInFlight) return;
@@ -642,6 +742,11 @@ const botUptimeInterval = setInterval(() => {
 }, 1000);
 botUptimeInterval.unref?.();
 const resolveFunctionGraph = (graphId) => graphs.find((graph) => graph.id === graphId);
+const isFunctionGraph = (graph) => graph?.graphType === 'function' || (graph?.nodes || []).some((node) => ['function_input', 'function_return'].includes(node?.type));
+const resolveFunctionGraphByName = (name) => {
+  const matches = graphs.filter((graph) => isFunctionGraph(graph) && graph.name?.toLowerCase() === String(name).toLowerCase());
+  return matches.length === 1 ? matches[0] : null;
+};
 let stopCronScheduler = null;
 let stopping = false;
 const graphRunAbortController = new AbortController();
@@ -787,7 +892,7 @@ async function trackGraphRun(run) {
 }
 function graphContext(graph, eventPayload = null, interactionState = null) {
   return {
-    rest: client.rest, client, resolveFunctionGraph, variablesState: variableState(graph), projectVariables, deploySlashCommands,
+    rest: client.rest, client, resolveFunctionGraph, resolveFunctionGraphByName, variablesState: variableState(graph), projectVariables, deploySlashCommands,
     webSockets: graphWebSockets,
     ...(interactionState ? { interactionState } : {}),
     canDeploySlashCommands: () => {
