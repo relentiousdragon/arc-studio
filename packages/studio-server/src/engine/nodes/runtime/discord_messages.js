@@ -33,7 +33,7 @@ export async function executeDiscordMessageNode(node, {
     const mentionRepliedUser = Boolean(resolveInput('mention_replied_user', node.data?.mention_replied_user ?? Boolean(replyToMessageId)));
     const componentsV2 = components?.format === 'arc-components-v2' || node.data?.componentsV2Enabled === true;
 
-    if (componentsV2) validateComponentsV2Mode(node, content, components, isInputConnected);
+    if (componentsV2) validateComponentsV2Mode(components, isInputConnected);
 
     if (!destinationId) {
       setOutput?.('success', false);
@@ -71,7 +71,7 @@ export async function executeDiscordMessageNode(node, {
     const messageId = validateDiscordSemanticValue(resolveInput('message_id', node.data?.message_id || ''), 'message_id', 'Message ID', { simulation, allowEmpty: true });
     const components = resolveComponents();
     const componentsV2 = components?.format === 'arc-components-v2' || node.data?.componentsV2Enabled === true;
-    if (componentsV2) validateComponentsV2Mode(node, '', components, isInputConnected);
+    if (componentsV2) validateComponentsV2Mode(components, isInputConnected);
     if (!channelId || !messageId) {
       setOutput?.('success', false);
       throw new Error('Edit Components needs a Channel ID and Message ID.');
@@ -94,7 +94,7 @@ export async function executeDiscordMessageNode(node, {
   const files = resolveFiles(resolveInput('files', node.data?.files || []));
   const componentsV2 = components?.format === 'arc-components-v2' || node.data?.componentsV2Enabled === true;
 
-  if (componentsV2) validateComponentsV2Mode(node, content, components, isInputConnected);
+  if (componentsV2) validateComponentsV2Mode(components, isInputConnected);
 
   if (!channelId || !messageId) {
     setOutput?.('success', false);
@@ -121,13 +121,9 @@ export async function executeDiscordMessageNode(node, {
   return true;
 }
 
-function validateComponentsV2Mode(node, content, components, isInputConnected) {
-  const contentInputConnected = isInputConnected('content');
-  const embedInputConnected = isInputConnected('embed');
-  const configuredContent = String(node.data?.content ?? '').trim();
-  const configuredEmbed = Boolean(node.data?.embed) || Array.isArray(node.data?.blocks) && node.data.blocks.length > 0;
-  if (contentInputConnected || embedInputConnected || configuredContent || String(content ?? '').trim() || configuredEmbed) {
-    throw new Error('Components V2 cannot be combined with message content or an embed. Clear those fields and disconnect their wires first.');
+function validateComponentsV2Mode(components, isInputConnected) {
+  if (isInputConnected('content') || isInputConnected('embed')) {
+    throw new Error('Components V2 cannot be combined with message content or an embed. Disconnect the content or embed wire first.');
   }
   if (!components || components.format !== 'arc-components-v2') throw new Error('Components V2 is enabled but no Components V2 layout is connected or configured.');
   const errors = Array.isArray(components.validationErrors) ? components.validationErrors : [];
