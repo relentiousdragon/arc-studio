@@ -110,7 +110,6 @@ import node_action_console_error from './logic-flow/action_console_error.js';
 // Discord Actions
 import node_action_send_message from './discord-actions/action_send_message.js';
 import node_action_edit_message from './discord-actions/action_edit_message.js';
-import node_action_edit_components from './discord-actions/action_edit_components.js';
 import node_action_reply_interaction from './discord-actions/action_reply_interaction.js';
 import node_action_respond_autocomplete from './discord-actions/action_respond_autocomplete.js';
 import node_action_show_modal from './discord-actions/action_show_modal.js';
@@ -303,7 +302,6 @@ export const nodeDefinitions = [
   node_action_console_error,
   node_action_send_message,
   node_action_edit_message,
-  node_action_edit_components,
   node_action_reply_interaction,
   node_action_respond_autocomplete,
   node_action_show_modal,
