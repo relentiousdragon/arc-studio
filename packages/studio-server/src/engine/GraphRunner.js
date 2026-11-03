@@ -14,6 +14,8 @@ import { PluginStore } from './PluginStore.js';
 import { EmbedBuilder, parseEmoji } from 'chezcord';
 import { evaluateMathNode } from './MathOperations.js';
 import { getTemplateReferences, renderTextTemplate } from './TemplateExpressions.js';
+import { buildEventTemplateValues } from './EventTemplatePaths.js';
+import { fieldLimitWarning } from './FieldLimits.js';
 //
 const DISCORD_GUILD_NODE_TYPES = new Set([
   'action_fetch_user', 'action_fetch_guild', 'action_fetch_member',
@@ -117,11 +119,18 @@ export class GraphRunner {
     const executedNodeIds = [];
     const traces = [];
     const debugSteps = [];
+    const runStartedAt = performance.now();
+    const nodeTimings = [];
+    const wirePath = [];
+    let previousNodeStartedAt = null;
+    let previousNodePauseTotalMs = 0;
+    let debugPausedMs = 0;
     if (eventName === 'FUNCTION_CALL' && nodes.filter((node) => node.type === 'function_return').length > 1) {
-      return { executedNodeIds, traces, debugSteps, result: undefined, error: 'A function graph can have only one Return Value node.' };
+      return { executedNodeIds, traces, debugSteps, nodeTimings, wirePath, result: undefined, error: 'A function graph can have only one Return Value node.' };
     }
     const repeatLoopStack = [];
     let functionReturnValue;
+    let eventTemplateValues = {};
     const recordExecutedNode = (nodeId) => {
       executedNodeIds.push(nodeId);
       if (executedNodeIds.length > 500) executedNodeIds.shift();
@@ -163,14 +172,10 @@ export class GraphRunner {
       }
       return ['string', 'number', 'boolean', 'array', 'object'].includes(type) ? type : null;
     };
-    const createdGraphVariables = nodes.filter((node) => node.type === 'variable_create').flatMap((node) => {
-      const name = String(node.data?.name || '').trim();
-      if (!name || !/^(?=.{1,64}$)[A-Za-z0-9]+(?:_+[A-Za-z0-9]+|-[A-Za-z0-9]+)*$/.test(name)) return [];
-      const type = inferCreatedVariableType(node) || 'string';
-      const initialValue = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'value') ? defaultValueForType(type) : node.data?.value ?? defaultValueForType(type);
-      return [{ id: `nodevar_${node.id}`, name, type, valueType: type, initialValue, persist: node.data?.persist !== false, nodeOwned: true, sourceNodeId: node.id }];
-    });
-    const usedVariableNames = new Set([...declaredGraphVariables, ...createdGraphVariables].map((variable) => String(variable?.name || '').toLowerCase()).filter(Boolean));
+    const staticCreatedVariableNames = nodes.filter((node) => node.type === 'variable_create')
+      .map((node) => String(node.data?.name || '').trim())
+      .filter((name) => name && !name.includes('{{') && /^(?=.{1,64}$)[A-Za-z0-9]+(?:_+[A-Za-z0-9]+|-[A-Za-z0-9]+)*$/.test(name));
+    const usedVariableNames = new Set([...declaredGraphVariables.map((variable) => variable?.name), ...staticCreatedVariableNames].map((name) => String(name || '').toLowerCase()).filter(Boolean));
     const attachmentVariables = nodes.filter((node) => node.type === 'event_slash_command').flatMap((node) => {
       const commandName = String(node.data?.commandName || 'command').replace(/[^A-Za-z0-9_-]/g, '_');
       return flattenSlashParameters(node.data?.options).filter(({ option }) => Number(option?.type) === 11).map(({ option, path }) => {
@@ -195,7 +200,7 @@ export class GraphRunner {
         };
       });
     });
-    const graphVariables = [...declaredGraphVariables, ...createdGraphVariables.filter((created) => !declaredGraphVariables.some((variable) => variable.id === created.id)), ...attachmentVariables];
+    const graphVariables = [...declaredGraphVariables, ...attachmentVariables];
     const projectVariables = Array.isArray(context.projectVariables) ? context.projectVariables.filter((variable) => variable && typeof variable.id === 'string') : [];
     const localVariableDefinitions = new Map(graphVariables.map((variable) => [variable.id, variable]));
     const projectVariableDefinitions = new Map(projectVariables.map((variable) => [variable.id, variable]));
@@ -256,6 +261,36 @@ export class GraphRunner {
         if (connected?.__arcVariableRef && typeof connected.variableId === 'string') return connected;
       }
       return variableReference(node.data?.variableId, node.data?.scope);
+    };
+    const createRuntimeVariable = (node, { scope, name, type, value, persist }) => {
+      const normalizedScope = scope === 'project' ? 'project' : 'graph';
+      const variableId = normalizedScope === 'project'
+        ? `project_var_${globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`}`
+        : `nodevar_${node.id}`;
+      const coerced = coerceVariableValue(value, type, value);
+      const definition = {
+        id: variableId,
+        name,
+        type,
+        valueType: type,
+        initialValue: coerced,
+        persist: normalizedScope === 'project' ? true : persist !== false,
+        runtimeCreated: true
+      };
+      if (normalizedScope === 'project') {
+        projectVariables.push(definition);
+        projectVariableDefinitions.set(variableId, definition);
+        projectVariableValues.set(variableId, coerced);
+      } else {
+        graphVariables.push(definition);
+        localVariableDefinitions.set(variableId, definition);
+        persistentVariableValues.set(variableId, coerced);
+        if (definition.persist === false) runVariableValues.set(variableId, coerced);
+      }
+      try {
+        context.onVariableCreated?.({ id: variableId, scope: normalizedScope, name, type, value: coerced, persist: definition.persist, graphId: graph.id });
+      } catch {}
+      return definition;
     };
     const setVariableValue = (variableId, scope, value, definition) => {
       if (definition?.readOnly) throw new Error(`Variable “${definition.name}” is read only.`);
@@ -330,6 +365,55 @@ export class GraphRunner {
       if (traces.length > 2000) traces.shift();
       if (context.log) context.log(msg, level);
     };
+    const warnedTemplateExpressions = new Set();
+    const warnUndefinedTemplate = (node, expression, references = []) => {
+      const key = `${node?.id || 'graph'}:${expression}`;
+      if (warnedTemplateExpressions.has(key)) return;
+      warnedTemplateExpressions.add(key);
+      const names = references.length ? references.join(', ') : expression;
+      log(`[Template] Undefined or null value for ${names} in ${node?.label || node?.type || 'graph'} (${node?.id || graph.id}).`, 'WARN');
+    };
+    const resolveFunctionVariable = (variableId, scope, functionGraph) => {
+      if (scope === 'project') return getVariableValue(variableId, 'project');
+      const definitions = new Map((functionGraph.variables || []).map((variable) => [variable.id, variable]));
+      const state = context.getGraphVariableState?.(functionGraph) || (functionGraph.id === graph.id ? persistentVariableValues : new Map());
+      initializeVariableValues(definitions, state, null, 'graph', functionGraph);
+      const variable = definitions.get(variableId);
+      return variable?.persist === false
+        ? coerceVariableValue(variable.secret ? context.getSecretVariableValue?.(variableId, 'graph', functionGraph) ?? defaultValueForType(variable.valueType || variable.type) : variable.initialValue, variable.valueType || variable.type, variable.initialValue)
+        : state.get(variableId);
+    };
+    const resolveTemplateGraphFunction = (name, values, callStack = [graph.id]) => {
+      const targetGraph = context.resolveFunctionGraphByName?.(name);
+      const isFunction = targetGraph?.graphType === 'function' || (targetGraph?.nodes || []).some((node) => ['function_input', 'function_return'].includes(node?.type));
+      if (!targetGraph || !isFunction || callStack.length >= 24 || callStack.includes(targetGraph.id)) return undefined;
+      const parameters = getFunctionGraphArguments(targetGraph);
+      if (values.length > parameters.length || parameters.some((parameter, index) => parameter.optional === false && values[index] === undefined)) return undefined;
+      const argumentValues = new Map(parameters.map((parameter, index) => [
+        parameter.paramId,
+        values[index] === undefined ? parameter.defaultValue ?? defaultValueForFunctionType(parameter.valueType) : values[index]
+      ]));
+      try {
+        const result = evaluateFunctionGraph(targetGraph, argumentValues, {
+          ...context,
+          resolveFunctionVariable,
+          resolveTemplateFunction: (nestedName, nestedValues, _nestedGraph, nestedStack) => resolveTemplateGraphFunction(nestedName, nestedValues, nestedStack)
+        }, callStack);
+        const returns = getFunctionGraphReturnValues(targetGraph);
+        if (returns.length === 1) return returns[0].legacy ? result : result?.[returns[0].returnId];
+        if (!returns.length || !result || typeof result !== 'object') return undefined;
+        const output = {};
+        for (const item of returns) {
+          const value = result[item.returnId];
+          for (const key of [item.name, item.returnId]) {
+            if (key && !['__proto__', 'prototype', 'constructor'].includes(key)) Object.defineProperty(output, key, { value, enumerable: true, configurable: true, writable: true });
+          }
+        }
+        return output;
+      } catch {
+        return undefined;
+      }
+    };
 
     const debugValue = (value, pinId = '') => {
       if (containsSecretValue(value)) return '[redacted]';
@@ -341,17 +425,41 @@ export class GraphRunner {
         return encoded.length > 4000 ? `${encoded.slice(0, 4000)}…` : JSON.parse(encoded);
       } catch { return '[unavailable]'; }
     };
-    const recordDebugStep = async (node, inputs = [], status = 'completed', error = '') => {
+    const recordNodeTiming = (node, startedAt, incomingWire = null, status = 'completed') => {
+      const endedAt = performance.now();
+      const incoming = incomingWire ? {
+        id: incomingWire.id || `${incomingWire.sourceNodeId}:${incomingWire.sourcePinId}->${incomingWire.targetNodeId}:${incomingWire.targetPinId}`,
+        sourceNodeId: incomingWire.sourceNodeId,
+        sourcePinId: incomingWire.sourcePinId,
+        targetNodeId: incomingWire.targetNodeId,
+        targetPinId: incomingWire.targetPinId
+      } : null;
+      const timing = {
+        nodeId: node.id,
+        status,
+        durationMs: Math.round((endedAt - startedAt) * 100) / 100,
+        elapsedMs: Math.round(Math.max(0, endedAt - runStartedAt - debugPausedMs) * 100) / 100,
+        sincePreviousNodeMs: previousNodeStartedAt === null ? null : Math.round(Math.max(0, startedAt - previousNodeStartedAt - (debugPausedMs - previousNodePauseTotalMs)) * 100) / 100,
+        ...(incoming ? { incomingWire: incoming } : {})
+      };
+      previousNodeStartedAt = startedAt;
+      previousNodePauseTotalMs = debugPausedMs;
+      nodeTimings.push(timing);
+      if (incoming) wirePath.push(incoming);
+      return timing;
+    };
+    const recordDebugStep = async (node, inputs = [], status = 'completed', error = '', timing = null) => {
       if (!context.debug) return;
       const outputs = getNodeOutputs(node, connections).filter((pin) => pin.type !== 'exec').flatMap((pin) => {
         const key = `${node.id}:${pin.id}`;
         const resolved = dataCache.has(key) ? dataCache.get(key) : resolveOutput(node, pin.id);
         return resolved !== undefined ? [{ pinId: pin.id, label: pin.label || pin.id, value: debugValue(resolved, pin.id) }] : [];
       });
-      const step = { nodeId: node.id, type: node.type, label: node.label || NodeDefinitions[node.type]?.label || node.type, status, inputs, outputs, ...(error ? { error: redactSecretText(error) } : {}) };
+      const step = { nodeId: node.id, type: node.type, label: node.label || NodeDefinitions[node.type]?.label || node.type, status, inputs, outputs, ...(timing || {}), ...(error ? { error: redactSecretText(error) } : {}) };
       debugSteps.push(step);
       if (debugSteps.length > 500) debugSteps.shift();
-      await context.onDebugStep?.(step);
+      const pause = await context.onDebugStep?.(step);
+      debugPausedMs += Math.max(0, Number(pause?.pausedDurationMs) || 0);
     };
 
     const findInputConnection = (nodeId, pinId) => {
@@ -374,7 +482,14 @@ export class GraphRunner {
     };
 
     const findExecOutputs = (nodeId, pinId = 'exec') => {
-      return connections.filter((c) => c.sourceNodeId === nodeId && c.sourcePinId === pinId);
+      const seenTargets = new Set();
+      return connections.filter((connection) => {
+        if (connection.sourceNodeId !== nodeId || connection.sourcePinId !== pinId) return false;
+        const key = `${connection.targetNodeId}\u0000${connection.targetPinId}`;
+        if (seenTargets.has(key)) return false;
+        seenTargets.add(key);
+        return true;
+      });
     };
     const findExecContinuation = (nodeId, inputPinId = 'exec') => {
       const outputPinId = inputPinId === 'exec' ? 'exec' : inputPinId;
@@ -413,10 +528,13 @@ export class GraphRunner {
         const reference = resolveVariableReference(sourceNode, seen);
         return reference ? getVariableValue(reference.variableId, reference.scope) : undefined;
       }
-      if (sourceNode.type === 'variable_create' && pinId === 'variable') return variableReference(`nodevar_${sourceNode.id}`, 'graph');
+      if (sourceNode.type === 'variable_create' && pinId === 'variable') {
+        return dataCache.get(`${sourceNode.id}:variable`) || variableReference(`nodevar_${sourceNode.id}`, 'graph');
+      }
       if (sourceNode.type === 'variable_create' && pinId === 'value') {
-        const variableId = `nodevar_${sourceNode.id}`;
-        return dataCache.has(`${sourceNode.id}:value`) ? dataCache.get(`${sourceNode.id}:value`) : getVariableValue(variableId, 'graph');
+        if (dataCache.has(`${sourceNode.id}:value`)) return dataCache.get(`${sourceNode.id}:value`);
+        const reference = dataCache.get(`${sourceNode.id}:variable`);
+        return getVariableValue(reference?.variableId || `nodevar_${sourceNode.id}`, reference?.scope === 'project' ? 'project' : 'graph');
       }
       if (sourceNode.type === 'variable_set' && pinId === 'variable') return resolveVariableReference(sourceNode, seen);
       if (sourceNode.type === 'function_input') {
@@ -524,16 +642,8 @@ export class GraphRunner {
         }));
         functionResult = evaluateFunctionGraph(targetGraph, argumentValues, {
           ...context,
-          resolveFunctionVariable: (variableId, scope, functionGraph) => {
-            if (scope === 'project') return getVariableValue(variableId, 'project');
-            const definitions = new Map((functionGraph.variables || []).map((variable) => [variable.id, variable]));
-            const state = context.getGraphVariableState?.(functionGraph) || (functionGraph.id === graph.id ? persistentVariableValues : new Map());
-            initializeVariableValues(definitions, state, null, 'graph', functionGraph);
-            const variable = definitions.get(variableId);
-            return variable?.persist === false
-              ? coerceVariableValue(variable.secret ? context.getSecretVariableValue?.(variableId, 'graph', functionGraph) ?? defaultValueForType(variable.valueType || variable.type) : variable.initialValue, variable.valueType || variable.type, variable.initialValue)
-              : state.get(variableId);
-          }
+          resolveFunctionVariable,
+          resolveTemplateFunction: (name, values, _callerGraph, callStack) => resolveTemplateGraphFunction(name, values, callStack)
         }, []);
         functionCallResultCache.set(sourceNode.id, functionResult);
         }
@@ -550,7 +660,9 @@ export class GraphRunner {
           if (variable) return getVariableValue(variable.id, graphVariables.includes(variable) ? 'graph' : 'project');
           if (argumentMatch && Number(argumentMatch[1]) >= 1 && Number(argumentMatch[1]) <= 50) return resolveDataInput(sourceNode, `arg_${Number(argumentMatch[1])}`, undefined, seen);
           return resolveDataInput(sourceNode, `slot_${name}`, undefined, seen);
-        }, context.appEmojis);
+        }, context.appEmojis, (expression, references) => warnUndefinedTemplate(sourceNode, expression, references), {
+          resolveFunction: (name, values) => resolveTemplateGraphFunction(name, values, context.graphCallStack || [graph.id])
+        });
         dataCache.set(cacheKey, rendered);
         return rendered;
       }
@@ -565,9 +677,65 @@ export class GraphRunner {
         return embed;
       }
       if (sourceNode.type === 'build_components' && pinId === 'components') {
-        const components = buildDiscordComponentsV2(sourceNode.data?.componentsV2, (value) => renderNodeTemplate(sourceNode, value));
+        const layout = JSON.parse(JSON.stringify(sourceNode.data?.componentsV2 || []));
+        const components = buildDiscordComponentsV2(layout, (value) => renderNodeTemplate(sourceNode, value));
+        components.layout = layout;
+        components.validationErrors = validateDiscordComponentsV2(components);
         dataCache.set(cacheKey, components);
         return components;
+      }
+      if (sourceNode.type === 'modify_components_v2' && pinId === 'components') {
+        const raw = resolveDataInput(sourceNode, 'components', null, seen);
+        if (!raw || raw.format !== 'arc-components-v2' || !Array.isArray(raw.layout)) {
+          throw new TypeError('Modify Components V2 needs a Components V2 layout from Component Builder.');
+        }
+        const layout = JSON.parse(JSON.stringify(raw.layout));
+        const targetId = String(resolveDataInput(sourceNode, 'target_id', sourceNode.data?.target_id || 'all')).trim();
+        const property = String(resolveDataInput(sourceNode, 'property', sourceNode.data?.property || 'spoiler')).trim();
+        const itemIndex = Math.trunc(Number(resolveDataInput(sourceNode, 'item_index', sourceNode.data?.item_index ?? -1)));
+        const value = resolveDataInput(sourceNode, 'value', sourceNode.data?.value);
+        const allowedProperties = new Set(['spoiler', 'accentColor', 'divider', 'spacing', 'content', 'url', 'description', 'accessory.label', 'accessory.disabled', 'accessory.url', 'accessory.customId']);
+        if (!allowedProperties.has(property)) throw new TypeError(`Unsupported Components V2 property: ${property || '(empty)'}.`);
+        let matched = 0;
+        const visit = (blocks) => {
+          for (const block of Array.isArray(blocks) ? blocks : []) {
+            if (!block || typeof block !== 'object') continue;
+            const matches = !targetId || targetId.toLowerCase() === 'all' || block.id === targetId;
+            if (matches) {
+              if (property === 'spoiler' && block.type === 'media_gallery') {
+                block.items = (block.items || []).map((item, index) => itemIndex >= 0 && index !== itemIndex ? item : { ...item, spoiler: Boolean(value) });
+                matched += 1;
+              } else if (block.type === 'media_gallery' && ['url', 'description'].includes(property)) {
+                block.items = (block.items || []).map((item, index) => itemIndex >= 0 && index !== itemIndex ? item : { ...item, [property]: String(value ?? '') });
+                matched += 1;
+              } else if (property.startsWith('accessory.') && block.type === 'section') {
+                const key = property.slice('accessory.'.length);
+                if (block.accessory && Object.hasOwn(block.accessory, key)) {
+                  block.accessory[key] = key === 'disabled' ? Boolean(value) : String(value ?? '');
+                  matched += 1;
+                }
+              } else {
+                const supportedByType = {
+                  container: ['spoiler', 'accentColor'], file: ['spoiler', 'url'],
+                  separator: ['divider', 'spacing'], text_display: ['content'], section: [], media_gallery: ['url', 'description']
+                };
+                if ((supportedByType[block.type] || []).includes(property)) {
+                  block[property] = ['spoiler', 'divider'].includes(property) ? Boolean(value)
+                    : property === 'spacing' ? (Number(value) === 2 ? 2 : 1)
+                      : String(value ?? '');
+                  matched += 1;
+                }
+              }
+            }
+            visit(block.children);
+          }
+        };
+        visit(layout);
+        if (!matched) throw new Error(`No Components V2 block matched “${targetId || 'all'}” and property “${property}”.`);
+        const components = buildDiscordComponentsV2(layout, (text) => renderNodeTemplate(sourceNode, text));
+        const result = { ...components, layout, validationErrors: validateDiscordComponentsV2(components) };
+        dataCache.set(cacheKey, result);
+        return result;
       }
       if (sourceNode.type === 'modify_embed') {
         const baseEmbed = resolveDataInput(sourceNode, 'embed', null, seen) || {};
@@ -660,17 +828,39 @@ export class GraphRunner {
       return undefined;
     };
 
+    const readEventTemplateRoot = (name) => {
+      const root = String(name || '');
+      if (!root) return undefined;
+      if (Object.hasOwn(eventTemplateValues, root)) return eventTemplateValues[root];
+      if (eventPayload && typeof eventPayload === 'object' && Object.hasOwn(eventPayload, root)) return eventPayload[root];
+      return undefined;
+    };
+
+    const warnedFieldValues = new Set();
+    const warnFieldValue = (node, pinId, value) => {
+      try {
+        const definition = NodeDefinitions[node.type];
+        const pin = definition?.inputs?.find((item) => item.id === pinId);
+        const warning = fieldLimitWarning({ nodeType: node.type, pin, value });
+        if (warning && !warnedFieldValues.has(`${node.id}:${pinId}`)) {
+          warnedFieldValues.add(`${node.id}:${pinId}`);
+          log(`[Warning] ${node.label || definition?.label || node.type} ${pin?.label || pinId}: ${warning}`);
+        }
+      } catch { /* a field warning must never break a graph run. */ }
+      return value;
+    };
+
     function resolveDataInput(node, pinId, defaultValue, seen = new Set()) {
       const conn = findInputConnection(node.id, pinId);
       let value;
       if (conn) {
         const upstreamNode = nodes.find((n) => n.id === conn.sourceNodeId);
         value = resolveOutput(upstreamNode, conn.sourcePinId, seen);
-        if (value !== undefined) return value;
+        if (value !== undefined) return warnFieldValue(node, pinId, value);
       }
       value = node.data?.[pinId] ?? defaultValue;
-      if (typeof value !== 'string' || /^arg_\d+$/.test(pinId)) return value;
-      return renderTextTemplate(value, (name) => {
+      if (typeof value !== 'string' || /^arg_\d+$/.test(pinId)) return warnFieldValue(node, pinId, value);
+      const renderedValue = renderTextTemplate(value, (name) => {
         const argumentMatch = /^arg(\d+)$/i.exec(name);
         if (argumentMatch) {
           const argumentIndex = Number(argumentMatch[1]);
@@ -693,9 +883,15 @@ export class GraphRunner {
         }
         const slotId = `slot_${name}`;
         const key = `${node.id}:${slotId}`;
-        if (seen.has(key)) return undefined;
-        return resolveDataInput(node, slotId, undefined, new Set(seen).add(key));
-      }, context.appEmojis);
+        if (findInputConnection(node.id, slotId) && !seen.has(key)) {
+          const slotValue = resolveDataInput(node, slotId, undefined, new Set(seen).add(key));
+          if (slotValue !== undefined) return slotValue;
+        }
+        return readEventTemplateRoot(name);
+      }, context.appEmojis, (expression, references) => warnUndefinedTemplate(node, expression, references), {
+        resolveFunction: (name, values) => resolveTemplateGraphFunction(name, values, context.graphCallStack || [graph.id])
+      });
+      return warnFieldValue(node, pinId, renderedValue);
     }
 
     function renderNodeTemplate(node, value) {
@@ -705,8 +901,11 @@ export class GraphRunner {
         const variable = graphVariables.find((item) => item.name?.toLowerCase() === name.toLowerCase())
           || projectVariables.find((item) => item.name?.toLowerCase() === name.toLowerCase());
         if (variable) return getVariableValue(variable.id, graphVariables.includes(variable) ? 'graph' : 'project');
-        return resolveDataInput(node, `slot_${name}`, undefined);
-      }, context.appEmojis);
+        if (findInputConnection(node.id, `slot_${name}`)) return resolveDataInput(node, `slot_${name}`, undefined);
+        return readEventTemplateRoot(name);
+      }, context.appEmojis, (expression, references) => warnUndefinedTemplate(node, expression, references), {
+        resolveFunction: (name, values) => resolveTemplateGraphFunction(name, values, context.graphCallStack || [graph.id])
+      });
     }
 
     function resolveMessageComponents(node) {
@@ -723,7 +922,7 @@ export class GraphRunner {
         : Array.isArray(value) ? value.map(renderNested)
           : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([key, nested]) => [key, renderNested(nested)])) : value;
       const rawResolved = resolveDataInput(node, 'components', []);
-      const resolved = componentSource?.type === 'build_components' ? rawResolved : renderNested(rawResolved);
+      const resolved = ['build_components', 'modify_components_v2'].includes(componentSource?.type) ? rawResolved : renderNested(rawResolved);
       if (resolved?.format === 'arc-components-v2') return { ...resolved, validationErrors: validateDiscordComponentsV2(resolved) };
       return resolved;
     }
@@ -826,14 +1025,14 @@ export class GraphRunner {
     const eventNodeType = startNode?.type;
     if (!startNode) {
       log(`[Graph] No active event node found for event "${eventName}". Skipping.`);
-      return { executedNodeIds, traces, error: null };
+      return { executedNodeIds, traces, nodeTimings, wirePath, error: null };
     }
     if (eventNodeType === 'event_slash_command') {
       const expectedCommand = String(startNode.data?.commandName || '').trim().toLowerCase();
       const receivedCommand = String(eventPayload.data?.name || '').trim().toLowerCase();
       if (expectedCommand && expectedCommand !== receivedCommand) {
         log(`[Graph] Command /${receivedCommand} does not match /${expectedCommand}. Skipping.`);
-        return { executedNodeIds, traces, error: null };
+        return { executedNodeIds, traces, nodeTimings, wirePath, error: null };
       }
     }
     if (eventNodeType === 'event_bot_startup') {
@@ -844,11 +1043,15 @@ export class GraphRunner {
         const timeoutSeconds = Number.isFinite(requestedTimeout) ? Math.max(0, Math.min(86400, Math.trunc(requestedTimeout))) : 30;
         if (typeof context.waitForGateway !== 'function') throw new Error('Gateway readiness waiting is unavailable in this workspace.');
         gatewayConnected = await context.waitForGateway(timeoutSeconds * 1000, context.signal);
-        if (context.signal?.aborted) return { executedNodeIds, traces, error: 'Graph execution cancelled.' };
+        if (context.signal?.aborted) return { executedNodeIds, traces, nodeTimings, wirePath, error: 'Graph execution cancelled.' };
       }
       eventPayload = { ...eventPayload, gatewayConnected };
     }
 
+    eventTemplateValues = buildEventTemplateValues(eventNodeType, eventPayload, {
+      guild: context.resolveGuildDirectory?.(eventPayload?.guild_id) || null,
+      channel: context.resolveChannelDirectory?.(eventPayload?.channel_id) || null
+    });
     recordExecutedNode(startNode.id);
     log(`[Graph] Triggered event node: ${startNode.label || startNode.type} (${startNode.id})`);
 
@@ -972,7 +1175,9 @@ export class GraphRunner {
       }
       dataCache.set(`${startNode.id}:${pin.id}`, value ?? (pin.type === 'number' ? 0 : pin.type === 'boolean' ? false : ''));
     }
-    await recordDebugStep(startNode, [], 'triggered');
+    const triggerTiming = recordNodeTiming(startNode, runStartedAt, null, 'triggered');
+    await context.onSimulationStep?.({ ...triggerTiming, type: startNode.type, label: startNode.label || NodeDefinitions[startNode.type]?.label || startNode.type });
+    await recordDebugStep(startNode, [], 'triggered', '', triggerTiming);
 
     let flowStepCount = 0;
     const runExecWires = async (currentExecWires, inParallelBranch = false, parallelDepth = 0) => {
@@ -993,6 +1198,7 @@ export class GraphRunner {
           if (targetNode.type === 'parallel_join' && !wire.__releasedJoin) return { error: 'Join synchronizes branches started by a Parallel node. For If/Else paths, connect each path directly to the same action node.' };
 
       recordExecutedNode(targetNode.id);
+      const nodeStartedAt = performance.now();
       if (repeatLoopStack.length) {
         try { context.onNodeExecution?.({ graphId: graph.id, nodeId: targetNode.id }); } catch {}
       }
@@ -1007,21 +1213,32 @@ export class GraphRunner {
         if (targetNode.type === 'utility_wire_extender') {
           currentExecWires.push(...findExecOutputs(targetNode.id, 'exec_out'));
         } else if (targetNode.type === 'variable_create') {
-          const name = String(targetNode.data?.name || '').trim();
-          const variableId = `nodevar_${targetNode.id}`;
-          const definition = localVariableDefinitions.get(variableId);
-          if (!definition) {
-            log('[Variable] Create skipped: enter a valid variable name.');
+          const scope = targetNode.data?.scope === 'project' ? 'project' : 'graph';
+          const renderedName = renderNodeTemplate(targetNode, String(targetNode.data?.name || ''));
+          const name = String(resolveDataInput(targetNode, 'name', renderedName) ?? '').trim().slice(0, 64);
+          const validName = /^(?=.{1,64}$)[A-Za-z0-9]+(?:_+[A-Za-z0-9]+|-[A-Za-z0-9]+)*$/.test(name);
+          if (!validName) {
+            log(`[Variable] Create skipped: “${name || 'unnamed'}” is not a valid variable name.`);
           } else {
-            const value = resolveDataInput(targetNode, 'value', definition.initialValue);
-            const inferredType = Array.isArray(value) ? 'array' : value !== null && typeof value === 'object' ? 'object' : typeof value;
-            if (['string', 'number', 'boolean', 'array', 'object'].includes(inferredType)) {
-              definition.type = inferredType;
-              definition.valueType = inferredType;
+            const definitions = scope === 'project' ? projectVariableDefinitions : localVariableDefinitions;
+            const existing = [...definitions.values()].find((item) => String(item.name || '').toLowerCase() === name.toLowerCase());
+            if (existing) {
+              dataCache.set(`${targetNode.id}:variable`, variableReference(existing.id, scope));
+              dataCache.set(`${targetNode.id}:value`, getVariableValue(existing.id, scope));
+              log(`[Variable] ${name} already exists, so the create step was skipped.`);
+            } else {
+              const configuredType = ['string', 'number', 'boolean', 'array', 'object'].includes(targetNode.data?.valueType) ? targetNode.data.valueType : 'string';
+              const value = resolveDataInput(targetNode, 'value', targetNode.data?.value ?? defaultValueForType(configuredType));
+              let type = configuredType;
+              if (findInputConnection(targetNode.id, 'value')) {
+                const inferred = Array.isArray(value) ? 'array' : value !== null && typeof value === 'object' ? 'object' : typeof value;
+                if (['string', 'number', 'boolean', 'array', 'object'].includes(inferred)) type = inferred;
+              }
+              const definition = createRuntimeVariable(targetNode, { scope, name, type, value, persist: targetNode.data?.persist !== false });
+              dataCache.set(`${targetNode.id}:variable`, variableReference(definition.id, scope));
+              dataCache.set(`${targetNode.id}:value`, getVariableValue(definition.id, scope));
+              log(`[Variable] Created ${scope === 'project' ? 'project' : 'graph'} variable ${name}.`);
             }
-            const createdValue = setVariableValue(variableId, 'graph', value, definition);
-            dataCache.set(`${targetNode.id}:value`, createdValue);
-            log(`[Variable] Created or updated ${name} (${definition.valueType}).`);
           }
           currentExecWires.push(...findExecContinuation(targetNode.id, wire.targetPinId));
         } else if (targetNode.type === 'variable_set') {
@@ -1032,7 +1249,7 @@ export class GraphRunner {
           if (!definition) {
             log('[Variable] Set skipped: no variable is selected');
           } else {
-            const fallback = getVariableValue(variableId, variableScope);
+            const fallback = Object.hasOwn(targetNode.data || {}, 'value') ? targetNode.data.value : getVariableValue(variableId, variableScope);
             const value = resolveDataInput(targetNode, 'value', fallback);
             setVariableValue(variableId, variableScope, value, definition);
             log(`[Variable] Set ${definition.name}`);
@@ -1215,7 +1432,7 @@ export class GraphRunner {
             log
           });
           if (result !== false) currentExecWires.push(...(result === 'failure' ? findExecOutputs(targetNode.id, 'failure_exec') : findExecContinuation(targetNode.id, wire.targetPinId)));
-        } else if (['action_send_message', 'action_edit_message', 'action_edit_components'].includes(targetNode.type)) {
+        } else if (['action_send_message', 'action_edit_message'].includes(targetNode.type)) {
           const { executeDiscordMessageNode } = await import('./nodes/runtime/discord_messages.js');
           await executeDiscordMessageNode(targetNode, {
             resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
@@ -1334,15 +1551,19 @@ export class GraphRunner {
           });
           currentExecWires.push(...findExecContinuation(targetNode.id, wire.targetPinId));
         }
-        await recordDebugStep(targetNode, debugInputs);
+        const timing = recordNodeTiming(targetNode, nodeStartedAt, wire, 'completed');
+        await context.onSimulationStep?.({ ...timing, type: targetNode.type, label: targetNode.label || NodeDefinitions[targetNode.type]?.label || targetNode.type });
+        await recordDebugStep(targetNode, debugInputs, 'completed', '', timing);
       } catch (nodeErr) {
         const safeError = redactSecretText(nodeErr?.message || String(nodeErr));
+        const timing = recordNodeTiming(targetNode, nodeStartedAt, wire, 'error');
+        await context.onSimulationStep?.({ ...timing, type: targetNode.type, label: targetNode.label || NodeDefinitions[targetNode.type]?.label || targetNode.type, error: safeError });
         if (nodeErr?.name === 'AbortError') return { error: safeError };
         log(`[Node Error] Failed on node ${targetNode.id}: ${safeError}`);
         try {
           context.onNodeError?.({ graphId: graph.id, graphName: graph.name || graph.id, nodeId: targetNode.id, nodeLabel: targetNode.label || NodeDefinitions[targetNode.type]?.label || targetNode.type, error: safeError });
         } catch {}
-        if (context.debug) await recordDebugStep(targetNode, [], 'error', safeError);
+        if (context.debug) await recordDebugStep(targetNode, [], 'error', safeError, timing);
         return { error: safeError };
       }
       }
@@ -1354,12 +1575,24 @@ export class GraphRunner {
     if (eventName === 'FUNCTION_CALL' && functionReturnValue === undefined) {
       const returnNode = nodes.find((node) => node.type === 'function_return');
       if (returnNode) {
+        const returnStartedAt = performance.now();
         functionReturnValue = resolveFunctionReturnResult(returnNode, resolveDataInput);
         recordExecutedNode(returnNode.id);
+        const timing = recordNodeTiming(returnNode, returnStartedAt);
+        await context.onSimulationStep?.({ ...timing, type: returnNode.type, label: returnNode.label || NodeDefinitions[returnNode.type]?.label || returnNode.type });
       }
     }
 
-    return { executedNodeIds, traces, debugSteps, result: functionReturnValue, error: executionError?.error || null };
+    return {
+      executedNodeIds,
+      traces,
+      debugSteps,
+      nodeTimings,
+      wirePath,
+      result: functionReturnValue,
+      error: executionError?.error || null,
+      elapsedMs: Math.round(Math.max(0, performance.now() - runStartedAt - debugPausedMs) * 100) / 100
+    };
   }
 }
 
@@ -1371,6 +1604,14 @@ function evaluateFunctionGraph(graph, argumentValues, context, callStack) {
   const nextStack = [...callStack, graph.id];
   const cache = new Map();
   const functionCallResultCache = new Map();
+  const warnedTemplateExpressions = new Set();
+  const warnUndefinedTemplate = (node, expression, references = []) => {
+    const key = `${node?.id || 'graph'}:${expression}`;
+    if (warnedTemplateExpressions.has(key)) return;
+    warnedTemplateExpressions.add(key);
+    const names = references.length ? references.join(', ') : expression;
+    context.log?.(`[Template] Undefined or null value for ${names} in ${node?.label || node?.type || 'function'} (${node?.id || graph.id}).`, 'WARN');
+  };
   const findNode = (id) => nodes.find((node) => node.id === id);
   const inputWire = (nodeId, pinId) => connections.find((wire) => wire.targetNodeId === nodeId && wire.targetPinId === pinId);
 
@@ -1433,7 +1674,9 @@ function evaluateFunctionGraph(graph, argumentValues, context, callStack) {
         const fallback = argument && inputNode ? resolveOutput(inputNode, argument.legacy ? 'value' : functionArgumentPinId(argument)) : undefined;
         const value = resolveInput(node, `slot_${name}`, fallback);
         return value;
-      }, context.appEmojis);
+      }, context.appEmojis, (expression, references) => warnUndefinedTemplate(node, expression, references), {
+        resolveFunction: (name, values) => context.resolveTemplateFunction?.(name, values, graph, nextStack)
+      });
     } else if (node.type === 'function_call') {
       const nestedGraph = context.resolveFunctionGraph?.(node.data?.graphId);
       if (nestedGraph) {
