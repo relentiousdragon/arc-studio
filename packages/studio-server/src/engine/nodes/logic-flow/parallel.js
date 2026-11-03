@@ -14,12 +14,12 @@ export default {
   "outputs": [
     {
       "id": "branch_a_exec",
-      "label": "Branch A",
+      "label": "Branch 1",
       "type": "exec"
     },
     {
       "id": "branch_b_exec",
-      "label": "Branch B",
+      "label": "Branch 2",
       "type": "exec"
     }
   ]
