@@ -1,11 +1,12 @@
 export default {
-  "description": "Creates or updates a graph variable. Its value type follows the connected value, otherwise choose a type and fallback value.",
+  "description": "Creates a graph or project variable when the graph runs. An existing variable with the same name is left untouched.",
   "type": "variable_create",
   "category": "Variables",
   "label": "Create Variable",
   "color": "#38bdf8",
   "defaultData": {
     "name": "",
+    "scope": "graph",
     "valueType": "string",
     "value": "",
     "persist": true
@@ -15,6 +16,12 @@ export default {
       "id": "exec",
       "label": "Exec",
       "type": "exec"
+    },
+    {
+      "id": "name",
+      "label": "Name",
+      "type": "arg",
+      "defaultValue": ""
     },
     {
       "id": "value",
