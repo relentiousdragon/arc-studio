@@ -183,6 +183,7 @@ import node_build_modal from './values-data/build_modal.js';
 import node_data_get_modal_value from './values-data/data_get_modal_value.js';
 import node_modify_embed from './values-data/modify_embed.js';
 import node_modify_components from './values-data/modify_components.js';
+import node_modify_components_v2 from './values-data/modify_components_v2.js';
 // Cryptography & Security
 import node_action_crypto_hash from './cryptography-security/action_crypto_hash.js';
 import node_action_crypto_hmac from './cryptography-security/action_crypto_hmac.js';
@@ -374,6 +375,7 @@ export const nodeDefinitions = [
   node_data_get_modal_value,
   node_modify_embed,
   node_modify_components,
+  node_modify_components_v2,
   node_action_crypto_hash,
   node_action_crypto_hmac,
   node_action_crypto_verify_hmac,
