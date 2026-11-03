@@ -2,6 +2,7 @@ import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, use
 import { createPortal } from 'react-dom';
 import { onPageBlur } from '../../core/pageFocus.js';
 import { getCaretCoordinates } from '../../core/caretCoordinates.js';
+import { templatePathSuggestions } from '../../core/templateFieldAutocomplete.js';
 
 let emojiEntriesPromise;
 function loadEmojiEntries() {
@@ -32,7 +33,7 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
   const [emojiEntries, setEmojiEntries] = useState(null);
   const skipAutocompleteRef = useRef(false);
   const onOpenTextEditor = props.onOpenTextEditor;
-  const { onOpenTextEditor: _onOpenTextEditor, ...fieldProps } = props;
+  const { onOpenTextEditor: _onOpenTextEditor, maxLength: _maxLength, ...fieldProps } = props;
   useImperativeHandle(forwardedRef, () => inputRef.current);
 
   const suggestions = useMemo(() => {
@@ -42,13 +43,21 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
       const list = match.filterStage
         ? TEMPLATE_FILTERS.map((name) => ({ key: `filter:${name}`, label: name, insert: name }))
         : match.pathStage
-          ? templateValuePaths.map((item) => typeof item === 'string' ? { path: item, label: item } : item).filter((item) => item?.path).map((item) => ({ key: `path:${item.path}`, label: item.label || item.path, insert: `${item.path}}}` }))
+          ? templatePathSuggestions(match.query, templateValuePaths).map((item) => ({ key: `path:${item.path}`, label: item.label || item.path, insert: item.insert }))
           : [
             ...graphVariables.map((item) => typeof item === 'string' ? item : item?.name).filter(Boolean).map((name) => ({ key: `variable:${name}`, label: name, insert: `${name}}}` })),
+            ...templateValuePaths.filter((item) => {
+              const path = typeof item === 'string' ? item : item?.path;
+              return Boolean(path) && path.includes('.');
+            }).map((item) => {
+              const path = typeof item === 'string' ? item : item.path;
+              return { key: `path:${path}`, label: (typeof item === 'string' ? item : item.label || item.path), insert: `${path}}}` };
+            }),
             ...templateSuggestions.map((item) => typeof item === 'string' ? { name: item, label: item } : item)
               .filter((item) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(item?.name || ''))
               .map((item) => ({ key: `socket:${item.name}:${item.label}`, label: item.label || item.name, insert: `${item.name}}}` }))
           ];
+      if (match.pathStage) return list.slice(0, 8);
       return list.filter((item) => item.label.toLowerCase().includes(query) || item.insert.slice(0, -2).toLowerCase().includes(query)).slice(0, 8);
     }
     const query = match.query.toLowerCase();
@@ -186,7 +195,6 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
       ? `${item.insert}${match.filterStage || !item.insert.endsWith('}}') ? (currentValue.slice(match.end).startsWith('}}') ? '' : '}}') : ''}`
       : item.emoji;
     const next = insertAtSelection(element, currentValue, match.start, match.end, insert);
-    if (Number.isFinite(Number(props.maxLength)) && next.value.length > Number(props.maxLength)) return;
     setMatch(null);
     skipAutocompleteRef.current = true;
     const prototype = element.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
@@ -231,7 +239,7 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
   };
   const showSuggestions = suggestions.length > 0 || (match?.kind !== 'template' && emojiEntries === null);
   return <>
-    <Component {...fieldProps} ref={inputRef} className={className} value={value} onFocus={handleFocus} onChange={onInputChange} onKeyDown={handleKeyDown} onPointerDown={onPointerDown} onContextMenu={handleContextMenu} />
+    <Component {...fieldProps} data-template-autocomplete="native" data-soft-maxlength={props.maxLength ?? undefined} ref={inputRef} className={className} value={value} onFocus={handleFocus} onChange={onInputChange} onKeyDown={handleKeyDown} onPointerDown={onPointerDown} onContextMenu={handleContextMenu} />
     {textMenu && <div className="discord-text-context-menu" style={{ left: textMenu.x, top: textMenu.y }} role="menu"><button type="button" role="menuitem" onPointerDown={(event) => event.preventDefault()} onClick={(event) => { event.stopPropagation(); setTextMenu(null); onOpenTextEditor?.(); }}>Open in text editor</button></div>}
     {(discordAutocomplete || templateAutocomplete) && match && position && showSuggestions && createPortal(<div ref={pickerRef} className="discord-emoji-suggestions" style={{ left: position.left, top: position.top, width: position.width, maxHeight: position.maxHeight, overflowY: 'auto' }} role="listbox" aria-label={match.kind === 'template' ? 'Template suggestions' : 'Emoji suggestions'}>
       <div className="discord-emoji-suggestion-heading">{match.kind === 'template' ? (match.filterStage ? 'FILTER' : match.pathStage ? 'VALUE PATH' : 'VARIABLE') : 'EMOJI'}{match.query ? ` · ${match.query}` : ''}</div>
