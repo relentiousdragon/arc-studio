@@ -62,6 +62,7 @@ import node_execute_graph from './logic-flow/execute_graph.js';
 // Functions
 import node_function_math from './functions/function_math.js';
 // Math
+import node_math_eval from './math/math_eval.js';
 import node_math_add from './math/math_add.js';
 import node_math_subtract from './math/math_subtract.js';
 import node_math_multiply from './math/math_multiply.js';
@@ -256,6 +257,7 @@ export const nodeDefinitions = [
   node_function_call,
   node_execute_graph,
   node_function_math,
+  node_math_eval,
   node_math_add,
   node_math_subtract,
   node_math_multiply,

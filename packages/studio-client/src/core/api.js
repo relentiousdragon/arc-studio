@@ -51,7 +51,7 @@ export function studioWebSocketUrl() {
   if (!base) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.hostname === 'localhost'
-      ? `127.0.0.1${window.location.port ? `:${window.location.port}` : ''}`
+      ? `127.0.0.1${window.location.port ? `:3000` : ''}`
       : window.location.host;
     return `${protocol}//${host}/ws`;
   }
