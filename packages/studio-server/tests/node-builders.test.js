@@ -116,3 +116,94 @@ test('GraphRunner sends modal builder output as the initial interaction response
     }
   }]);
 });
+
+test('GraphRunner modifies a Components V2 container property before editing the message', async () => {
+  const calls = [];
+  const graph = {
+    id: 'modify-components-v2',
+    nodes: [
+      { id: 'event', type: 'event_message_create' },
+      { id: 'builder', type: 'build_components', data: { componentsV2: [{ id: 'container_a', type: 'container', spoiler: false, children: [{ id: 'text_a', type: 'text_display', content: 'Hidden text' }] }] } },
+      { id: 'spoiler', type: 'value_boolean', data: { value: true } },
+      { id: 'modify', type: 'modify_components_v2', data: { target_id: 'container_a', property: 'spoiler', value: false } },
+      { id: 'edit', type: 'action_edit_message', data: { channel_id: 'channel-1', message_id: 'message-1' } }
+    ],
+    connections: [
+      { sourceNodeId: 'event', sourcePinId: 'exec', targetNodeId: 'edit', targetPinId: 'exec' },
+      { sourceNodeId: 'builder', sourcePinId: 'components', targetNodeId: 'modify', targetPinId: 'components' },
+      { sourceNodeId: 'spoiler', sourcePinId: 'value', targetNodeId: 'modify', targetPinId: 'value' },
+      { sourceNodeId: 'modify', sourcePinId: 'components', targetNodeId: 'edit', targetPinId: 'components' }
+    ]
+  };
+
+  const result = await GraphRunner.execute(graph, 'MESSAGE_CREATE', {}, {
+    mock: true,
+    rest: { editMessage: async (...args) => { calls.push(args); return { id: 'message-1' }; } },
+    log: () => {}
+  });
+
+  assert.equal(result.error, null);
+  assert.deepEqual(calls, [['channel-1', 'message-1', {
+    flags: 32768,
+    content: null,
+    embeds: [],
+    components: [{ type: 17, components: [{ type: 10, content: 'Hidden text' }], spoiler: true }]
+  }]]);
+});
+
+test('GraphRunner ignores unconnected fallback content when a Components V2 wire is connected', async () => {
+  const calls = [];
+  const graph = {
+    id: 'ignore-fallback-components-v2-content',
+    nodes: [
+      { id: 'event', type: 'event_message_create' },
+      { id: 'builder', type: 'build_components', data: { componentsV2: [{ id: 'text_a', type: 'text_display', content: 'Hello' }] } },
+      { id: 'edit', type: 'action_edit_message', data: { channel_id: 'channel-1', message_id: 'message-1', content: 'Ignored fallback content' } }
+    ],
+    connections: [
+      { sourceNodeId: 'event', sourcePinId: 'exec', targetNodeId: 'edit', targetPinId: 'exec' },
+      { sourceNodeId: 'builder', sourcePinId: 'components', targetNodeId: 'edit', targetPinId: 'components' }
+    ]
+  };
+
+  const result = await GraphRunner.execute(graph, 'MESSAGE_CREATE', {}, {
+    mock: true,
+    rest: { editMessage: async (...args) => { calls.push(args); return { id: 'message-1' }; } },
+    log: () => {}
+  });
+
+  assert.equal(result.error, null);
+  assert.deepEqual(calls, [['channel-1', 'message-1', {
+    flags: 32768,
+    content: null,
+    embeds: [],
+    components: [{ type: 10, content: 'Hello' }]
+  }]]);
+});
+
+test('GraphRunner rejects a connected content wire alongside a Components V2 layout', async () => {
+  const calls = [];
+  const graph = {
+    id: 'reject-connected-components-v2-content',
+    nodes: [
+      { id: 'event', type: 'event_message_create' },
+      { id: 'builder', type: 'build_components', data: { componentsV2: [{ id: 'text_a', type: 'text_display', content: 'Hello' }] } },
+      { id: 'content', type: 'value_text', data: { value: 'Connected content' } },
+      { id: 'edit', type: 'action_edit_message', data: { channel_id: 'channel-1', message_id: 'message-1' } }
+    ],
+    connections: [
+      { sourceNodeId: 'event', sourcePinId: 'exec', targetNodeId: 'edit', targetPinId: 'exec' },
+      { sourceNodeId: 'builder', sourcePinId: 'components', targetNodeId: 'edit', targetPinId: 'components' },
+      { sourceNodeId: 'content', sourcePinId: 'value', targetNodeId: 'edit', targetPinId: 'content' }
+    ]
+  };
+
+  const result = await GraphRunner.execute(graph, 'MESSAGE_CREATE', {}, {
+    mock: true,
+    rest: { editMessage: async (...args) => { calls.push(args); return { id: 'message-1' }; } },
+    log: () => {}
+  });
+
+  assert.match(result.error, /Components V2 cannot be combined with message content or an embed/);
+  assert.deepEqual(calls, []);
+});

@@ -41,6 +41,7 @@ function createInteractionHarness(type, data = {}, options = {}) {
       resolveInput: (pinId, fallback) => data[pinId] ?? fallback,
       resolveComponents: () => data.components || [],
       resolveFiles: (files) => files,
+      isInputConnected: options.isInputConnected || (() => false),
       buildEmbed: () => data.builtEmbed,
       rest: options.rest || {},
       simulation: options.simulation !== false,
@@ -158,6 +159,35 @@ test('interaction reply creates one initial response with ephemeral flags and re
   assert.equal(harness.state.pending, null);
 
   await assert.rejects(harness.execute(), /already been acknowledged/);
+});
+
+test('Edit Interaction Reply uses Components V2 payload rules', async () => {
+  const components = { format: 'arc-components-v2', components: [{ type: 10, content: 'Updated' }], validationErrors: [] };
+  const payload = { flags: 32768, content: null, embeds: [], components: components.components };
+  const calls = [];
+  const harness = createInteractionHarness('action_edit_interaction_reply', {
+    application_id: 'app-1', interaction_token: 'token-1', components
+  }, { rest: { editOriginalInteractionResponse: async (...args) => calls.push(args) } });
+
+  await harness.execute();
+  assert.deepEqual(calls, [['app-1', 'token-1', payload]]);
+
+  const fallbackCalls = [];
+  const fallback = createInteractionHarness('action_edit_interaction_reply', {
+    application_id: 'app-1', interaction_token: 'token-1', content: 'Ignored fallback content', components
+  }, { rest: { editOriginalInteractionResponse: async (...args) => fallbackCalls.push(args) } });
+
+  await fallback.execute();
+  assert.deepEqual(fallbackCalls, [['app-1', 'token-1', payload]]);
+
+  const connected = createInteractionHarness('action_edit_interaction_reply', {
+    application_id: 'app-1', interaction_token: 'token-1', content: 'Connected content', components
+  }, {
+    isInputConnected: (pinId) => pinId === 'content',
+    rest: { editOriginalInteractionResponse: async () => assert.fail('Invalid Components V2 payload must not reach REST.') }
+  });
+
+  await assert.rejects(connected.execute(), /Components V2 cannot be combined with message content or an embed/);
 });
 
 test('defer reply and update retain acknowledgement state and reply after defer edits the original response', async () => {

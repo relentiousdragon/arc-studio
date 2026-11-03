@@ -126,7 +126,7 @@ export async function executeDiscordInteractionNode(node, {
     const ephemeral = Boolean(resolveInput('ephemeral', node.data?.ephemeral || false));
     const componentsV2 = components?.format === 'arc-components-v2' || node.data?.componentsV2Enabled === true;
 
-    if (componentsV2) validateComponentsV2Mode(node, content, components, isInputConnected);
+    if (componentsV2) validateComponentsV2Mode(components, isInputConnected);
     if (interactionId) setOutput('interaction_id', interactionId);
     if (applicationId) setOutput('application_id', applicationId);
     if (interactionToken) setOutput('interaction_token', interactionToken);
@@ -204,7 +204,7 @@ export async function executeDiscordInteractionNode(node, {
   const files = resolveFiles(resolveInput('files', node.data?.files || []));
   const componentsV2 = components?.format === 'arc-components-v2' || node.data?.componentsV2Enabled === true;
 
-  if (componentsV2) validateComponentsV2Mode(node, content, components, isInputConnected);
+  if (componentsV2) validateComponentsV2Mode(components, isInputConnected);
 
   if (!applicationId) {
     setOutput?.('success', false);
@@ -224,11 +224,9 @@ export async function executeDiscordInteractionNode(node, {
   return true;
 }
 
-function validateComponentsV2Mode(node, content, components, isInputConnected) {
-  const hasContent = isInputConnected('content') || String(node.data?.content ?? '').trim() || String(content ?? '').trim();
-  const hasEmbed = isInputConnected('embed') || Boolean(node.data?.embed) || (Array.isArray(node.data?.blocks) && node.data.blocks.length > 0);
-  if (hasContent || hasEmbed) {
-    throw new Error('Components V2 cannot be combined with message content or an embed. Clear those fields and disconnect their wires first.');
+function validateComponentsV2Mode(components, isInputConnected) {
+  if (isInputConnected('content') || isInputConnected('embed')) {
+    throw new Error('Components V2 cannot be combined with message content or an embed. Disconnect the content or embed wire first.');
   }
   if (!components || components.format !== 'arc-components-v2') throw new Error('Components V2 is enabled but no Components V2 layout is connected or configured.');
   const errors = Array.isArray(components.validationErrors) ? components.validationErrors : [];

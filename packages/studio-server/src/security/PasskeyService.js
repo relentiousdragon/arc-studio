@@ -6,6 +6,7 @@ import {
   verifyAuthenticationResponse,
   verifyRegistrationResponse
 } from '@simplewebauthn/server';
+import { COSEALG } from '@simplewebauthn/server/helpers';
 
 const CEREMONY_TTL_MS = 3 * 60 * 1000;
 const PENDING_LOGIN_TTL_MS = 60 * 1000;
@@ -124,6 +125,7 @@ export class PasskeyService {
       userDisplayName: String(user.username),
       userID: Buffer.from(String(user.id)),
       attestationType: 'none',
+      supportedAlgorithmIDs: [COSEALG.EdDSA, COSEALG.ES256, COSEALG.RS256],
       excludeCredentials: existing,
       authenticatorSelection: {
         residentKey: 'required',

@@ -28,6 +28,34 @@ const getLocalCollaboratorColor = (id) => {
   for (const character of String(id || '')) hash = (hash * 31 + character.charCodeAt(0)) | 0;
   return colors[(hash >>> 0) % colors.length];
 };
+function appendSimulationStep(current, payload) {
+  const step = payload?.step;
+  if (!step?.nodeId) return current;
+  if (current?.runId && current.runId !== payload.runId) return current;
+  const base = current?.runId === payload.runId
+    ? current
+    : { runId: payload.runId, tabId: payload.tabId, debug: Boolean(payload.debug), running: true, nodeTimings: [], wirePath: [], elapsedMs: 0 };
+  return {
+    ...base,
+    running: true,
+    nodeTimings: [...(base.nodeTimings || []), step].slice(-1000),
+    wirePath: step.incomingWire ? [...(base.wirePath || []), step.incomingWire].slice(-1000) : base.wirePath || [],
+    elapsedMs: Number(step.elapsedMs) || base.elapsedMs || 0
+  };
+}
+function finishSimulationOverlay(current, payload) {
+  if (current?.runId && current.runId !== payload?.runId) return current;
+  const result = payload?.result;
+  const base = current?.runId === payload?.runId ? current : { runId: payload?.runId, tabId: payload?.tabId, nodeTimings: [], wirePath: [] };
+  return {
+    ...base,
+    running: false,
+    elapsedMs: Number(result?.elapsedMs) || base.elapsedMs || 0,
+    nodeTimings: result?.nodeTimings || base.nodeTimings || [],
+    wirePath: result?.wirePath || base.wirePath || [],
+    error: result?.error || payload?.error || ''
+  };
+}
 function getNextProjectGraphName(graphs) {
   const existingNames = new Set(graphs.map((graph) => String(graph.name || '').trim().toLowerCase()));
   let number = 1;
@@ -77,7 +105,7 @@ import { classifyArcUpdate, compareArcVersions } from './core/appUpdates.js';
 import { flattenSlashParameters, isValidSlashName, slashOptionPinId, validateSlashCommandOptions } from '../../studio-server/src/engine/SlashCommandOptions.js';
 import { DEFAULT_SHORTCUTS, formatShortcut, getDefaultShortcut, shortcutMatches } from './core/shortcuts.js';
 import { playUiSound, unlockUiSounds } from './core/uiSounds.js';
-import { BuiltInNodeDefinitions, BundledNodeTypes, NODE_SCHEMA_VERSION, CLIENT_PROTOCOL_VERSION, NODE_REGISTRY_PROTOCOL_VERSION, SUPPORTED_NODE_REGISTRY_FEATURES, getNodeRegistryCompatibility, createDefaultNodeData, getAvailableNodeDefinitions, getNodeArgumentPins, getNodeRegistryDefinitions, getNodeTemplateInputPins, getTextTemplateSlots, isNodeTypeSupported, registerPluginNodeDefinitions, renderTextTemplate, resolveDynamicNodePins, setWorkspaceNodeDefinitions } from './components/nodes/nodeDefinitions.js';
+import { BuiltInNodeDefinitions, BundledNodeTypes, NODE_SCHEMA_VERSION, CLIENT_PROTOCOL_VERSION, NODE_REGISTRY_PROTOCOL_VERSION, SUPPORTED_NODE_REGISTRY_FEATURES, getNodeRegistryCompatibility, createDefaultNodeData, getAvailableNodeDefinitions, getNodeArgumentPins, getNodeRegistryDefinitions, getNodeTemplateInputPins, getTextTemplateSlots, isNodeTypeSupported, registerPluginNodeDefinitions, renderTextTemplate, resolveDynamicNodePins, setWorkspaceNodeDefinitions, validateTemplateFunctionName } from './components/nodes/nodeDefinitions.js';
 import { createEmbedBlock, embedBlockPins, getEmbedBlocks } from './components/nodes/EmbedNodeBuilder.jsx';
 import { createDefaultModal } from './components/nodes/ModalNodeBuilder.jsx';
 import { evaluateMathNode } from '../../studio-server/src/engine/MathOperations.js';
@@ -161,12 +189,13 @@ function ExportReviewDisclosure({ title, summary, expanded, onToggle, children }
 }
 
 function collectTemplateValuePaths(value, root, depth = 0, output = [], seen = new Set()) {
-  if (depth >= 4 || value == null || typeof value !== 'object' || seen.has(value)) return output;
+  if (depth >= 6 || output.length >= 400 || value == null || typeof value !== 'object' || seen.has(value)) return output;
   seen.add(value);
   const entries = Array.isArray(value)
     ? value.slice(0, 10).map((_item, index) => [index, value[index]])
     : Object.entries(value).slice(0, 40).filter(([key]) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key));
   for (const [key, child] of entries) {
+    if (output.length >= 400) break;
     const path = Array.isArray(value) ? `${root}[${key}]` : `${root}.${key}`;
     output.push({ path, label: path });
     collectTemplateValuePaths(child, path, depth + 1, output, seen);
@@ -388,6 +417,24 @@ function getTemplatePreviewInputs(graph, node, variables) {
   return Object.fromEntries(connections.filter((wire) => wire.targetNodeId === node.id).map((wire) => [wire.targetPinId, sample(byId.get(wire.sourceNodeId), wire.sourcePinId)]).filter(([, value]) => value !== undefined));
 }
 
+function getEventTemplatePaths(graph) {
+  if (!graph) return [];
+  const definitions = new Map(BuiltInNodeDefinitions.map((definition) => [definition.type, definition]));
+  const eventTypes = new Set((graph.nodes || []).map((node) => node?.type).filter((type) => definitions.get(type)?.templatePaths?.length));
+  const paths = new Map();
+  for (const node of graph.nodes || []) {
+    const definition = definitions.get(node?.type);
+    for (const item of definition?.templatePaths || []) {
+      if (!item?.path) continue;
+      const key = item.path.toLowerCase();
+      if (paths.has(key)) continue;
+      const label = eventTypes.size > 1 ? `${definition.label || 'Event'} · ${item.label || item.path}` : (item.label || item.path);
+      paths.set(key, { path: item.path, label });
+    }
+  }
+  return [...paths.values()];
+}
+
 function getTemplateValuePaths(graph, node, variables) {
   const paths = [];
   for (const variable of variables) {
@@ -403,6 +450,11 @@ function getTemplateValuePaths(graph, node, variables) {
     const root = argument ? `arg${argument[1]}` : slot[1];
     const sample = getNodeOutputSample(nodeById.get(wire.sourceNodeId), wire.sourcePinId, variables, graph.nodes || []);
     collectTemplateValuePaths(sample, root, 0, paths);
+  }
+  for (const item of getEventTemplatePaths(graph)) {
+    const root = item.path.split(/[.[]/)[0].toLowerCase();
+    if (variables.some((variable) => String(variable?.name || '').toLowerCase() === root)) continue;
+    paths.push(item);
   }
   return [...new Map(paths.map((item) => [item.path, item])).values()];
 }
@@ -738,6 +790,28 @@ export function App() {
   const [canResetPrimaryAdminWithMasterKey, setCanResetPrimaryAdminWithMasterKey] = useState(false);
   const [workspaceError, setWorkspaceError] = useState('');
   const [authToken, setAuthToken] = useState(() => getInitialAuthToken(desktopMode));
+  const [showLandscapePrompt, setShowLandscapePrompt] = useState(false);
+  const orientationFullscreenRef = useRef(false);
+  useEffect(() => {
+    if (!authToken || desktopMode || !window.matchMedia?.('(pointer: coarse)').matches) {
+      setShowLandscapePrompt(false);
+      return undefined;
+    }
+    const updateOrientationPrompt = () => setShowLandscapePrompt(window.matchMedia('(orientation: portrait)').matches);
+    updateOrientationPrompt();
+    window.addEventListener('resize', updateOrientationPrompt);
+    window.screen?.orientation?.addEventListener?.('change', updateOrientationPrompt);
+    return () => {
+      window.removeEventListener('resize', updateOrientationPrompt);
+      window.screen?.orientation?.removeEventListener?.('change', updateOrientationPrompt);
+    };
+  }, [authToken, desktopMode]);
+  useEffect(() => {
+    if (authToken || !orientationFullscreenRef.current) return;
+    window.screen?.orientation?.unlock?.();
+    if (document.fullscreenElement) document.exitFullscreen?.().catch?.(() => {});
+    orientationFullscreenRef.current = false;
+  }, [authToken]);
   const forceSignOutRef = useRef(null);
   const [localSessionRestoreReady, setLocalSessionRestoreReady] = useState(() => !desktopMode || workspaceMode !== 'local' || Boolean(getInitialAuthToken(desktopMode)));
   const [currentUser, setCurrentUser] = useState(null);
@@ -806,7 +880,11 @@ export function App() {
   const activeProjectIdRef = useRef(activeProjectId);
   activeProjectIdRef.current = activeProjectId;
   const startupProjectHandledRef = useRef(false);
-  const projectVariablesSaveRef = useRef({ timer: null, revision: 0 });
+  const projectVariablesSaveRef = useRef({ timer: null, revision: 0, projectId: '', pending: false });
+  const projectVariablesSavePendingFor = (projectId) => {
+    const save = projectVariablesSaveRef.current;
+    return Boolean(save.pending && save.projectId && save.projectId === projectId);
+  };
   const [savingProjectVariables, setSavingProjectVariables] = useState(false);
   const [projectVariables, setProjectVariables] = useState([]);
   const [disabledBuiltInVariables, setDisabledBuiltInVariables] = useState([]);
@@ -913,6 +991,7 @@ export function App() {
   const [sidebarWidths, setSidebarWidths] = useState(readSidebarWidths);
   const [nameDialog, setNameDialog] = useState(null);
   const [nameDialogError, setNameDialogError] = useState('');
+  const graphNameInputRef = useRef(null);
   const [nodeRenameDialog, setNodeRenameDialog] = useState(null);
   const [nodeRenameValue, setNodeRenameValue] = useState('');
   const [tagGroupDialog, setTagGroupDialog] = useState(null);
@@ -1502,6 +1581,7 @@ export function App() {
   useEffect(() => { setSelectedCanvasNodeId(''); setSelectedCanvasNodeCount(0); }, [activeTabId]);
   const traceRequestIdRef = useRef(0);
   const [activeDebugStep, setActiveDebugStep] = useState(null);
+  const [activeSimulationOverlay, setActiveSimulationOverlay] = useState(null);
   const [logs, setLogs] = useState([]);
   const wsRef = useRef(null);
   const sendCollaborationAction = useCallback((action, immediate = false) => {
@@ -1547,6 +1627,19 @@ export function App() {
       collaborationActionTimerRef.current = window.setTimeout(flush, motionAction ? collaborationMotionSendIntervalRef.current : 16);
     }
   }, [activeProjectId, activeTabId, transientCanvasMotionSupported]);
+  const commitNodePositions = useCallback((positions) => {
+    const socket = wsRef.current;
+    if (localDesktopWorkspace || !activeProjectId || !activeTabId || !Array.isArray(positions) || !positions.length) return;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify({
+      type: 'GRAPH_NODE_MOVE',
+      projectId: activeProjectId,
+      graphId: activeTabId,
+      baseRevision: liveGraphRevisionRef.current.get(activeTabId) || 0,
+      clientId: collaborationClientIdRef.current,
+      positions: positions.map((position) => ({ id: position.id, x: Math.round(position.x), y: Math.round(position.y) }))
+    }));
+  }, [activeProjectId, activeTabId, localDesktopWorkspace]);
   const sendGraphChatMessage = useCallback((content, position) => {
     const socket = wsRef.current;
     if (localDesktopWorkspace || !activeProjectId || !activeTabId || !liveGraphReadyRef.current.has(`${activeProjectId}:${activeTabId}`)
@@ -1686,9 +1779,10 @@ export function App() {
       }
       return 'object';
     };
+    const declaredVariableNames = new Set(savedVariables.map((variable) => String(variable?.name || '').toLowerCase()).filter(Boolean));
     const createdVariables = graphNodes.filter((node) => node.type === 'variable_create').flatMap((node) => {
       const name = String(node.data?.name || '').trim();
-      if (!validVariableName(name)) return [];
+      if (!validVariableName(name) || declaredVariableNames.has(name.toLowerCase())) return [];
       const wire = graphConnections.find((item) => item.targetNodeId === node.id && item.targetPinId === 'value');
       const inferredType = wire ? resolveNodeType(wire.sourceNodeId, wire.sourcePinId) : null;
       const type = ['string', 'number', 'boolean', 'array', 'object'].includes(inferredType) ? inferredType
@@ -1703,6 +1797,7 @@ export function App() {
     ...graphVariables.map((variable) => ({ ...variable, scope: 'graph' })),
     ...projectVariables.map((variable) => ({ ...variable, scope: 'project' }))
   ], [graphVariables, projectVariables]);
+  const eventTemplatePaths = useMemo(() => getEventTemplatePaths(activeGraph), [activeGraph]);
   const workspaceLabel = desktopMode && workspaceMode === 'local' ? 'Local Workspace' : 'Private Workspace';
   const graphLookup = useMemo(() => new Map([...savedGraphs, ...tabs].map((graph) => [graph.id, graph])), [savedGraphs, tabs]);
   const activeProjectName = projects.find((project) => project.id === activeProjectId)?.name || '';
@@ -1742,6 +1837,18 @@ export function App() {
       .sort((left, right) => Number(left) - Number(right))
       .map((number) => ({ name: `arg${number}`, label: `arg${number}` }));
   }, [activeConnections, embedStudio?.nodeId]);
+  const connectedTemplateArguments = useMemo(() => {
+    const targetId = discordTextStudio?.nodeId || embedStudio?.nodeId;
+    if (!targetId) return [];
+    return activeConnections
+      .filter((wire) => wire.targetNodeId === targetId && /^arg_(\d+)$/.test(wire.targetPinId))
+      .sort((left, right) => Number(/^arg_(\d+)$/.exec(left.targetPinId)?.[1]) - Number(/^arg_(\d+)$/.exec(right.targetPinId)?.[1]))
+      .map((wire) => {
+        const number = /^arg_(\d+)$/.exec(wire.targetPinId)?.[1];
+        const source = activeNodes.find((node) => node.id === wire.sourceNodeId);
+        return { name: `arg${number}`, label: `arg${number}`, sourceLabel: source?.label || source?.type || 'Node', sourcePinId: wire.sourcePinId };
+      });
+  }, [activeConnections, activeNodes, discordTextStudio?.nodeId, embedStudio?.nodeId]);
   const embedTemplateValuePaths = useMemo(() => {
     if (!embedStudio?.nodeId) return [];
     return getTemplateValuePaths(activeGraph, activeGraph?.nodes?.find((node) => node.id === embedStudio.nodeId), availableVariables);
@@ -2291,8 +2398,9 @@ export function App() {
     fetch(apiUrl('/api/variables/project'), { headers: { 'x-arc-token': authToken } })
       .then((response) => response.json())
       .then((data) => {
-        if (!cancelled && Array.isArray(data.variables)) setProjectVariables(data.variables);
-        if (!cancelled && Array.isArray(data.disabledBuiltInVariables)) setDisabledBuiltInVariables(data.disabledBuiltInVariables);
+        if (cancelled) return;
+        if (Array.isArray(data.variables) && !projectVariablesSavePendingFor(data.projectId || activeProjectId)) setProjectVariables(data.variables);
+        if (Array.isArray(data.disabledBuiltInVariables)) setDisabledBuiltInVariables(data.disabledBuiltInVariables);
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -2725,7 +2833,7 @@ export function App() {
             for (const timer of liveGraphSendTimersRef.current.values()) window.clearTimeout(timer);
             liveGraphSendTimersRef.current.clear();
             setSocketReadyRevision((revision) => revision + 1);
-            if (Array.isArray(msg.payload.projectVariables)) setProjectVariables(msg.payload.projectVariables);
+            if (Array.isArray(msg.payload.projectVariables) && !projectVariablesSavePendingFor(msg.payload.projects?.activeProjectId || activeProjectIdRef.current)) setProjectVariables(msg.payload.projectVariables);
             if (msg.payload.projects) {
               const nextProjects = Array.isArray(msg.payload.projects.projects) ? msg.payload.projects.projects : [];
               setProjects(nextProjects);
@@ -2803,7 +2911,7 @@ export function App() {
             setMaxProjects(localDesktopWorkspace ? null : payload.maxProjects === undefined ? 10 : payload.maxProjects);
             setActiveProjectId(nextProjectId);
             setNeedsProjectOnboarding(nextProjects.length === 0 || nextProjects.some((project) => project.id === nextProjectId && project.pendingStarterChoice));
-            setProjectVariables(Array.isArray(payload.projectVariables) ? payload.projectVariables : []);
+            if (!projectVariablesSavePendingFor(nextProjectId)) setProjectVariables(Array.isArray(payload.projectVariables) ? payload.projectVariables : []);
             const projectGraphs = (Array.isArray(payload.graphs) ? payload.graphs : []).map(migrateFunctionGraphEntry);
             reconnectGraphBaseRef.current.clear();
             liveGraphBaseRef.current = new Map(projectGraphs.map((graph) => [graph.id, snapshotGraph(graph)]));
@@ -2847,6 +2955,7 @@ export function App() {
             setWorkspaceRevision((revision) => revision + 1);
           } else if (msg.type === 'PROJECT_VARIABLES_UPDATED') {
             if (!isProjectVariableUpdateForActiveProject(msg.payload, activeProjectIdRef.current)) return;
+            if (projectVariablesSavePendingFor(msg.payload.projectId)) return;
             setProjectVariables(Array.isArray(msg.payload.variables) ? msg.payload.variables : []);
           } else if (msg.type === 'NOTE_EDIT_LOCKS_UPDATED') {
             const payload = msg.payload || {};
@@ -2960,6 +3069,34 @@ export function App() {
               if (tab.id !== incoming.id) return tab;
               const saved = savedGraphsRef.current.find((item) => item.id === incoming.id);
               return { ...merged, isDirty: saved ? !sameGraphContent(merged, saved) : true };
+            }));
+          } else if (msg.type === 'GRAPH_NODE_MOVED' && msg.payload?.graphId) {
+            const payload = msg.payload;
+            if (payload.projectId !== activeProjectIdRef.current) return;
+            const graphId = payload.graphId;
+            const moved = new Map((Array.isArray(payload.positions) ? payload.positions : [])
+              .filter((position) => position && typeof position.id === 'string' && Number.isFinite(position.x) && Number.isFinite(position.y))
+              .map((position) => [position.id, position]));
+            if (!moved.size) return;
+            const revision = Number(payload.revision);
+            if (Number.isInteger(revision) && revision > 0) {
+              liveGraphRevisionRef.current.set(graphId, Math.max(revision, liveGraphRevisionRef.current.get(graphId) || 0));
+            }
+            const moveNodes = (graph) => graph && graph.id === graphId && Array.isArray(graph.nodes)
+              ? { ...graph, nodes: graph.nodes.map((node) => moved.has(node.id) ? { ...node, x: moved.get(node.id).x, y: moved.get(node.id).y } : node) }
+              : graph;
+            const base = liveGraphBaseRef.current.get(graphId);
+            if (base) liveGraphBaseRef.current.set(graphId, moveNodes(base));
+            setTabs((current) => current.map((tab) => {
+              if (tab.id !== graphId || tab.localRecoveryOnly || !Array.isArray(tab.nodes)) return tab;
+              let changed = false;
+              const nodes = tab.nodes.map((node) => {
+                const position = moved.get(node.id);
+                if (!position || node.x === position.x && node.y === position.y) return node;
+                changed = true;
+                return { ...node, x: position.x, y: position.y };
+              });
+              return changed ? { ...tab, nodes, isDirty: true } : tab;
             }));
           } else if (msg.type === 'GRAPH_AUTOSAVE_FAILED' && msg.payload?.graphId) {
             const payload = msg.payload;
@@ -3319,12 +3456,27 @@ export function App() {
             setActivePulseNodeIds(msg.payload.step?.nodeId ? [msg.payload.step.nodeId] : []);
             setActivePulseGraphId(msg.payload.tabId || null);
             setActiveDebugStep(msg.payload.step || null);
+            setActiveSimulationOverlay((current) => appendSimulationStep(current, { ...msg.payload, debug: true }));
             arcEvents.emit('simulation:debug-step', msg.payload);
           } else if (msg.type === 'MOCK_DEBUG_FINISHED') {
             setActivePulseNodeIds([]);
             setActivePulseGraphId(null);
             setActiveDebugStep(null);
+            setActiveSimulationOverlay((current) => finishSimulationOverlay(current, msg.payload));
             arcEvents.emit('simulation:debug-finished', msg.payload);
+          } else if (msg.type === 'MOCK_SIMULATION_STARTED') {
+            setActiveSimulationOverlay({ runId: msg.payload?.runId, tabId: msg.payload?.tabId, debug: Boolean(msg.payload?.debug), running: true, nodeTimings: [], wirePath: [], elapsedMs: 0 });
+            setActivePulseGraphId(msg.payload?.tabId || null);
+            setActivePulseNodeIds([]);
+            setActiveDebugStep(null);
+          } else if (msg.type === 'MOCK_SIMULATION_STEP') {
+            setActivePulseNodeIds(msg.payload.step?.nodeId ? [msg.payload.step.nodeId] : []);
+            setActivePulseGraphId(msg.payload.tabId || null);
+            setActiveSimulationOverlay((current) => appendSimulationStep(current, msg.payload));
+          } else if (msg.type === 'MOCK_SIMULATION_FINISHED') {
+            setActivePulseNodeIds([]);
+            setActivePulseGraphId(null);
+            setActiveSimulationOverlay((current) => finishSimulationOverlay(current, msg.payload));
           }
         } catch { /* malformed/unrelated socket messages. */ }
       };
@@ -3733,6 +3885,8 @@ export function App() {
     setProjectVariables(nextVariables);
     const revision = ++projectVariablesSaveRef.current.revision;
     window.clearTimeout(projectVariablesSaveRef.current.timer);
+    projectVariablesSaveRef.current.projectId = projectId;
+    projectVariablesSaveRef.current.pending = true;
     setSavingProjectVariables(true);
     projectVariablesSaveRef.current.timer = window.setTimeout(async () => {
       try {
@@ -3759,7 +3913,10 @@ export function App() {
           }
         } catch {}
       } finally {
-        if (projectVariablesSaveRef.current.revision === revision) setSavingProjectVariables(false);
+        if (projectVariablesSaveRef.current.revision === revision) {
+          projectVariablesSaveRef.current.pending = false;
+          setSavingProjectVariables(false);
+        }
       }
     }, 220);
   }, [authToken, activeProjectId]);
@@ -3784,7 +3941,10 @@ export function App() {
     }
   }, [authToken, activeProjectId]);
 
-  useEffect(() => () => window.clearTimeout(projectVariablesSaveRef.current.timer), [activeProjectId, workspaceRevision, authToken]);
+  useEffect(() => () => {
+    projectVariablesSaveRef.current.pending = false;
+    window.clearTimeout(projectVariablesSaveRef.current.timer);
+  }, [authToken]);
 
   const notifyGraphCheckIssues = useCallback((graph, lookup = graphLookup) => {
     const report = validateGraph(graph, lookup, botProfile?.intentSummary, projectVariables);
@@ -4011,6 +4171,16 @@ export function App() {
     if (!name) { setNameDialogError('Enter a graph name.'); return; }
     const graph = tabs.find((tab) => tab.id === nameDialog?.graphId) || savedGraphs.find((item) => item.id === nameDialog?.graphId);
     if (!graph) { setNameDialog(null); setNameDialogError(''); return; }
+    const isFunctionGraph = graph.graphType === 'function' || (graph.nodes || []).some((node) => ['function_input', 'function_return'].includes(node.type));
+    const previouslySavedGraph = savedGraphs.find((item) => item.id === graph.id);
+    if (isFunctionGraph && (!previouslySavedGraph || previouslySavedGraph.name !== name)) {
+      const nameError = validateTemplateFunctionName(name);
+      if (nameError) { setNameDialogError(nameError); return; }
+      const duplicate = [...savedGraphs, ...tabs].some((item) => item.id !== graph.id
+        && (item.graphType === 'function' || (item.nodes || []).some((node) => ['function_input', 'function_return'].includes(node.type)))
+        && item.name?.toLowerCase() === name.toLowerCase());
+      if (duplicate) { setNameDialogError(`A function graph named “${name}” already exists.`); return; }
+    }
     const renamed = { ...graph, name, isDirty: true };
     const isSaveMode = nameDialog.mode === 'save' || nameDialog.mode === 'save-close';
     const wasAlreadySaved = savedGraphs.some((item) => item.id === graph.id);
@@ -4126,10 +4296,13 @@ export function App() {
       return;
     }
     const graphId = createEditorId('function');
+    const usedFunctionNames = new Set(functionGraphs.map((item) => item.name?.toLowerCase()).filter(Boolean));
+    let functionNameIndex = functionGraphs.length + 1;
+    while (usedFunctionNames.has(`function_${functionNameIndex}`.toLowerCase())) functionNameIndex += 1;
     const graph = {
       id: graphId,
       graphType: 'function',
-      name: `Function ${functionGraphs.length + 1}`,
+      name: `Function_${functionNameIndex}`,
       variables: [],
       nodes: [
         { id: `${graphId}_input`, type: 'function_input', label: 'Function Input', x: 72, y: 145, data: { arguments: [
@@ -4154,7 +4327,7 @@ export function App() {
     setActiveTabId(graphId);
     rememberUserGraph(graphId);
     setIsLibraryOpen(false);
-  }, [functionGraphs.length, rememberUserGraph, tabs.length]);
+  }, [functionGraphs, rememberUserGraph, tabs.length]);
 
   const handleSaveGraphTemplate = useCallback(async (graph) => {
     if (!authToken || !graph) return;
@@ -4433,7 +4606,7 @@ export function App() {
       for (const intent of disabledIntents) issues.push({ kind: 'warning', message: `${intent.replaceAll('_', ' ')} is required by the exported graphs but is currently disabled in the Discord Developer Portal.` });
       const permissions = new Set();
       for (const graph of exportGraphs) for (const node of graph.nodes || []) {
-        if (['action_send_message', 'action_edit_message', 'action_edit_components'].includes(node.type)) {
+        if (['action_send_message', 'action_edit_message'].includes(node.type)) {
           permissions.add('View Channels');
           permissions.add('Send Messages');
           if (node.type === 'action_send_message' && (String(node.data?.thread_id || '').trim() || graph.connections?.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'thread_id'))) permissions.add('Send Messages in Threads');
@@ -5049,7 +5222,7 @@ export function App() {
   const openEmbedStudioForNode = useCallback((node, routeOverride = null) => {
     if (node?.id && activeTabId) studioFocusReturnRef.current = { graphId: activeTabId, nodeId: node.id };
     const isComponentsBuilderNode = node.type === 'build_components';
-    const isMessageComponentsNode = isComponentsBuilderNode || ['action_send_message', 'action_reply_interaction', 'action_edit_message', 'action_edit_components', 'action_edit_interaction_reply'].includes(node.type);
+    const isMessageComponentsNode = isComponentsBuilderNode || ['action_send_message', 'action_reply_interaction', 'action_edit_message', 'action_edit_interaction_reply'].includes(node.type);
 
     const embedWire = activeConnections.find((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'embed');
     const embedSourceNode = embedWire ? activeNodes.find((n) => n.id === embedWire.sourceNodeId) : null;
@@ -7047,6 +7220,18 @@ export function App() {
 
   return (
     <div className={`app-root ${macOSDesktop ? 'is-macos' : ''}`} data-theme={theme} data-release-channel={currentUpdateChannel} data-ui-scale={uiScale} data-font-scale={fontScale} data-compact-context={settings.compactContextMenus ? 'true' : undefined} data-reduce-motion={settings.reduceMotion ? 'true' : undefined} onContextMenu={(event) => { if (desktopMode) event.preventDefault(); }} style={{ '--arc-ui-scale': Number(uiScale) / 100, '--arc-font-scale': Number(fontScale) / 100 }}>
+      {showLandscapePrompt && <div className="mobile-landscape-prompt" role="status">
+        <span>ARC Studio works best in landscape. Rotate your phone for more canvas space.</span>
+        <button type="button" onClick={async () => {
+          try {
+            await document.documentElement.requestFullscreen?.();
+            orientationFullscreenRef.current = Boolean(document.fullscreenElement);
+            await window.screen?.orientation?.lock?.('landscape');
+          } catch {}
+          setShowLandscapePrompt(window.matchMedia('(orientation: portrait)').matches);
+        }}>Try landscape</button>
+        <button type="button" aria-label="Dismiss landscape suggestion" onClick={() => setShowLandscapePrompt(false)}><X size={16} /></button>
+      </div>}
       <div className="app-client-surface">
       <TopBar
         tabs={tabs}
@@ -7166,6 +7351,7 @@ export function App() {
             templateValuePaths={embedTemplateValuePaths}
             templatePreviewValues={getTemplatePreviewInputs({ nodes: activeNodes, connections: activeConnections }, activeNodes.find((item) => item.id === embedStudio.nodeId), availableVariables)}
             templateSuggestions={embedTemplateSuggestions}
+            connectedTemplateArguments={connectedTemplateArguments}
             botProfile={botProfile}
             botStatus={botStatus}
             theme={theme}
@@ -7201,6 +7387,7 @@ export function App() {
             templatePreviewValues={getTemplatePreviewInputs({ nodes: activeNodes, connections: activeConnections }, activeNodes.find((item) => item.id === (discordTextStudio.nodeId || embedStudio?.nodeId)), availableVariables)}
             templateValuePaths={discordTextStudio.templateValuePaths || []}
             templateSuggestions={discordTextStudio.templateSuggestions || []}
+            connectedTemplateArguments={connectedTemplateArguments}
             collaborators={studioCollaborators}
             remoteCursors={textStudioCursors}
             onDraftChange={(draft, caret) => {
@@ -7247,6 +7434,8 @@ export function App() {
             nodeName={modalStudio.nodeName}
             theme={theme}
             modal={modalStudio.modal}
+            graphVariables={availableVariables}
+            templateValuePaths={getTemplateValuePaths(activeGraph, activeGraph?.nodes?.find((node) => node.id === modalStudio.nodeId), availableVariables)}
             onDraftChange={updateModalStudioDraft}
             onApply={applyModalStudio}
             onClose={() => finishStudioClose('popup-modal', () => setModalStudio(null))}
@@ -7269,8 +7458,11 @@ export function App() {
             onSelectedNodeCountChange={setSelectedCanvasNodeCount}
             activePulseNodeIds={activePulseGraphId === activeTabId ? activePulseNodeIds : []}
             debugStep={activeDebugStep}
+            simulationOverlay={activeSimulationOverlay?.tabId === activeTabId ? activeSimulationOverlay : null}
+            onClearSimulationOverlay={() => setActiveSimulationOverlay(null)}
             onDebugAction={(action) => { if (action === 'continue') { setActiveDebugStep(null); setActivePulseNodeIds([]); } arcEvents.emit('simulation:debug-action-request', action); }}
             graphVariables={availableVariables}
+            eventTemplatePaths={eventTemplatePaths}
             functionGraphs={functionGraphs}
             callableGraphs={callableGraphs}
             appEmojis={appEmojis}
@@ -7320,6 +7512,7 @@ export function App() {
             onOpenFunctionGraph={handleOpenGraph}
             remoteActions={remoteCollaborationActions}
             onCollaborationAction={sendCollaborationAction}
+            onNodeMoveCommit={commitNodePositions}
             graphChatEnabled={!localDesktopWorkspace && Boolean(activeGraph) && !activeGraphIsLocalRecovery}
             graphChatBubbles={graphChatBubbles}
             onSendGraphChat={sendGraphChatMessage}
@@ -7437,7 +7630,7 @@ export function App() {
           </div>}
           <LazyMountedFeature Component={BotSettingsModal} isOpen={isBotSidebarOpen} loadingLabel="Opening app settings…" loadingKind="sidebar" isDesktop={desktopMode} presentation="sidebar" sidebarWidth={sidebarWidths.bot} onSidebarResize={(width) => handleSidebarResize('bot', width)} onClose={() => setIsBotSidebarOpen(false)} onViewCommands={() => setCommandBrowserRequest((request) => request + 1)} authToken={authToken} profile={botProfile} onProfileChange={setBotProfile} />
           <LazyMountedFeature Component={PluginStoreModal} isOpen={isPluginStoreOpen} loadingLabel="Opening Plugin Store…" loadingKind="sidebar" isDesktop={desktopMode} sidebarWidth={sidebarWidths.plugins} onSidebarResize={(width) => handleSidebarResize('plugins', width)} onClose={() => setIsPluginStoreOpen(false)} authToken={authToken} canInstall={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} canManageSource={currentUser?.permissions?.includes('*')} onInstalled={handlePluginsChanged} />
-          <LazyMountedFeature Component={GraphVariablesModal} isOpen={isVariablesOpen} loadingLabel="Opening variables…" loadingKind="sidebar" isDesktop={desktopMode} presentation="sidebar" sidebarWidth={sidebarWidths.variables} activeScope={variableScope} onScopeChange={setVariableScope} onSidebarResize={(width) => handleSidebarResize('variables', width)} onClose={() => setIsVariablesOpen(false)} variables={graphVariables} projectVariables={projectVariables} canEdit={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} canEditGraph={Boolean(activeGraph && (currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write')))} canEditProject={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onChange={handleVariablesChange} onProjectChange={handleProjectVariablesChange} onOpenTextEditor={openVariableTextEditor} onRestoreSystemVariable={handleRestoreSystemVariable} isSaving={savingProjectVariables || savingGraphIds.includes(activeTabId)} />
+          <LazyMountedFeature Component={GraphVariablesModal} isOpen={isVariablesOpen} loadingLabel="Opening variables…" loadingKind="sidebar" isDesktop={desktopMode} presentation="sidebar" sidebarWidth={sidebarWidths.variables} activeScope={variableScope} onScopeChange={setVariableScope} onSidebarResize={(width) => handleSidebarResize('variables', width)} onClose={() => setIsVariablesOpen(false)} variables={graphVariables.filter((variable) => !variable.nodeOwned)} projectVariables={projectVariables} canEdit={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} canEditGraph={Boolean(activeGraph && (currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write')))} canEditProject={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onChange={handleVariablesChange} onProjectChange={handleProjectVariablesChange} onOpenTextEditor={openVariableTextEditor} onRestoreSystemVariable={handleRestoreSystemVariable} isSaving={savingProjectVariables || savingGraphIds.includes(activeTabId)} />
         </main>
       </div>
 
@@ -7622,6 +7815,7 @@ export function App() {
       </Modal>
       <Modal
         isOpen={Boolean(nameDialog)}
+        initialFocusRef={graphNameInputRef}
         onClose={() => { setNameDialog(null); setNameDialogError(''); }}
         onConfirm={handleNameDialogSubmit}
         title={nameDialog?.mode === 'save' || nameDialog?.mode === 'save-close' ? 'Save graph' : 'Rename graph'}
@@ -7630,7 +7824,7 @@ export function App() {
         footer={<><Button variant="secondary" onClick={() => { setNameDialog(null); setNameDialogError(''); }}>Cancel</Button><Button onClick={handleNameDialogSubmit}>{nameDialog?.mode === 'save' || nameDialog?.mode === 'save-close' ? 'Save graph' : 'Rename graph'}</Button></>}
       >
         <form onSubmit={handleNameDialogSubmit}>
-          <TextInput label="Graph name" placeholder="Untitled graph" value={nameDialog?.value || ''} maxLength={80} autoFocus error={nameDialogError} onChange={(event) => { setNameDialog((current) => current ? { ...current, value: event.target.value } : current); setNameDialogError(''); }} />
+          <TextInput inputRef={graphNameInputRef} label="Graph name" placeholder="Untitled graph" value={nameDialog?.value || ''} maxLength={80} autoFocus error={nameDialogError} onChange={(event) => { setNameDialog((current) => current ? { ...current, value: event.target.value } : current); setNameDialogError(''); }} />
           <button type="submit" style={{ display: 'none' }} tabIndex={-1} aria-hidden="true" />
         </form>
       </Modal>
@@ -8122,9 +8316,10 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
   const functionInputs = nodes.filter((node) => node.type === 'function_input');
   const functionArguments = getFunctionGraphArguments(graph);
   const declaredGraphVariables = Array.isArray(graph.variables) ? graph.variables : [];
+  const declaredVariableNames = new Set(declaredGraphVariables.map((variable) => String(variable?.name || '').toLowerCase()).filter(Boolean));
   const nodeCreatedVariables = nodes.filter((node) => node.type === 'variable_create').flatMap((node) => {
     const name = String(node.data?.name || '').trim();
-    if (!/^(?=.{1,64}$)[A-Za-z0-9]+(?:_+[A-Za-z0-9]+|-[A-Za-z0-9]+)*$/.test(name)) return [];
+    if (!/^(?=.{1,64}$)[A-Za-z0-9]+(?:_+[A-Za-z0-9]+|-[A-Za-z0-9]+)*$/.test(name) || declaredVariableNames.has(name.toLowerCase())) return [];
     const type = ['string', 'number', 'boolean', 'array', 'object'].includes(node.data?.valueType) ? node.data.valueType : 'string';
     return [{ id: `nodevar_${node.id}`, name, type, initialValue: node.data?.value ?? (type === 'number' ? 0 : type === 'boolean' ? false : type === 'array' ? [] : type === 'object' ? {} : ''), persist: node.data?.persist !== false, nodeOwned: true, sourceNodeId: node.id }];
   });
@@ -8435,7 +8630,7 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
     if (node.type === 'parallel') {
       for (const pinId of ['branch_a_exec', 'branch_b_exec']) {
         const count = connections.filter((wire) => wire.sourceNodeId === node.id && wire.sourcePinId === pinId).length;
-        if (count !== 1) errors.push(`${node.label || 'Parallel'}: connect exactly one execution wire to ${pinId === 'branch_a_exec' ? 'Branch A' : 'Branch B'}.`);
+        if (count !== 1) errors.push(`${node.label || 'Parallel'}: connect exactly one execution wire to ${pinId === 'branch_a_exec' ? 'Branch 1' : 'Branch 2'}.`);
       }
     }
     if (node.type === 'parallel_join') {
@@ -8471,7 +8666,12 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
     if (['variable_get', 'variable_set'].includes(node.type) && !variableById.has(node.data?.variableId)
       && !connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'variable')) errors.push(`${node.label || node.type}: select a graph variable or connect a Variable socket.`);
     if (node.type === 'variable_set' && variableById.get(node.data?.variableId)?.readOnly) errors.push(`${node.label || 'Set Variable'}: attachment variables are read only.`);
-    if (node.type === 'variable_create' && !String(node.data?.name || '').trim()) errors.push(`${node.label || 'Create Variable'}: enter a variable name.`);
+    if (node.type === 'variable_create') {
+      const rawName = String(node.data?.name || '').trim();
+      const nameWired = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'name');
+      if (!rawName && !nameWired) errors.push(`${node.label || 'Create Variable'}: enter a variable name or connect the Name socket.`);
+      else if (rawName && !rawName.includes('{{') && !/^(?=.{1,64}$)[A-Za-z0-9]+(?:_+[A-Za-z0-9]+|-[A-Za-z0-9]+)*$/.test(rawName)) errors.push(`${node.label || 'Create Variable'}: variable names must start and end with a letter or number, with letters, numbers, hyphens, or underscores inside.`);
+    }
     if (node.type === 'function_call') {
       const called = graphLookup?.get(node.data?.graphId);
       if (!called) errors.push(`${node.label || 'Call Graph'}: select a saved graph.`);
@@ -8486,29 +8686,29 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
     if (['math_divide', 'math_modulo'].includes(node.type) && !connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'b') && Number(node.data?.b ?? 0) === 0) {
       warnings.push(`${node.label || 'Math node'}: B is zero, so the result will be 0 until a non-zero value is connected.`);
     }
-    if (['action_send_message', 'action_edit_message', 'action_edit_components'].includes(node.type)) {
-      const isEdit = ['action_edit_message', 'action_edit_components'].includes(node.type);
-      const componentsOnly = node.type === 'action_edit_components';
+    if (['action_send_message', 'action_edit_message'].includes(node.type)) {
+      const isEdit = node.type === 'action_edit_message';
       const label = node.label || (isEdit ? 'Edit Message' : 'Send Message');
       const hasChannel = Boolean(String(node.data?.channel_id ?? '').trim()) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'channel_id');
       const hasThread = !isEdit && (Boolean(String(node.data?.thread_id ?? '').trim()) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'thread_id'));
       const hasMessageId = Boolean(String(node.data?.message_id ?? '').trim()) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'message_id');
-      const hasContent = Boolean(String(node.data?.content ?? '').trim()) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'content');
-      const hasEmbed = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'embed') || hasConfiguredEmbed(node);
+      const hasContentWire = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'content');
+      const hasEmbedWire = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'embed');
       const componentsWire = findInputWire(node.id, 'components');
       const componentsSource = componentsWire && nodeById.get(componentsWire.sourceNodeId);
-      const componentsV2 = Boolean(node.data?.componentsV2Enabled || componentsSource?.type === 'build_components');
+      const componentsV2 = Boolean(node.data?.componentsV2Enabled || ['build_components', 'modify_components_v2'].includes(componentsSource?.type));
+      const hasContent = hasContentWire || (!componentsV2 && Boolean(String(node.data?.content ?? '').trim()));
+      const hasEmbed = hasEmbedWire || (!componentsV2 && hasConfiguredEmbed(node));
       const hasComponents = (Array.isArray(node.data?.components) && node.data.components.some((row) => row.components?.length)) || componentsWire || componentsV2 && Array.isArray(node.data?.componentsV2Layout) && node.data.componentsV2Layout.length > 0;
       if (!hasChannel && !hasThread) errors.push(`${label}: connect a channel ID or thread ID.`);
       if (isEdit && !hasMessageId) errors.push(`${label}: connect a message ID.`);
       if (!hasContent && !hasEmbed && !hasComponents && !isEdit) errors.push(`${label}: add message content, an embed, or components.`);
-      if (componentsOnly && !hasComponents) errors.push(`${label}: add components or connect a Components Builder.`);
       if (componentsV2) {
         if (hasContent || hasEmbed) errors.push(`${label}: Components V2 cannot be combined with message content or embeds.`);
         if (node.data?.componentsV2Enabled) validateComponentsV2Layout(node.data?.componentsV2Layout, label);
       }
       const content = resolveKnownStringInput(node, 'content', node.data?.content || '');
-      if (content !== undefined && content.length > 2000) errors.push(`${label}: content exceeds 2,000 characters after text variables are applied.`);
+      if ((!componentsV2 || hasContentWire) && content !== undefined && content.length > 2000) errors.push(`${label}: content exceeds 2,000 characters after text variables are applied.`);
     }
     if (['action_create_thread', 'action_start_thread_from_message'].includes(node.type)) {
       const label = node.label || definitions.get(node.type)?.label || 'Create Thread';
@@ -8550,11 +8750,13 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
           }
         }
       }
-      const hasContent = Boolean(String(node.data?.content ?? '').trim()) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'content');
-      const hasEmbed = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'embed') || hasConfiguredEmbed(node);
+      const hasContentWire = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'content');
+      const hasEmbedWire = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'embed');
       const componentsWire = findInputWire(node.id, 'components');
       const componentsSource = componentsWire && nodeById.get(componentsWire.sourceNodeId);
-      const componentsV2 = Boolean(node.data?.componentsV2Enabled || componentsSource?.type === 'build_components');
+      const componentsV2 = Boolean(node.data?.componentsV2Enabled || ['build_components', 'modify_components_v2'].includes(componentsSource?.type));
+      const hasContent = hasContentWire || (!componentsV2 && Boolean(String(node.data?.content ?? '').trim()));
+      const hasEmbed = hasEmbedWire || (!componentsV2 && hasConfiguredEmbed(node));
       const hasComponents = (Array.isArray(node.data?.components) && node.data.components.some((row) => row.components?.length)) || componentsWire || componentsV2 && Array.isArray(node.data?.componentsV2Layout) && node.data.componentsV2Layout.length > 0;
       if (!hasContent && !hasEmbed && !hasComponents) errors.push(`${label}: add reply content, an embed, or components.`);
       if (componentsV2) {
@@ -8562,15 +8764,17 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
         if (node.data?.componentsV2Enabled) validateComponentsV2Layout(node.data?.componentsV2Layout, label);
       }
       const content = resolveKnownStringInput(node, 'content', node.data?.content || '');
-      if (content !== undefined && content.length > 2000) errors.push(`${label}: content exceeds 2,000 characters after text variables are applied.`);
+      if ((!componentsV2 || hasContentWire) && content !== undefined && content.length > 2000) errors.push(`${label}: content exceeds 2,000 characters after text variables are applied.`);
     }
     if (node.type === 'action_edit_interaction_reply') {
       const label = node.label || definitions.get(node.type)?.label || 'Edit Interaction Reply';
       const componentsWire = findInputWire(node.id, 'components');
       const componentsSource = componentsWire && nodeById.get(componentsWire.sourceNodeId);
-      const componentsV2 = Boolean(node.data?.componentsV2Enabled || componentsSource?.type === 'build_components');
-      const hasContent = Boolean(String(node.data?.content ?? '').trim()) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'content');
-      const hasEmbed = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'embed') || hasConfiguredEmbed(node);
+      const componentsV2 = Boolean(node.data?.componentsV2Enabled || ['build_components', 'modify_components_v2'].includes(componentsSource?.type));
+      const hasContentWire = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'content');
+      const hasEmbedWire = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'embed');
+      const hasContent = hasContentWire || (!componentsV2 && Boolean(String(node.data?.content ?? '').trim()));
+      const hasEmbed = hasEmbedWire || (!componentsV2 && hasConfiguredEmbed(node));
       if (componentsV2 && (hasContent || hasEmbed)) errors.push(`${label}: Components V2 cannot be combined with message content or embeds.`);
       if (componentsV2 && node.data?.componentsV2Enabled) validateComponentsV2Layout(node.data?.componentsV2Layout, label);
     }

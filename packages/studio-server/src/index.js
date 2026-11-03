@@ -21,6 +21,7 @@ import { NodeDefinitions, NODE_SCHEMA_VERSION, CLIENT_PROTOCOL_VERSION, getNodeR
 import { getNodeRegistryCompatibility, getNodeRegistryRequiredFeatures, NODE_REGISTRY_PROTOCOL_VERSION } from './engine/NodeRegistryContract.js';
 import { isKnownArcStudioClient, readClientAccessSettings } from './security/ClientAccessPolicy.js';
 import { getActiveCollaborators, getCollaboratorColor, MAX_REALTIME_COLLABORATORS } from './engine/CollaborationLimits.js';
+import { applyNodePositions, normalizeNodePositions, rebaseNodePositions } from './engine/LiveGraphPositions.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -62,6 +63,19 @@ const collaborationLastSeen = new CollaborationLastSeen();
 
 const app = express();
 const server = http.createServer(app);
+let reportedListenError = false;
+server.on('error', (error) => {
+  if (reportedListenError) return;
+  reportedListenError = true;
+  if (error?.code === 'EADDRINUSE') {
+    logger.log('ERROR', `Port ${serverConfig.port} is already in use on ${serverConfig.host}. Stop the other process or set a different PORT in .env.`);
+    console.error(`[ARC Studio] Port ${serverConfig.port} is already in use on ${serverConfig.host}. Stop the other process or set a different PORT in .env.`);
+  } else {
+    logger.log('ERROR', `HTTP server could not listen: ${error?.message || error}`);
+    console.error(`[ARC Studio] HTTP server could not listen: ${error?.message || error}`);
+  }
+  process.exitCode = 1;
+});
 let websocketProxyWarningLogged = false;
 server.on('upgrade', (request, socket) => {
   let pathname = '';
@@ -73,6 +87,13 @@ server.on('upgrade', (request, socket) => {
   if (pathname && pathname !== '/ws') socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
 });
 const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 40 * 1024 * 1024 });
+wss.on('error', (error) => {
+  if (reportedListenError) return;
+  reportedListenError = true;
+  logger.log('ERROR', `WebSocket server could not start: ${error?.message || error}`);
+  console.error(`[ARC Studio] WebSocket server could not start: ${error?.message || error}`);
+  process.exitCode = 1;
+});
 //
 const liveGraphStates = new Map();
 const liveGraphAutosaveTimers = new Map();
@@ -394,6 +415,7 @@ const projectStore = botManager.projectStore;
 const userBotManagers = new Map();
 const managerForUser = (user) => {
   const requestedId = projectStore.projects.some((project) => project.id === user?.activeProjectId) ? user.activeProjectId : projectStore.activeProjectId;
+  if (requestedId === botManager.project.id) return botManager;
   const managerKey = requestedId;
   let manager = userBotManagers.get(managerKey);
   if (!manager) {
@@ -965,7 +987,7 @@ wss.on('connection', (ws, request) => {
           const initialGraph = ws.arcManager.getGraphs().find((graph) => graph.id === graphId);
           if (initialGraph) {
             const serializedGraph = JSON.stringify(initialGraph);
-            liveState = { projectId, graphId, graph: initialGraph, revision: 0, updatedAt: Date.now(), user: null, serializedGraph, history: [{ revision: 0, graph: initialGraph }] };
+            liveState = { projectId, graphId, graph: initialGraph, revision: 0, updatedAt: Date.now(), user: null, serializedGraph, history: [{ revision: 0, graph: initialGraph }], nodePositionRevisions: {} };
             liveGraphStates.set(`${projectId}:${graphId}`, liveState);
           }
         }
@@ -1366,6 +1388,51 @@ wss.on('connection', (ws, request) => {
         liveCollaborationActions.set(roomKey, room);
         sendToCollaborationRoom(roomKey, { type: 'COLLAB_ACTION_UPDATED', payload: envelope }, ws);
         scheduleCollaborationActionExpiry();
+      } else if (msg.type === 'GRAPH_NODE_MOVE') {
+        const roomKey = ws.arcRoomKey;
+        const projectId = typeof msg.projectId === 'string' ? msg.projectId : '';
+        const graphId = typeof msg.graphId === 'string' ? msg.graphId : '';
+        const permissions = ws.arcUser?.permissions || [];
+        if (!roomKey || !ws.arcPresence || projectId !== ws.arcPresence.projectId || graphId !== ws.arcPresence.graphId) return;
+        if (!permissions.includes('*') && !permissions.includes('graphs:write')) return;
+        const now = Date.now();
+        if (!ws.arcNodeMoveRate || now - ws.arcNodeMoveRate.windowAt >= 1000) ws.arcNodeMoveRate = { windowAt: now, count: 0 };
+        if (++ws.arcNodeMoveRate.count > 40) return;
+        const positions = normalizeNodePositions(msg.positions);
+        if (!positions.length) return;
+        const key = `${projectId}:${graphId}`;
+        let state = liveGraphStates.get(key);
+        if (!state) {
+          const initialGraph = ws.arcManager.getGraphs().find((graph) => graph.id === graphId);
+          if (!initialGraph) return;
+          state = {
+            projectId, graphId, graph: initialGraph, revision: 0, updatedAt: now, user: null,
+            serializedGraph: JSON.stringify(initialGraph), history: [{ revision: 0, graph: initialGraph }], nodePositionRevisions: {}
+          };
+          liveGraphStates.set(key, state);
+        }
+        const graph = applyNodePositions(state.graph, positions);
+        const revision = state.revision + 1;
+        const nodePositionRevisions = { ...(state.nodePositionRevisions || {}) };
+        for (const position of positions) nodePositionRevisions[position.id] = revision;
+        const serializedGraph = JSON.stringify(graph);
+        liveGraphStates.set(key, {
+          projectId,
+          graphId,
+          graph,
+          revision,
+          updatedAt: now,
+          user: { id: ws.arcUser.id, username: ws.arcUser.username },
+          serializedGraph,
+          nodePositionRevisions,
+          history: [...(state.history || []), { revision, graph }].slice(-(serializedGraph.length <= 1_000_000 ? 8 : 2))
+        });
+        scheduleLiveGraphAutosave(projectId, graphId);
+        sendToCollaborationRoom(roomKey, { type: 'GRAPH_NODE_MOVED', payload: {
+          projectId, graphId, positions, revision,
+          sourceUserId: ws.arcUser.id,
+          clientId: typeof msg.clientId === 'string' ? msg.clientId.slice(0, 120) : ''
+        } });
       } else if (msg.type === 'GRAPH_STATE') {
         const payload = msg.payload || msg;
         const projectId = typeof payload.projectId === 'string' ? payload.projectId : '';
@@ -1407,7 +1474,7 @@ wss.on('connection', (ws, request) => {
           const initialGraph = ws.arcManager.getGraphs().find((item) => item.id === graph.id);
           if (initialGraph) {
             const initialSerialized = JSON.stringify(initialGraph);
-            previous = { projectId, graphId: graph.id, graph: initialGraph, revision: 0, updatedAt: Date.now(), user: null, serializedGraph: initialSerialized, history: [{ revision: 0, graph: initialGraph }] };
+            previous = { projectId, graphId: graph.id, graph: initialGraph, revision: 0, updatedAt: Date.now(), user: null, serializedGraph: initialSerialized, history: [{ revision: 0, graph: initialGraph }], nodePositionRevisions: {} };
             liveGraphStates.set(key, previous);
           }
         }
@@ -1424,6 +1491,7 @@ wss.on('connection', (ws, request) => {
             return;
           }
         }
+        if (previous) candidateGraph = rebaseNodePositions(candidateGraph, previous.graph, previous.nodePositionRevisions, Number.isInteger(baseRevision) ? baseRevision : previous.revision);
         if (Array.isArray(candidateGraph.notes)) candidateGraph.notes = candidateGraph.notes.map((note) => ({ ...note }));
         const previousNotes = new Map((previous?.graph?.notes || []).map((note) => [note.id, note]));
         const incomingNotes = Array.isArray(candidateGraph.notes)
@@ -1541,6 +1609,7 @@ wss.on('connection', (ws, request) => {
           updatedAt: Date.now(),
           user: { id: ws.arcUser.id, username: ws.arcUser.username },
           serializedGraph,
+          nodePositionRevisions: previous?.nodePositionRevisions || {},
           history: [...(previous?.history || (previous ? [{ revision: previous.revision, graph: previous.graph }] : [])), { revision, graph: candidateGraph }].slice(-(serializedGraph.length <= 1_000_000 ? 8 : 2))
         };
         liveGraphStates.set(key, state);

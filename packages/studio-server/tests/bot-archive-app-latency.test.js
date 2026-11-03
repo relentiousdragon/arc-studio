@@ -3,10 +3,17 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { inflateRawSync } from 'node:zlib';
+import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
-import { buildBotArchive } from '../src/export/BotArchive.js';
+import { buildBotArchive, verifyBotArchiveIntegrity, generateThirdPartyLicenses, findPluginLicense } from '../src/export/BotArchive.js';
 //
+const require = createRequire(import.meta.url);
+function installedPackageRoot(name) {
+  let directory = path.dirname(require.resolve(name));
+  while (!fs.existsSync(path.join(directory, 'package.json'))) directory = path.dirname(directory);
+  return directory;
+}
 function readZipEntry(archive, targetName) {
   let offset = 0;
   while (offset + 30 <= archive.length && archive.readUInt32LE(offset) === 0x04034b50) {
@@ -215,8 +222,13 @@ test('selectively exported GraphRunner loads and executes its included action ru
 
   try {
     extractZipEntries(archive, directory);
-    fs.mkdirSync(path.join(directory, 'node_modules'), { recursive: true });
-    fs.symlinkSync(path.join(directory, 'chezcord'), path.join(directory, 'node_modules/chezcord'), 'dir');
+    const manifest = JSON.parse(fs.readFileSync(path.join(directory, 'package.json'), 'utf8'));
+    const moduleDirectory = path.join(directory, 'node_modules');
+    fs.mkdirSync(moduleDirectory, { recursive: true });
+    for (const name of Object.keys(manifest.dependencies)) {
+      const source = name === 'chezcord' ? path.join(directory, 'chezcord') : installedPackageRoot(name);
+      fs.symlinkSync(source, path.join(moduleDirectory, name), 'dir');
+    }
     const { GraphRunner } = await import(pathToFileURL(path.join(directory, 'src/engine/GraphRunner.js')).href);
     const presences = [];
     const result = await GraphRunner.execute({
@@ -246,5 +258,72 @@ test('standalone bot export contains all relative engine imports', () => {
       const target = path.posix.normalize(path.posix.join(path.posix.dirname(entry), match[1]));
       assert.ok(entries.has(target), `${entry} imports missing archive entry ${target}`);
     }
+  }
+});
+
+test('standalone bot export integrity manifest excludes mutable env file', () => {
+  const archive = buildBotArchive([], []);
+  assert.equal(verifyBotArchiveIntegrity(archive), true);
+
+  const manifest = JSON.parse(readZipEntry(archive, 'integrity.json'));
+  assert.equal(Object.hasOwn(manifest.files, '.env'), false, '.env should not be in integrity manifest');
+  assert.ok(Object.hasOwn(manifest.files, 'src/index.js'), 'src/index.js should be in integrity manifest');
+});
+
+test('standalone bot export includes THIRD-PARTY-LICENSES.md and chezcord LICENSE', () => {
+  const archive = buildBotArchive([], []);
+  const entries = listZipEntries(archive);
+
+  assert.ok(entries.has('THIRD-PARTY-LICENSES.md'));
+  assert.ok(entries.has('chezcord/LICENSE'));
+  assert.ok(entries.has('LICENSE'));
+
+  const licenses = readZipEntry(archive, 'THIRD-PARTY-LICENSES.md');
+  assert.match(licenses, /Chezcord/);
+  assert.match(licenses, /Apache-2\.0/);
+});
+
+test('standalone bot export documents plugin licenses and bundles license file', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-plugin-license-test-'));
+  try {
+    fs.writeFileSync(path.join(tempDir, 'LICENSE'), 'MIT License\n\nCopyright 2026 Test Plugin Author\n');
+    fs.writeFileSync(path.join(tempDir, 'runtime.js'), 'export function execute() {}\n');
+    const adapter = {
+      directory: tempDir,
+      manifest: {
+        id: 'test-plugin',
+        name: 'Test Plugin',
+        version: '1.0.0',
+        kind: 'host-adapter',
+        author: 'Test Author',
+        license: 'MIT',
+        nodes: [{ type: 'arc.test_node', label: 'Test Node', inputs: [], outputs: [] }],
+        runtime: { module: 'runtime.js', execute: 'execute' },
+        export: { dependencies: { 'test-pkg': '^1.0.0' }, runtimeConfig: {} },
+        thirdPartyNotices: [
+          { name: 'helper-lib', version: '2.0.0', license: 'BSD-3-Clause', notice: 'Copyright Helper Lib' }
+        ]
+      }
+    };
+    const archive = buildBotArchive(
+      [{ id: 'g1', nodes: [{ id: 'n1', type: 'arc.test_node' }], connections: [] }],
+      [],
+      [adapter]
+    );
+    const entries = listZipEntries(archive);
+    assert.ok(entries.has('plugins/test-plugin/LICENSE'));
+    assert.ok(entries.has('THIRD-PARTY-LICENSES.md'));
+
+    const licenses = readZipEntry(archive, 'THIRD-PARTY-LICENSES.md');
+    assert.match(licenses, /Test Plugin/);
+    assert.match(licenses, /MIT License/);
+    assert.match(licenses, /helper-lib/);
+    assert.match(licenses, /BSD-3-Clause/);
+    assert.match(licenses, /test-pkg/);
+
+    const readme = readZipEntry(archive, 'README.md');
+    assert.match(readme, /THIRD-PARTY-LICENSES\.md/);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });

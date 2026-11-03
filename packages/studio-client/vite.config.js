@@ -1,10 +1,15 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { readdirSync, rmSync, statSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadEnv } from 'vite';
 //
 const clientDirectory = dirname(fileURLToPath(import.meta.url));
+const repositoryRoot = resolve(clientDirectory, '../..');
+const workspaceEnv = loadEnv(process.env.NODE_ENV || 'development', repositoryRoot, '');
+const apiPort = Number(process.env.ARC_SERVER_PORT || workspaceEnv.PORT || 3000);
+const apiHost = process.env.HOST || workspaceEnv.HOST || '127.0.0.1';
 const retainedAssetAgeMs = 30 * 24 * 60 * 60 * 1000;
 
 function retainRecentHashedAssets() {
@@ -31,11 +36,11 @@ export default defineConfig({
     allowedHosts: true,
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:3000',
+        target: `http://${apiHost}:${apiPort}`,
         changeOrigin: true
       },
       '/ws': {
-        target: 'ws://127.0.0.1:3000',
+        target: `ws://${apiHost}:${apiPort}`,
         ws: true
       }
     }

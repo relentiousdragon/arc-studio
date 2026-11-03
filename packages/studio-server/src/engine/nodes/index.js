@@ -110,7 +110,6 @@ import node_action_console_error from './logic-flow/action_console_error.js';
 // Discord Actions
 import node_action_send_message from './discord-actions/action_send_message.js';
 import node_action_edit_message from './discord-actions/action_edit_message.js';
-import node_action_edit_components from './discord-actions/action_edit_components.js';
 import node_action_reply_interaction from './discord-actions/action_reply_interaction.js';
 import node_action_respond_autocomplete from './discord-actions/action_respond_autocomplete.js';
 import node_action_show_modal from './discord-actions/action_show_modal.js';
@@ -183,6 +182,7 @@ import node_build_modal from './values-data/build_modal.js';
 import node_data_get_modal_value from './values-data/data_get_modal_value.js';
 import node_modify_embed from './values-data/modify_embed.js';
 import node_modify_components from './values-data/modify_components.js';
+import node_modify_components_v2 from './values-data/modify_components_v2.js';
 // Cryptography & Security
 import node_action_crypto_hash from './cryptography-security/action_crypto_hash.js';
 import node_action_crypto_hmac from './cryptography-security/action_crypto_hmac.js';
@@ -302,7 +302,6 @@ export const nodeDefinitions = [
   node_action_console_error,
   node_action_send_message,
   node_action_edit_message,
-  node_action_edit_components,
   node_action_reply_interaction,
   node_action_respond_autocomplete,
   node_action_show_modal,
@@ -374,6 +373,7 @@ export const nodeDefinitions = [
   node_data_get_modal_value,
   node_modify_embed,
   node_modify_components,
+  node_modify_components_v2,
   node_action_crypto_hash,
   node_action_crypto_hmac,
   node_action_crypto_verify_hmac,

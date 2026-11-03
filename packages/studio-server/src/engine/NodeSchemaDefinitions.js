@@ -1,4 +1,5 @@
 import { nodeDefinitions } from './nodes/index.js';
+import { eventTemplatePaths } from './EventTemplatePaths.js';
 //
 export const NodeCategories = Object.freeze({
   EVENTS: 'Events',
@@ -21,6 +22,7 @@ const SEMANTIC_STRING_PIN_TYPES = Object.freeze({
 
 export const NodeDefinitions = Object.fromEntries(nodeDefinitions.map((definition) => [definition.type, {
   ...definition,
+  ...(definition.gatewayEvent ? { templatePaths: eventTemplatePaths(definition.type) } : {}),
   inputs: (definition.inputs || []).map((pin) => pin.type === 'string' && SEMANTIC_STRING_PIN_TYPES[pin.id]
     ? { ...pin, semanticType: SEMANTIC_STRING_PIN_TYPES[pin.id] }
     : pin),

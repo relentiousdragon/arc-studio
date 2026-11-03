@@ -127,6 +127,18 @@ export function validateNodeDefinitions(definitions) {
       addIssue(issues, `${path}.dynamicPins`, 'expected an object with a kind');
     }
     if (definition.dynamicPins?.version !== undefined && (!Number.isInteger(definition.dynamicPins.version) || definition.dynamicPins.version < 1)) addIssue(issues, `${path}.dynamicPins.version`, 'expected a positive integer');
+    if (definition.templatePaths !== undefined) {
+      if (!Array.isArray(definition.templatePaths)) addIssue(issues, `${path}.templatePaths`, 'expected an array');
+      else for (const [index, item] of definition.templatePaths.entries()) {
+        const templatePath = `${path}.templatePaths[${index}]`;
+        if (!item || typeof item !== 'object' || Array.isArray(item)) {
+          addIssue(issues, templatePath, 'expected an object');
+          continue;
+        }
+        if (typeof item.path !== 'string' || !item.path.trim()) addIssue(issues, `${templatePath}.path`, 'expected a non empty template path');
+        if (item.label !== undefined && (typeof item.label !== 'string' || !item.label.trim())) addIssue(issues, `${templatePath}.label`, 'expected a non empty display label');
+      }
+    }
     if (definition.editorControls !== undefined && !Array.isArray(definition.editorControls)) addIssue(issues, `${path}.editorControls`, 'expected an array');
     for (const [index, control] of (Array.isArray(definition.editorControls) ? definition.editorControls : []).entries()) {
       const controlPath = `${path}.editorControls[${index}]`;

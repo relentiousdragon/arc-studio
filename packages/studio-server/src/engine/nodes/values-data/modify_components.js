@@ -1,5 +1,5 @@
 export default {
-  "description": "Enables, disables, or updates buttons/select menus in an action row",
+  "description": "Updates legacy message buttons and select menus. Use Modify Components V2 for Components V2 layouts.",
   "type": "modify_components",
   "category": "Values & Data",
   "label": "Modify Components",

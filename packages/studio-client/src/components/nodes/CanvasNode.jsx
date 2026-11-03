@@ -14,8 +14,22 @@ import { apiUrl } from '../../core/api.js';
 import { onPageBlur } from '../../core/pageFocus.js';
 import { resolveVariableReference } from '../../core/projectVariables.js';
 import { getInputDefault } from '../../../../studio-server/src/engine/NodeSchemaDefinitions.js';
+import { attachTemplateAutocomplete } from '../../core/templateFieldAutocomplete.js';
 //
 const slashCommandNamePattern = /^[-_'\p{L}\p{N}\p{sc=Deva}\p{sc=Thai}]{1,32}$/u;
+const componentsV2PropertyOptions = [
+  { value: 'spoiler', label: 'Spoiler' },
+  { value: 'accentColor', label: 'Accent color' },
+  { value: 'divider', label: 'Divider' },
+  { value: 'spacing', label: 'Spacing' },
+  { value: 'content', label: 'Content' },
+  { value: 'url', label: 'URL' },
+  { value: 'description', label: 'Media description' },
+  { value: 'accessory.label', label: 'Accessory label' },
+  { value: 'accessory.disabled', label: 'Accessory disabled' },
+  { value: 'accessory.url', label: 'Accessory URL' },
+  { value: 'accessory.customId', label: 'Accessory custom ID' }
+];
 const defaultValueForType = (type) => type === 'number' ? 0 : type === 'boolean' ? false : type === 'array' ? [] : type === 'object' ? {} : '';
 const eventSocketHints = {
   application_id: 'Discord application (bot) ID associated with this interaction',
@@ -55,9 +69,10 @@ function VariableJSONFallback({ type, value, onChange }) {
   </div>;
 }
 function variableValuePaths(value, root, depth = 0, output = []) {
-  if (depth >= 4 || value == null || typeof value !== 'object') return output;
+  if (depth >= 6 || output.length >= 400 || value == null || typeof value !== 'object') return output;
   const entries = Array.isArray(value) ? value.slice(0, 10).map((_item, index) => [index, value[index]]) : Object.entries(value).slice(0, 40).filter(([key]) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key));
   for (const [key, child] of entries) {
+    if (output.length >= 400) break;
     const path = Array.isArray(value) ? `${root}[${key}]` : `${root}.${key}`;
     output.push({ path, label: path });
     variableValuePaths(child, path, depth + 1, output);
@@ -128,7 +143,7 @@ function numericNodeInputValue(value, { min = -Infinity, max = Infinity, fallbac
 }
 
 function CanvasNodeView({
-  node, definition, loadFailed = false, authToken = '', connectedInputIds = new Set(), graphVariables = [], templatePreviewValues = {}, callableGraphs = [], selected = false, illuminated = false, isLocked = false, findOptions = null, isFindCurrent = false,
+  node, definition, loadFailed = false, authToken = '', connectedInputIds = new Set(), graphVariables = [], eventTemplatePaths = [], templatePreviewValues = {}, callableGraphs = [], selected = false, illuminated = false, simulationMetric = null, simulationActive = false, isLocked = false, findOptions = null, isFindCurrent = false,
   snappedPin = null, appEmojis = [], modalFieldOptions = [], componentsV2SourceConnected = false, onSelect, onDelete, onNodeDataChange, onPinStartConnect, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph
 }) {
   const nodeDef = definition || { label: node.label || node.type, color: '#778196', category: 'Node', inputs: [], outputs: [] };
@@ -139,6 +154,22 @@ function CanvasNodeView({
   const rows = Math.max(inputs.length, outputs.length);
   const update = (key, value, label) => onNodeDataChange?.(node.id, typeof key === 'object' ? key : { [key]: value }, label);
   const selectedVariable = resolveVariableReference(graphVariables, node.data?.variableId, node.data?.scope || 'graph');
+  const templatePaths = React.useMemo(() => {
+    const variablePaths = graphVariables.flatMap((variable) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(variable.name || '') ? variableValuePaths(variable.initialValue, variable.name) : []);
+    const eventPaths = (Array.isArray(eventTemplatePaths) ? eventTemplatePaths : []).filter((item) => {
+      const root = String(item?.path || '').split(/[.[]/)[0].toLowerCase();
+      return item?.path && root && !graphVariables.some((variable) => String(variable?.name || '').toLowerCase() === root);
+    }).map((item) => ({ path: item.path, label: item.label || item.path }));
+    return [...new Map([...variablePaths, ...eventPaths].map((item) => [item.path, item])).values()];
+  }, [graphVariables, eventTemplatePaths]);
+  const templateContextRef = React.useRef({ variables: [], paths: [], sockets: [] });
+  templateContextRef.current = {
+    variables: graphVariables.filter((variable) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(variable.name || '')).map((variable) => ({ label: variable.name, insert: variable.name })),
+    paths: templatePaths,
+    sockets: nodeDef.inputs.filter((pin) => /^arg_\d+$/.test(pin.id)).map((pin) => ({ label: pin.label || pin.id, insert: pin.id.replace(/^arg_/, 'arg') }))
+  };
+  const cardRef = React.useRef(null);
+  React.useEffect(() => attachTemplateAutocomplete(cardRef.current, () => templateContextRef.current), [node.id]);
   const configureTextFields = (element) => {
     if (!element) return;
     element.querySelectorAll('input:not([type="number"]):not([type="checkbox"]):not([type="radio"]):not([type="color"]), textarea').forEach((field) => {
@@ -191,7 +222,7 @@ function CanvasNodeView({
       data-node-card-id={node.id}
       tabIndex={-1}
       style={{ '--node-accent': nodeDef.color, '--node-rows': rows }}
-      ref={configureTextFields}
+      ref={(element) => { cardRef.current = element; configureTextFields(element); }}
       onClick={(event) => { event.stopPropagation(); onSelect?.(node.id, event); }}
       onDoubleClick={(event) => {
         event.stopPropagation();
@@ -206,7 +237,7 @@ function CanvasNodeView({
       <header className="node-header">
         <span className="node-type-mark"><span /></span>
         <span className="node-category">{renderCanvasFindText(nodeDef.category, findOptions, isFindCurrent)}</span>
-        {isDeprecated && <span className="node-deprecated-icon" title={nodeDef.deprecationMessage} aria-label="Deprecated node"><AlertTriangle size={12} /></span>}
+        {simulationMetric && <span className={`node-simulation-metric ${simulationActive ? 'is-active' : ''} ${simulationMetric.status === 'error' ? 'is-error' : ''}`} title={`${simulationMetric.count} execution${simulationMetric.count === 1 ? '' : 's'} · last ${simulationMetric.lastMs.toFixed(2)} ms · total ${simulationMetric.totalMs.toFixed(2)} ms${simulationMetric.lastGapMs == null ? '' : ` · ${simulationMetric.lastGapMs.toFixed(2)} ms since previous node`}${simulationMetric.incomingWire ? ` · from ${simulationMetric.incomingWire.sourceNodeId}` : ''}`}>{simulationMetric.lastMs < 0.1 && simulationMetric.lastMs > 0 ? '<0.1' : `${simulationMetric.lastMs.toFixed(simulationMetric.lastMs >= 10 ? 1 : 2)} ms`}{simulationMetric.count > 1 ? ` ×${simulationMetric.count}` : ''}</span>}
         {!isLocked && <button className="node-delete" onClick={(event) => { event.stopPropagation(); onDelete?.(node.id); }} title="Delete node" aria-label="Delete node" tabIndex={selected ? 0 : -1}><X size={13} /></button>}
       </header>
       <div className="node-title" data-tooltip={node.label && node.label !== nodeDef.label ? `Node type: ${nodeDef.label}` : undefined}>{renderCanvasFindText(node.label || nodeDef.label, findOptions, isFindCurrent)}</div>
@@ -215,7 +246,7 @@ function CanvasNodeView({
         <div className="node-pin-column node-pin-outputs">{outputs.map((pin, index) => renderPin(pin, 'output', index))}</div>
       </div>
       {!loadFailed && isDeprecated && <div className="node-config node-deprecated-message" role="note"><AlertTriangle size={13} /><span>{nodeDef.deprecationMessage}</span></div>}
-      {!loadFailed && !isDeprecated && !nodeDef.requiresGenericEditor && renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues, componentsV2SourceConnected)}
+      {!loadFailed && !isDeprecated && !nodeDef.requiresGenericEditor && renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues, componentsV2SourceConnected, templatePaths)}
       {!loadFailed && !isDeprecated && (nodeDef.requiresGenericEditor || nodeDef.editorOnlyInputs?.length > 0) && <div className="node-config node-config-stack node-schema-fallback">
         {nodeDef.requiresGenericEditor && <span className="node-config-hint">This workspace schema differs from this client’s editor. These values are used by the workspace server.</span>}
         {nodeDef.editorOnlyInputs.filter((pin) => pin.type !== 'exec' && !connectedInputIds.has(pin.id)).map((pin) => {
@@ -423,7 +454,7 @@ function renderSchemaControls(node, controls, update, connectedInputIds) {
   </div>;
 }
 
-function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues, componentsV2SourceConnected = false) {
+function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues, componentsV2SourceConnected = false, templatePaths = []) {
   const isConnected = (pinId) => connectedInputIds.has(pinId);
   if (node.type === 'branch_switch') {
     const cases = nodeDef.inputs.filter((pin) => /^case_\d+$/.test(pin.id));
@@ -438,15 +469,15 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
   const textEditor = (id, label, maxLength = 2000, placeholder = '', autocomplete = true) => {
     const value = String(node.data?.[id] ?? '');
     const openTextEditor = () => onOpenTextStudio?.(node, id, label, value, maxLength);
-    const valuePaths = graphVariables.flatMap((variable) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(variable.name || '') ? variableValuePaths(variable.initialValue, variable.name) : []);
+    const valuePaths = templatePaths;
     const templateSuggestions = nodeDef.inputs.filter((pin) => /^arg_\d+$/.test(pin.id)).map((pin) => ({ name: pin.id.replace(/^arg_/, 'arg'), label: pin.label }));
     if (value.length > LONG_TEXT_THRESHOLD) return <DiscordLongTextField value={value} onOpenEditor={openTextEditor} label={label} maxLength={maxLength} />;
     return <CharacterLimit value={value} maxLength={maxLength}><DiscordTextField onOpenTextEditor={openTextEditor} discordAutocomplete={autocomplete} templateAutocomplete templateValuePaths={valuePaths} templateSuggestions={templateSuggestions} graphVariables={graphVariables} as="textarea" rows={2} maxLength={maxLength} value={value} appEmojis={appEmojis} onChange={(event) => update(id, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder={placeholder} aria-label={label} /></CharacterLimit>;
   };
-  const templateInput = (id, label, { multiline = false, maxLength = 8192, inputMode, placeholder = 'Used when unconnected' } = {}) => {
+  const templateInput = (id, label, { multiline = false, maxLength = 8192, inputMode, placeholder = 'Used when unconnected', defaultValue } = {}) => {
     if (isConnected(id)) return null;
-    const value = String(node.data?.[id] ?? '');
-    const valuePaths = graphVariables.flatMap((variable) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(variable.name || '') ? variableValuePaths(variable.initialValue, variable.name) : []);
+    const value = String(node.data?.[id] ?? defaultValue ?? '');
+    const valuePaths = templatePaths;
     const templateSuggestions = nodeDef.inputs.filter((pin) => /^arg_\d+$/.test(pin.id)).map((pin) => ({ name: pin.id.replace(/^arg_/, 'arg'), label: pin.label }));
     return <FallbackField label={label}><DiscordTextField
       as={multiline ? 'textarea' : 'input'}
@@ -467,7 +498,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
   };
   const comparisonInput = (id, label) => {
     const value = String(node.data?.[id] ?? '');
-    const valuePaths = graphVariables.flatMap((variable) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(variable.name || '') ? variableValuePaths(variable.initialValue, variable.name) : []);
+    const valuePaths = templatePaths;
     const templateSuggestions = nodeDef.inputs.filter((pin) => /^arg_\d+$/.test(pin.id)).map((pin) => ({ name: pin.id.replace(/^arg_/, 'arg'), label: pin.label }));
     return <DiscordTextField
       value={value}
@@ -559,17 +590,17 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     const activityTypes = [{ value: '0', label: 'Playing' }, { value: '1', label: 'Streaming' }, { value: '2', label: 'Listening' }, { value: '3', label: 'Watching' }, { value: '5', label: 'Competing' }];
     const statuses = [{ value: 'online', label: 'Online' }, { value: 'idle', label: 'Idle' }, { value: 'dnd', label: 'Do not disturb' }, { value: 'invisible', label: 'Invisible' }];
     return <div className="node-config node-config-stack">
-      {!isConnected('activity_text') && <FallbackField label="Activity text"><input value={node.data?.activity_text ?? 'ARC Studio'} maxLength={128} onChange={(event) => update('activity_text', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave blank to clear activity" aria-label="Presence activity text" /></FallbackField>}
+      {templateInput('activity_text', 'Activity text', { maxLength: 128, defaultValue: 'ARC Studio', placeholder: 'Leave blank to clear activity' })}
       {!isConnected('activity_type') && <FallbackField label="Activity type"><AnimatedDropdown value={String(node.data?.activity_type ?? 0)} options={activityTypes} onChange={(value) => update('activity_type', Number(value))} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Presence activity type" className="node-select" /></FallbackField>}
-      {Number(node.data?.activity_type) === 1 && String(node.data?.activity_text ?? 'ARC Studio').trim() && !isConnected('stream_url') && <FallbackField label="Stream URL"><input type="url" value={node.data?.stream_url ?? ''} maxLength={2048} onChange={(event) => update('stream_url', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="https://twitch.tv/your-channel" aria-label="Streaming activity URL" /></FallbackField>}
+      {Number(node.data?.activity_type) === 1 && String(node.data?.activity_text ?? 'ARC Studio').trim() && templateInput('stream_url', 'Stream URL', { maxLength: 2048, inputMode: 'url', placeholder: 'https://twitch.tv/your-channel' })}
       {!isConnected('status') && <FallbackField label="Status"><AnimatedDropdown value={node.data?.status ?? 'online'} options={statuses} onChange={(value) => update('status', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Bot presence status" className="node-select" /></FallbackField>}
-      {!isConnected('custom_status_text') && <FallbackField label="Custom status"><DiscordTextField value={node.data?.custom_status_text ?? ''} maxLength={128} appEmojis={appEmojis} discordAutocomplete onChange={(event) => update('custom_status_text', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave blank to clear" aria-label="Custom status text" /></FallbackField>}
-      <span className="node-config-hint">Custom status supports Unicode emoji and pasted Discord custom emoji.</span>
+      {!isConnected('custom_status_text') && <FallbackField label="Custom status"><DiscordTextField value={node.data?.custom_status_text ?? ''} maxLength={128} appEmojis={appEmojis} graphVariables={graphVariables} templateValuePaths={templatePaths} templateAutocomplete discordAutocomplete onOpenTextEditor={() => onOpenTextStudio?.(node, 'custom_status_text', 'Custom status', String(node.data?.custom_status_text ?? ''), 128)} onChange={(event) => update('custom_status_text', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave blank to clear" aria-label="Custom status text" /></FallbackField>}
+      <span className="node-config-hint">Activity and custom status accept {'{{variables}}'}, event values, and custom emoji.</span>
     </div>;
   }
   if (node.type === 'action_set_custom_status') {
     return <div className="node-config node-config-stack">
-      {!isConnected('status_text') && <FallbackField label="Status text"><input value={node.data?.status_text ?? 'ARC Studio'} maxLength={128} onChange={(event) => update('status_text', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Working on a bot" aria-label="Custom status text" /></FallbackField>}
+      {templateInput('status_text', 'Status text', { maxLength: 128, defaultValue: 'ARC Studio', placeholder: 'Working on a bot' })}
       <span className="node-config-hint">Unicode emoji and pasted Discord custom emoji are supported in the text.</span>
     </div>;
   }
@@ -643,8 +674,8 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
   }
   if (node.type === 'function_call') {
     const target = callableGraphs.find((graph) => graph.id === node.data?.graphId);
-    const parameters = (target?.nodes || []).filter((item) => item.type === 'function_input');
-    const requiredCount = parameters.filter((item) => item.data?.optional === false).length;
+    const parameters = getFunctionGraphArguments(target);
+    const requiredCount = parameters.filter((item) => !item.optional).length;
     const optionalCount = parameters.length - requiredCount;
     const returnValues = getFunctionGraphReturnValues(target);
     const returnCount = (target?.nodes || []).filter((item) => item.type === 'function_return').length;
@@ -687,7 +718,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       {!isConnected('text') && <FallbackField label="Text"><textarea rows={2} maxLength={8192} value={node.data?.text ?? ''} onChange={(event) => update('text', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Regex input text" /></FallbackField>}
       {!isConnected('pattern') && <FallbackField label="Pattern"><input maxLength={256} value={node.data?.pattern ?? ''} onChange={(event) => update('pattern', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="e.g. (\\d+)" aria-label="Regular expression pattern" /></FallbackField>}
       {!isConnected('flags') && <FallbackField label="Flags"><input maxLength={6} value={node.data?.flags ?? ''} onChange={(event) => update('flags', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="g, i, m, s, u, y" aria-label="Regular expression flags" /></FallbackField>}
-      {mode === 'replace' && !isConnected('replacement') && <FallbackField label="Replacement"><textarea rows={2} maxLength={2000} value={node.data?.replacement ?? ''} onChange={(event) => update('replacement', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Replacement text" aria-label="Regex replacement text" /></FallbackField>}
+      {mode === 'replace' && templateInput('replacement', 'Replacement', { multiline: true, maxLength: 2000, placeholder: 'Replacement text' })}
       <span className="node-config-hint">Limits: 256-character pattern, 8,192-character input. Use Valid and Error to handle invalid patterns safely.</span>
     </div>;
   }
@@ -734,9 +765,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     </div>;
   }
   if (node.type === 'value_text') {
-    const value = String(node.data?.value ?? 'Hello World');
-    const openTextEditor = () => onOpenTextStudio?.(node, 'value', 'Text value', value);
-    return <div className="node-config node-config-stack">{value.length > LONG_TEXT_THRESHOLD ? <DiscordLongTextField value={value} onOpenEditor={openTextEditor} label="Text value" /> : <DiscordTextField onOpenTextEditor={openTextEditor} value={value} appEmojis={appEmojis} onChange={(event) => update('value', event.target.value)} onPointerDown={(event) => event.stopPropagation()} aria-label="Text value" />}</div>;
+    return <div className="node-config node-config-stack">{textEditor('value', 'Text value', 2000, 'Hello World')}</div>;
   }
   if (node.type === "data_format_time") {
     const tz = node.data?.timezone ?? getInputDefault(node.type, "timezone");
@@ -776,7 +805,9 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     const inferredType = nodeDef?.inputs?.find((pin) => pin.id === 'value')?.colorType || type;
     const setFallbackType = (nextType) => update({ valueType: nextType, value: defaultValueForType(nextType) });
     return <div className="node-config node-config-stack">
-      <FallbackField label="Variable name"><input value={node.data?.name ?? ''} maxLength={64} onChange={(event) => update('name', event.target.value.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64))} onPointerDown={(event) => event.stopPropagation()} placeholder="e.g. current-score" aria-label="Created variable name" /></FallbackField>
+      <FallbackField label="Variable name">{textEditor('name', 'Variable name', 64, 'e.g. user_{{userId}}')}</FallbackField>
+      <span className="node-config-hint">Supports {'{{variable}}'} slots. A connected Name socket overrides this text.</span>
+      <FallbackField label="Scope"><AnimatedDropdown value={node.data?.scope === 'project' ? 'project' : 'graph'} options={[{ value: 'graph', label: 'Graph variable' }, { value: 'project', label: 'Project variable' }]} onChange={(value) => update('scope', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Variable scope" className="node-select" /></FallbackField>
       {isConnected('value')
         ? <span className="node-config-hint">Value type comes from the connected socket: {inferredType}.</span>
         : <>
@@ -789,24 +820,43 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
                 ? <NodeNumberInput value={node.data?.value ?? 0} onChange={(event) => update('value', numericNodeInputValue(event.target.value))} onPointerDown={(event) => event.stopPropagation()} aria-label="Variable fallback number" />
                 : <input value={node.data?.value ?? ''} onChange={(event) => update('value', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Variable fallback text" />}</FallbackField>}
         </>}
-      <FallbackCheckbox label="Persist between runs" checked={node.data?.persist !== false} onChange={(persist) => update('persist', persist)} />
-      <span className="node-config-hint">Create Variable makes a graph variable. Project variables are managed in Variables and always persist.</span>
+      {node.data?.scope !== 'project' && <FallbackCheckbox label="Persist between runs" checked={node.data?.persist !== false} onChange={(persist) => update('persist', persist)} />}
+      <span className="node-config-hint">{node.data?.scope === 'project' ? 'Project variables always persist and are shared by every graph.' : 'Runs when the graph executes. A variable that already uses this name is left untouched.'}</span>
     </div>;
   }
   if (node.type === 'variable_get' || node.type === 'variable_set') {
     const currentScope = node.data?.scope || 'graph';
+    const variableWired = isConnected('variable');
     const selectableVariables = node.type === 'variable_set' ? graphVariables.filter((variable) => variable.readOnly !== true) : graphVariables;
     const variableOptions = selectableVariables.map((variable) => ({ value: `${variable.scope || 'graph'}:${variable.id}`, label: `${variable.scope === 'project' ? 'Project' : 'Graph'} · ${variable.name} · ${variable.type}` }));
     const selectedScope = selectedVariable?.scope || currentScope;
+    const valuePin = nodeDef.inputs.find((pin) => pin.id === 'value');
+    const valueType = ['string', 'number', 'boolean', 'array', 'object'].includes(valuePin?.colorType)
+      ? valuePin.colorType
+      : ['string', 'number', 'boolean', 'array', 'object'].includes(valuePin?.type) ? valuePin.type : 'string';
+    const resolvedValueName = valuePin?.label && valuePin.label !== 'Value' ? valuePin.label : nodeDef.outputs.find((pin) => pin.id === 'value')?.label;
+    const valueConfigured = Object.hasOwn(node.data || {}, 'value');
+    const valueFallback = valueConfigured ? node.data.value : selectedVariable?.initialValue ?? defaultValueForType(valueType);
     return <div className="node-config node-config-stack">
-      {selectableVariables.length ? <AnimatedDropdown value={`${selectedScope}:${node.data?.variableId || ''}`} onChange={(value) => { const separator = value.indexOf(':'); update({ scope: value.slice(0, separator), variableId: value.slice(separator + 1) }); }} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Project or graph variable" placeholder="Select variable" options={variableOptions} className="node-select" /> : node.type === 'variable_set' && graphVariables.length ? <span className="node-config-hint">No writable variables are available.</span> : <button className="node-config-action" onClick={(event) => { event.stopPropagation(); onOpenVariables?.(); }}><Plus size={12} /> Create variable</button>}
-      {selectedVariable && <span className="node-config-hint">{selectedVariable.name} · {selectedVariable.type}</span>}
+      {variableWired
+        ? <span className="node-config-hint">Variable comes from the connected socket{resolvedValueName && resolvedValueName !== 'Value' ? ` · ${resolvedValueName}` : ''} · {valueType}</span>
+        : selectableVariables.length ? <AnimatedDropdown value={`${selectedScope}:${node.data?.variableId || ''}`} onChange={(value) => { const separator = value.indexOf(':'); update({ scope: value.slice(0, separator), variableId: value.slice(separator + 1) }); }} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Project or graph variable" placeholder="Select variable" options={variableOptions} className="node-select" /> : node.type === 'variable_set' && graphVariables.length ? <span className="node-config-hint">No writable variables are available.</span> : <button className="node-config-action" onClick={(event) => { event.stopPropagation(); onOpenVariables?.(); }}><Plus size={12} /> Create variable</button>}
+      {!variableWired && selectedVariable && <span className="node-config-hint">{selectedVariable.name} · {selectedVariable.type}</span>}
+      {node.type === 'variable_set' && !isConnected('value') && (valueType === 'boolean'
+        ? <FallbackCheckbox label={`Value · ${valueType}`} checked={Boolean(valueFallback)} onChange={(value) => update('value', value)} />
+        : <FallbackField label={`Value · ${valueType}`}>
+          {['array', 'object'].includes(valueType)
+            ? <VariableJSONFallback key={valueType} type={valueType} value={valueFallback} onChange={(value) => update('value', value)} />
+            : valueType === 'number'
+              ? <NodeNumberInput value={valueFallback} onChange={(event) => update('value', numericNodeInputValue(event.target.value))} onPointerDown={(event) => event.stopPropagation()} aria-label="Variable value" />
+              : <input value={String(valueFallback ?? '')} onChange={(event) => update('value', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Variable value" />}
+        </FallbackField>)}
     </div>;
   }
   if (node.type === 'format_text') {
     const value = String(node.data?.template ?? '');
     const openTextEditor = () => onOpenTextStudio?.(node, 'template', 'Text template', value);
-    const valuePaths = graphVariables.flatMap((variable) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(variable.name || '') ? variableValuePaths(variable.initialValue, variable.name) : []);
+    const valuePaths = templatePaths;
     const templateSuggestions = nodeDef.inputs.filter((pin) => /^arg_\d+$/.test(pin.id)).map((pin) => ({ name: pin.id.replace(/^arg_/, 'arg'), label: pin.label }));
     return <div className="node-config node-config-stack">{value.length > LONG_TEXT_THRESHOLD ? <DiscordLongTextField value={value} onOpenEditor={openTextEditor} label="Text template" /> : <DiscordTextField onOpenTextEditor={openTextEditor} as="textarea" rows={2} value={value} appEmojis={appEmojis} graphVariables={graphVariables} discordAutocomplete templateAutocomplete templateValuePaths={valuePaths} templateSuggestions={templateSuggestions} onChange={(event) => update('template', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Type text with {{name}}" aria-label="Text template" />}<TemplateVariableHints value={node.data?.template} graphVariables={graphVariables} inputSlots={nodeDef.inputs.filter((pin) => pin.id.startsWith('slot_'))} connectedInputIds={connectedInputIds} templatePreviewValues={templatePreviewValues} /></div>;
   }
@@ -816,7 +866,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     </div>;
   }
   if (node.type === 'build_embed') {
-    const templateValuePaths = graphVariables.flatMap((variable) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(variable.name || '') ? variableValuePaths(variable.initialValue, variable.name) : []);
+    const templateValuePaths = templatePaths;
     const templateSuggestions = nodeDef.inputs.filter((pin) => /^arg_\d+$/.test(pin.id)).map((pin) => ({ name: pin.id.replace(/^arg_/, 'arg'), label: pin.label }));
     return <EmbedNodeBuilder data={node.data || {}} connectedInputIds={connectedInputIds} appEmojis={appEmojis} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} templatePreviewValues={templatePreviewValues} onChange={(blocks) => update('blocks', blocks)} onOpenStudio={() => onOpenEmbedStudio?.(node)} onOpenTextStudio={(label, value, maxLength, applyValue, parentBlockContext) => onOpenTextStudio?.(node, null, label, value, maxLength, applyValue, '', parentBlockContext)} />;
   }
@@ -847,15 +897,6 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       <button type="button" className={`node-config-action ${componentsConnected ? 'is-disabled' : ''}`} disabled={componentsConnected} title={componentsConnected ? 'Components input is connected. Edit the source node on the canvas instead.' : undefined} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { if (componentsConnected) return; event.stopPropagation(); onOpenEmbedStudio?.(node); }}><Plus size={12} /> {componentsConnected ? 'Components wired (edit source node)' : `Edit message components${node.data?.components?.length ? ` · ${node.data.components.length} rows` : ''}`}</button>
     </div>;
   }
-  if (node.type === 'action_edit_components') {
-    const componentsConnected = isConnected('components');
-    return <div className="node-config node-config-stack">
-      {!isConnected('channel_id') && <label className="node-config-fallback"><span>Channel ID</span><input value={node.data?.channel_id ?? ''} onChange={(event) => update('channel_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Channel ID" /></label>}
-      {!isConnected('message_id') && <label className="node-config-fallback"><span>Message ID</span><input value={node.data?.message_id ?? ''} onChange={(event) => update('message_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Message ID" /></label>}
-      {componentsV2SourceConnected && <span className="node-config-hint">The connected Components V2 layout replaces the message components.</span>}
-      <button type="button" className={`node-config-action ${componentsConnected ? 'is-disabled' : ''}`} disabled={componentsConnected} title={componentsConnected ? 'Components input is connected. Edit the source node on the canvas instead.' : undefined} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { if (componentsConnected) return; event.stopPropagation(); onOpenEmbedStudio?.(node); }}><Plus size={12} /> {componentsConnected ? 'Components wired (edit source node)' : `Edit components${node.data?.components?.length ? ` · ${node.data.components.length} rows` : ''}`}</button>
-    </div>;
-  }
   if (node.type === 'modify_embed') {
     return <div className="node-config node-config-stack">
       {!isConnected('title') && <label className="node-config-fallback"><span>Title</span><input value={node.data?.title ?? ''} onChange={(event) => update('title', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="New title (Optional)" aria-label="Title" /></label>}
@@ -867,6 +908,19 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     return <div className="node-config node-config-stack">
       {!isConnected('custom_id') && <label className="node-config-fallback"><span>Target Custom ID</span><input value={node.data?.custom_id ?? 'all'} onChange={(event) => update('custom_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="all or button_id" aria-label="Target Custom ID" /></label>}
       {!isConnected('disabled') && <div className="function-input-option"><span>Disabled</span><AnimatedCheckbox checked={node.data?.disabled ?? true} label="Disabled" onChange={(val) => update('disabled', val)} onPointerDown={(event) => event.stopPropagation()} /></div>}
+    </div>;
+  }
+  if (node.type === 'modify_components_v2') {
+    const property = node.data?.property || 'spoiler';
+    const booleanProperty = ['spoiler', 'divider', 'accessory.disabled'].includes(property);
+    return <div className="node-config node-config-stack">
+      {!isConnected('target_id') && <label className="node-config-fallback"><span>Block ID</span><input value={node.data?.target_id ?? 'all'} onChange={(event) => update('target_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="all or a Component Studio block ID" aria-label="Components V2 block ID" /></label>}
+      {!isConnected('property') && <FallbackField label="Property"><AnimatedDropdown value={property} options={componentsV2PropertyOptions} onChange={(value) => update('property', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Components V2 property" className="node-select" /></FallbackField>}
+      {!isConnected('item_index') && property === 'spoiler' && <label className="node-config-fallback"><span>Media item index</span><input type="number" min={-1} max={9} value={node.data?.item_index ?? -1} onChange={(event) => update('item_index', Number(event.target.value))} onPointerDown={(event) => event.stopPropagation()} aria-label="Media item index" /></label>}
+      {!isConnected('value') && (booleanProperty
+        ? <div className="function-input-option"><span>Value</span><AnimatedCheckbox checked={Boolean(node.data?.value)} label="Enabled" onChange={(value) => update('value', value)} onPointerDown={(event) => event.stopPropagation()} /></div>
+        : <label className="node-config-fallback"><span>Value</span><input value={node.data?.value ?? ''} onChange={(event) => update('value', event.target.value)} onPointerDown={(event) => event.stopPropagation()} aria-label="Modified component value" /></label>)}
+      <span className="node-config-hint">Connect Component Builder → Modify Components V2 → Edit Message or Edit Interaction Reply. Find block IDs in Component Studio.</span>
     </div>;
   }
   if (node.type === 'action_reply_interaction') {
@@ -986,7 +1040,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
         {textField('reason', 'Audit Log Reason')}
         <span className="node-config-warning"><AlertTriangle size={12} /> Discord checks the bot’s role position and server permissions.</span>
       </>}
-      {node.type === 'action_voice_channel_status' && <>{textField('channel_id', 'Voice channel ID')}{textField('status', 'Status (blank clears)')}{reason}</>}
+      {node.type === 'action_voice_channel_status' && <>{textField('channel_id', 'Voice channel ID')}{templateInput('status', 'Status (blank clears)')}{reason}</>}
       {node.type === 'action_voice_state' && <>
         {textField('guild_id', 'Server ID')}{textField('channel_id', 'Voice channel ID (blank leaves)')}
         {!isConnected('self_mute') && <FallbackCheckbox label="Self Mute" checked={node.data?.self_mute ?? false} onChange={(value) => update('self_mute', value)} />}

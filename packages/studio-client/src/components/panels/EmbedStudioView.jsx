@@ -135,16 +135,19 @@ export function renderDiscordFormattedText(text) {
   if (!text) return null;
   const str = String(text);
   const templateLiterals = [];
-  const templateMarker = /\uE000(\d+)\uE001/g;
+  const customEmojiLiterals = [];
+  const inlineMarker = /\uE000(\d+)\uE001|\uE100(\d+)\uE101/g;
   const renderPlainText = (value) => {
     const nodes = [];
     let cursor = 0;
     let marker;
-    templateMarker.lastIndex = 0;
-    while ((marker = templateMarker.exec(value)) !== null) {
+    inlineMarker.lastIndex = 0;
+    while ((marker = inlineMarker.exec(value)) !== null) {
       if (marker.index > cursor) nodes.push(value.slice(cursor, marker.index));
-      nodes.push(templateLiterals[Number(marker[1])] ?? marker[0]);
-      cursor = templateMarker.lastIndex;
+      nodes.push(marker[1] !== undefined
+        ? templateLiterals[Number(marker[1])] ?? marker[0]
+        : customEmojiLiterals[Number(marker[2])] ?? marker[0]);
+      cursor = inlineMarker.lastIndex;
     }
     if (cursor < value.length) nodes.push(value.slice(cursor));
     return nodes;
@@ -202,29 +205,15 @@ export function renderDiscordFormattedText(text) {
     return <React.Fragment key={`${key}_${index}`}>{formatted}{index < value.split('\n').length - 1 ? '\n' : ''}</React.Fragment>;
   });
   const customEmojiRegex = /<(a?):([a-zA-Z0-9_]+):([0-9]+)>/g;
-  const parts = [];
-  let lastIndex = 0;
-  let match;
-
-  while ((match = customEmojiRegex.exec(str)) !== null) {
-    if (match.index > lastIndex) {
-      parts.push(...renderLines(str.slice(lastIndex, match.index), `text_${match.index}`));
-    }
-    const isAnimated = match[1] === 'a';
-    const name = match[2];
-    const id = match[3];
-    const ext = isAnimated ? 'gif' : 'webp';
+  const formattedText = str.replace(customEmojiRegex, (_match, animated, name, id) => {
+    const index = customEmojiLiterals.length;
+    const ext = animated === 'a' ? 'gif' : 'webp';
     const url = `https://cdn.discordapp.com/emojis/${id}.${ext}?size=48&quality=lossless`;
+    customEmojiLiterals.push(<CustomEmoji key={`emoji_${id}_${index}`} className="discord-custom-emoji" src={url} alt={`:${name}:`} />);
+    return `\uE100${index}\uE101`;
+  });
 
-    parts.push(<CustomEmoji key={`emoji_${id}_${match.index}`} className="discord-custom-emoji" src={url} alt={`:${name}:`} />);
-    lastIndex = customEmojiRegex.lastIndex;
-  }
-
-  if (lastIndex < str.length) {
-    parts.push(...renderLines(str.slice(lastIndex), 'text_tail'));
-  }
-
-  return parts;
+  return renderLines(formattedText, 'text');
 }
 //
 export function EmbedStudioView({
@@ -254,6 +243,7 @@ export function EmbedStudioView({
   templateValuePaths = [],
   templatePreviewValues = {},
   templateSuggestions = [],
+  connectedTemplateArguments = [],
   botProfile = null,
   botStatus = 'DISCONNECTED',
   theme = 'dark',
@@ -1510,6 +1500,7 @@ export function EmbedStudioView({
                 isContentWired={isContentWired}
                 appEmojis={appEmojis}
                 graphVariables={graphVariables}
+                templateValuePaths={templateValuePaths}
                 onChange={onComponentsChange}
                 selectedComponentId={selectedComponentId}
                 onSelectComponent={setSelectedComponentId}
@@ -1542,7 +1533,7 @@ export function EmbedStudioView({
               <span>Please review and fix the highlighted fields in your embed blocks.</span>
             </div>
           )}
-          {((activeTab === 'embed' && focusedEmbedBlockId) || (activeTab === 'components' && (componentsV2Enabled ? focusedV2BlockId : focusedComponentRowId))) && <div className="embed-studio-help-footer"><TemplateSyntaxHelp /></div>}
+          {((activeTab === 'embed' && focusedEmbedBlockId) || (activeTab === 'components' && (componentsV2Enabled ? focusedV2BlockId : focusedComponentRowId))) && <div className="embed-studio-help-footer"><TemplateSyntaxHelp connectedArguments={connectedTemplateArguments} /></div>}
         </div>
 
         <div className="embed-studio-resize-handle" role="separator" aria-label="Resize editor and preview" aria-orientation="vertical" aria-valuemin={25} aria-valuemax={75} aria-valuenow={Math.round(editorPanePercent)} tabIndex={0} title="Drag to resize" onPointerDown={onStudioDividerPointerDown} onPointerMove={onStudioDividerPointerMove} onPointerUp={stopStudioResize} onPointerCancel={stopStudioResize} onKeyDown={(event) => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); updateStudioSplitFromKeyboard(event.key === 'ArrowRight' ? 1 : -1); } }} />
