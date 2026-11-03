@@ -12,13 +12,8 @@ function buildCustomStatusActivity(rawStatusText) {
   const statusText = customEmojiMatch
     ? rawStatusText.replace(customEmojiMatch[0], '').replace(/\s{2,}/g, ' ').trim().slice(0, 128)
     : rawStatusText.slice(0, 128);
-  const emoji = customEmojiMatch ? {
-    name: customEmojiMatch.groups.name,
-    id: customEmojiMatch.groups.id,
-    ...(customEmojiMatch.groups.animated ? { animated: true } : {})
-  } : null;
-  return statusText || emoji
-    ? { name: 'Custom Status', type: 4, ...(statusText ? { state: statusText } : {}), ...(emoji ? { emoji } : {}) }
+  return statusText
+    ? { name: 'Custom Status', type: 4, state: statusText }
     : null;
 }
 
