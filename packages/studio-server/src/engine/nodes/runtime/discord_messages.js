@@ -1,6 +1,6 @@
 import { validateDiscordSemanticValue } from '../../DiscordValueValidation.js';
 
-const MESSAGE_NODE_TYPES = new Set(['action_send_message', 'action_edit_message', 'action_edit_components']);
+const MESSAGE_NODE_TYPES = new Set(['action_send_message', 'action_edit_message']);
 //
 export function isDiscordMessageNodeType(type) {
   return MESSAGE_NODE_TYPES.has(type);
@@ -63,26 +63,6 @@ export async function executeDiscordMessageNode(node, {
       if (sentMessage?.id) setOutput('message_id', sentMessage.id);
       setOutput?.('success', Boolean(sentMessage?.id ?? true));
     }
-    return true;
-  }
-
-  if (node.type === 'action_edit_components') {
-    const channelId = validateDiscordSemanticValue(resolveInput('channel_id', node.data?.channel_id || ''), 'channel_id', 'Channel ID', { simulation, allowEmpty: true });
-    const messageId = validateDiscordSemanticValue(resolveInput('message_id', node.data?.message_id || ''), 'message_id', 'Message ID', { simulation, allowEmpty: true });
-    const components = resolveComponents();
-    const componentsV2 = components?.format === 'arc-components-v2' || node.data?.componentsV2Enabled === true;
-    if (componentsV2) validateComponentsV2Mode(components, isInputConnected);
-    if (!channelId || !messageId) {
-      setOutput?.('success', false);
-      throw new Error('Edit Components needs a Channel ID and Message ID.');
-    }
-    const payload = componentsV2
-      ? { flags: 32768, content: null, embeds: [], components: components.components }
-      : { components: Array.isArray(components) ? components : [] };
-    log(`[Edit Components] Replacing components on message ${messageId} in channel ${channelId}.`);
-    const editedMessage = await rest.editMessage(channelId, messageId, payload);
-    if (editedMessage?.id) setOutput('message_id', editedMessage.id);
-    setOutput?.('success', Boolean(editedMessage?.id ?? true));
     return true;
   }
 
