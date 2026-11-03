@@ -25,7 +25,8 @@ export function TextInput({ label, error, helper, icon: Icon, rightElement, clas
 
 export function CharacterLimit({ value = '', maxLength, children, className = '' }) {
   if (maxLength == null) return children;
-  return <div className={`character-limit-control ${className}`}>{children}<small className="character-count" aria-hidden="true">{String(value ?? '').length} / {maxLength}</small></div>;
+  const over = String(value ?? '').length > maxLength;
+  return <div className={`character-limit-control ${className}`}>{children}<small className={`character-count ${over ? 'is-over' : ''}`} style={over ? { color: '#f87171', fontWeight: 600 } : undefined} aria-hidden="true">{String(value ?? '').length} / {maxLength}</small></div>;
 }
 
 export function PasswordInput({ label = 'Password', error, showStrength = false, value = '', className = '', id, ...props }) {
