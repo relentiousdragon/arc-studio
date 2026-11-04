@@ -153,14 +153,14 @@ export async function executeRepeatWhile({
 }
 
 export async function executeParallelBranches(branches, runBranch, log, createExecutionError = (message) => new Error(message)) {
-  if (branches.some((branch) => branch.length !== 1)) throw createExecutionError('Parallel needs exactly one wire connected to each branch output.');
-  log('[Parallel] Running both branches concurrently. Connect both branches to the same Join node.');
+  if (branches.length < 2 || branches.some((branch) => branch.length !== 1)) throw createExecutionError('Parallel needs at least two connected branches and exactly one wire per branch output.');
+  log(`[Parallel] Running ${branches.length} branches concurrently. Connect every branch to the same Join node.`);
   const results = await Promise.all(branches.map((branch) => runBranch(branch)));
   const failed = results.find((result) => result?.error);
   if (failed) throw createExecutionError(failed.error);
   const joinIds = new Set(results.map((result) => result?.joinId).filter(Boolean));
-  if (joinIds.size !== 1 || results.some((result) => !result?.joinId)) throw createExecutionError('Both Parallel branches must reach the same Join node.');
+  if (joinIds.size !== 1 || results.some((result) => !result?.joinId)) throw createExecutionError('Every Parallel branch must reach the same Join node.');
   const joinId = [...joinIds][0];
-  log('[Parallel] Both branches completed. Continuing after Join.');
+  log('[Parallel] All branches completed. Continuing after Join.');
   return joinId;
 }

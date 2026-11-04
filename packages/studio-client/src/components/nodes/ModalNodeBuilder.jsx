@@ -1,6 +1,7 @@
 import React from 'react';
 import { Plus, Trash2 } from 'lucide-react';
 import { AnimatedCheckbox, AnimatedDropdown } from '../ui/CustomControls.jsx';
+import { DiscordTextField } from '../ui/DiscordTextField.jsx';
 
 const FIELD_TYPES = [
   { value: 'text', label: 'Text field' }, { value: 'string_select', label: 'String select' },
@@ -23,7 +24,14 @@ function TextInput({ label, value = '', maxLength, onChange, ...props }) {
   return <label><span className="modal-builder-label-row"><span>{label}</span><small>{String(value).length}/{maxLength}</small></span><input {...props} value={value} maxLength={maxLength} onChange={onChange} /></label>;
 }
 
-export function ModalNodeBuilder({ value, onChange }) {
+function TemplateTitleInput({ value = '', maxLength = 45, onChange, graphVariables = [], templateValuePaths = [] }) {
+  return <label>
+    <span className="modal-builder-label-row"><span>Modal title</span><small>{String(value).length}/{maxLength}</small></span>
+    <DiscordTextField value={value} maxLength={maxLength} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateAutocomplete onChange={onChange} placeholder="Tell us more" aria-label="Modal title" />
+  </label>;
+}
+
+export function ModalNodeBuilder({ value, onChange, graphVariables = [], templateValuePaths = [] }) {
   const draft = value || createDefaultModal();
   const fields = Array.isArray(draft.components) ? draft.components : [];
   const commit = (next) => onChange?.(next);
@@ -59,7 +67,7 @@ export function ModalNodeBuilder({ value, onChange }) {
 
   return <div className="modal-builder-config">
     <div className="modal-builder-heading">
-      <TextInput label="Modal title" value={draft.title || ''} maxLength={45} onChange={(event) => commit({ ...draft, title: event.target.value })} placeholder="Tell us more" />
+      <TemplateTitleInput value={draft.title || ''} maxLength={45} graphVariables={graphVariables} templateValuePaths={templateValuePaths} onChange={(event) => commit({ ...draft, title: event.target.value })} />
       <TextInput label="Modal custom ID" value={draft.customId || ''} maxLength={100} onChange={(event) => commit({ ...draft, customId: event.target.value })} placeholder="arc_modal" />
     </div>
     <div className="modal-builder-fields-heading"><strong>Fields</strong><span>{fields.length}/5</span></div>

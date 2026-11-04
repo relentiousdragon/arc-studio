@@ -31,8 +31,9 @@ test('each built-in schema is defined once in its own module and indexed', async
     const filename = `${categoryFolder(category)}/${type}.js`;
     const module = await import(new URL(filename, directory));
     const registryEntry = structuredClone(NodeDefinitions[type]);
+    delete registryEntry.templatePaths;
     for (const direction of ['inputs', 'outputs']) registryEntry[direction] = registryEntry[direction].map(({ semanticType, ...pin }) => pin);
-    assert.deepEqual(module.default, registryEntry, `${filename} must match its registry entry apart from derived pin semantics`);
+    assert.deepEqual(module.default, registryEntry, `${filename} must match its registry entry apart from derived pin semantics and event template paths`);
     for (const direction of ['inputs', 'outputs']) {
       const pins = module.default[direction];
       assert.ok(Array.isArray(pins), `${type}.${direction} must be an array`);
@@ -64,7 +65,7 @@ test('declarative editor controls have valid metadata and supply node defaults',
   assert.deepEqual(createDefaultNodeData('data_to_boolean'), { value: false });
   assert.deepEqual(createDefaultNodeData('math_compare'), { operation: 'less_than' });
   assert.deepEqual(createDefaultNodeData('math_constant'), { constant: 'pi' });
-  assert.deepEqual(createDefaultNodeData('variable_create'), { name: '', valueType: 'string', value: '', persist: true });
+  assert.deepEqual(createDefaultNodeData('variable_create'), { name: '', scope: 'graph', valueType: 'string', value: '', persist: true });
   assert.deepEqual(createDefaultNodeData('data_check_value'), { fallback: '' });
   assert.deepEqual(createDefaultNodeData('data_get_value_by_path'), { path: '', fallback: '' });
   assert.deepEqual(createDefaultNodeData('data_find_array_item'), { path: '', value: '' });
@@ -75,10 +76,7 @@ test('declarative editor controls have valid metadata and supply node defaults',
   assert.deepEqual(createDefaultNodeData('data_array_get'), { index: 0 });
   assert.deepEqual(createDefaultNodeData('repeat_while'), { condition: true, interval_ms: 500 });
   const functionInputData = createDefaultNodeData('function_input');
-  assert.match(functionInputData.arguments[0].paramId, /^param_\d+_[a-z0-9]+$/);
-  assert.deepEqual(functionInputData.arguments.map(({ name, valueType, optional, defaultValue }) => ({ name, valueType, optional, defaultValue })), [
-    { name: 'Input', valueType: 'string', optional: false, defaultValue: '' }
-  ]);
+  assert.deepEqual(functionInputData.arguments, []);
   assert.deepEqual(createDefaultNodeData('function_return'), {
     returns: [{ returnId: 'output_1', name: 'Result', valueType: 'number', defaultValue: 0 }]
   });

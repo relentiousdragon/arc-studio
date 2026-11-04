@@ -1,7 +1,28 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { GraphRunner } from '../src/engine/GraphRunner.js';
-import { getTemplateReferences } from '../src/engine/TemplateExpressions.js';
+import { getTemplateReferences, renderTextTemplate } from '../src/engine/TemplateExpressions.js';
+
+it('warns for undefined template values without interrupting rendering and accepts conditional fallbacks', () => {
+  const warnings = [];
+  const render = (template, values = {}) => renderTextTemplate(template, (name) => values[name], [], (expression, references) => warnings.push({ expression, references }));
+
+  assert.equal(render('Hello {{VAR}}'), 'Hello {{VAR}}');
+  assert.deepEqual(warnings, [{ expression: 'VAR', references: ['VAR'] }]);
+  assert.equal(render('{{VAR ? "this" : "that"}}'), 'that');
+  assert.equal(render('{{VAR ? "this" : "that"}}', { VAR: null }), 'that');
+  assert.equal(warnings.length, 1);
+});
+
+it('prints an escaped template literally without the backslash', () => {
+  const warnings = [];
+  const render = (template, values = {}) => renderTextTemplate(template, (name) => values[name], [], (expression) => warnings.push(expression));
+
+  assert.equal(render('\\{{VAR}}'), '{{VAR}}');
+  assert.equal(render('\\{{VAR}} and {{NAME}}', { NAME: 'Ada' }), '{{VAR}} and Ada');
+  assert.equal(render('\\\\{{VAR}}', { VAR: 'x' }), '\\{{VAR}}');
+  assert.deepEqual(warnings, []);
+});
 //
 describe('template inputs and streaming presence', () => {
   it('does not create dynamic references from quoted string literals', () => {

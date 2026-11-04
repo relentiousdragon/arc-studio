@@ -207,6 +207,7 @@ export function MessageComponentsBuilder({
   isContentWired = false,
   appEmojis = [],
   graphVariables = [],
+  templateValuePaths = [],
   onChange,
   allowMultipleRows = true,
   selectedComponentId = null,
@@ -513,7 +514,7 @@ export function MessageComponentsBuilder({
 
                         <label className="component-field">
                           <span>Custom ID</span>
-                          <DiscordTextField templateAutocomplete graphVariables={graphVariables}
+                          <DiscordTextField templateAutocomplete graphVariables={graphVariables} templateValuePaths={templateValuePaths}
                             value={component.customId}
                             maxLength={100}
                             autoCapitalize="none"
@@ -526,7 +527,7 @@ export function MessageComponentsBuilder({
 
                         <label className="component-field full-width">
                           <span>Placeholder</span>
-                          <DiscordTextField templateAutocomplete graphVariables={graphVariables}
+                          <DiscordTextField templateAutocomplete graphVariables={graphVariables} templateValuePaths={templateValuePaths}
                             value={component.placeholder}
                             maxLength={150}
                             onChange={(event) => patchComponent(row.id, component.id, { placeholder: event.target.value })}
@@ -565,7 +566,7 @@ export function MessageComponentsBuilder({
                                 />
                                 <DiscordTextField
                                   templateAutocomplete
-                                  graphVariables={graphVariables}
+                                  graphVariables={graphVariables} templateValuePaths={templateValuePaths}
                                   aria-label={`Option ${index + 1} label`}
                                   value={option.label}
                                   maxLength={100}
@@ -574,7 +575,7 @@ export function MessageComponentsBuilder({
                                 />
                                 <DiscordTextField
                                   templateAutocomplete
-                                  graphVariables={graphVariables}
+                                  graphVariables={graphVariables} templateValuePaths={templateValuePaths}
                                   aria-label={`Option ${index + 1} value`}
                                   value={option.value}
                                   maxLength={100}
@@ -583,7 +584,7 @@ export function MessageComponentsBuilder({
                                 />
                                 <DiscordTextField
                                   templateAutocomplete
-                                  graphVariables={graphVariables}
+                                  graphVariables={graphVariables} templateValuePaths={templateValuePaths}
                                   aria-label={`Option ${index + 1} description`}
                                   value={option.description || ''}
                                   maxLength={100}
@@ -697,7 +698,7 @@ export function MessageComponentsBuilder({
                     <div className="component-inspector-grid">
                       <label className="component-field">
                         <span>Button Label</span>
-                        <DiscordTextField templateAutocomplete graphVariables={graphVariables}
+                        <DiscordTextField templateAutocomplete graphVariables={graphVariables} templateValuePaths={templateValuePaths}
                           value={component.label}
                           maxLength={80}
                           onChange={(event) => patchComponent(row.id, component.id, { label: event.target.value })}
@@ -719,7 +720,7 @@ export function MessageComponentsBuilder({
                       {component.style === 'link' ? (
                         <label className="component-field full-width">
                           <span>Link URL</span>
-                          <DiscordTextField templateAutocomplete graphVariables={graphVariables}
+                          <DiscordTextField templateAutocomplete graphVariables={graphVariables} templateValuePaths={templateValuePaths}
                             type="url"
                             value={component.url}
                             maxLength={512}
@@ -730,7 +731,7 @@ export function MessageComponentsBuilder({
                       ) : (
                         <label className="component-field full-width">
                           <span>Custom ID</span>
-                          <DiscordTextField templateAutocomplete graphVariables={graphVariables}
+                          <DiscordTextField templateAutocomplete graphVariables={graphVariables} templateValuePaths={templateValuePaths}
                             value={component.customId}
                             maxLength={100}
                             autoCapitalize="none"

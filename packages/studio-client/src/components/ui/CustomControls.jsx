@@ -18,7 +18,7 @@ export function AnimatedCheckbox({ checked = false, onChange, label, className =
 
 export function AnimatedDropdown({
   value, onChange, options = [], placeholder = 'Select…', ariaLabel, className = '', onPointerDown,
-  searchable = options.length >= 8, disabled = false
+  searchable = options.length >= 8, disabled = false, multiple = false
 }) {
   const generatedId = useId();
   const rootRef = useRef(null);
@@ -32,6 +32,9 @@ export function AnimatedDropdown({
   const uiScale = getArcUiScale();
   const searchRequested = Boolean(searchable);
   const selected = options.find((option) => option.value === value);
+  const selectedValues = multiple && Array.isArray(value) ? value.map(String) : [];
+  const selectedLabels = multiple ? options.filter((option) => selectedValues.includes(String(option.value))).map((option) => option.label) : [];
+  const isSelected = (option) => multiple ? selectedValues.includes(String(option.value)) : option.value === value;
   const filteredOptions = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return needle ? options.filter((option) => `${option.label} ${option.description || ''}`.toLowerCase().includes(needle)) : options;
@@ -105,6 +108,12 @@ export function AnimatedDropdown({
   }, [open, menuPosition?.showSearch]);
 
   const choose = (option) => {
+    if (multiple) {
+      const entry = String(option.value);
+      onChange?.(selectedValues.includes(entry) ? selectedValues.filter((item) => item !== entry) : [...selectedValues, entry]);
+      setQuery('');
+      return;
+    }
     onChange?.(option.value);
     setOpen(false);
     setQuery('');
@@ -153,7 +162,7 @@ export function AnimatedDropdown({
       }}
       onKeyDown={handleKeyDown}
     >
-      <span className={!selected ? 'is-placeholder' : ''}>{selected?.label || placeholder}</span>
+      <span className={(multiple ? !selectedLabels.length : !selected) ? 'is-placeholder' : ''}>{multiple ? (selectedLabels.length ? selectedLabels.join(', ') : placeholder) : selected?.label || placeholder}</span>
       <ChevronDown size={13} className="arc-dropdown-chevron" />
     </button>
     {open && createPortal(<div
@@ -171,12 +180,12 @@ export function AnimatedDropdown({
           key={option.value}
           type="button"
           role="option"
-          aria-selected={option.value === value}
-          className={`arc-dropdown-option ${option.value === value ? 'is-selected' : ''} ${index === activeIndex ? 'is-active' : ''}`}
+          aria-selected={isSelected(option)}
+          className={`arc-dropdown-option ${isSelected(option) ? 'is-selected' : ''} ${index === activeIndex ? 'is-active' : ''}`}
           onPointerDown={(event) => event.stopPropagation()}
           onMouseEnter={() => setActiveIndex(index)}
           onClick={(event) => { event.preventDefault(); event.stopPropagation(); choose(option); }}
-        ><span>{option.label}</span>{option.value === value && <Check size={13} />}</button>) : <div className="arc-dropdown-empty">No matches</div>}
+        ><span>{option.label}</span>{isSelected(option) && <Check size={13} />}</button>) : <div className="arc-dropdown-empty">No matches</div>}
       </div>
     </div>, document.body)}
   </div>;

@@ -27,10 +27,14 @@ const LARGE_GRAPH_WIRE_LIMIT = 64;
 const NODE_CULL_OVERSCAN_MIN = 520;
 const NODE_CULL_OVERSCAN_MAX = 1120;
 const PAN_CULL_REFRESH_DISTANCE = 560;
+const SPATIAL_CELL_SIZE = 640;
+const SPATIAL_MAX_CELLS_PER_ITEM = 128;
+const SPATIAL_MAX_QUERY_CELLS = 16384;
+const SPATIAL_NODE_HEIGHT = 1800;
 const EMPTY_NODE_CONNECTIONS = Object.freeze({ incoming: [], outgoing: [], incident: [] });
 const textInputPopupOpen = () => typeof document !== 'undefined' && Boolean(document.querySelector('.arc-full-emoji-picker, .discord-emoji-suggestions'));
 const graphChatEmojiPattern = /^<(a?):([a-zA-Z0-9_~]{2,32}):(\d+)>$/;
-const getCanvasDisplayScale = (element) => {
+const measureCanvasDisplayScale = (element) => {
   if (!element) return 1;
   const appRoot = element.closest('.app-root');
   const bounds = appRoot?.getBoundingClientRect();
@@ -44,6 +48,54 @@ const getCollaboratorColor = (id) => {
   for (const char of String(id || '')) hash = (hash * 31 + char.charCodeAt(0)) | 0;
   return COLLABORATOR_COLORS[(hash >>> 0) % COLLABORATOR_COLORS.length];
 };
+
+function createCanvasSpatialIndex(items, getBounds) {
+  const cells = new Map();
+  const overflow = [];
+  const cellRange = (bounds) => ({
+    left: Math.floor(bounds.left / SPATIAL_CELL_SIZE),
+    top: Math.floor(bounds.top / SPATIAL_CELL_SIZE),
+    right: Math.floor(bounds.right / SPATIAL_CELL_SIZE),
+    bottom: Math.floor(bounds.bottom / SPATIAL_CELL_SIZE)
+  });
+  for (const item of items) {
+    const bounds = getBounds(item);
+    if (!bounds || ![bounds.left, bounds.top, bounds.right, bounds.bottom].every(Number.isFinite)) {
+      overflow.push(item);
+      continue;
+    }
+    const range = cellRange(bounds);
+    const columns = Math.max(0, range.right - range.left + 1);
+    const rows = Math.max(0, range.bottom - range.top + 1);
+    if (!columns || !rows || columns * rows > SPATIAL_MAX_CELLS_PER_ITEM) {
+      overflow.push(item);
+      continue;
+    }
+    for (let x = range.left; x <= range.right; x += 1) {
+      for (let y = range.top; y <= range.bottom; y += 1) {
+        const key = `${x}:${y}`;
+        let bucket = cells.get(key);
+        if (!bucket) { bucket = []; cells.set(key, bucket); }
+        bucket.push(item);
+      }
+    }
+  }
+  return {
+    query(bounds) {
+      const range = cellRange(bounds);
+      const columns = Math.max(0, range.right - range.left + 1);
+      const rows = Math.max(0, range.bottom - range.top + 1);
+      if (!columns || !rows || columns * rows > SPATIAL_MAX_QUERY_CELLS) return items;
+      const result = new Set(overflow);
+      for (let x = range.left; x <= range.right; x += 1) {
+        for (let y = range.top; y <= range.bottom; y += 1) {
+          for (const item of cells.get(`${x}:${y}`) || []) result.add(item);
+        }
+      }
+      return result;
+    }
+  };
+}
 
 function equalDefinitionValue(left, right) {
   if (Object.is(left, right)) return true;
@@ -283,10 +335,10 @@ function getWireCutSegments(pathElement, event) {
 }
 
 export function NodeCanvas({
-  nodes: suppliedNodes = [], connections: suppliedConnections = [], graphId = '', projectId = '', focusRequest = null, followRequest = null, onFollowComplete, activePulseNodeIds = [], debugStep = null, onDebugAction, settings = {}, isLocked = false, canvasLocked = isLocked, canWriteGraphs = true, desktopMode = false, shortcutPlatform = 'windows', authToken = '', graphName = 'Untitled graph',
+  nodes: suppliedNodes = [], connections: suppliedConnections = [], graphId = '', projectId = '', focusRequest = null, followRequest = null, onFollowComplete, activePulseNodeIds = [], debugStep = null, simulationOverlay = null, onClearSimulationOverlay, onDebugAction, settings = {}, isLocked = false, canvasLocked = isLocked, canWriteGraphs = true, desktopMode = false, shortcutPlatform = 'windows', authToken = '', graphName = 'Untitled graph',
   tagGroups = [], notes = [], arrows = [], transientArrows = [], currentUser = null, projectOwnerId = '', noteEditLocks = {}, collaborationOnline = false, collaborationReady = false, collaborationMotionSupported = false, collaborationClientId = '', onRequestNoteEditLock, onReleaseNoteEditLock, onNotesChange, onArrowsChange, onCanvasArrowAction, onTagGroupsChange, onRequestCreateTagGroup, onRequestEditTagGroup, onRenameNode,
-  graphVariables = [], functionGraphs = [], callableGraphs = functionGraphs, appEmojis = [], nodeDefinitions = BuiltInNodeDefinitions, nodeDefinitionsReady = false, onNodesChange, onConnectionsChange, onOpenPalette, onViewportCenterChange, onSelectedNodeChange, onSelectedNodeCountChange, onOpenLibrary, onOpenVariables,
-  onHistoryGroupStart, onHistoryGroupEnd, onNodeDrop, onSaveNodePrefab, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph, remoteActions = [], onCollaborationAction,
+  graphVariables = [], eventTemplatePaths = [], functionGraphs = [], callableGraphs = functionGraphs, appEmojis = [], nodeDefinitions = BuiltInNodeDefinitions, nodeDefinitionsReady = false, onNodesChange, onConnectionsChange, onOpenPalette, onViewportCenterChange, onSelectedNodeChange, onSelectedNodeCountChange, onOpenLibrary, onOpenVariables,
+  onHistoryGroupStart, onHistoryGroupEnd, onNodeDrop, onSaveNodePrefab, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph, remoteActions = [], onCollaborationAction, onNodeMoveCommit,
   graphChatEnabled = false, graphChatBubbles = [], onSendGraphChat, onMoveGraphChatBubble
 }) {
   const previousNodesRef = useRef([]);
@@ -337,6 +389,8 @@ export function NodeCanvas({
     return value;
   }, [functionGraphs, callableGraphs]);
   const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
+  const nodeByIdRef = useRef(nodeById);
+  nodeByIdRef.current = nodeById;
   const previousNodePositionsRef = useRef(new Map());
   const nodePositionById = useMemo(() => {
     const previous = previousNodePositionsRef.current;
@@ -411,9 +465,10 @@ export function NodeCanvas({
   }, [connections]);
   const shortcutModifier = shortcutPlatform === 'macos' ? '⌘' : 'Ctrl';
   const containerRef = useRef(null);
+  const canvasGeometryRef = useRef({ bounds: null, scale: 1, width: 0, height: 0, sidebar: null, dock: null, tools: null });
+  const getCanvasDisplayScale = () => canvasGeometryRef.current.scale || 1;
   const visibleNodeIdsCacheRef = useRef(null);
   const visibleWireIdsCacheRef = useRef(null);
-  const canvasRenderVersionRef = useRef(0);
   const pointerMoveFrameRef = useRef(0);
   const pendingPointerMoveRef = useRef(null);
   const pointerMoveHandlerRef = useRef(null);
@@ -423,6 +478,9 @@ export function NodeCanvas({
   const frameTimingRef = useRef({ last: 0, samples: 0, slow: 0, fast: 0 });
   const canvasWorldRef = useRef(null);
   const autoPanFrameTimeRef = useRef(0);
+  const wheelPanTimerRef = useRef(0);
+  const wheelPanFrameRef = useRef(0);
+  const wheelPanDeltaRef = useRef({ x: 0, y: 0 });
   const [performanceReduced, setPerformanceReduced] = useState(() => {
     if (typeof navigator === 'undefined') return false;
     const lowMemory = Number.isFinite(navigator.deviceMemory) && navigator.deviceMemory <= 4;
@@ -434,13 +492,14 @@ export function NodeCanvas({
   canvasQualityModeRef.current = canvasQualityMode;
   const performanceReducedRef = useRef(performanceReduced);
   performanceReducedRef.current = performanceReduced;
-  canvasRenderVersionRef.current += 1;
-  const socketPositionCacheRef = useRef({ renderVersion: -1, positions: new Map() });
+  const socketPositionCacheRef = useRef({ positions: new Map() });
   const handledFocusRequestRef = useRef(null);
   const viewportGraphKey = graphId ? `arc_project_${projectId || 'default'}_arc_canvas_view_${graphId}` : '';
   const viewportGraphKeyRef = useRef(viewportGraphKey);
   const [pan, setPan] = useState({ x: 22, y: 18 });
   const [zoom, setZoom] = useState(1);
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
   const [canvasFindOpen, setCanvasFindOpen] = useState(false);
   const [canvasFindQuery, setCanvasFindQuery] = useState('');
   const [canvasFindCaseSensitive, setCanvasFindCaseSensitive] = useState(false);
@@ -450,6 +509,8 @@ export function NodeCanvas({
   const canvasFindInputRef = useRef(null);
   const viewportRef = useRef({ pan, zoom });
   const [isPanning, setIsPanning] = useState(false);
+  const [isWheelPanning, setIsWheelPanning] = useState(false);
+  const [isRestoringPanQuality, setIsRestoringPanQuality] = useState(false);
   viewportRef.current = { pan: isPanning ? viewportRef.current.pan : pan, zoom };
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [selectedNodeIds, setSelectedNodeIds] = useState([]);
@@ -622,36 +683,8 @@ export function NodeCanvas({
   }, [graphId, onHistoryGroupEnd]);
   const [libraryDragPreview, setLibraryDragPreview] = useState(null);
   const [wireLayoutRevision, refreshWireLayout] = useState(0);
+  const [socketLayoutRevision, refreshSocketLayout] = useState(0);
   const [nodeBoundsRevision, refreshNodeBounds] = useState(0);
-  const nodeMeasurementInputsRef = useRef({ nodes, zoom });
-  nodeMeasurementInputsRef.current = { nodes, zoom };
-  const measureVisibleNodeCards = useCallback(() => {
-    const container = containerRef.current;
-    if (!container) return;
-    const { nodes: currentNodes, zoom: currentZoom } = nodeMeasurementInputsRef.current;
-    const scale = getCanvasDisplayScale(container) * currentZoom;
-    if (!(scale > 0)) return;
-    const actualNodeIds = new Set(currentNodes.map((node) => node.id));
-    const sizes = nodeWorldSizeCacheRef.current.sizes;
-    let changed = false;
-    for (const card of container.querySelectorAll('[data-node-card-id]')) {
-      const rect = card.getBoundingClientRect();
-      if (!(rect.width > 0 && rect.height > 0)) continue;
-      const id = card.dataset.nodeCardId;
-      if (!actualNodeIds.has(id)) continue;
-      const next = {
-        width: Math.round(rect.width / scale * 100) / 100,
-        height: Math.round(rect.height / scale * 100) / 100
-      };
-      const previous = sizes.get(id);
-      if (!previous || Math.abs(previous.width - next.width) > 0.5 || Math.abs(previous.height - next.height) > 0.5) {
-        sizes.set(id, next);
-        changed = true;
-      }
-    }
-    for (const id of sizes.keys()) if (!actualNodeIds.has(id)) sizes.delete(id);
-    if (changed) refreshNodeBounds((revision) => revision + 1);
-  }, []);
   const [connectingWire, setConnectingWire] = useState(null);
   canvasInteractionActiveRef.current = Boolean(isPanning || draggingNode || draggingNote || connectingWire || selectionBox);
   const connectingWireRef = useRef(connectingWire);
@@ -664,6 +697,9 @@ export function NodeCanvas({
   const pointerPositionRef = useRef(null);
   const touchPointersRef = useRef(new Map());
   const touchPinchRef = useRef(null);
+  const touchNodeGestureRef = useRef(null);
+  const panQualityTimerRef = useRef(0);
+  const panQualityRestoreTimerRef = useRef(0);
   const lastPastePositionRef = useRef(null);
   const pasteCascadeRef = useRef(0);
   const uiScale = getArcUiScale();
@@ -680,15 +716,16 @@ export function NodeCanvas({
     if (canvasWorldRef.current) {
       canvasWorldRef.current.style.transform = `translate3d(${nextPan.x}px, ${nextPan.y}px, 0) scale(${viewportRef.current.zoom})`;
     }
-    containerRef.current?.style.setProperty('--grid-x', `${nextPan.x}px`);
-    containerRef.current?.style.setProperty('--grid-y', `${nextPan.y}px`);
+    const gridSize = Number.parseFloat(containerRef.current?.style.getPropertyValue('--grid-size')) || GRID_SIZE;
+    containerRef.current?.style.setProperty('--grid-x', `${nextPan.x - gridSize / 2}px`);
+    containerRef.current?.style.setProperty('--grid-y', `${nextPan.y - gridSize / 2}px`);
     if (Math.hypot(nextPan.x - pan.x, nextPan.y - pan.y) >= PAN_CULL_REFRESH_DISTANCE) setPan(nextPan);
   };
   useEffect(() => { collaborationCursorRef.current = null; }, [graphId]);
   const reportGraphChatCursorMode = (mode) => {
     let cursor = collaborationCursorRef.current;
     const pointer = pointerPositionRef.current;
-    const bounds = containerRef.current?.getBoundingClientRect();
+    const bounds = canvasGeometryRef.current.bounds;
     if (pointer && bounds) {
       const displayScale = getCanvasDisplayScale(containerRef.current);
       cursor = {
@@ -745,6 +782,24 @@ export function NodeCanvas({
     return { counts, orders, indices };
   }, [connections]);
   const activePulseNodeSet = useMemo(() => new Set(activePulseNodeIds), [activePulseNodeIds]);
+  const simulationMetricsByNode = useMemo(() => {
+    const metrics = new Map();
+    for (const step of simulationOverlay?.nodeTimings || []) {
+      if (!step?.nodeId) continue;
+      const metric = metrics.get(step.nodeId) || { count: 0, totalMs: 0, lastMs: 0, status: 'completed' };
+      metric.count += 1;
+      metric.totalMs += Number(step.durationMs) || 0;
+      metric.lastMs = Number(step.durationMs) || 0;
+      metric.lastGapMs = Number.isFinite(Number(step.sincePreviousNodeMs)) ? Number(step.sincePreviousNodeMs) : null;
+      metric.incomingWire = step.incomingWire || null;
+      metric.status = step.status || 'completed';
+      metrics.set(step.nodeId, metric);
+    }
+    return metrics;
+  }, [simulationOverlay?.nodeTimings]);
+  const simulationWireKeys = useMemo(() => new Set((simulationOverlay?.wirePath || []).map((wire) => `${wire.sourceNodeId}:${wire.sourcePinId}->${wire.targetNodeId}:${wire.targetPinId}`)), [simulationOverlay?.wirePath]);
+  const latestSimulationStep = simulationOverlay?.nodeTimings?.at(-1);
+  const formatSimulationTime = (value) => `${value < 0.1 && value > 0 ? '<0.1' : Number(value || 0).toFixed(value >= 10 ? 1 : 2)} ms`;
 
   useLayoutEffect(() => {
     viewportGraphKeyRef.current = viewportGraphKey;
@@ -765,7 +820,7 @@ export function NodeCanvas({
 
   useLayoutEffect(() => {
     const publishCenter = () => {
-      const bounds = containerRef.current?.getBoundingClientRect();
+      const bounds = canvasGeometryRef.current.bounds;
       if (!bounds) return;
       const displayScale = getCanvasDisplayScale(containerRef.current);
       onViewportCenterChange?.({
@@ -791,7 +846,7 @@ export function NodeCanvas({
         event.preventDefault();
         event.stopPropagation();
         if (event.shiftKey) {
-          const viewport = containerRef.current?.getBoundingClientRect();
+          const viewport = canvasGeometryRef.current.bounds;
           const visibleIds = [...(containerRef.current?.querySelectorAll('[data-node-card-id]') || [])]
             .filter((card) => {
               const rect = card.getBoundingClientRect();
@@ -841,7 +896,7 @@ export function NodeCanvas({
       if (!shortcutBlocked && !event.repeat && !event.metaKey && !event.ctrlKey && !event.altKey) {
         const key = event.key.toLowerCase();
         if (event.key === '/' && graphChatEnabled && collaborationReady && graphId && !graphChatComposerOpen && !contextMenu && !textInputPopupOpen()) {
-          const bounds = containerRef.current?.getBoundingClientRect();
+          const bounds = canvasGeometryRef.current.bounds;
           if (!bounds) return;
           const pointer = pointerPositionRef.current;
           const inside = pointer && pointer.x >= bounds.left && pointer.x <= bounds.right && pointer.y >= bounds.top && pointer.y <= bounds.bottom;
@@ -857,7 +912,7 @@ export function NodeCanvas({
           setGraphChatComposerOpen(true);
         } else if (shortcutMatches(event, settings.shortcuts?.addNote || DEFAULT_SHORTCUTS.addNote) && !isLocked) {
           event.preventDefault();
-          const bounds = containerRef.current?.getBoundingClientRect();
+          const bounds = canvasGeometryRef.current.bounds;
           const pointer = pointerPositionRef.current;
           const displayScale = getCanvasDisplayScale(containerRef.current);
           const position = bounds && pointer && pointer.x >= bounds.left && pointer.x <= bounds.right && pointer.y >= bounds.top && pointer.y <= bounds.bottom
@@ -946,15 +1001,18 @@ export function NodeCanvas({
         event.preventDefault();
         return;
       }
-      let scrollArea = event.target instanceof Element ? event.target : null;
-      while (scrollArea && scrollArea !== container) {
-        const style = window.getComputedStyle(scrollArea);
-        const vertical = ['auto', 'scroll'].includes(style.overflowY) && scrollArea.scrollHeight > scrollArea.clientHeight;
-        const horizontal = ['auto', 'scroll'].includes(style.overflowX) && scrollArea.scrollWidth > scrollArea.clientWidth;
-        const canScrollY = event.deltaY !== 0 && vertical && (event.deltaY < 0 ? scrollArea.scrollTop > 0 : scrollArea.scrollTop + scrollArea.clientHeight < scrollArea.scrollHeight - 1);
-        const canScrollX = event.deltaX !== 0 && horizontal && (event.deltaX < 0 ? scrollArea.scrollLeft > 0 : scrollArea.scrollLeft + scrollArea.clientWidth < scrollArea.scrollWidth - 1);
-        if ((canScrollY || canScrollX) && !event.ctrlKey && !event.metaKey && !event.shiftKey) return;
-        scrollArea = scrollArea.parentElement;
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest('.node-config, .canvas-note-card, .canvas-chat-composer, .canvas-tools, .canvas-tag-group-members, textarea, [data-canvas-scroll]')) {
+        let scrollArea = target;
+        while (scrollArea && scrollArea !== container) {
+          const style = window.getComputedStyle(scrollArea);
+          const vertical = ['auto', 'scroll'].includes(style.overflowY) && scrollArea.scrollHeight > scrollArea.clientHeight;
+          const horizontal = ['auto', 'scroll'].includes(style.overflowX) && scrollArea.scrollWidth > scrollArea.clientWidth;
+          const canScrollY = event.deltaY !== 0 && vertical && (event.deltaY < 0 ? scrollArea.scrollTop > 0 : scrollArea.scrollTop + scrollArea.clientHeight < scrollArea.scrollHeight - 1);
+          const canScrollX = event.deltaX !== 0 && horizontal && (event.deltaX < 0 ? scrollArea.scrollLeft > 0 : scrollArea.scrollLeft + scrollArea.clientWidth < scrollArea.scrollWidth - 1);
+          if ((canScrollY || canScrollX) && !event.ctrlKey && !event.metaKey && !event.shiftKey) return;
+          scrollArea = scrollArea.parentElement;
+        }
       }
       if (textInputPopupOpen()) {
         event.preventDefault();
@@ -963,7 +1021,7 @@ export function NodeCanvas({
       event.preventDefault();
       const zoomWithWheel = settings.zoomCanvasWithScroll && !event.shiftKey;
       if (event.ctrlKey || event.metaKey || zoomWithWheel) {
-        const rect = container.getBoundingClientRect();
+        const rect = canvasGeometryRef.current.bounds;
         const displayScale = getCanvasDisplayScale(container);
         const cursorX = (event.clientX - rect.left) / displayScale;
         const cursorY = (event.clientY - rect.top) / displayScale;
@@ -985,15 +1043,58 @@ export function NodeCanvas({
         });
       } else if (event.shiftKey) {
         const displayScale = getCanvasDisplayScale(container);
-        setPan((current) => ({ x: current.x - event.deltaY / displayScale, y: current.y }));
+        wheelPanDeltaRef.current.x += event.deltaY / displayScale;
+        if (!wheelPanFrameRef.current) wheelPanFrameRef.current = window.requestAnimationFrame(() => {
+          wheelPanFrameRef.current = 0;
+          const delta = wheelPanDeltaRef.current;
+          wheelPanDeltaRef.current = { x: 0, y: 0 };
+          setPan((current) => ({ x: current.x - delta.x, y: current.y - delta.y }));
+          setIsWheelPanning(true);
+        });
+        window.clearTimeout(wheelPanTimerRef.current);
+        wheelPanTimerRef.current = window.setTimeout(() => setIsWheelPanning(false), 140);
       } else {
         const displayScale = getCanvasDisplayScale(container);
-        setPan((current) => ({ x: current.x - event.deltaX / displayScale, y: current.y - event.deltaY / displayScale }));
+        wheelPanDeltaRef.current.x += event.deltaX / displayScale;
+        wheelPanDeltaRef.current.y += event.deltaY / displayScale;
+        if (!wheelPanFrameRef.current) wheelPanFrameRef.current = window.requestAnimationFrame(() => {
+          wheelPanFrameRef.current = 0;
+          const delta = wheelPanDeltaRef.current;
+          wheelPanDeltaRef.current = { x: 0, y: 0 };
+          setPan((current) => ({ x: current.x - delta.x, y: current.y - delta.y }));
+          setIsWheelPanning(true);
+        });
+        window.clearTimeout(wheelPanTimerRef.current);
+        wheelPanTimerRef.current = window.setTimeout(() => setIsWheelPanning(false), 140);
       }
     };
     container.addEventListener('wheel', onWheel, { passive: false });
-    return () => container.removeEventListener('wheel', onWheel);
+    return () => {
+      container.removeEventListener('wheel', onWheel);
+      window.clearTimeout(wheelPanTimerRef.current);
+      if (wheelPanFrameRef.current) window.cancelAnimationFrame(wheelPanFrameRef.current);
+      wheelPanFrameRef.current = 0;
+      wheelPanDeltaRef.current = { x: 0, y: 0 };
+      setIsWheelPanning(false);
+    };
   }, [settings.zoomCanvasWithScroll]);
+
+  useEffect(() => {
+    window.clearTimeout(panQualityTimerRef.current);
+    window.clearTimeout(panQualityRestoreTimerRef.current);
+    if (isPanning || isWheelPanning) {
+      setIsRestoringPanQuality(false);
+      return undefined;
+    }
+    panQualityTimerRef.current = window.setTimeout(() => {
+      setIsRestoringPanQuality(true);
+      panQualityRestoreTimerRef.current = window.setTimeout(() => setIsRestoringPanQuality(false), 240);
+    }, 70);
+    return () => {
+      window.clearTimeout(panQualityTimerRef.current);
+      window.clearTimeout(panQualityRestoreTimerRef.current);
+    };
+  }, [isPanning, isWheelPanning]);
 
   useEffect(() => {
     const validIds = selectedNodeIds.filter((id) => nodes.some((node) => node.id === id));
@@ -1058,6 +1159,15 @@ export function NodeCanvas({
       inputs = inputs.map(resolveInputPinColor);
       const execPin = inputs.find((pin) => pin.type === 'exec');
       if (!execPin) return { ...nextDefinition, inputs };
+      if (node.type === 'parallel') {
+        const connectedIds = nodeConnections.outgoing.map((wire) => wire.sourcePinId);
+        const highest = connectedIds.reduce((value, id) => Math.max(value, Number(id.match(/^branch_(\d+)_exec$/)?.[1] || (id === 'branch_a_exec' ? 1 : id === 'branch_b_exec' ? 2 : 0))), 2);
+        const outputs = [...(nextDefinition.outputs || [])];
+        for (let index = 3; index <= Math.min(16, highest + 1); index += 1) outputs.push({ id: `branch_${index}_exec`, label: `Branch ${index}`, type: 'exec' });
+        return { ...nextDefinition, inputs, outputs };
+      }
+      if (node.type === 'parallel_join') return { ...nextDefinition, inputs };
+      if (!(nextDefinition.outputs || []).some((pin) => pin.type === 'exec' && pin.id === 'exec')) return { ...nextDefinition, inputs };
       const baseId = execPin.id;
       const highestConnected = nodeConnections.incoming.reduce((highest, wire) => {
         if (wire.targetPinId === baseId) return Math.max(highest, 1);
@@ -1065,7 +1175,13 @@ export function NodeCanvas({
         return match ? Math.max(highest, Number(match[1])) : highest;
       }, 0);
       const count = Math.min(16, Math.max(1, highestConnected + 1));
-      return { ...nextDefinition, inputs: [...inputs, ...Array.from({ length: count - 1 }, (_, index) => ({ ...execPin, id: `${baseId}_${index + 2}`, label: `Exec ${index + 2}` }))] };
+      const dynamicPins = Array.from({ length: count - 1 }, (_, index) => ({ ...execPin, id: `${baseId}_${index + 2}`, label: `Exec ${index + 2}` }));
+      const outputs = [...(nextDefinition.outputs || [])];
+      for (const pin of [execPin, ...dynamicPins]) {
+        if (pin.id === baseId) continue;
+        if (!outputs.some((item) => item.id === pin.id)) outputs.push({ ...pin, label: pin.label, direction: undefined });
+      }
+      return { ...nextDefinition, inputs: [...inputs, ...dynamicPins], outputs };
     };
     const schemaPins = resolveDynamicNodePins(definition, node, nodeConnections.incident);
     if (node.type === 'utility_wire_extender') {
@@ -1261,7 +1377,7 @@ export function NodeCanvas({
       const node = nodes.find((item) => item.id === focusRequest.nodeId);
       const container = containerRef.current;
       if (!node || !container) return;
-      const bounds = container.getBoundingClientRect();
+      const bounds = canvasGeometryRef.current.bounds;
       const displayScale = getCanvasDisplayScale(container);
       const card = [...container.querySelectorAll('[data-node-card-id]')].find((item) => item.dataset.nodeCardId === node.id);
       const cardBounds = card?.getBoundingClientRect();
@@ -1296,26 +1412,52 @@ export function NodeCanvas({
 
   useLayoutEffect(() => {
     refreshWireLayout((revision) => revision + 1);
-  }, [nodes, connections, pan, zoom, nodeDefinitionsById, settings.uiScale]);
+    refreshSocketLayout((revision) => revision + 1);
+  }, [nodes, connections, nodeDefinitionsById, settings.uiScale]);
 
   useEffect(() => {
     const container = containerRef.current;
-    if (!container || typeof ResizeObserver === 'undefined') return undefined;
-    const observer = new ResizeObserver(() => refreshWireLayout((revision) => revision + 1));
-    observer.observe(container);
+    if (!container) return undefined;
+    const refreshCanvasGeometry = () => {
+      const bounds = container.getBoundingClientRect();
+      const sidebar = container.parentElement?.querySelector('.project-sidebar, .graph-library-panel, .plugin-store-sidebar, .bot-settings-sidebar, .graph-variables-sidebar');
+      const dock = document.querySelector('.control-dock');
+      const tools = container.querySelector('.canvas-tools');
+      canvasGeometryRef.current = {
+        bounds: { left: bounds.left, top: bounds.top, right: bounds.right, bottom: bounds.bottom, width: bounds.width, height: bounds.height },
+        scale: measureCanvasDisplayScale(container),
+        width: container.clientWidth,
+        height: container.clientHeight,
+        sidebar: sidebar?.getBoundingClientRect() || null,
+        dock: dock?.getBoundingClientRect() || null,
+        tools: tools?.getBoundingClientRect() || null
+      };
+      refreshWireLayout((revision) => revision + 1);
+    };
+    refreshCanvasGeometry();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(refreshCanvasGeometry);
+    observer?.observe(container);
     const appRoot = container.closest('.app-root');
-    if (appRoot) observer.observe(appRoot);
+    if (appRoot) observer?.observe(appRoot);
     const controlDock = document.querySelector('.control-dock');
-    if (controlDock) observer.observe(controlDock);
-    return () => observer.disconnect();
-  }, [nodes.length]);
+    if (controlDock) observer?.observe(controlDock);
+    const sidebar = container.parentElement?.querySelector('.project-sidebar, .graph-library-panel, .plugin-store-sidebar, .bot-settings-sidebar, .graph-variables-sidebar');
+    if (sidebar) observer?.observe(sidebar);
+    const tools = container.querySelector('.canvas-tools');
+    if (tools) observer?.observe(tools);
+    window.addEventListener('resize', refreshCanvasGeometry);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', refreshCanvasGeometry);
+    };
+  }, []);
 
   const showLibraryDragPreview = useCallback((payload, clientX, clientY) => {
     const container = containerRef.current;
     if (!container) return;
     const target = document.elementFromPoint(clientX, clientY);
     if (!target || !container.contains(target)) { setLibraryDragPreview(null); return; }
-    const bounds = container.getBoundingClientRect();
+    const bounds = canvasGeometryRef.current.bounds;
     const type = payload?.previewNode?.type || payload?.prefabNode?.type || payload?.nodeType || (payload?.type === 'graph-call' ? 'function_call' : payload?.type === 'embed-asset' ? 'build_embed' : payload?.type === 'components-v2-asset' ? 'build_components' : null);
     const definition = definitionsByType.get(type);
     if (!definition) { setLibraryDragPreview(null); return; }
@@ -1358,7 +1500,7 @@ export function NodeCanvas({
     const targetId = targetElement?.closest?.('[data-node-card-id]')?.getAttribute('data-node-card-id');
     const target = nodes.find((node) => node.id === targetId);
     if (!target) return false;
-    const allowedMessageTypes = new Set(['action_send_message', 'action_reply_interaction', 'action_edit_message', 'action_edit_components', 'action_edit_interaction_reply']);
+    const allowedMessageTypes = new Set(['action_send_message', 'action_reply_interaction', 'action_edit_message', 'action_edit_interaction_reply']);
     const layout = Array.isArray(payload?.componentsV2Layout) ? payload.componentsV2Layout : [];
     let reason = '';
     if (!layout.length) reason = 'This Components V2 asset is empty.';
@@ -1394,7 +1536,7 @@ export function NodeCanvas({
   const dropLibraryPayload = useCallback((payload, clientX, clientY, targetElement) => {
     const container = containerRef.current;
     if (!container || !targetElement || !container.contains(targetElement)) return;
-    const bounds = container.getBoundingClientRect();
+    const bounds = canvasGeometryRef.current.bounds;
     const displayScale = getCanvasDisplayScale(container);
     const position = { x: Math.round(((clientX - bounds.left) / displayScale - pan.x) / zoom), y: Math.round(((clientY - bounds.top) / displayScale - pan.y) / zoom) };
     if (payload?.type === 'components-v2-asset') applyComponentsV2AssetToTarget(payload, targetElement);
@@ -1424,11 +1566,23 @@ export function NodeCanvas({
   }, [desktopMode, dropLibraryPayload, showLibraryDragPreview]);
 
   const previousRemoteNodePositionsRef = useRef(new Map());
+  const remoteNodePositionCacheRef = useRef({ graphId: '', positions: new Map() });
   const remoteNodePositionById = useMemo(() => {
     const previous = previousRemoteNodePositionsRef.current;
+    const cache = remoteNodePositionCacheRef.current.graphId === graphId ? remoteNodePositionCacheRef.current.positions : new Map();
+    remoteNodePositionCacheRef.current = { graphId, positions: cache };
     const positions = new Map();
     for (const peer of remoteActions) if (Array.isArray(peer.action?.nodePositions)) {
       for (const position of peer.action.nodePositions) if (position && typeof position.id === 'string') positions.set(position.id, position);
+    }
+    const cachedAt = Date.now();
+    for (const [id, position] of positions) cache.set(id, { ...position, cachedAt });
+    const localPositions = new Map(nodes.map((node) => [node.id, node]));
+    for (const [id, entry] of cache) {
+      const node = localPositions.get(id);
+      const settled = node && Math.abs(node.x - entry.x) < 1 && Math.abs(node.y - entry.y) < 1;
+      if (!node || settled || cachedAt - Number(entry.cachedAt) > 15_000) { cache.delete(id); continue; }
+      if (!positions.has(id)) positions.set(id, { id, x: entry.x, y: entry.y });
     }
     const unchanged = previous.size === positions.size && [...positions].every(([id, position]) => {
       const oldPosition = previous.get(id);
@@ -1437,7 +1591,7 @@ export function NodeCanvas({
     if (unchanged) return previous;
     previousRemoteNodePositionsRef.current = positions;
     return positions;
-  }, [remoteActions]);
+  }, [graphId, nodes, remoteActions]);
 
   const localNodePositionById = useMemo(() => {
     if (!draggingNode?.historyStarted && !draggingNode?.deltaX && !draggingNode?.deltaY) return null;
@@ -1456,38 +1610,11 @@ export function NodeCanvas({
   }, [draggingNode, nodes]);
 
   const getSocketPosition = useCallback((nodeId, pinId, direction) => {
-    let cache = socketPositionCacheRef.current;
-    const renderVersion = canvasRenderVersionRef.current;
-    if (cache.renderVersion !== renderVersion) {
-      const positions = new Map();
-      const container = containerRef.current;
-      if (container) {
-        const cardBoundsById = new Map();
-        for (const row of container.querySelectorAll('.node-pin-row')) {
-          const { nodeId: rowNodeId, pinId: rowPinId, direction: rowDirection } = row.dataset;
-          const socket = row.querySelector('.pin-socket');
-          const card = row.closest('[data-node-card-id]');
-          if (!nodePositionById.has(rowNodeId) || !socket || !card) continue;
-          let cardBounds = cardBoundsById.get(rowNodeId);
-          if (!cardBounds) {
-            cardBounds = card.getBoundingClientRect();
-            cardBoundsById.set(rowNodeId, cardBounds);
-          }
-          const socketBounds = socket.getBoundingClientRect();
-          if (!cardBounds.width) continue;
-          const nodePosition = localNodePositionById?.get(rowNodeId) || remoteNodePositionById.get(rowNodeId) || nodePositionById.get(rowNodeId);
-          const scale = cardBounds.width / NODE_WIDTH;
-          positions.set(`${rowNodeId}\u0000${rowPinId}\u0000${rowDirection}`, {
-            x: nodePosition.x + (socketBounds.left + socketBounds.width / 2 - cardBounds.left) / scale,
-            y: nodePosition.y + (socketBounds.top + socketBounds.height / 2 - cardBounds.top) / scale
-          });
-        }
-      }
-      cache = { renderVersion, positions };
-      socketPositionCacheRef.current = cache;
+    const cachedPosition = socketPositionCacheRef.current.positions.get(`${nodeId}\u0000${pinId}\u0000${direction}`);
+    if (cachedPosition) {
+      const nodePosition = localNodePositionById?.get(nodeId) || remoteNodePositionById.get(nodeId) || nodePositionById.get(nodeId);
+      return { x: nodePosition.x + cachedPosition.x, y: nodePosition.y + cachedPosition.y };
     }
-    const cachedPosition = cache.positions.get(`${nodeId}\u0000${pinId}\u0000${direction}`);
-    if (cachedPosition) return cachedPosition;
     if (!nodePositionById.has(nodeId)) return { x: 0, y: 0 };
     const nodePosition = localNodePositionById?.get(nodeId) || remoteNodePositionById.get(nodeId) || nodePositionById.get(nodeId);
     const definition = nodeDefinitionsById.get(nodeId);
@@ -1497,7 +1624,7 @@ export function NodeCanvas({
       x: nodePosition.x + (direction === 'output' ? NODE_WIDTH : 0),
       y: nodePosition.y + 72 + index * 23
     };
-  }, [nodePositionById, nodeDefinitionsById, remoteNodePositionById, localNodePositionById]);
+  }, [nodeCardIdsToken, nodeDefinitionInputsToken, socketLayoutRevision, nodeBoundsRevision, nodePositionById, nodeDefinitionsById, remoteNodePositionById, localNodePositionById]);
 
   const pinFromRow = useCallback((row) => row ? ({
     nodeId: row.dataset.nodeId,
@@ -1722,7 +1849,7 @@ export function NodeCanvas({
   function pasteNodes(source = clipboardRef.current, requestedWorldOrigin = null) {
     if (!source) return;
     const fragment = Array.isArray(source.nodes) ? source : { nodes: [source], connections: [] };
-    const bounds = containerRef.current?.getBoundingClientRect();
+    const bounds = canvasGeometryRef.current.bounds;
     const pointer = pointerPositionRef.current;
     let pasteOrigin = requestedWorldOrigin;
     if (!pasteOrigin && bounds && pointer && pointer.x >= bounds.left && pointer.x <= bounds.right && pointer.y >= bounds.top && pointer.y <= bounds.bottom) {
@@ -1752,6 +1879,45 @@ export function NodeCanvas({
     onConnectionsChange?.([...connections, ...pastedConnections]);
     selectNodes(pastedNodes.map((node) => node.id), pastedNodes[pastedNodes.length - 1]?.id);
     return pastedNodes;
+  }
+
+  function startDragClone(drag) {
+    const ids = new Set(drag.nodeIds || [drag.id]);
+    const selected = nodes.filter((node) => ids.has(node.id));
+    if (!selected.length) return false;
+    const singleton = selected.find((node) => ['function_input', 'function_return'].includes(node.type));
+    if (singleton) {
+      shakeNode(singleton.id);
+      arcEvents.emit('toast:notify', { title: 'Function node cannot be cloned', message: `${getNodeDefinition(singleton)?.label || singleton.type} is limited to one per function graph.`, type: 'warning' });
+      setDraggingNode((current) => current ? { ...current, altKey: false } : current);
+      return false;
+    }
+    const stamp = Date.now();
+    const idMap = new Map(selected.map((node) => [node.id, `node_${stamp}_${Math.random().toString(36).slice(2, 8)}`]));
+    const clones = selected.map((node) => ({ ...structuredCloneSafe(node), id: idMap.get(node.id) }));
+    const cloneConnections = connections.filter((wire) => idMap.has(wire.sourceNodeId) && idMap.has(wire.targetNodeId)).map((wire) => ({
+      ...structuredCloneSafe(wire),
+      id: `wire_${stamp}_${Math.random().toString(36).slice(2, 8)}`,
+      sourceNodeId: idMap.get(wire.sourceNodeId),
+      targetNodeId: idMap.get(wire.targetNodeId)
+    }));
+    onNodesChange?.([...nodes, ...clones]);
+    if (cloneConnections.length) onConnectionsChange?.([...connections, ...cloneConnections]);
+    const cloneIds = clones.map((node) => node.id);
+    selectNodes(cloneIds, cloneIds[cloneIds.length - 1]);
+    setDraggingNode((current) => current ? {
+      ...current,
+      id: cloneIds[0],
+      nodeIds: cloneIds,
+      initialPositions: Object.fromEntries(clones.map((node) => [node.id, { x: node.x, y: node.y }])),
+      initialX: clones[0].x,
+      initialY: clones[0].y,
+      deltaX: 0,
+      deltaY: 0,
+      altKey: false,
+      cloned: true
+    } : current);
+    return true;
   }
 
   function duplicateNode(nodeId) {
@@ -1803,7 +1969,7 @@ export function NodeCanvas({
         const pointers = [...touchPointersRef.current.values()].slice(-2);
         const midpoint = { x: (pointers[0].x + pointers[1].x) / 2, y: (pointers[0].y + pointers[1].y) / 2 };
         const distance = Math.max(1, Math.hypot(pointers[0].x - pointers[1].x, pointers[0].y - pointers[1].y));
-        const bounds = containerRef.current?.getBoundingClientRect();
+        const bounds = canvasGeometryRef.current.bounds;
         const displayScale = getCanvasDisplayScale(containerRef.current);
         if (bounds) {
           const current = viewportRef.current;
@@ -1821,6 +1987,14 @@ export function NodeCanvas({
         selectionStartRef.current = null;
         setSelectionBox(null);
         for (const pointerId of touchPointersRef.current.keys()) containerRef.current?.setPointerCapture?.(pointerId);
+        return;
+      }
+      if (touchPointersRef.current.size === 1) {
+        event.preventDefault();
+        setIsPanning(true);
+        const displayScale = getCanvasDisplayScale(containerRef.current);
+        panStartRef.current = { x: event.clientX / displayScale - pan.x, y: event.clientY / displayScale - pan.y };
+        if (Number.isInteger(event.pointerId)) containerRef.current?.setPointerCapture?.(event.pointerId);
         return;
       }
     }
@@ -1864,7 +2038,7 @@ export function NodeCanvas({
       || Math.hypot(event.clientX - pending.x, event.clientY - pending.y) < 4) return false;
     pendingPinDragRef.current = null;
     pinDoubleClickRef.current = null;
-    const bounds = containerRef.current?.getBoundingClientRect();
+    const bounds = canvasGeometryRef.current.bounds;
     if (!bounds) return false;
     const displayScale = getCanvasDisplayScale(containerRef.current);
     const wire = {
@@ -1885,6 +2059,34 @@ export function NodeCanvas({
   const movePointer = (event) => {
     pointerPositionRef.current = { x: event.clientX, y: event.clientY };
     activatePendingPinDrag(event);
+    const touchNodeGesture = touchNodeGestureRef.current;
+    if (event.pointerType === 'touch' && touchNodeGesture?.pointerId === event.pointerId && touchNodeGesture.mode === 'pending' && !touchNodeGesture.started
+      && Math.hypot(event.clientX - touchNodeGesture.x, event.clientY - touchNodeGesture.y) > 10) {
+      window.clearTimeout(touchNodeGesture.timer);
+      touchNodeGesture.mode = 'dragging';
+      const node = nodes.find((item) => item.id === touchNodeGesture.nodeId);
+      if (!node || isLocked) return;
+      const downEvent = {
+        button: 0,
+        pointerId: event.pointerId,
+        pointerType: 'touch',
+        clientX: touchNodeGesture.x,
+        clientY: touchNodeGesture.y,
+        target: touchNodeGesture.target,
+        altKey: false,
+        ctrlKey: false,
+        metaKey: false,
+        shiftKey: false
+      };
+      beginNodeDrag(downEvent, node);
+      const displayScale = getCanvasDisplayScale(containerRef.current);
+      const deltaX = (event.clientX - touchNodeGesture.x) / displayScale / zoom;
+      const deltaY = (event.clientY - touchNodeGesture.y) / displayScale / zoom;
+      const nextX = snapToGrid ? Math.round((node.x + deltaX) / GRID_SIZE) * GRID_SIZE : node.x + deltaX;
+      const nextY = snapToGrid ? Math.round((node.y + deltaY) / GRID_SIZE) * GRID_SIZE : node.y + deltaY;
+      setDraggingNode((current) => current ? { ...current, deltaX: nextX - current.initialX, deltaY: nextY - current.initialY } : current);
+      return;
+    }
     if (textInputPopupOpen() && (isPanning || touchPinchRef.current)) {
       if (isPanning) setPan(viewportRef.current.pan);
       setIsPanning(false);
@@ -1899,7 +2101,7 @@ export function NodeCanvas({
         const pointers = [...touchPointersRef.current.values()].slice(-2);
         const midpoint = { x: (pointers[0].x + pointers[1].x) / 2, y: (pointers[0].y + pointers[1].y) / 2 };
         const distance = Math.max(1, Math.hypot(pointers[0].x - pointers[1].x, pointers[0].y - pointers[1].y));
-        const bounds = containerRef.current?.getBoundingClientRect();
+        const bounds = canvasGeometryRef.current.bounds;
         if (bounds) {
           event.preventDefault();
           const displayScale = getCanvasDisplayScale(containerRef.current);
@@ -1920,7 +2122,7 @@ export function NodeCanvas({
       rightPanOriginRef.current = null;
       return;
     }
-    const bounds = containerRef.current?.getBoundingClientRect();
+    const bounds = canvasGeometryRef.current.bounds;
     if (bounds) {
       const displayScale = getCanvasDisplayScale(containerRef.current);
       const currentViewport = viewportRef.current;
@@ -2019,6 +2221,7 @@ export function NodeCanvas({
       if (!draggingNode.historyStarted) {
         onHistoryGroupStart?.();
       }
+      if (!draggingNode.cloned && !isLocked && (draggingNode.altKey || altDownRef.current) && startDragClone(draggingNode)) return;
       let x = draggingNode.initialX + deltaX / zoom;
       let y = draggingNode.initialY + deltaY / zoom;
       if (snapToGrid) {
@@ -2043,7 +2246,7 @@ export function NodeCanvas({
       return;
     }
     if (connectingWire && containerRef.current) {
-      const rect = containerRef.current.getBoundingClientRect();
+      const rect = canvasGeometryRef.current.bounds;
       const displayScale = getCanvasDisplayScale(containerRef.current);
       const snapTarget = settings.magneticSnap === false ? null : findClosestPin(event.clientX, event.clientY, connectingWire);
       const currentPos = snapTarget
@@ -2073,7 +2276,7 @@ export function NodeCanvas({
       const pointer = pointerPositionRef.current;
       const container = containerRef.current;
       if (activeDrag && pointer && container && document.visibilityState !== 'hidden') {
-        const bounds = container.getBoundingClientRect();
+        const bounds = canvasGeometryRef.current.bounds;
         const edgeSize = 56;
         const speed = 760;
         const axisVelocity = (position, size) => {
@@ -2162,6 +2365,14 @@ export function NodeCanvas({
     const target = start.direction === 'input' ? start : end;
     const allowsExecFanIn = target.pinType === 'exec';
     const next = connections.filter((connection) => connection.id !== replacedConnectionId && (allowsExecFanIn || !(connection.targetNodeId === target.nodeId && connection.targetPinId === target.pinId)));
+    const duplicate = next.some((connection) => connection.sourceNodeId === source.nodeId
+      && connection.sourcePinId === source.pinId
+      && connection.targetNodeId === target.nodeId
+      && connection.targetPinId === target.pinId);
+    if (duplicate) {
+      if (next.length !== connections.length) onConnectionsChange?.(next);
+      return;
+    }
     next.push({
       id: `wire_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       sourceNodeId: source.nodeId,
@@ -2175,7 +2386,7 @@ export function NodeCanvas({
 
   const finishPointer = (event, activeWire = connectingWire) => {
     if (drawingArrow) {
-      const bounds = containerRef.current?.getBoundingClientRect();
+      const bounds = canvasGeometryRef.current.bounds;
       const scale = getCanvasDisplayScale(containerRef.current);
       const end = bounds ? {
         x: Math.round(((event.clientX - bounds.left) / scale - pan.x) / zoom),
@@ -2241,7 +2452,8 @@ export function NodeCanvas({
     let finalSelectedNoteIds = selectedNoteIds;
     let finalSelectedArrowIds = selectedArrowIds;
     const finishedDraggingNode = draggingNode;
-    const finishBounds = containerRef.current?.getBoundingClientRect();
+    if (finishedDraggingNode?.cloned) finalSelectedNodeIds = [...(finishedDraggingNode.nodeIds || [])];
+    const finishBounds = canvasGeometryRef.current.bounds;
     const finishScale = getCanvasDisplayScale(containerRef.current);
     const finishCursor = finishBounds ? {
       x: ((event.clientX - finishBounds.left) / finishScale - pan.x) / zoom,
@@ -2257,15 +2469,15 @@ export function NodeCanvas({
     const finalNodeMoveX = finishedDraggingNode ? finalNodeX - finishedDraggingNode.initialX : 0;
     const finalNodeMoveY = finishedDraggingNode ? finalNodeY - finishedDraggingNode.initialY : 0;
     const nodeMoveStarted = Boolean(finishedDraggingNode && (finishedDraggingNode.historyStarted || Math.hypot(finalNodeDelta.x * zoom, finalNodeDelta.y * zoom) >= 2));
-    const cloneOnDrop = Boolean(!isLocked && nodeMoveStarted && finishedDraggingNode && (event.altKey || altDownRef.current || finishedDraggingNode.altKey));
     const finalNodePositions = nodeMoveStarted ? (finishedDraggingNode.nodeIds || [finishedDraggingNode.id]).map((id) => {
       const initial = finishedDraggingNode.initialPositions?.[id] || nodes.find((item) => item.id === id) || { x: 0, y: 0 };
       return { id, x: Math.round(initial.x + finalNodeMoveX), y: Math.round(initial.y + finalNodeMoveY) };
     }) : undefined;
-    let finishedNodePositions = collaborationMotionSupported && !cloneOnDrop ? finalNodePositions : undefined;
-    if (nodeMoveStarted && finalNodePositions?.length && !cloneOnDrop) {
+    let finishedNodePositions = collaborationMotionSupported ? finalNodePositions : undefined;
+    if (nodeMoveStarted && finalNodePositions?.length) {
       const finalPositionsById = new Map(finalNodePositions.map((position) => [position.id, position]));
       onNodesChange?.(nodes.map((node) => finalPositionsById.has(node.id) ? { ...node, ...finalPositionsById.get(node.id) } : node));
+      onNodeMoveCommit?.(finalNodePositions);
     }
     const finalNoteDelta = draggingNote ? {
       x: Math.round((event.clientX - draggingNote.startX) / finishScale / zoom),
@@ -2278,9 +2490,9 @@ export function NodeCanvas({
       const initial = draggingNote.initialPositions[id] || { x: note.x, y: note.y };
       return { id, x: initial.x + finalNoteDelta.x, y: initial.y + finalNoteDelta.y };
     }).filter(Boolean) : undefined;
-    if (!cloneOnDrop && !isLocked && finishedDraggingNode && (event.altKey || altDownRef.current || finishedDraggingNode.altKey)) {
+    if (!isLocked && finishedDraggingNode) {
       const selectedIds = [...new Set(finishedDraggingNode.nodeIds || [finishedDraggingNode.id])];
-      const bounds = containerRef.current?.getBoundingClientRect();
+      const bounds = canvasGeometryRef.current.bounds;
       const displayScale = getCanvasDisplayScale(containerRef.current);
       const point = bounds ? {
         x: ((event.clientX - bounds.left) / displayScale - pan.x) / zoom,
@@ -2349,27 +2561,6 @@ export function NodeCanvas({
     if (isPanning) setPan(viewportRef.current.pan);
     setIsPanning(false);
     setDraggingNode(null);
-    if (cloneOnDrop) {
-      const selectedIds = [...new Set(finishedDraggingNode.nodeIds || [finishedDraggingNode.id])];
-      const singletonNode = nodes.find((node) => selectedIds.includes(node.id) && ['function_input', 'function_return'].includes(node.type));
-      if (singletonNode) {
-        shakeNode(singletonNode.id);
-        arcEvents.emit('toast:notify', { title: 'Function node cannot be cloned', message: `${getNodeDefinition(singletonNode)?.label || singletonNode.type} is limited to one per function graph.`, type: 'warning' });
-      } else {
-        copyNodes(selectedIds);
-        const cloneOrigin = {
-          x: Math.min(...finalNodePositions.map((position) => position.x)),
-          y: Math.min(...finalNodePositions.map((position) => position.y))
-        };
-        const clones = pasteNodes(undefined, cloneOrigin) || [];
-        if (clones.length) {
-          finalSelectedNodeIds = clones.map((node) => node.id);
-          finalSelectedNoteIds = [];
-          finalSelectedArrowIds = [];
-          finishedNodePositions = collaborationMotionSupported ? clones.map(({ id, x, y }) => ({ id, x, y })) : undefined;
-        }
-      }
-    }
     if (draggingNote) {
       if (noteMoveStarted) {
         if (!draggingNote.historyStarted) onHistoryGroupStart?.();
@@ -2410,6 +2601,46 @@ export function NodeCanvas({
     canvasInteractionActiveRef.current = false;
     movePointer(event);
     pendingPinDragRef.current = null;
+    const touchNodeGesture = touchNodeGestureRef.current;
+    if (event.pointerType === 'touch' && touchNodeGesture?.pointerId === event.pointerId) {
+      window.clearTimeout(touchNodeGesture.timer);
+      touchNodeGestureRef.current = null;
+      if (touchNodeGesture.mode === 'dragging') {
+        const node = nodes.find((item) => item.id === touchNodeGesture.nodeId);
+        if (node) {
+          const displayScale = getCanvasDisplayScale(containerRef.current);
+          const rawX = node.x + (event.clientX - touchNodeGesture.x) / displayScale / zoom;
+          const rawY = node.y + (event.clientY - touchNodeGesture.y) / displayScale / zoom;
+          const nextX = snapToGrid ? Math.round(rawX / GRID_SIZE) * GRID_SIZE : rawX;
+          const nextY = snapToGrid ? Math.round(rawY / GRID_SIZE) * GRID_SIZE : rawY;
+          const movingIds = selectedNodeIds.includes(node.id) ? selectedNodeIds : [node.id];
+          const deltaX = nextX - node.x;
+          const deltaY = nextY - node.y;
+          const finalPositions = movingIds.map((id) => {
+            const initial = nodes.find((item) => item.id === id);
+            return initial ? { id, x: Math.round(initial.x + deltaX), y: Math.round(initial.y + deltaY) } : null;
+          }).filter(Boolean);
+          onHistoryGroupStart?.();
+          const finalPositionsById = new Map(finalPositions.map((position) => [position.id, position]));
+          onNodesChange?.(nodes.map((item) => finalPositionsById.has(item.id) ? { ...item, ...finalPositionsById.get(item.id) } : item));
+          onHistoryGroupEnd?.();
+          selectNodes(movingIds, node.id);
+          onNodeMoveCommit?.(finalPositions);
+          onCollaborationAction?.({ kind: 'selection', selectedNodeIds: movingIds, nodePositions: collaborationMotionSupported ? finalPositions : undefined }, true);
+        }
+        setDraggingNode(null);
+        setDraggingNote(null);
+        selectionStartRef.current = null;
+        setSelectionBox(null);
+        canvasInteractionActiveRef.current = false;
+        autoPanFrameTimeRef.current = 0;
+        return;
+      }
+      if (!touchNodeGesture.started) {
+        selectNodes([touchNodeGesture.nodeId], touchNodeGesture.nodeId);
+        return;
+      }
+    }
     const wasPinching = event.pointerType === 'touch' && Boolean(touchPinchRef.current);
     if (event.pointerType === 'touch') touchPointersRef.current.delete(event.pointerId);
     if (wasPinching) {
@@ -2430,7 +2661,7 @@ export function NodeCanvas({
     if (event.button !== 0 || isLocked) return;
     event.stopPropagation();
     const position = getSocketPosition(nodeId, pinId, direction);
-    const bounds = containerRef.current.getBoundingClientRect();
+    const bounds = canvasGeometryRef.current.bounds;
     const displayScale = getCanvasDisplayScale(containerRef.current);
     const pointer = { x: ((event.clientX - bounds.left) / displayScale - pan.x) / zoom, y: ((event.clientY - bounds.top) / displayScale - pan.y) / zoom };
     setConnectingWire({ nodeId, pinId, direction, pinType, startPos: position, currentPos: pointer, snapTarget: null });
@@ -2449,7 +2680,7 @@ export function NodeCanvas({
       ? getNodeDefinition(node)?.outputs?.find((item) => item.id === pinId)
       : getNodeDefinition(node)?.inputs?.find((item) => item.id === pinId);
     if (!pin) return;
-    const bounds = containerRef.current.getBoundingClientRect();
+    const bounds = canvasGeometryRef.current.bounds;
     const displayScale = getCanvasDisplayScale(containerRef.current);
     const pointer = { x: ((event.clientX - bounds.left) / displayScale - pan.x) / zoom, y: ((event.clientY - bounds.top) / displayScale - pan.y) / zoom };
     setConnectingWire({ nodeId, pinId, direction, pinType: pin.type, startPos: getSocketPosition(nodeId, pinId, direction), currentPos: pointer, snapTarget: null, connectionId: moveExisting ? connection.id : null, originalConnection: moveExisting ? connection : null });
@@ -2469,10 +2700,33 @@ export function NodeCanvas({
   };
 
   const handlePinPointerDownCapture = (event) => {
+    if (event.pointerType === 'touch') {
+      const target = event.target instanceof Element ? event.target : null;
+      const card = target?.closest('[data-node-card-id]');
+      const excluded = target?.closest('button, input, textarea, select, [data-pin-id], .node-config, .canvas-tools, .canvas-breadcrumbs');
+      if (card && !excluded && !isLocked && event.button === 0) {
+        event.preventDefault();
+        event.stopPropagation();
+        const nodeId = card.dataset.nodeCardId;
+        const gesture = { nodeId, pointerId: event.pointerId, x: event.clientX, y: event.clientY, target, started: false, mode: 'pending' };
+        touchNodeGestureRef.current = gesture;
+        if (Number.isInteger(event.pointerId)) containerRef.current?.setPointerCapture?.(event.pointerId);
+        window.clearTimeout(gesture.timer);
+        gesture.timer = window.setTimeout(() => {
+          if (touchNodeGestureRef.current !== gesture) return;
+          gesture.started = true;
+          selectionStartRef.current = { x: gesture.x, y: gesture.y, additive: false };
+          setSelectionBox({ x1: gesture.x, y1: gesture.y, x2: gesture.x, y2: gesture.y });
+          setSelectedNoteIds([]);
+          setSelectedArrowIds([]);
+        }, 1000);
+        return;
+      }
+    }
     if (event.button === 0 && event.altKey && event.shiftKey && !canvasLocked
       && containerRef.current?.contains(event.target)
       && !(event.target instanceof Element && event.target.closest('.canvas-tools, .canvas-breadcrumbs, [data-arrow-control-id]'))) {
-      const bounds = containerRef.current.getBoundingClientRect();
+      const bounds = canvasGeometryRef.current.bounds;
       const displayScale = getCanvasDisplayScale(containerRef.current);
       const point = {
         x: Math.round(((event.clientX - bounds.left) / displayScale - pan.x) / zoom),
@@ -2551,7 +2805,7 @@ export function NodeCanvas({
           pinType: originalConnection.type || target.pinType
         }
       : target;
-    const bounds = containerRef.current.getBoundingClientRect();
+    const bounds = canvasGeometryRef.current.bounds;
     const displayScale = getCanvasDisplayScale(containerRef.current);
     const pointer = { x: ((event.clientX - bounds.left) / displayScale - pan.x) / zoom, y: ((event.clientY - bounds.top) / displayScale - pan.y) / zoom };
     const nextWire = {
@@ -2613,7 +2867,7 @@ export function NodeCanvas({
 
   const fitView = () => {
     if (textInputPopupOpen()) return;
-    const bounds = containerRef.current?.getBoundingClientRect();
+    const bounds = canvasGeometryRef.current.bounds;
     if (!bounds || !nodes.length) { setZoom(1); setPan({ x: 22, y: 18 }); return; }
     const displayScale = getCanvasDisplayScale(containerRef.current);
     const viewWidth = bounds.width / displayScale;
@@ -2629,7 +2883,7 @@ export function NodeCanvas({
   };
 
   const focusWorldPoint = useCallback((x, y) => {
-    const bounds = containerRef.current?.getBoundingClientRect();
+    const bounds = canvasGeometryRef.current.bounds;
     if (!bounds) return;
     const scale = getCanvasDisplayScale(containerRef.current);
     setPan({ x: bounds.width / scale / 2 - x * zoom, y: bounds.height / scale / 2 - y * zoom });
@@ -2814,7 +3068,7 @@ export function NodeCanvas({
       x: Math.max(8, event.clientX),
       y: Math.max(8, event.clientY),
       position: (() => {
-        const bounds = containerRef.current.getBoundingClientRect();
+        const bounds = canvasGeometryRef.current.bounds;
         const displayScale = getCanvasDisplayScale(containerRef.current);
         return { x: Math.round(((event.clientX - bounds.left) / displayScale - pan.x) / zoom), y: Math.round(((event.clientY - bounds.top) / displayScale - pan.y) / zoom) };
       })(),
@@ -2843,19 +3097,17 @@ export function NodeCanvas({
   };
 
   const gridSize = GRID_SIZE;
+  const gridPatternSize = gridSize * zoom * Math.max(1, Math.round(15 / (gridSize * zoom)));
+  const gridDotSize = Math.max(0.7, 1.2 * zoom);
   const inputConnectionByNodePin = connectionByNodePin.incoming;
   const tagGroupLayouts = useMemo(() => tagGroups.map((group) => {
     const members = nodes.filter((node) => (group.nodeIds || []).includes(node.id));
     const noteMembers = notes.filter((note) => (group.noteIds || []).includes(note.id));
     if (!members.length && !noteMembers.length) return null;
-    const cards = new Map(Array.from(containerRef.current?.querySelectorAll('[data-node-card-id]') || [], (card) => [card.dataset.nodeCardId, card]));
-    const scale = getCanvasDisplayScale(containerRef.current) * zoom;
     const measuredNodes = members.map((node) => {
-      const card = cards.get(node.id);
-      const rect = card?.getBoundingClientRect();
       const cachedSize = nodeWorldSizeCacheRef.current.sizes.get(node.id);
       const initialPosition = draggingNode && (draggingNode.altKey || altDownRef.current) ? draggingNode.initialPositions?.[node.id] : null;
-      return { x: initialPosition?.x ?? node.x, y: initialPosition?.y ?? node.y, width: rect?.width && scale ? rect.width / scale : cachedSize?.width || NODE_WIDTH, height: rect?.height && scale ? rect.height / scale : cachedSize?.height || estimateNodeCardHeight(node, getNodeDefinition(node)) };
+      return { x: initialPosition?.x ?? node.x, y: initialPosition?.y ?? node.y, width: cachedSize?.width || NODE_WIDTH, height: cachedSize?.height || estimateNodeCardHeight(node, getNodeDefinition(node)) };
     });
     const measured = measuredNodes.length ? measuredNodes : noteMembers.map((note) => ({ x: note.x, y: note.y, width: 224, height: 156 }));
     const side = 28;
@@ -2897,7 +3149,7 @@ export function NodeCanvas({
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
-    const bounds = container.getBoundingClientRect();
+    const bounds = canvasGeometryRef.current.bounds;
     const displayScale = getCanvasDisplayScale(container);
     const centerX = (bounds.width / displayScale / 2 - pan.x) / zoom;
     const centerY = (bounds.height / displayScale / 2 - pan.y) / zoom;
@@ -3008,6 +3260,14 @@ const previewOutput = (node, outputId, seen = new Set()) => {
 };
 
   const activeCanvasNodeId = containerRef.current?.ownerDocument?.activeElement?.closest?.('[data-node-card-id]')?.dataset.nodeCardId || '';
+  const nodeSpatialIndex = useMemo(() => createCanvasSpatialIndex(nodes, (node) => {
+    return {
+      left: node.x,
+      top: node.y,
+      right: node.x + NODE_WIDTH,
+      bottom: node.y + Math.max(SPATIAL_NODE_HEIGHT, estimateCulledNodeHeight(node, nodeDefinitionsById.get(node.id)))
+    };
+  }), [nodes, nodeDefinitionInputsToken, nodeDefinitionsById]);
   const visibleCanvasNodeIds = useMemo(() => {
     if (nodes.length <= LARGE_GRAPH_NODE_LIMIT) {
       visibleNodeIdsCacheRef.current = null;
@@ -3018,9 +3278,8 @@ const previewOutput = (node, outputId, seen = new Set()) => {
       visibleNodeIdsCacheRef.current = null;
       return null;
     }
-    const bounds = container?.getBoundingClientRect();
-    const scaleElement = container || (typeof document !== 'undefined' ? document.querySelector('.app-root') : null);
-    const displayScale = getCanvasDisplayScale(scaleElement);
+    const bounds = canvasGeometryRef.current.bounds;
+    const displayScale = getCanvasDisplayScale();
     const viewWidth = (bounds?.width || window.innerWidth) / displayScale;
     const viewHeight = (bounds?.height || window.innerHeight) / displayScale;
     if (!(viewWidth > 0 && viewHeight > 0 && zoom > 0)) {
@@ -3060,15 +3319,19 @@ const previewOutput = (node, outputId, seen = new Set()) => {
         if (typeof action.snapTarget?.nodeId === 'string') pinnedIds.add(action.snapTarget.nodeId);
       }
     }
-    const sizes = nodeWorldSizeCacheRef.current.sizes;
     const next = new Set();
-    for (const node of nodes) {
+    const nearbyNodes = new Set(nodeSpatialIndex.query({ left, top, right, bottom }));
+    for (const id of pinnedIds) {
+      const node = nodeById.get(id);
+      if (node) nearbyNodes.add(node);
+    }
+    for (const node of nearbyNodes) {
       if (pinnedIds.has(node.id)) {
         next.add(node.id);
         continue;
       }
       const position = localNodePositionById?.get(node.id) || remoteNodePositionById.get(node.id) || node;
-      const size = sizes.get(node.id);
+      const size = nodeWorldSizeCacheRef.current.sizes.get(node.id);
       const width = size?.width || NODE_WIDTH;
       const height = Math.max(size?.height || 0, estimateCulledNodeHeight(node, nodeDefinitionsById.get(node.id)));
       if (position.x + width >= left && position.x <= right && position.y + height >= top && position.y <= bottom) next.add(node.id);
@@ -3077,7 +3340,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
     if (previous && previous.size === next.size && [...next].every((id) => previous.has(id))) return previous;
     visibleNodeIdsCacheRef.current = next;
     return next;
-  }, [nodes, nodeDefinitionsById, remoteNodePositionById, localNodePositionById, remoteActions, selectedNodeIds, pan, zoom, draggingNode?.id, draggingNode?.nodeIds, connectingWire?.nodeId, connectingWire?.snapTarget?.nodeId, connectingWire?.originalConnection, contextMenu?.nodeId, contextMenu?.nodeIds, activeCanvasNodeId, focusRequest?.requestId, focusRequest?.nodeId, wireLayoutRevision, nodeBoundsRevision, graphId, projectId]);
+  }, [nodes, nodeById, nodeSpatialIndex, nodeDefinitionsById, remoteNodePositionById, localNodePositionById, remoteActions, selectedNodeIds, pan, zoom, draggingNode?.id, draggingNode?.nodeIds, connectingWire?.nodeId, connectingWire?.snapTarget?.nodeId, connectingWire?.originalConnection, contextMenu?.nodeId, contextMenu?.nodeIds, activeCanvasNodeId, focusRequest?.requestId, focusRequest?.nodeId, wireLayoutRevision, nodeBoundsRevision, graphId, projectId]);
 
   const previousTemplatePreviewsRef = useRef(new Map());
   const templatePreviewValuesByNode = useMemo(() => {
@@ -3103,27 +3366,90 @@ const previewOutput = (node, outputId, seen = new Set()) => {
   const selectedNodeIdSet = useMemo(() => new Set(selectedNodeIds), [selectedNodeIds]);
   const activePulseNodeIdSet = useMemo(() => new Set(activePulseNodeIds), [activePulseNodeIds]);
 
-  useLayoutEffect(() => {
-    measureVisibleNodeCards();
-  }, [visibleCanvasNodeIds, zoom, nodeDefinitionInputsToken, nodeDefinitionsById, graphId, projectId, measureVisibleNodeCards]);
-
-  useLayoutEffect(() => {
+  useEffect(() => {
     refreshWireLayout((revision) => revision + 1);
   }, [visibleCanvasNodeIds]);
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container || typeof ResizeObserver === 'undefined') return undefined;
-    const observer = new ResizeObserver(() => {
-      measureVisibleNodeCards();
-      refreshWireLayout((revision) => revision + 1);
+    const observer = new ResizeObserver((entries) => {
+      const affectedCards = new Set();
+      for (const entry of entries) {
+        const target = entry.target;
+        const card = target.matches('[data-node-card-id]') ? target : target.closest('[data-node-card-id]');
+        if (card) affectedCards.add(card);
+      }
+      const sizes = nodeWorldSizeCacheRef.current.sizes;
+      const measurementScale = getCanvasDisplayScale() * zoomRef.current;
+      let nodeBoundsChanged = false;
+      let socketPositionsChanged = false;
+      const positions = socketPositionCacheRef.current.positions;
+      for (const card of affectedCards) {
+        const nodeId = card.dataset.nodeCardId;
+        if (!nodeByIdRef.current.has(nodeId)) continue;
+        const cardBounds = card.getBoundingClientRect();
+        if (!(cardBounds.width > 0 && cardBounds.height > 0)) continue;
+        const nextSize = {
+          width: Math.round(cardBounds.width / measurementScale * 100) / 100,
+          height: Math.round(cardBounds.height / measurementScale * 100) / 100
+        };
+        const previousSize = sizes.get(nodeId);
+        if (!previousSize || Math.abs(previousSize.width - nextSize.width) > 0.5 || Math.abs(previousSize.height - nextSize.height) > 0.5) {
+          sizes.set(nodeId, nextSize);
+          nodeBoundsChanged = true;
+        }
+        for (const row of card.querySelectorAll('.node-pin-row')) {
+          const { nodeId: rowNodeId, pinId, direction } = row.dataset;
+          const socket = row.querySelector('.pin-socket');
+          if (!rowNodeId || !pinId || !direction || !socket) continue;
+          const socketBounds = socket.getBoundingClientRect();
+          const scale = cardBounds.width / NODE_WIDTH;
+          positions.set(`${rowNodeId}\u0000${pinId}\u0000${direction}`, {
+            x: (socketBounds.left + socketBounds.width / 2 - cardBounds.left) / scale,
+            y: (socketBounds.top + socketBounds.height / 2 - cardBounds.top) / scale
+          });
+          socketPositionsChanged = true;
+        }
+      }
+      if (nodeBoundsChanged) refreshNodeBounds((revision) => revision + 1);
+      if (socketPositionsChanged) refreshSocketLayout((revision) => revision + 1);
+      if (nodeBoundsChanged || socketPositionsChanged) refreshWireLayout((revision) => revision + 1);
     });
-    const nodeIds = new Set(nodes.map((node) => node.id));
-    container.querySelectorAll('[data-node-card-id]').forEach((card) => {
-      if (nodeIds.has(card.dataset.nodeCardId)) observer.observe(card);
+    const observedElements = new Set();
+    const observeTree = (node) => {
+      if (!(node instanceof Element)) return;
+      if (node.matches('[data-node-card-id], .node-pin-row') && !observedElements.has(node)) {
+        observedElements.add(node);
+        observer.observe(node);
+      }
+      node.querySelectorAll('[data-node-card-id], .node-pin-row').forEach((element) => {
+        if (observedElements.has(element)) return;
+        observedElements.add(element);
+        observer.observe(element);
+      });
+    };
+    const unobserveTree = (node) => {
+      if (!(node instanceof Element)) return;
+      if (node.matches('[data-node-card-id], .node-pin-row') && observedElements.delete(node)) observer.unobserve(node);
+      node.querySelectorAll('[data-node-card-id], .node-pin-row').forEach((element) => {
+        if (observedElements.delete(element)) observer.unobserve(element);
+      });
+    };
+    observeTree(container);
+    const mutations = typeof MutationObserver === 'undefined' ? null : new MutationObserver((records) => {
+      for (const record of records) {
+        record.addedNodes.forEach(observeTree);
+        record.removedNodes.forEach(unobserveTree);
+      }
     });
-    return () => observer.disconnect();
-  }, [visibleCanvasNodeIds, nodeCardIdsToken, measureVisibleNodeCards]);
+    mutations?.observe(container, { childList: true, subtree: true });
+    return () => {
+      mutations?.disconnect();
+      observer.disconnect();
+      observedElements.clear();
+    };
+  }, []);
 
   const remoteNodeVisualStateById = useMemo(() => {
     const states = new Map();
@@ -3200,6 +3526,9 @@ const previewOutput = (node, outputId, seen = new Set()) => {
     const targetType = targetPin?.colorType || targetPin?.type;
     const pinColor = PinColors[sourceType || connection.type || targetType] || '#9299a6';
     const active = activePulseNodeSet.has(connection.sourceNodeId) && activePulseNodeSet.has(connection.targetNodeId);
+    const simulationKey = `${connection.sourceNodeId}:${connection.sourcePinId}->${connection.targetNodeId}:${connection.targetPinId}`;
+    const onSimulationPath = simulationWireKeys.has(simulationKey);
+    const isCurrentSimulationWire = latestSimulationStep?.incomingWire && `${latestSimulationStep.incomingWire.sourceNodeId}:${latestSimulationStep.incomingWire.sourcePinId}->${latestSimulationStep.incomingWire.targetNodeId}:${latestSimulationStep.incomingWire.targetPinId}` === simulationKey;
     const fanoutKey = `${connection.sourceNodeId}:${connection.sourcePinId}`;
     const fanout = wireFanout.counts.get(fanoutKey) || 1;
     const fanoutOrder = wireFanout.orders.get(connection.id) || 0;
@@ -3207,7 +3536,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
     const shade = fanout > 1 ? (fanoutOrder % 2 === 0 ? -12 : 5) : denseWiring ? denseShades[(wireFanout.indices.get(connection.id) || 0) % denseShades.length] : 0;
     const color = reduceWireColorNoise && !active && !isSelectedNodeWire ? '#737d8b' : shade ? shadeWireColor(pinColor, shade) : pinColor;
     return (
-      <g key={connection.id} className={`wire-group ${fanout > 1 ? 'is-fanout' : ''} ${denseWiring ? 'is-dense' : ''} ${reduceWireColorNoise && !active && !isSelectedNodeWire ? 'is-muted' : ''} ${isLocked ? 'is-locked' : ''} ${isSelectedNodeWire ? 'is-connected-selected' : ''} ${isPrimarySelectedWire ? 'is-primary-selection' : ''}`} data-wire-id={connection.id} style={{ '--wire-opacity': fanout > 1 ? 0.66 : denseWiring ? 0.68 : 0.84 }}>
+      <g key={connection.id} className={`wire-group ${fanout > 1 ? 'is-fanout' : ''} ${denseWiring ? 'is-dense' : ''} ${reduceWireColorNoise && !active && !isSelectedNodeWire ? 'is-muted' : ''} ${isLocked ? 'is-locked' : ''} ${isSelectedNodeWire ? 'is-connected-selected' : ''} ${isPrimarySelectedWire ? 'is-primary-selection' : ''} ${onSimulationPath ? 'is-simulation-path' : ''} ${isCurrentSimulationWire ? 'is-simulation-current' : ''}`} data-wire-id={connection.id} style={{ '--wire-opacity': fanout > 1 ? 0.66 : denseWiring ? 0.68 : 0.84 }}>
         <path d={path} className="wire-hit-area" data-tooltip={shiftHeld ? outputPreview : undefined} aria-label={settings.doubleClickWireToCut ? 'Single-click to reroute; double-click to disconnect' : 'Single-click to disconnect; double-click to reroute'} onClick={(event) => {
           if (settings.doubleClickWireToCut) {
             startWireFromConnection(event, connection, 'output');
@@ -3229,17 +3558,37 @@ const previewOutput = (node, outputId, seen = new Set()) => {
             startWireFromConnection(event, connection, 'output');
           }
         }} />
-        {!wireCutAnimations.some((item) => item.id === connection.id) && <path d={path} className={`wire-visible ${active && wirePulse ? 'wire-visible-active' : ''} ${isSelectedNodeWire ? 'wire-connected-selected' : ''}`} style={{ '--wire-color': color }} />}
+        {!wireCutAnimations.some((item) => item.id === connection.id) && <path d={path} className={`wire-visible ${active && wirePulse ? 'wire-visible-active' : ''} ${isSelectedNodeWire ? 'wire-connected-selected' : ''}`} data-tooltip={onSimulationPath ? `Simulation path${isCurrentSimulationWire ? ' · current wire' : ''}${latestSimulationStep?.sincePreviousNodeMs != null && isCurrentSimulationWire ? ` · ${latestSimulationStep.sincePreviousNodeMs.toFixed(2)} ms since previous node` : ''}` : undefined} style={{ '--wire-color': color }} />}
       </g>
     );
   };
 
-  const canvasWidth = containerRef.current?.clientWidth || 0;
-  const canvasHeight = containerRef.current?.clientHeight || 0;
-  const canvasBounds = containerRef.current?.getBoundingClientRect();
-  const canvasDisplayScale = getCanvasDisplayScale(containerRef.current);
+  const canvasGeometry = canvasGeometryRef.current;
+  const canvasWidth = canvasGeometry.width;
+  const canvasHeight = canvasGeometry.height;
+  const canvasBounds = canvasGeometry.bounds;
+  const canvasDisplayScale = canvasGeometry.scale || 1;
   const wireViewportWidth = canvasWidth || (typeof window !== 'undefined' ? window.innerWidth / canvasDisplayScale : 0);
   const wireViewportHeight = canvasHeight || (typeof window !== 'undefined' ? window.innerHeight / canvasDisplayScale : 0);
+  const wireSpatialIndex = useMemo(() => {
+    if (connections.length <= LARGE_GRAPH_WIRE_LIMIT) return null;
+    return createCanvasSpatialIndex(connections, (connection) => {
+      const source = nodeById.get(connection.sourceNodeId);
+      const target = nodeById.get(connection.targetNodeId);
+      if (!source || !target) return null;
+      const sourceHeight = Math.max(SPATIAL_NODE_HEIGHT, estimateCulledNodeHeight(source, nodeDefinitionsById.get(source.id)));
+      const targetHeight = Math.max(SPATIAL_NODE_HEIGHT, estimateCulledNodeHeight(target, nodeDefinitionsById.get(target.id)));
+      const startX = source.x + NODE_WIDTH;
+      const endX = target.x;
+      const curve = wireStyle === 'straight' ? 0 : Math.max(Math.abs(endX - startX) * 0.5, 52);
+      return {
+        left: Math.min(startX, endX, startX + curve, endX - curve) - 24,
+        top: Math.min(source.y, target.y) - 24,
+        right: Math.max(startX, endX, startX + curve, endX - curve) + 24,
+        bottom: Math.max(source.y + sourceHeight, target.y + targetHeight) + 24
+      };
+    });
+  }, [connections, nodeById, nodeDefinitionInputsToken, nodeDefinitionsById, wireStyle]);
   const visibleWireIds = useMemo(() => {
     if (connections.length <= LARGE_GRAPH_WIRE_LIMIT || !(wireViewportWidth > 0 && wireViewportHeight > 0 && zoom > 0)) {
       visibleWireIdsCacheRef.current = null;
@@ -3255,7 +3604,20 @@ const previewOutput = (node, outputId, seen = new Set()) => {
     };
     const padding = 16 / zoom;
     const next = new Set();
-    for (const connection of connections) {
+    const candidates = new Set(wireSpatialIndex?.query(bounds) || connections);
+    const dynamicNodeIds = new Set([
+      ...selectedNodeIds,
+      ...(localNodePositionById?.keys() || []),
+      ...remoteNodePositionById.keys(),
+      connectingWire?.nodeId,
+      connectingWire?.snapTarget?.nodeId,
+      connectingWire?.originalConnection?.sourceNodeId,
+      connectingWire?.originalConnection?.targetNodeId
+    ].filter(Boolean));
+    for (const nodeId of dynamicNodeIds) {
+      for (const connection of nodeConnectionsById.get(nodeId)?.incident || EMPTY_NODE_CONNECTIONS.incident) candidates.add(connection);
+    }
+    for (const connection of candidates) {
       const start = getSocketPosition(connection.sourceNodeId, connection.sourcePinId, 'output');
       const end = getSocketPosition(connection.targetNodeId, connection.targetPinId, 'input');
       let left = Math.min(start.x, end.x);
@@ -3274,7 +3636,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
     if (previous && previous.size === next.size && [...next].every((id) => previous.has(id))) return previous;
     visibleWireIdsCacheRef.current = next;
     return next;
-  }, [connections, getSocketPosition, pan, zoom, wireStyle, wireViewportWidth, wireViewportHeight]);
+  }, [connections, wireSpatialIndex, nodeConnectionsById, selectedNodeIds, localNodePositionById, remoteNodePositionById, connectingWire, getSocketPosition, pan, zoom, wireStyle, wireViewportWidth, wireViewportHeight]);
   const visibleBaseConnections = useMemo(() => visibleWireIds ? baseConnections.filter((wire) => visibleWireIds.has(wire.id)) : baseConnections, [baseConnections, visibleWireIds]);
   const visibleElevatedConnections = useMemo(() => visibleWireIds ? elevatedConnections.filter((wire) => visibleWireIds.has(wire.id)) : elevatedConnections, [elevatedConnections, visibleWireIds]);
   const denseViewportWorkload = useMemo(() => {
@@ -3341,14 +3703,13 @@ const previewOutput = (node, outputId, seen = new Set()) => {
     visibleWireCount: denseViewportWorkload.wireCount
   });
   const visibleCanvas = { left: 0, top: 0, right: canvasWidth, bottom: canvasHeight };
-  const sidebar = containerRef.current?.parentElement?.querySelector('.project-sidebar, .graph-library-panel, .plugin-store-sidebar, .bot-settings-sidebar, .graph-variables-sidebar');
-  if (sidebar && canvasBounds) {
-    const sidebarBounds = sidebar.getBoundingClientRect();
+  if (canvasGeometry.sidebar && canvasBounds) {
+    const sidebarBounds = canvasGeometry.sidebar;
     if (sidebarBounds.left <= canvasBounds.left + 1 && sidebarBounds.right > canvasBounds.left) {
       visibleCanvas.left = Math.min(canvasWidth, Math.max(visibleCanvas.left, (sidebarBounds.right - canvasBounds.left) / canvasDisplayScale));
     }
   }
-  const dockBounds = document.querySelector('.control-dock')?.getBoundingClientRect();
+  const dockBounds = canvasGeometry.dock;
   if (dockBounds && canvasBounds && dockBounds.left < canvasBounds.right && dockBounds.right > canvasBounds.left && dockBounds.top < canvasBounds.bottom) {
     visibleCanvas.bottom = Math.max(0, Math.min(canvasHeight, (dockBounds.top - canvasBounds.top) / canvasDisplayScale));
   }
@@ -3357,7 +3718,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
   const safeRight = Math.max(safeLeft, visibleCanvas.right - safeMargin);
   const safeTop = Math.min(visibleCanvas.bottom, visibleCanvas.top + safeMargin);
   const safeBottom = Math.max(safeTop, visibleCanvas.bottom - safeMargin);
-  const canvasToolsBounds = document.querySelector('.canvas-tools')?.getBoundingClientRect();
+  const canvasToolsBounds = canvasGeometry.tools;
   const canvasToolsObstacle = canvasToolsBounds && canvasBounds ? {
     left: (canvasToolsBounds.left - canvasBounds.left) / canvasDisplayScale - 10,
     top: (canvasToolsBounds.top - canvasBounds.top) / canvasDisplayScale - 10,
@@ -3407,7 +3768,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
       ref={containerRef}
       className={`node-canvas ${isPanning ? 'is-panning' : ''} ${draggingNode ? 'is-dragging-node' : ''} ${connectingWire ? 'is-connecting-wire' : ''} ${connectingWire?.clickToConnect ? 'is-click-connecting' : ''} ${graphChatComposerOpen ? 'has-graph-chat-composer' : ''}`}
       data-performance={performanceReduced ? 'reduced' : 'normal'}
-      data-canvas-quality={effectiveCanvasQuality}
+      data-canvas-quality={isPanning || isWheelPanning ? 'fast' : isRestoringPanQuality ? 'optimal' : effectiveCanvasQuality}
       data-pin-descriptions={settings.pinDescriptionsAlways || shiftHeld ? 'true' : undefined}
       onPointerDownCapture={handlePinPointerDownCapture}
       onPointerDown={startPan}
@@ -3418,7 +3779,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
           return;
         }
         if (event.detail !== 3 || event.target.closest?.('button, input, textarea, select, [data-node-card-id], [data-note-id], [data-wire-id], [data-arrow-id], [data-arrow-control-id]')) return;
-        const bounds = containerRef.current?.getBoundingClientRect();
+        const bounds = canvasGeometryRef.current.bounds;
         if (!bounds) return;
         const displayScale = getCanvasDisplayScale(containerRef.current);
         const point = { x: ((event.clientX - bounds.left) / displayScale - pan.x) / zoom, y: ((event.clientY - bounds.top) / displayScale - pan.y) / zoom };
@@ -3433,6 +3794,8 @@ const previewOutput = (node, outputId, seen = new Set()) => {
         if (pointerMoveFrameRef.current) window.cancelAnimationFrame(pointerMoveFrameRef.current);
         pointerMoveFrameRef.current = 0; pendingPointerMoveRef.current = null; canvasInteractionActiveRef.current = false;
         pendingPinDragRef.current = null;
+        window.clearTimeout(touchNodeGestureRef.current?.timer);
+        touchNodeGestureRef.current = null;
         touchPointersRef.current.clear(); touchPinchRef.current = null;
         if (isPanning) setPan(viewportRef.current.pan);
         setIsPanning(false);
@@ -3478,7 +3841,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
         if (!nodePayload && !graphPayload && !embedPayload && !componentsV2Payload) return;
         event.preventDefault();
         event.stopPropagation();
-        const bounds = containerRef.current.getBoundingClientRect();
+        const bounds = canvasGeometryRef.current.bounds;
         const displayScale = getCanvasDisplayScale(containerRef.current);
         try {
           const position = { x: Math.round(((event.clientX - bounds.left) / displayScale - pan.x) / zoom), y: Math.round(((event.clientY - bounds.top) / displayScale - pan.y) / zoom) };
@@ -3497,8 +3860,12 @@ const previewOutput = (node, outputId, seen = new Set()) => {
           }
         } catch {}
       }}
-      style={{ '--grid-size': `${gridSize}px`, '--grid-x': `${viewportRef.current.pan.x}px`, '--grid-y': `${viewportRef.current.pan.y}px` }}
+      style={{ '--grid-size': `${gridPatternSize}px`, '--grid-dot-size': `${gridDotSize}px`, '--grid-x': `${viewportRef.current.pan.x - gridPatternSize / 2}px`, '--grid-y': `${viewportRef.current.pan.y - gridPatternSize / 2}px` }}
     >
+      {selectedNodeIds.length > 1 && <div className="canvas-mobile-selection-count" role="status" aria-live="polite">
+        <span>{selectedNodeIds.length} nodes selected</span>
+        <button type="button" aria-label="Clear node selection" onPointerDown={(event) => event.stopPropagation()} onClick={() => selectNodes([])}><X size={15} /></button>
+      </div>}
       <div className={`canvas-surface ${settings.showGrid === false ? 'is-grid-hidden' : ''}`} aria-hidden="true" />
       {connectingWire?.clickToConnect && <div className="wire-connect-hint">Click or tap a matching socket to connect <kbd>Esc</kbd></div>}
 
@@ -3599,8 +3966,9 @@ const previewOutput = (node, outputId, seen = new Set()) => {
                 loadFailed={nodeLoadFailed}
                 authToken={authToken}
                 connectedInputIds={connectedInputIds.get(node.id) || EMPTY_PIN_SET}
-                componentsV2SourceConnected={Boolean(connectionByNodePin.incoming.get(node.id)?.get('components') && nodeById.get(connectionByNodePin.incoming.get(node.id).get('components').sourceNodeId)?.type === 'build_components')}
+                componentsV2SourceConnected={Boolean(connectionByNodePin.incoming.get(node.id)?.get('components') && ['build_components', 'modify_components_v2'].includes(nodeById.get(connectionByNodePin.incoming.get(node.id).get('components').sourceNodeId)?.type))}
                 graphVariables={canvasGraphVariables}
+                eventTemplatePaths={eventTemplatePaths}
                 templatePreviewValues={templatePreviewValues}
                 modalFieldOptions={modalFieldOptions}
                 appEmojis={appEmojis}
@@ -3608,6 +3976,8 @@ const previewOutput = (node, outputId, seen = new Set()) => {
                 snappedPin={connectingWire?.snapTarget?.nodeId === node.id ? connectingWire.snapTarget : null}
                 selected={isSelected}
                 illuminated={activePulseNodeIdSet.has(node.id)}
+                simulationMetric={simulationMetricsByNode.get(node.id)}
+                simulationActive={Boolean(simulationOverlay?.running && latestSimulationStep?.nodeId === node.id)}
                 isLocked={isLocked}
                 findOptions={canvasFindOpen && canvasFindQuery.trim() ? {
                   query: canvasFindQuery,
@@ -3773,7 +4143,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
       </div>
 
       {selectionBox && (() => {
-        const bounds = containerRef.current?.getBoundingClientRect();
+        const bounds = canvasGeometryRef.current.bounds;
         if (!bounds) return null;
         const displayScale = getCanvasDisplayScale(containerRef.current);
         return <div className="canvas-selection-box" aria-hidden="true" style={{ left: (Math.min(selectionBox.x1, selectionBox.x2) - bounds.left) / displayScale, top: (Math.min(selectionBox.y1, selectionBox.y2) - bounds.top) / displayScale, width: Math.abs(selectionBox.x2 - selectionBox.x1) / displayScale, height: Math.abs(selectionBox.y2 - selectionBox.y1) / displayScale }} />;
@@ -3811,7 +4181,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
           <button type="button" className="canvas-find-button canvas-find-close" onClick={() => setCanvasFindOpen(false)} title="Close find (Esc)" aria-label="Close canvas find" tabIndex={canvasFindOpen ? 0 : -1}><X size={14} /></button>
         </div>
       </div>
-      {!!(tagGroupLayouts.length || notes.length) && <aside className="canvas-note-timeline" aria-label="Graph sections and notes">
+      {!!(tagGroupLayouts.length || notes.length) && <aside className={`canvas-note-timeline${simulationOverlay ? ' has-simulation' : ''}`} aria-label="Graph sections and notes">
         <header>Sections &amp; notes</header>
         <div className="canvas-timeline-list">
           {tagGroupLayouts.map((group) => {
@@ -3828,6 +4198,13 @@ const previewOutput = (node, outputId, seen = new Set()) => {
         <span><i />Paused · {debugStep.label || 'Node'}</span>
         <button onClick={() => onDebugAction?.('step')} title="Run the next node" aria-label="Step to next node"><StepForward size={14} />Step</button>
         <button onClick={() => onDebugAction?.('continue')} title="Continue until the next pause or completion" aria-label="Continue debug run"><FastForward size={14} />Continue</button>
+      </div>}
+      {simulationOverlay && <div className={`canvas-simulation-status ${simulationOverlay.running ? 'is-running' : ''}`} role="status" aria-live="polite">
+        <i />
+        <span>{simulationOverlay.running ? 'Simulation running' : 'Simulation complete'}</span>
+        <b>{simulationOverlay.nodeTimings?.length || 0} steps</b>
+        <b>{formatSimulationTime(simulationOverlay.elapsedMs)}</b>
+        <button type="button" onClick={onClearSimulationOverlay} aria-label="Clear simulation results" title="Clear simulation results">×</button>
       </div>}
       {contextMenu && createPortal(<div ref={contextMenuRef} className="canvas-context-menu" role="menu" style={{ left: contextMenu.x, top: contextMenu.y, transform: `scale(${uiScale})`, transformOrigin: 'top left' }} onPointerDown={(event) => event.stopPropagation()}>
         {contextMenu.arrowId ? (() => {
@@ -3938,7 +4315,7 @@ function estimateNodeCardHeight(node, definition) {
   else if (node?.type === 'action_web_fetch') configHeight = 470;
   else if (node?.type === 'action_web_retry') configHeight = 590;
   else if (node?.type === 'action_http_download') configHeight = 320;
-  else if (node?.type === 'action_send_message' || node?.type === 'action_edit_message' || node?.type === 'action_edit_components') configHeight = 490;
+  else if (node?.type === 'action_send_message' || node?.type === 'action_edit_message') configHeight = 490;
   else if (['action_create_thread', 'action_start_thread_from_message'].includes(node?.type)) configHeight = 320;
   else if (node?.type === 'branch_switch') configHeight = 150;
   else if (definition?.pluginAdapter) configHeight = 120 + (definition.inputs || []).filter((pin) => pin.type !== 'exec').length * 42;

@@ -65,7 +65,7 @@ function PreviewControl({ field }) {
   return <div className="popup-modal-preview-select">{field.placeholder || selectLabel}<span>⌄</span></div>;
 }
 
-export function PopupModalStudioView({ graphName, nodeName, theme = 'dark', modal, onDraftChange, onApply, onClose }) {
+export function PopupModalStudioView({ graphName, nodeName, theme = 'dark', modal, graphVariables = [], templateValuePaths = [], onDraftChange, onApply, onClose }) {
   const initialDraft = useRef(JSON.stringify(modal));
   const [discardOpen, setDiscardOpen] = useState(false);
   const [previewTheme, setPreviewTheme] = useState(theme === 'light' ? 'light' : 'dark');
@@ -99,7 +99,7 @@ export function PopupModalStudioView({ graphName, nodeName, theme = 'dark', moda
             event.preventDefault();
           }
           event.stopPropagation();
-        }} tabIndex={0} aria-label="Popup modal configuration fields"><ModalNodeBuilder value={modal} onChange={onDraftChange} />{issue && <p className="popup-modal-studio-error" role="alert">{issue}</p>}</div>
+        }} tabIndex={0} aria-label="Popup modal configuration fields"><ModalNodeBuilder value={modal} graphVariables={graphVariables} templateValuePaths={templateValuePaths} onChange={onDraftChange} />{issue && <p className="popup-modal-studio-error" role="alert">{issue}</p>}</div>
       </div>
       <aside className={`popup-modal-studio-preview ${previewTheme === 'light' ? 'is-discord-light' : ''}`} aria-label="Live modal preview">
         <div className="popup-modal-studio-preview-heading">

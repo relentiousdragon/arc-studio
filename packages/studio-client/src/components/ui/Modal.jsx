@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronDown, X } from 'lucide-react';
 //
-export function Modal({ isOpen, onClose, onConfirm, title, subtitle, icon: Icon, iconClassName = '', headerMeta, children, footer, maxWidth, panelClassName = '', shake = false, showScrollCue = false }) {
+export function Modal({ isOpen, onClose, onConfirm, title, subtitle, icon: Icon, iconClassName = '', headerMeta, children, footer, maxWidth, panelClassName = '', shake = false, showScrollCue = false, initialFocusRef = null }) {
   const dialogRef = useRef(null);
   const bodyRef = useRef(null);
   const [hasMoreContent, setHasMoreContent] = useState(false);
@@ -50,7 +50,9 @@ export function Modal({ isOpen, onClose, onConfirm, title, subtitle, icon: Icon,
 
   useEffect(() => {
     if (!isOpen) return undefined;
-    dialogRef.current?.focus({ preventScroll: true });
+    const initialFocusTarget = initialFocusRef?.current;
+    if (initialFocusTarget && !initialFocusTarget.disabled) initialFocusTarget.focus({ preventScroll: true });
+    else dialogRef.current?.focus({ preventScroll: true });
     const onKeyDown = (event) => {
       if (event.key === 'Escape') {
         event.preventDefault();
@@ -83,7 +85,7 @@ export function Modal({ isOpen, onClose, onConfirm, title, subtitle, icon: Icon,
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isOpen]);
+  }, [isOpen, initialFocusRef]);
 
   if (!isOpen) return null;
   const widthClass = String(maxWidth || '').includes('2xl') ? 'modal-wide' : String(maxWidth || '').includes('lg') ? 'modal-medium' : '';

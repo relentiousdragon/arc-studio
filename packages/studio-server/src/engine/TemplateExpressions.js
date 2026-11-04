@@ -88,6 +88,28 @@ function parse(source) {
 }
 
 const number = (value) => { const result = typeof value === 'number' ? value : typeof value === 'string' && value.trim() ? Number(value.trim()) : NaN; return Number.isFinite(result) ? result : 0; };
+function dateValue(value = Date.now()) {
+  const date = value instanceof Date ? new Date(value.getTime()) : new Date(typeof value === 'number' ? value : /^\d+(?:\.\d+)?$/.test(String(value ?? '').trim()) ? Number(value) : String(value ?? ''));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+function formatDate(value = Date.now(), locale = 'en-US', timeZone = 'UTC', dateStyle = 'medium', timeStyle = 'short') {
+  const date = dateValue(value);
+  if (!date) return '';
+  try { return new Intl.DateTimeFormat(String(locale || 'en-US'), { dateStyle: String(dateStyle || 'medium'), timeStyle: String(timeStyle || 'short'), timeZone: String(timeZone || 'UTC') }).format(date); }
+  catch { return ''; }
+}
+function getDatePart(value, part, timeZone = 'UTC') {
+  const date = dateValue(value);
+  if (!date) return '';
+  const requested = String(part || '').toLowerCase();
+  if (requested === 'millisecond') return date.getUTCMilliseconds();
+  const options = { timeZone: String(timeZone || 'UTC'), year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23', weekday: 'long' };
+  try {
+    const valuePart = new Intl.DateTimeFormat('en-US', options).formatToParts(date).find((item) => item.type === requested);
+    if (!valuePart) return '';
+    return ['weekday'].includes(requested) ? valuePart.value : Number(valuePart.value);
+  } catch { return ''; }
+}
 const MATH = {
   abs: (x) => Math.abs(number(x)), sqrt: (x) => Math.sqrt(Math.max(0, number(x))), round: (x, d = 0) => { const p = 10 ** Math.max(0, Math.min(12, Math.trunc(number(d)))); return Math.round(number(x) * p) / p; },
   floor: (x) => Math.floor(number(x)), ceil: (x) => Math.ceil(number(x)), min: (...x) => Math.min(...x.map(number)), max: (...x) => Math.max(...x.map(number)),
@@ -95,10 +117,28 @@ const MATH = {
   sin: (x) => Math.sin(number(x)), cos: (x) => Math.cos(number(x)), tan: (x) => Math.tan(number(x)), asin: (x) => Math.asin(number(x)), acos: (x) => Math.acos(number(x)), atan: (x) => Math.atan(number(x)),
   log: (x) => number(x) > 0 ? Math.log(number(x)) : 0, log10: (x) => number(x) > 0 ? Math.log10(number(x)) : 0, exp: (x) => Math.exp(number(x)), sign: (x) => Math.sign(number(x)),
   sum: (...x) => x.reduce((a, b) => a + number(b), 0), average: (...x) => x.length ? x.reduce((a, b) => a + number(b), 0) / x.length : 0,
-  tonumber: (x) => number(x), tostring: (x) => templateText(x)
+  tonumber: (x) => number(x), tostring: (x) => templateText(x),
+  datenow: () => Date.now(), dateunix: () => Math.floor(Date.now() / 1000),
+  dateiso: (value = Date.now()) => dateValue(value)?.toISOString() || '',
+  dateformat: formatDate, datepart: getDatePart
 };
+const TEMPLATE_FILTER_NAMES = new Set([
+  'lower', 'lowercase', 'tolowercase', 'upper', 'uppercase', 'touppercase', 'trim', 'trimstart', 'trimend',
+  'title', 'titlecase', 'capitalize', 'replace', 'replacefirst', 'join', 'slice', 'length', 'json', 'default',
+  'tonumber', 'tostring', 'totext', 'round', 'floor', 'ceil'
+]);
+export const RESERVED_TEMPLATE_FUNCTION_NAMES = new Set([
+  ...Object.keys(MATH), ...TEMPLATE_FILTER_NAMES,
+  'true', 'false', 'null', 'undefined', 'pi', 'e', 'tau'
+]);
+export function validateTemplateFunctionName(value) {
+  const name = String(value ?? '').trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return 'Function graph names must be one word using letters, numbers, or underscores, and start with a letter or underscore.';
+  if (RESERVED_TEMPLATE_FUNCTION_NAMES.has(name.toLowerCase())) return `“${name}” is reserved for a template function or filter.`;
+  return '';
+}
 function safeResult(value) { return typeof value === 'number' && !Number.isFinite(value) ? 0 : value; }
-function evaluate(ast, resolveSlot) {
+function evaluate(ast, resolveSlot, options = {}) {
   switch (ast.kind) {
     case 'literal': return { found: true, value: ast.value };
     case 'path': {
@@ -107,25 +147,29 @@ function evaluate(ast, resolveSlot) {
       return { found: true, value };
     }
     case 'member': {
-      const base = evaluate(ast.object, resolveSlot);
-      const keyNode = typeof ast.key === 'object' && ast.key !== null && ast.key.kind ? evaluate(ast.key, resolveSlot) : { found: true, value: ast.key };
+      const base = evaluate(ast.object, resolveSlot, options);
+      const keyNode = typeof ast.key === 'object' && ast.key !== null && ast.key.kind ? evaluate(ast.key, resolveSlot, options) : { found: true, value: ast.key };
       if (!base.found || !keyNode.found) return { found: false, value: undefined };
       const key = keyNode.value;
       if (['__proto__', 'prototype', 'constructor'].includes(String(key)) || base.value == null || !Object.hasOwn(Object(base.value), key)) return { found: false, value: undefined };
       return { found: true, value: base.value[key] };
     }
-    case 'unary': { const v = evaluate(ast.value, resolveSlot); return { found: v.found, value: ast.op === '!' ? !v.value : safeResult(ast.op === '-' ? -number(v.value) : number(v.value)) }; }
-    case 'conditional': { const test = evaluate(ast.test, resolveSlot); return evaluate(test.value ? ast.yes : ast.no, resolveSlot); }
+    case 'unary': { const v = evaluate(ast.value, resolveSlot, options); return { found: v.found, value: ast.op === '!' ? !v.value : safeResult(ast.op === '-' ? -number(v.value) : number(v.value)) }; }
+    case 'conditional': { const test = evaluate(ast.test, resolveSlot, options); return evaluate(test.value ? ast.yes : ast.no, resolveSlot, options); }
     case 'call': {
-      const fn = MATH[ast.name]; if (!fn || ast.args.length > 50) return { found: false, value: undefined };
-      const args = ast.args.map((arg) => evaluate(arg, resolveSlot)); if (args.some((arg) => !arg.found)) return { found: false, value: undefined };
-      return { found: true, value: safeResult(fn(...args.map((arg) => arg.value))) };
+      if (ast.args.length > 50) return { found: false, value: undefined };
+      const args = ast.args.map((arg) => evaluate(arg, resolveSlot, options)); if (args.some((arg) => !arg.found)) return { found: false, value: undefined };
+      const values = args.map((arg) => arg.value);
+      const fn = MATH[ast.name];
+      if (fn) return { found: true, value: safeResult(fn(...values)) };
+      const result = options.resolveFunction?.(ast.name, values);
+      return result === undefined ? { found: false, value: undefined } : { found: true, value: safeResult(result) };
     }
     case 'binary': {
-      const a = evaluate(ast.left, resolveSlot); if (!a.found) return a;
+      const a = evaluate(ast.left, resolveSlot, options); if (!a.found) return a;
       if (ast.op === '&&' && !a.value) return { found: true, value: a.value };
       if (ast.op === '||' && a.value) return { found: true, value: a.value };
-      const b = evaluate(ast.right, resolveSlot); if (!b.found) return b; const x = a.value, y = b.value;
+      const b = evaluate(ast.right, resolveSlot, options); if (!b.found) return b; const x = a.value, y = b.value;
       const result = ast.op === '+' ? (typeof x === 'string' || typeof y === 'string' ? templateText(x) + templateText(y) : number(x) + number(y))
         : ast.op === '-' ? number(x) - number(y) : ast.op === '*' ? number(x) * number(y) : ast.op === '/' ? number(y) === 0 ? 0 : number(x) / number(y)
           : ast.op === '%' ? number(y) === 0 ? 0 : number(x) % number(y) : ['^', '**'].includes(ast.op) ? number(x) ** number(y)
@@ -151,8 +195,8 @@ function splitArguments(source) {
   if (source.slice(start).trim() || args.length) args.push(source.slice(start).trim());
   return quote || depth !== 0 ? null : args;
 }
-export function evaluateTemplateExpression(source, resolveSlot) {
-  try { const tree = parse(source.trim()); return evaluate(tree, resolveSlot); } catch { return { found: false, value: undefined }; }
+export function evaluateTemplateExpression(source, resolveSlot, options = {}) {
+  try { const tree = parse(source.trim()); return evaluate(tree, resolveSlot, options); } catch { return { found: false, value: undefined }; }
 }
 
 export function applyTemplateTransforms(value, transforms = []) {
@@ -215,13 +259,25 @@ export function getTemplateReferences(source) {
   return [...refs];
 }
 
-export function renderTextTemplate(template, resolveSlot, appEmojis = []) {
+export function renderTextTemplate(template, resolveSlot, appEmojis = [], onUndefined = null, options = {}) {
   return String(template ?? '').replace(/(\\)?(\{\{\s*([^{}]+?)\s*\}\})/g, (_match, escaped, token, source) => {
-    if (escaped) return `\\${token}`;
+    if (escaped) return token;
     const parts = splitTemplatePipeline(source); const base = parts.shift() || '';
     const emojiName = /^e_([A-Za-z0-9_-]+)$/.exec(base.trim())?.[1];
     if (emojiName) { const emoji = appEmojis instanceof Map ? appEmojis.get(emojiName.toLowerCase()) : appEmojis.find?.((item) => item?.name?.toLowerCase() === emojiName.toLowerCase()); if (emoji?.id && emoji.name) return `<${emoji.animated ? 'a' : ''}:${emoji.name}:${emoji.id}>`; }
-    const evaluated = evaluateTemplateExpression(base, resolveSlot);
+    const evaluated = evaluateTemplateExpression(base, resolveSlot, options);
+    let guarded = false;
+    try {
+      const ast = parse(base);
+      if (ast.kind === 'conditional') {
+        const condition = evaluate(ast.test, resolveSlot, options);
+        const fallback = evaluate(condition.value ? ast.yes : ast.no, resolveSlot, options);
+        guarded = (!condition.found || condition.value == null) && fallback.found && fallback.value != null;
+      }
+    } catch {}
+    if (!guarded && (evaluated.value == null || !evaluated.found) && !parts.some((part) => /^default\s*\(/i.test(part))) {
+      onUndefined?.(source, getTemplateReferences(base));
+    }
     if (!evaluated.found && !parts.some((part) => /^default\s*\(/i.test(part))) return token;
     return applyTemplateTransforms(evaluated.value, parts);
   });

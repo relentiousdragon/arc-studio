@@ -16,6 +16,7 @@ export { recordLibraryItemUsage };
 
 const EXPANSION_STORAGE_KEY = 'arc_library_expansion_by_project';
 const DEFAULT_EXPANDED_GRAPH_GROUPS = { 'Slash Commands': true, Messages: true, Components: true, 'Member Events': true, Functions: true, Other: true };
+const readGraphCategories = (key) => { try { const value = JSON.parse(readAppStorage(key) || '{}'); return value && typeof value === 'object' && !Array.isArray(value) ? value : {}; } catch { return {}; } };
 //
 function readLibraryExpansion() {
   try {
@@ -35,6 +36,9 @@ export function GraphLibraryPanel({
   const setActiveSection = (section) => { setLocalActiveSection(section); onActiveSectionChange?.(section); };
   const [expandedByProject, setExpandedByProject] = useState(readLibraryExpansion);
   const [contextMenu, setContextMenu] = useState(null);
+  const categoryStorageKey = `arc_library_graph_categories:${usageScope || 'default'}`;
+  const [graphCategories, setGraphCategories] = useState(() => readGraphCategories(categoryStorageKey));
+  const [categoryDrag, setCategoryDrag] = useState(null);
   const [libraryDragGhost, setLibraryDragGhost] = useState(null);
   const [selectedLibraryNodeTypes, setSelectedLibraryNodeTypes] = useState([]);
   const [selectedGraphKeys, setSelectedGraphKeys] = useState([]);
@@ -92,7 +96,7 @@ export function GraphLibraryPanel({
   const search = (index, source) => query.trim() ? index.search(query, Number.MAX_SAFE_INTEGER).map(({ item }) => item) : source;
   const filteredGraphs = search(graphSearchIndex, graphs);
   const filteredTemplates = search(templateSearchIndex, templates);
-  const graphGroups = groupGraphs(filteredGraphs);
+  const graphGroups = groupGraphs(filteredGraphs, graphCategories);
   const graphLastSeen = new Map(graphActivity.map((entry) => [entry.graphId, entry]));
   const searchNodes = search(nodeSearchIndex, definitions.filter((node) => !node.hidden));
   const nodeGroups = groupNodes(searchNodes);
@@ -106,7 +110,7 @@ export function GraphLibraryPanel({
   const frequentNodes = rankByUsage(searchNodes, usage.nodes, (node) => node.type, 5);
   const frequentGraphs = graphs.length >= 10 ? rankByUsage(filteredGraphs, usage.graphs, (graph) => graph.id, 3) : [];
   const frequentEmbeds = filteredEmbeds.length >= 10 ? rankByUsage(filteredEmbeds, usage.embeds, (asset) => asset.id, 3) : [];
-  const allGraphGroupNames = groupGraphs(graphs).map(([name]) => name);
+  const allGraphGroupNames = groupGraphs(graphs, graphCategories).map(([name]) => name);
   const allNodeGroupNames = groupNodes(definitions.filter((node) => !node.hidden)).map(([name]) => name);
   const activeGroupKind = activeSection === 'graphs' ? 'graphs' : activeSection === 'nodes' ? 'nodes' : null;
   const activeGroupNames = activeGroupKind === 'graphs' ? allGraphGroupNames : activeGroupKind === 'nodes' ? allNodeGroupNames : [];
@@ -119,6 +123,8 @@ export function GraphLibraryPanel({
   };
 
   useEffect(() => { writeAppStorage(EXPANSION_STORAGE_KEY, JSON.stringify(expandedByProject)); }, [expandedByProject]);
+  useEffect(() => { setGraphCategories(readGraphCategories(categoryStorageKey)); }, [categoryStorageKey]);
+  useEffect(() => { writeAppStorage(categoryStorageKey, JSON.stringify(graphCategories)); }, [categoryStorageKey, graphCategories]);
   useEffect(() => {
     const existing = new Set(graphVariables.map((variable) => variable.id));
     setSelectedVariableIds((current) => {
@@ -422,7 +428,7 @@ export function GraphLibraryPanel({
 
   return <aside className="graph-library-panel" aria-label="Graph library" style={{ '--arc-sidebar-width': `${sidebarWidth}px` }} onDragOver={(event) => { event.preventDefault(); try { event.dataTransfer.dropEffect = 'copy'; } catch {} }} onDrop={ignoreLibraryDrop}>
     <SidebarResizeHandle width={sidebarWidth} defaultWidth={320} onResize={onSidebarResize} />
-    <header className="graph-library-header"><span><FolderTree size={15} /> Library</span><div className="graph-library-header-actions">{activeGroupKind && activeGroupNames.length > 0 && <button className="graph-library-expand-all" onClick={toggleAllGroups} aria-label={`${allGroupsExpanded ? 'Collapse' : 'Expand'} all ${activeGroupKind} groups`} title={`${allGroupsExpanded ? 'Collapse' : 'Expand'} all ${activeGroupKind} groups`}><ChevronDown size={12} /><span>{allGroupsExpanded ? 'Collapse all' : 'Expand all'}</span></button>}<input ref={importGraphInputRef} type="file" accept=".arcgraph,application/vnd.arc-studio.graph+json" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) onImportGraph?.(file); event.target.value = ''; }} /><button className="icon-button compact" onClick={() => importGraphInputRef.current?.click()} disabled={!canImportGraph} aria-label="Import graph file" title={canImportGraph ? 'Import .arcgraph file' : 'Graph editing access required'}><FileUp size={14} /></button><button className="icon-button compact" onClick={onClose} aria-label="Close graph library"><X size={14} /></button></div></header>
+    <header className="graph-library-header"><span><FolderTree size={15} /> Library</span><div className="graph-library-header-actions">{activeGroupKind && activeGroupNames.length > 0 && <button className="graph-library-expand-all" onClick={toggleAllGroups} aria-label={`${allGroupsExpanded ? 'Collapse' : 'Expand'} all ${activeGroupKind} groups`} title={`${allGroupsExpanded ? 'Collapse' : 'Expand'} all ${activeGroupKind} groups`}><ChevronDown size={12} /><span>{allGroupsExpanded ? 'Collapse all' : 'Expand all'}</span></button>}{activeSection === 'graphs' && <button className="icon-button compact" aria-label="Create graph category" title="Create category" onClick={() => { const name = window.prompt('Category name'); if (name?.trim()) setGraphCategories((current) => ({ ...current, [`category:${Date.now()}`]: { name: name.trim(), graphIds: [] } })); }}><Plus size={14} /></button>}<input ref={importGraphInputRef} type="file" accept=".arcgraph,application/vnd.arc-studio.graph+json" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) onImportGraph?.(file); event.target.value = ''; }} /><button className="icon-button compact" onClick={() => importGraphInputRef.current?.click()} disabled={!canImportGraph} aria-label="Import graph file" title={canImportGraph ? 'Import .arcgraph file' : 'Graph editing access required'}><FileUp size={14} /></button><button className="icon-button compact" onClick={onClose} aria-label="Close graph library"><X size={14} /></button></div></header>
     <div className="graph-library-tabs" role="tablist" aria-label="Library sections">
       {[
         ['graphs', 'Graphs', FolderTree],
@@ -452,7 +458,7 @@ export function GraphLibraryPanel({
           })}</div>
         </section>}
         {graphGroups.map(([groupName, items]) => <section className="graph-library-group" key={groupName}>
-          <button className="graph-library-root graph-library-subroot" onClick={() => { if (!isSearching) updateExpandedGroups('graphs', (current) => ({ ...current, [groupName]: !current[groupName] })); }} onContextMenu={(event) => { event.preventDefault(); setContextMenu({ kind: 'graph-group', groupName, graphKeys: items.map(graphSelectionKey), x: event.clientX, y: event.clientY }); }} aria-expanded={isSearching || Boolean(expandedGroups[groupName])} role="treeitem">
+          <button className="graph-library-root graph-library-subroot" draggable={!isSearching} onDragStart={(event) => { setCategoryDrag(groupName); event.dataTransfer.setData('text/plain', groupName); event.dataTransfer.effectAllowed = 'move'; }} onDragOver={(event) => { if (categoryDrag && categoryDrag !== groupName) event.preventDefault(); }} onDrop={(event) => { event.preventDefault(); const from = categoryDrag || event.dataTransfer.getData('text/plain'); if (from && from !== groupName) { const order = graphGroups.map(([name]) => name); const next = order.filter((name) => name !== from); next.splice(Math.max(0, next.indexOf(groupName)), 0, from); setGraphCategories((current) => ({ ...current, __order: next })); } setCategoryDrag(null); }} onDragEnd={() => setCategoryDrag(null)} onClick={() => { if (!isSearching) updateExpandedGroups('graphs', (current) => ({ ...current, [groupName]: !current[groupName] })); }} onContextMenu={(event) => { event.preventDefault(); setContextMenu({ kind: 'graph-group', groupName, graphIds: items.map((item) => item.id), graphKeys: items.map(graphSelectionKey), x: event.clientX, y: event.clientY }); }} aria-expanded={isSearching || Boolean(expandedGroups[groupName])} role="treeitem">
             {isSearching || expandedGroups[groupName] ? <ChevronDown size={12} /> : <ChevronRight size={12} />}{groupName === 'Functions' ? <Calculator size={13} /> : <FolderTree size={13} />}<span>{groupName}</span><small>{items.length}</small>
           </button>
           {(isSearching || expandedGroups[groupName]) && <div className="graph-library-children" role="group">{items.map((graph) => {
@@ -563,6 +569,7 @@ export function GraphLibraryPanel({
         <button onClick={() => { onOpenGraph?.(contextMenu.graph); setContextMenu(null); }}><FileCode2 size={14} /> Open graph</button>
         <button onClick={() => { onDuplicateGraph?.(contextMenu.graph); setContextMenu(null); }}><Copy size={14} /> Duplicate graph</button>
         <button onClick={() => { onRenameGraph?.(contextMenu.graph); setContextMenu(null); }}><Pencil size={14} /> Rename graph</button>
+        {Object.entries(graphCategories).filter(([id, value]) => id !== '__order' && value?.name).map(([id, value]) => <button key={id} onClick={() => { const ids = (contextMenu.graphKeys || [graphSelectionKey(contextMenu.graph)]).map((key) => graphs.find((graph) => graphSelectionKey(graph) === key)?.id).filter(Boolean); setGraphCategories((current) => Object.fromEntries(Object.entries(current).map(([key, category]) => [key, key === id ? { ...category, graphIds: [...new Set([...(category.graphIds || []), ...ids])] } : key === '__order' ? [key, category] : { ...category, graphIds: (category.graphIds || []).filter((graphId) => !ids.includes(graphId)) }]))); setContextMenu(null); }}><FolderTree size={14} /> Move to {value.name}</button>)}
         <button onClick={() => { onSetDefault?.(contextMenu.graph); setContextMenu(null); }}><Star size={14} fill={defaultGraphId === contextMenu.graph.id ? 'currentColor' : 'none'} /> {defaultGraphId === contextMenu.graph.id ? 'Default for new graphs' : 'Set as new graph default'}</button>
         <button onClick={() => { onSaveTemplate?.(contextMenu.graph); setContextMenu(null); }}><BookmarkPlus size={14} /> Save as template</button>
         <button onClick={() => { onExportGraph?.(contextMenu.graph); setContextMenu(null); }}><Download size={14} /> Export graph</button>
@@ -575,6 +582,8 @@ export function GraphLibraryPanel({
         }}><X size={14} /> {contextMenu.graphKeys?.length > 1 ? `Delete ${contextMenu.graphKeys.length} selected graphs` : 'Delete saved graph'}</button>
       </> : contextMenu.kind === 'graph-group' ? <>
         <button onClick={() => { setSelectedGraphKeys([...new Set(contextMenu.graphKeys || [])]); graphSelectionAnchorRef.current = null; setContextMenu(null); }}><FileCode2 size={14} /> Select all {contextMenu.groupName} graphs</button>
+        <button onClick={() => { const name = window.prompt('New category name'); if (name?.trim()) setGraphCategories((current) => ({ ...current, [`category:${Date.now()}`]: { name: name.trim(), graphIds: [] } })); setContextMenu(null); }}><Plus size={14} /> Create category</button>
+        <button onClick={() => { const name = window.prompt('Rename category', contextMenu.groupName); if (name?.trim() && name.trim() !== contextMenu.groupName) { const ids = contextMenu.graphIds || []; setGraphCategories((current) => ({ ...Object.fromEntries(Object.entries(current).map(([id, category]) => [id, id === '__order' ? category : { ...category, graphIds: (category.graphIds || []).filter((graphId) => !ids.includes(graphId)) }])), [`category:${Date.now()}`]: { name: name.trim(), graphIds: ids } })); } setContextMenu(null); }}><Pencil size={14} /> Rename category</button>
       </> : contextMenu.kind === 'prefab' ? <>
         <button onClick={() => { onAddPrefab?.(contextMenu.graph); setContextMenu(null); }}><FileCode2 size={14} /> Add to graph</button>
         <button className="is-danger" onClick={() => { onDeletePrefab?.(contextMenu.graph); setContextMenu(null); }}><X size={14} /> Delete saved node</button>
@@ -717,13 +726,24 @@ function formatGraphLastSeen(value) {
   return new Date(timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
-function groupGraphs(graphs) {
+function groupGraphs(graphs, categoryState = {}) {
   const order = ['Slash Commands', 'Messages', 'Message Events', 'Components', 'Member Events', 'Voice & Presence', 'Bot Events', 'Channel Events', 'Roles', 'Moderation Events', 'Invites', 'Cron Jobs', 'Scheduled Events', 'Functions', 'Other'];
-  const groups = new Map(order.map((name) => [name, []]));
+  const assignments = new Map();
+  const customCategories = [];
+  for (const [id, category] of Object.entries(categoryState || {})) {
+    if (id === '__order' || !category || typeof category !== 'object') continue;
+    if (typeof category.name === 'string' && category.name.trim()) {
+      customCategories.push(category.name);
+      for (const graphId of Array.isArray(category.graphIds) ? category.graphIds : []) assignments.set(graphId, category.name);
+    }
+  }
+  const groups = new Map([...order, ...customCategories].map((name) => [name, []]));
   for (const graph of graphs) {
     const eventTypes = (graph.nodes || []).filter((node) => String(node.type).startsWith('event_')).map((node) => node.type);
-    let group = 'Other';
+    let group = assignments.get(graph.id) || 'Other';
+    if (assignments.has(graph.id)) { groups.set(group, [...(groups.get(group) || []), graph]); continue; }
     if (graph.graphType === 'function') group = 'Functions';
+    else if (eventTypes.length > 1) group = 'Other';
     else if (eventTypes.includes('event_slash_command')) group = 'Slash Commands';
     else if (eventTypes.includes('event_message_create')) group = 'Messages';
     else if (eventTypes.some((type) => type.startsWith('event_message_') || type.startsWith('event_reaction_'))) group = 'Message Events';
@@ -741,7 +761,10 @@ function groupGraphs(graphs) {
     if (!groups.has(group)) groups.set(group, []);
     groups.get(group).push(graph);
   }
-  return order.map((name) => [name, groups.get(name)]).filter(([, items]) => items.length);
+  const naturalOrder = [...order, ...customCategories.filter((name) => !order.includes(name))];
+  const requestedOrder = Array.isArray(categoryState?.__order) ? categoryState.__order : [];
+  const finalOrder = [...requestedOrder.filter((name) => groups.has(name)), ...naturalOrder.filter((name) => !requestedOrder.includes(name))];
+  return finalOrder.map((name) => [name, groups.get(name)]).filter(([name, items]) => items.length || customCategories.includes(name));
 }
 
 function graphSelectionKey(graph) {

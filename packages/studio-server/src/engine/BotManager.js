@@ -2,6 +2,7 @@ import { Client, CommandStatistics, GatewayIntents, RESTClient } from 'chezcord'
 import { registerAsyncEventHandler } from './AsyncEventHandler.js';
 import { MockGateway } from './MockGateway.js';
 import { GraphRunner } from './GraphRunner.js';
+import { validateTemplateFunctionName } from './TemplateExpressions.js';
 import { GraphWebSocketManager } from './nodes/runtime/websocket.js';
 import { startCronScheduler } from './CronSchedule.js';
 import { waitForGatewayReady } from './GatewayReadyWaiter.js';
@@ -31,6 +32,9 @@ function isDiscordVerifiedBot(user) {
   if (rawFlags === undefined || rawFlags === null || rawFlags === '') return false;
   const flags = Number(rawFlags);
   return Number.isSafeInteger(flags) && flags >= 0 && (flags & VERIFIED_BOT_FLAG) !== 0;
+}
+function isFunctionGraph(graph) {
+  return graph?.graphType === 'function' || (graph?.nodes || []).some((node) => ['function_input', 'function_return'].includes(node?.type));
 }
 
 function redactSecret(message, secret) {
@@ -815,7 +819,7 @@ export class BotManager {
   getCommandPermissionRequirements(graphs) {
     const permissions = new Set();
     for (const graph of graphs) for (const node of graph.nodes || []) {
-      if (['action_send_message', 'action_edit_message', 'action_edit_components'].includes(node.type)) {
+      if (['action_send_message', 'action_edit_message'].includes(node.type)) {
         permissions.add('View Channels');
         permissions.add('Send Messages');
         if (node.type === 'action_send_message'
@@ -1409,6 +1413,73 @@ export class BotManager {
     return this.getProjectVariables();
   }
 
+  cacheDiscordDirectory(payload) {
+    if (!payload || typeof payload !== 'object') return;
+    this.guildNameDirectory ||= new Map();
+    this.channelNameDirectory ||= new Map();
+    const rememberGuild = (guild) => {
+      if (!guild?.id || !guild.name) return;
+      this.guildNameDirectory.set(String(guild.id), {
+        id: String(guild.id), name: String(guild.name),
+        owner_id: guild.owner_id, member_count: guild.member_count, icon: guild.icon
+      });
+      if (this.guildNameDirectory.size > 5000) this.guildNameDirectory.delete(this.guildNameDirectory.keys().next().value);
+    };
+    const rememberChannel = (channel) => {
+      if (!channel?.id || !channel.name) return;
+      this.channelNameDirectory.set(String(channel.id), {
+        id: String(channel.id), name: String(channel.name),
+        type: channel.type, parent_id: channel.parent_id, guild_id: channel.guild_id
+      });
+      if (this.channelNameDirectory.size > 20000) this.channelNameDirectory.delete(this.channelNameDirectory.keys().next().value);
+    };
+    rememberGuild(payload);
+    rememberGuild(payload.guild);
+    rememberChannel(payload.channel);
+    for (const channel of Array.isArray(payload.channels) ? payload.channels : []) rememberChannel(channel);
+    for (const guild of Array.isArray(payload.guilds) ? payload.guilds : []) rememberGuild(guild);
+  }
+
+  registerRuntimeVariable(variable) {
+    if (!variable || typeof variable.name !== 'string') return;
+    const name = variable.name.trim();
+    if (!name) return;
+    const type = ['string', 'number', 'boolean', 'array', 'object'].includes(variable.type) ? variable.type : 'string';
+    const initialValue = structuredClone(variable.value ?? (type === 'number' ? 0 : type === 'boolean' ? false : type === 'array' ? [] : type === 'object' ? {} : ''));
+    if (variable.scope === 'project') {
+      if (this.projectVariables.some((item) => String(item.name || '').toLowerCase() === name.toLowerCase())) return;
+      try {
+        this.setProjectVariables([...this.projectVariables, {
+          id: typeof variable.id === 'string' && variable.id ? variable.id : `project_var_${Date.now()}`, name, type, initialValue, persist: true
+        }]);
+        this.log('INFO', `Created project variable “${name}” while the graph was running.`);
+      } catch (error) {
+        this.log('WARN', `Could not save project variable “${name}”: ${error.message}`);
+      }
+      return;
+    }
+    const graph = this.graphs.get(variable.graphId);
+    if (!graph) return;
+    const variables = Array.isArray(graph.variables) ? graph.variables : [];
+    if (variables.some((item) => String(item.name || '').toLowerCase() === name.toLowerCase())) return;
+    try {
+      const saved = this.saveGraph(graph.id, {
+        ...graph,
+        variables: [...variables, {
+          id: typeof variable.id === 'string' && variable.id ? variable.id : `nodevar_${Date.now()}`,
+          name,
+          type,
+          initialValue,
+          persist: variable.persist !== false
+        }]
+      }, { quiet: true });
+      this.broadcastWS({ type: 'GRAPH_UPDATED', payload: { projectId: this.project.id, graph: saved } });
+      this.log('INFO', `Created graph variable “${name}” while the graph was running.`);
+    } catch (error) {
+      this.log('WARN', `Could not save graph variable “${name}”: ${error.message}`);
+    }
+  }
+
   ensureDiscordAppIdVariable(applicationId) {
     const id = String(applicationId || '').trim();
     if (!/^\d{15,22}$/.test(id) || this.disabledBuiltInProjectVariables.has('DISCORD_APP_ID')) return false;
@@ -1501,6 +1572,13 @@ export class BotManager {
     if (!graphData || !Array.isArray(graphData.nodes) || !Array.isArray(graphData.connections)) {
       throw new TypeError('A graph must include nodes and connections arrays.');
     }
+    const previousGraph = this.graphs.get(tabId);
+    if (isFunctionGraph(graphData) && (!previousGraph || previousGraph.name !== graphData.name)) {
+      const nameError = validateTemplateFunctionName(graphData.name);
+      if (nameError) throw new TypeError(nameError);
+      const duplicate = [...this.graphs.values()].some((item) => item.id !== tabId && isFunctionGraph(item) && item.name?.toLowerCase() === graphData.name.toLowerCase());
+      if (duplicate) throw new TypeError(`A function graph named “${graphData.name}” already exists.`);
+    }
     graphData = this.protectGraphSecrets(graphData);
     if (Array.isArray(graphData.variables)) {
       const activeSecretKeys = new Set(graphData.variables.filter((variable) => variable?.secret).map((variable) => this.secretStoreKey('graph', tabId, variable.id)));
@@ -1526,13 +1604,12 @@ export class BotManager {
       }
       for (const node of graphData.nodes.filter((item) => item?.type === 'variable_create')) {
         const name = String(node.data?.name || '').trim();
+        const dynamicName = name.includes('{{') || (Array.isArray(graphData.connections) && graphData.connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'name'));
+        if (dynamicName) continue;
         const validName = /^(?=.{1,64}$)[A-Za-z0-9]+(?:_+[A-Za-z0-9]+|-[A-Za-z0-9]+)*$/.test(name);
         if (!validName) throw new TypeError('Create Variable names must start and end with a letter or number, with letters, numbers, hyphens, or underscores inside.');
-        if (names.has(name.toLowerCase())) throw new TypeError(`Variable name “${name}” is used more than once.`);
-        names.add(name.toLowerCase());
       }
     }
-    const previousGraph = this.graphs.get(tabId);
     if (Array.isArray(graphData.variables)) {
       const previousVariables = new Map((previousGraph?.variables || []).map((variable) => [variable.id, variable]));
       for (const states of [this.variableStates, this.mockVariableStates]) {
@@ -1768,11 +1845,18 @@ export class BotManager {
             client: this.client,
             webSockets: this.graphWebSockets,
             resolveFunctionGraph: (graphId) => this.graphs.get(graphId),
+            resolveFunctionGraphByName: (name) => {
+              const matches = [...this.graphs.values()].filter((item) => isFunctionGraph(item) && item.name?.toLowerCase() === String(name).toLowerCase());
+              return matches.length === 1 ? matches[0] : null;
+            },
             variablesState: this.getVariableState(graph),
             projectVariables: this.projectVariables,
             projectVariablesState: this.getProjectVariableState(),
             getGraphVariableState: (targetGraph) => this.getVariableState(targetGraph),
             getSecretVariableValue: (variableId, scope, sourceGraph) => this.getSecretValue(scope, scope === 'project' ? '' : sourceGraph?.id, variableId),
+            resolveGuildDirectory: (guildId) => this.guildNameDirectory?.get(String(guildId || '')) || null,
+            resolveChannelDirectory: (channelId) => this.channelNameDirectory?.get(String(channelId || '')) || null,
+            onVariableCreated: (variable) => this.registerRuntimeVariable(variable),
             appEmojis: this.applicationEmojis,
             interactionState,
             canDeploySlashCommands: () => {
@@ -1897,6 +1981,7 @@ export class BotManager {
     }));
 
     this.client.on('gatewayDispatch', (eventName, payload) => {
+      this.cacheDiscordDirectory(payload);
       if (['READY', 'MESSAGE_CREATE', 'INTERACTION_CREATE', 'GUILD_MEMBER_ADD'].includes(eventName)) return;
       const graphNeedsEvent = [...this.graphs.values()].some((graph) => graph.graphType !== 'function'
         && (graph.nodes || []).some((node) => NodeDefinitions[node.type]?.gatewayEvent === eventName));
@@ -2033,6 +2118,7 @@ export class BotManager {
     if (this.debugRuns.has(runId)) throw new Error('This debug session is already running.');
     const session = { runId, paused: false, continue: false, resume: null, timer: null };
     this.debugRuns.set(runId, session);
+    this.broadcastWS({ type: 'MOCK_SIMULATION_STARTED', payload: { runId, tabId, debug: true } });
     this.injectMockEvent(tabId, eventName, customPayload, graphOverride, session, graphOverrides).then((result) => {
       this.broadcastWS({ type: 'MOCK_DEBUG_FINISHED', payload: { runId, result } });
     }).catch((error) => {
@@ -2060,6 +2146,7 @@ export class BotManager {
 
   async injectMockEvent(tabId, eventName, customPayload, graphOverride = null, debugSession = null, graphOverrides = null) {
     const startTime = Date.now();
+    const simulationId = debugSession?.runId || `simulation_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     this.log('MOCK', `[Offline Simulator] Injecting mock ${eventName} event into tab: "${tabId}"`);
 
     const graph = graphOverride?.id === tabId && Array.isArray(graphOverride.nodes)
@@ -2068,6 +2155,7 @@ export class BotManager {
     if (!graph) {
       throw new Error(`Graph tab "${tabId}" not found for simulation.`);
     }
+    if (!debugSession) this.broadcastWS({ type: 'MOCK_SIMULATION_STARTED', payload: { runId: simulationId, tabId: graph.id, debug: false } });
 
     const interceptedOutputs = [];
     const mockREST = this.mockGateway.createMockREST(interceptedOutputs);
@@ -2086,6 +2174,10 @@ export class BotManager {
         }
       },
       resolveFunctionGraph: (graphId) => functionGraphLookup.get(graphId),
+      resolveFunctionGraphByName: (name) => {
+        const matches = [...functionGraphLookup.values()].filter((item) => isFunctionGraph(item) && item.name?.toLowerCase() === String(name).toLowerCase());
+        return matches.length === 1 ? matches[0] : null;
+      },
       variablesState: this.getVariableState(graph, 'mock'),
       projectVariables: this.projectVariables,
       projectVariablesState: this.getProjectVariableState('mock'),
@@ -2094,10 +2186,12 @@ export class BotManager {
       appEmojis: this.applicationEmojis,
       mock: true,
       debug: Boolean(debugSession),
+      onSimulationStep: debugSession ? undefined : (step) => this.broadcastWS({ type: 'MOCK_SIMULATION_STEP', payload: { runId: simulationId, tabId: graph.id, step } }),
       onDebugStep: debugSession ? async (step) => {
         this.broadcastWS({ type: 'MOCK_DEBUG_STEP', payload: { runId: debugSession.runId, tabId: graph.id, step } });
-        if (debugSession.continue) return;
+        if (debugSession.continue) return { pausedDurationMs: 0 };
         debugSession.paused = true;
+        const pauseStartedAt = performance.now();
         await new Promise((resolve) => {
           debugSession.resume = resolve;
           debugSession.timer = setTimeout(() => {
@@ -2107,28 +2201,29 @@ export class BotManager {
           }, 120_000);
           debugSession.timer.unref?.();
         });
+        return { pausedDurationMs: performance.now() - pauseStartedAt };
       } : undefined,
       log: (message, level = 'EXECUTION') => this.log(level === 'EXECUTION' ? 'MOCK' : level, message)
     });
 
-    const elapsed = Date.now() - startTime;
+    const elapsed = debugSession && Number.isFinite(result.elapsedMs) ? result.elapsedMs : Date.now() - startTime;
     this.log('MOCK', `[Offline Simulator] Simulation completed in ${elapsed}ms. Output actions generated: ${interceptedOutputs.length}`);
 
-    this.broadcastWS({
-      type: 'GRAPH_EXECUTION_PULSE',
-      payload: { tabId: graph.id, nodeIds: result.executedNodeIds }
-    });
-
-    return {
+    const simulationResult = {
       success: !result.error,
+      simulationId,
       tabId: graph.id,
       eventName,
       executedNodeIds: result.executedNodeIds,
+      nodeTimings: result.nodeTimings || [],
+      wirePath: result.wirePath || [],
       traces: result.traces,
       debugSteps: result.debugSteps || [],
       interceptedOutputs,
       elapsedMs: elapsed,
       error: result.error
     };
+    if (!debugSession) this.broadcastWS({ type: 'MOCK_SIMULATION_FINISHED', payload: { runId: simulationId, tabId: graph.id, result: simulationResult } });
+    return simulationResult;
   }
 }
