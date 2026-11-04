@@ -96,6 +96,7 @@ const icons = {
   action_crypto_encrypt: LockKeyhole,
   action_crypto_decrypt: UnlockKeyhole,
   action_crypto_random: Dices,
+  math_eval: Calculator,
   math_add: Plus,
   math_subtract: Minus,
   math_multiply: Asterisk,

@@ -75,7 +75,11 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
   }
   if ([...usedTypes].some((type) => type.startsWith('action_crypto_'))) requiredRuntimeModules.add('crypto.js');
   const exports = normalizePluginExports(pluginAdapters, usedTypes);
-  const dependencies = { chezcord: 'file:./chezcord', dayjs: '^1.11.23' };
+  const dependencies = {
+    chezcord: 'file:./chezcord',
+    dayjs: '^1.11.23',
+    "expr-eval": "^2.0.2" 
+  };
   if (requiredRuntimeModules.has('websocket.js')) dependencies.ws = '^8.18.0';
   const environment = [];
   const permissionSections = [];

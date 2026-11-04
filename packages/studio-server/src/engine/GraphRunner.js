@@ -168,7 +168,7 @@ export class GraphRunner {
       let type = sourcePin?.type || null;
       if (type === 'object' && (['data_array_create', 'data_array_append', 'data_array_concat'].includes(source.type) || source.type === 'data_regex' && ['captures', 'matches'].includes(sourcePinId))) type = 'array';
       if (source.type === 'data_parse_json' && !connections.some((wire) => wire.targetNodeId === source.id && wire.targetPinId === 'json')) {
-        try { type = Array.isArray(JSON.parse(source.data?.json || '')) ? 'array' : 'object'; } catch {}
+        try { type = Array.isArray(JSON.parse(source.data?.json || '')) ? 'array' : 'object'; } catch { }
       }
       return ['string', 'number', 'boolean', 'array', 'object'].includes(type) ? type : null;
     };
@@ -317,7 +317,7 @@ export class GraphRunner {
           try {
             const serialized = JSON.stringify(value);
             if (serialized.length > 2 && text.includes(serialized)) return '[redacted]';
-          } catch {}
+          } catch { }
         }
         if (typeof value === 'boolean' && new RegExp(`\\b${value}\\b`, 'i').test(text)) return '[redacted]';
         if (typeof value === 'number' && Number.isFinite(value)) {
@@ -338,13 +338,13 @@ export class GraphRunner {
           if (new RegExp(`(?<![\\w.])${escaped}(?![\\w.])`).test(value)) return true;
         }
         if (value && typeof value === 'object' && secret && typeof secret === 'object') {
-          try { if (JSON.stringify(value) === JSON.stringify(secret)) return true; } catch {}
+          try { if (JSON.stringify(value) === JSON.stringify(secret)) return true; } catch { }
         }
         if (typeof value === 'string' && secret && typeof secret === 'object') {
           try {
             const serialized = JSON.stringify(secret);
             if (serialized.length > 2 && value.includes(serialized)) return true;
-          } catch {}
+          } catch { }
         }
         if (typeof value !== 'object' && Object.is(value, secret)) return true;
         if (Array.isArray(value) ? value.some(containsSecretValue) : typeof value === 'object' && Object.values(value).some(containsSecretValue)) return true;
@@ -619,6 +619,11 @@ export class GraphRunner {
           resolveDataInput(sourceNode, pin.id, pin.defaultValue, seen)
         ]));
         const result = evaluateMathNode(sourceNode.type, inputs, sourceNode.data || {});
+        if (sourceNode.type === "math_eval") {
+          dataCache.set(`${sourceNode.id}:result`, result.result);
+          dataCache.set(`${sourceNode.id}:valid`, result.valid);
+          return result[pinId];
+        }
         dataCache.set(cacheKey, result);
         return result;
       }
@@ -1007,21 +1012,21 @@ export class GraphRunner {
     const normalizedEvent = ['SLASH_COMMAND', 'BUTTON_CLICK', 'SELECT_MENU', 'MODAL_SUBMIT'].includes(eventName) ? 'INTERACTION_CREATE' : eventName;
     const startNode = eventName === 'FUNCTION_CALL'
       ? (nodes.find((node) => node.type === 'function_input' && findExecOutputs(node.id, 'exec').length > 0)
-         || nodes.find((node) => node.type === 'function_input')
-         || nodes.find((node) => node.type === 'function_return'))
+        || nodes.find((node) => node.type === 'function_input')
+        || nodes.find((node) => node.type === 'function_return'))
       : nodes.find((node) => {
-      const definition = NodeDefinitions[node.type];
-      if (definition?.gatewayEvent !== normalizedEvent) return false;
-      if (String(normalizedEvent).startsWith('WEBSOCKET_') && String(node.data?.filter_connection_id || '').trim()
-        && String(node.data.filter_connection_id).trim() !== String(eventPayload?.connectionId || '')) return false;
-      if (node.type === 'event_message_create' && typeof node.data?.prefix === 'string' && node.data.prefix
-        && !String(eventPayload?.content || '').trimStart().startsWith(node.data.prefix)) return false;
-      if (node.type === 'event_cron' && eventPayload?.cronNodeId && node.id !== eventPayload.cronNodeId) return false;
-      if (definition.gatewayInteractionType && Number(eventPayload.type) !== definition.gatewayInteractionType) return false;
-      if (definition.gatewayCommandType && Number(eventPayload.data?.type || 1) !== definition.gatewayCommandType) return false;
-      if (definition.gatewayComponentTypes && !definition.gatewayComponentTypes.includes(Number(eventPayload.data?.component_type))) return false;
-      return true;
-    });
+        const definition = NodeDefinitions[node.type];
+        if (definition?.gatewayEvent !== normalizedEvent) return false;
+        if (String(normalizedEvent).startsWith('WEBSOCKET_') && String(node.data?.filter_connection_id || '').trim()
+          && String(node.data.filter_connection_id).trim() !== String(eventPayload?.connectionId || '')) return false;
+        if (node.type === 'event_message_create' && typeof node.data?.prefix === 'string' && node.data.prefix
+          && !String(eventPayload?.content || '').trimStart().startsWith(node.data.prefix)) return false;
+        if (node.type === 'event_cron' && eventPayload?.cronNodeId && node.id !== eventPayload.cronNodeId) return false;
+        if (definition.gatewayInteractionType && Number(eventPayload.type) !== definition.gatewayInteractionType) return false;
+        if (definition.gatewayCommandType && Number(eventPayload.data?.type || 1) !== definition.gatewayCommandType) return false;
+        if (definition.gatewayComponentTypes && !definition.gatewayComponentTypes.includes(Number(eventPayload.data?.component_type))) return false;
+        return true;
+      });
     const eventNodeType = startNode?.type;
     if (!startNode) {
       log(`[Graph] No active event node found for event "${eventName}". Skipping.`);
@@ -1269,11 +1274,11 @@ export class GraphRunner {
           const textB = String(resolveDataInput(targetNode, 'text_b', targetNode.data?.text_b || ''));
           const op = targetNode.data?.operator || 'equals';
 
-          let result = false;
-          if (op === 'equals') result = textA === textB;
-          else if (op === 'contains') result = textA.includes(textB);
-          else if (op === 'startsWith') result = textA.startsWith(textB);
-          else if (op === 'endsWith') result = textA.endsWith(textB);
+            let result = false;
+            if (op === 'equals') result = textA === textB;
+            else if (op === 'contains') result = textA.includes(textB);
+            else if (op === 'startsWith') result = textA.startsWith(textB);
+            else if (op === 'endsWith') result = textA.endsWith(textB);
 
           dataCache.set(`${targetNode.id}:result`, result);
           log(`[Compare Text] Compared text values using ${op}; result: ${result}.`);
@@ -1459,26 +1464,222 @@ export class GraphRunner {
               interactionState.acknowledged = true;
               await context.rest.createInteractionResponse(interactionId || 'mock', interactionToken, { type: 4, data: { content: deploymentError, flags: 64 } });
             }
-          } else {
-            if (interactionToken && !interactionState.acknowledged) {
-              interactionState.acknowledged = true;
-              interactionState.deferred = true;
-              interactionState.pending = context.rest.deferInteractionReply?.(interactionId || 'mock', interactionToken, { ephemeral: true })
-                || context.rest.createInteractionResponse(interactionId || 'mock', interactionToken, { type: 5, data: { flags: 64 } });
-              try { await interactionState.pending; }
-              catch (error) { interactionState.acknowledged = false; interactionState.deferred = false; throw error; }
-              finally { interactionState.pending = null; }
+            const branch = ready ? 'ready_exec' : 'timeout_exec';
+            log(ready ? '[Wait Until Condition] Condition became true.' : '[Wait Until Condition] Timed out.');
+            currentExecWires.push(...findExecOutputs(targetNode.id, branch));
+          } else if (targetNode.type === 'wait_until_time') {
+            const { targetTime, waitMs } = parseWaitUntilTime(resolveDataInput(targetNode, 'time', targetNode.data?.time || ''));
+            if (waitMs > 0) {
+              log(`[Wait Until Time] Waiting until ${new Date(targetTime).toISOString()}.`);
+              await waitFor(waitMs, context.signal);
+            } else {
+              log('[Wait Until Time] The specified time has already passed, continuing now.');
             }
-            try {
-              deployment = await context.deploySlashCommands();
-              const count = Number(deployment?.deployed ?? deployment?.commands ?? 0);
-              if (interactionToken && context.rest.editOriginalInteractionResponse) await context.rest.editOriginalInteractionResponse(interactionState.applicationId || eventPayload?.application_id, interactionToken, { content: `Deployed ${count} slash command${count === 1 ? '' : 's'}.` });
-            } catch (error) {
-              deploymentError = error?.message || String(error);
-              if (interactionToken && interactionState.deferred && context.rest.editOriginalInteractionResponse) {
-                try { await context.rest.editOriginalInteractionResponse(interactionState.applicationId || eventPayload?.application_id, interactionToken, { content: `Slash command deployment failed: ${deploymentError.slice(0, 1800)}` }); } catch {}
+            currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+          } else if (targetNode.type === 'function_return') {
+            functionReturnValue = resolveFunctionReturnResult(targetNode, resolveDataInput);
+            for (const returnValue of getFunctionReturnValues(targetNode)) {
+              const value = returnValue.legacy ? functionReturnValue : functionReturnValue?.[returnValue.returnId];
+              dataCache.set(`${targetNode.id}:${functionReturnInputPinId(returnValue)}`, value);
+            }
+            log(`[Function Return] Returned ${getFunctionReturnValues(targetNode).length} value${getFunctionReturnValues(targetNode).length === 1 ? '' : 's'}.`);
+          } else if (targetNode.type === 'function_call') {
+            const targetGraph = context.resolveFunctionGraph?.(targetNode.data?.graphId);
+            if (!targetGraph) throw new Error('Call Function node requires a valid function graph selected.');
+            const callStack = Array.isArray(context.graphCallStack) ? context.graphCallStack : [graph.id];
+            if (callStack.includes(targetGraph.id)) throw new Error('Function call cycle detected. Graphs cannot call themselves or call each other in a loop.');
+            if (callStack.length >= 24) throw new Error('Function call nesting exceeded 24 levels.');
+            const parameters = getFunctionGraphArguments(targetGraph);
+            const missingParameter = parameters.find((parameter) => parameter.optional === false
+              && !connections.some((wire) => wire.targetNodeId === targetNode.id && wire.targetPinId === functionArgumentPinId(parameter)));
+            if (missingParameter) throw new Error(`${targetGraph.name || 'Function'} requires an input for “${missingParameter.name || 'Input'}”.`);
+            const argumentValues = new Map(parameters.map((parameter) => {
+              const value = resolveDataInput(targetNode, functionArgumentPinId(parameter), parameter.defaultValue ?? defaultValueForFunctionType(parameter.valueType));
+              return [parameter.paramId, value];
+            }));
+            log(`[Call Function] Invoking ${targetGraph.name || targetGraph.id}.`);
+            const nestedResult = await GraphRunner.execute(targetGraph, 'FUNCTION_CALL', {
+              ...eventPayload,
+              argumentValues
+            }, {
+              ...context,
+              graphCallStack: [...callStack, targetGraph.id],
+              variablesState: context.getGraphVariableState?.(targetGraph) || (targetGraph.id === graph.id ? persistentVariableValues : new Map()),
+              interactionState
+            });
+            if (nestedResult.error) throw Object.assign(new Error(nestedResult.error), context.signal?.aborted ? { name: 'AbortError' } : {});
+            if (Array.isArray(nestedResult.executedNodeIds)) executedNodeIds.push(...nestedResult.executedNodeIds);
+            for (const returnValue of getFunctionGraphReturnValues(targetGraph)) {
+              const value = returnValue.legacy ? nestedResult.result : nestedResult.result?.[returnValue.returnId];
+              dataCache.set(`${targetNode.id}:${functionReturnOutputPinId(returnValue)}`, value);
+            }
+            currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+          } else if (targetNode.type === 'execute_graph') {
+            const targetGraph = context.resolveFunctionGraph?.(targetNode.data?.graphId);
+            if (!targetGraph || targetGraph.graphType === 'function') throw new Error('Run Event Graph needs a saved event graph selected.');
+            const callStack = Array.isArray(context.graphCallStack) ? context.graphCallStack : [graph.id];
+            if (callStack.includes(targetGraph.id)) throw new Error('Graph call cycle detected. Event graphs cannot run themselves or call each other in a loop.');
+            if (callStack.length >= 16) throw new Error('Event graph call nesting exceeded 16 levels.');
+            log(`[Run Event Graph] Running ${targetGraph.name || targetGraph.id} for ${eventName}.`);
+            const nestedResult = await GraphRunner.execute(targetGraph, eventName, eventPayload, {
+              ...context,
+              graphCallStack: [...callStack, targetGraph.id],
+              variablesState: context.getGraphVariableState?.(targetGraph) || context.variablesState
+            });
+            if (nestedResult.error) throw Object.assign(new Error(nestedResult.error), context.signal?.aborted ? { name: 'AbortError' } : {});
+            if (!nestedResult.executedNodeIds.length) throw new Error(`“${targetGraph.name || 'Target graph'}” has no trigger matching ${eventName}.`);
+            currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+          } else if (targetNode.type === 'parallel') {
+            const branches = ['branch_a_exec', 'branch_b_exec'].map((pinId) => findExecOutputs(targetNode.id, pinId));
+            const joinId = await executeParallelBranches(
+              branches,
+              (branch) => runExecWires(branch, true, parallelDepth + 1),
+              log,
+              (message) => Object.assign(new Error(message), context.signal?.aborted ? { name: 'AbortError' } : {})
+            );
+            currentExecWires.push({ sourceNodeId: targetNode.id, sourcePinId: 'exec', targetNodeId: joinId, __releasedJoin: true });
+          } else if (targetNode.type === 'parallel_join') {
+            currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+          } else if (NodeDefinitions[targetNode.type]?.pluginAdapter) {
+            const definition = NodeDefinitions[targetNode.type];
+            if (context.mock && definition.hostAdapter) throw new Error(`${definition.category} nodes are disabled in Offline Simulator to prevent live database changes.`);
+            const inputs = Object.fromEntries(definition.inputs.filter((pin) => pin.type !== 'exec').map((pin) => [
+              pin.id,
+              resolveDataInput(targetNode, pin.id, pin.defaultValue)
+            ]));
+            const outputs = await PluginStore.executeAdapter(targetNode.type, inputs, { projectDir: context.projectDir });
+            for (const [pinId, value] of Object.entries(outputs)) dataCache.set(`${targetNode.id}:${pinId}`, value);
+            log(`[Plugin Adapter] ${definition.label} completed in its isolated WebAssembly worker.`);
+            currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+          } else if (DISCORD_GUILD_NODE_TYPES.has(targetNode.type)) {
+            const { executeDiscordGuildNode } = await import('./nodes/runtime/discord_guild.js');
+            const result = await executeDiscordGuildNode(targetNode, {
+              resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
+              isInputConnected: (pinId) => Boolean(findInputConnection(targetNode.id, pinId)),
+              rest: context.rest,
+              client: context.client,
+              setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value),
+              log
+            });
+            if (result !== false) currentExecWires.push(...findExecOutputs(targetNode.id, result === 'failure' ? 'failure_exec' : 'exec'));
+          } else if (['action_send_message', 'action_edit_message', 'action_edit_components'].includes(targetNode.type)) {
+            const { executeDiscordMessageNode } = await import('./nodes/runtime/discord_messages.js');
+            await executeDiscordMessageNode(targetNode, {
+              resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
+              resolveComponents: () => resolveMessageComponents(targetNode),
+              resolveFiles: (files) => resolveMessageFiles(targetNode, files),
+              buildEmbed: () => buildEmbedFromNode(targetNode),
+              isInputConnected: (pinId) => Boolean(findInputConnection(targetNode.id, pinId)),
+              rest: context.rest,
+              simulation: Boolean(context.simulation || context.mock),
+              setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value),
+              log
+            });
+            currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+          } else if (targetNode.type === 'action_deploy_slash_commands') {
+            if (typeof context.deploySlashCommands !== 'function') throw new Error('Slash command deployment is available while the bot is connected, not in simulation or exported runtime.');
+            const interactionToken = String(eventPayload?.token || '');
+            const interactionId = String(eventPayload?.id || '');
+            const canDeploy = context.canDeploySlashCommands?.() !== false;
+            let deployment = null;
+            let deploymentError = '';
+            if (!canDeploy) {
+              deploymentError = 'Only server managers with Manage Server or Administrator can deploy slash commands.';
+              if (interactionToken && !interactionState.acknowledged) {
+                interactionState.acknowledged = true;
+                await context.rest.createInteractionResponse(interactionId || 'mock', interactionToken, { type: 4, data: { content: deploymentError, flags: 64 } });
+              }
+            } else {
+              if (interactionToken && !interactionState.acknowledged) {
+                interactionState.acknowledged = true;
+                interactionState.deferred = true;
+                interactionState.pending = context.rest.deferInteractionReply?.(interactionId || 'mock', interactionToken, { ephemeral: true })
+                  || context.rest.createInteractionResponse(interactionId || 'mock', interactionToken, { type: 5, data: { flags: 64 } });
+                try { await interactionState.pending; }
+                catch (error) { interactionState.acknowledged = false; interactionState.deferred = false; throw error; }
+                finally { interactionState.pending = null; }
+              }
+              try {
+                deployment = await context.deploySlashCommands();
+                const count = Number(deployment?.deployed ?? deployment?.commands ?? 0);
+                if (interactionToken && context.rest.editOriginalInteractionResponse) await context.rest.editOriginalInteractionResponse(interactionState.applicationId || eventPayload?.application_id, interactionToken, { content: `Deployed ${count} slash command${count === 1 ? '' : 's'}.` });
+              } catch (error) {
+                deploymentError = error?.message || String(error);
+                if (interactionToken && interactionState.deferred && context.rest.editOriginalInteractionResponse) {
+                  try { await context.rest.editOriginalInteractionResponse(interactionState.applicationId || eventPayload?.application_id, interactionToken, { content: `Slash command deployment failed: ${deploymentError.slice(0, 1800)}` }); } catch { }
+                }
               }
             }
+            const deployedCount = Number(deployment?.deployed ?? deployment?.commands ?? 0);
+            dataCache.set(`${targetNode.id}:deployed_count`, deployedCount);
+            dataCache.set(`${targetNode.id}:success`, !deploymentError);
+            dataCache.set(`${targetNode.id}:error`, deploymentError);
+            if (deploymentError) log(`[Deploy Slash Commands] ${deploymentError}`);
+            else log(`[Deploy Slash Commands] Deployed ${deployedCount} command(s).`);
+            currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+          } else if (DISCORD_INTERACTION_NODE_TYPES.has(targetNode.type)) {
+            const { executeDiscordInteractionNode } = await import('./nodes/runtime/discord_interactions.js');
+            await executeDiscordInteractionNode(targetNode, {
+              resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
+              resolveComponents: () => resolveMessageComponents(targetNode),
+              resolveFiles: (files) => resolveMessageFiles(targetNode, files),
+              buildEmbed: () => buildEmbedFromNode(targetNode),
+              isInputConnected: (pinId) => Boolean(findInputConnection(targetNode.id, pinId)),
+              rest: context.rest,
+              simulation: Boolean(context.simulation || context.mock),
+              log,
+              state: interactionState,
+              eventPayload,
+              nodes,
+              setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value)
+            });
+            currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+          } else if (['action_console_log', 'action_console_warn', 'action_console_error'].includes(targetNode.type)) {
+            const { executeConsoleLogNode } = await import('./nodes/runtime/console_log.js');
+            executeConsoleLogNode(targetNode, {
+              resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
+              log
+            });
+            currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+          } else if (targetNode.type === 'action_set_custom_status') {
+            log('Set Custom Status moved to Set Presence. Configure Custom Status there, then delete this node.', 'WARN');
+            dataCache.set(`${targetNode.id}:success`, false);
+            currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+          } else if (targetNode.type === 'action_set_presence') {
+            const { executePresenceNode } = await import('./nodes/runtime/discord_presence.js');
+            executePresenceNode(targetNode, {
+              resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
+              context,
+              setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value),
+              log
+            });
+            currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+          } else if (NETWORK_NODE_TYPES.has(targetNode.type)) {
+            const { executeNetworkNode } = await import('./nodes/runtime/network.js');
+            await executeNetworkNode(targetNode, {
+              resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
+              setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value),
+              context,
+              log
+            });
+            currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+          } else if (WEBSOCKET_NODE_TYPES.has(targetNode.type)) {
+            const { executeWebSocketNode } = await import('./nodes/runtime/websocket.js');
+            const result = await executeWebSocketNode(targetNode, {
+              resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
+              setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value),
+              context,
+              log
+            });
+            currentExecWires.push(...findExecOutputs(targetNode.id, result === 'failure' ? 'failure_exec' : 'exec'));
+          } else if (CRYPTO_NODE_TYPES.has(targetNode.type)) {
+            const { executeCryptoNode } = await import('./nodes/runtime/crypto.js');
+            executeCryptoNode(targetNode, {
+              resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
+              setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value),
+              log
+            });
+            currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
           }
           const deployedCount = Number(deployment?.deployed ?? deployment?.commands ?? 0);
           dataCache.set(`${targetNode.id}:deployed_count`, deployedCount);
@@ -1685,15 +1886,15 @@ function evaluateFunctionGraph(graph, argumentValues, context, callStack) {
         let functionResult;
         if (functionCallResultCache.has(node.id)) functionResult = functionCallResultCache.get(node.id);
         else {
-        const nestedParams = getFunctionGraphArguments(nestedGraph);
-        const missingParameter = nestedParams.find((parameter) => parameter.optional === false
-          && !inputWire(node.id, functionArgumentPinId(parameter)));
-        if (missingParameter) throw new Error(`${nestedGraph.name || 'Function'} requires an input for “${missingParameter.name || 'Input'}”.`);
-        const nestedValues = new Map(nestedParams.map((parameter) => {
-          return [parameter.paramId, resolveInput(node, functionArgumentPinId(parameter), parameter.defaultValue ?? defaultValueForFunctionType(parameter.valueType))];
-        }));
-        functionResult = evaluateFunctionGraph(nestedGraph, nestedValues, context, nextStack);
-        functionCallResultCache.set(node.id, functionResult);
+          const nestedParams = getFunctionGraphArguments(nestedGraph);
+          const missingParameter = nestedParams.find((parameter) => parameter.optional === false
+            && !inputWire(node.id, functionArgumentPinId(parameter)));
+          if (missingParameter) throw new Error(`${nestedGraph.name || 'Function'} requires an input for “${missingParameter.name || 'Input'}”.`);
+          const nestedValues = new Map(nestedParams.map((parameter) => {
+            return [parameter.paramId, resolveInput(node, functionArgumentPinId(parameter), parameter.defaultValue ?? defaultValueForFunctionType(parameter.valueType))];
+          }));
+          functionResult = evaluateFunctionGraph(nestedGraph, nestedValues, context, nextStack);
+          functionCallResultCache.set(node.id, functionResult);
         }
         result = returnValue.legacy ? functionResult : functionResult?.[returnValue.returnId];
       }

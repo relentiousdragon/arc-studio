@@ -800,6 +800,17 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       </div>
     );
   }
+  if (node.type === "math_eval") {
+    return <div className="node-config node-config-stack">
+      {!isConnected("expression") && (
+        <label className="node-config-fallback">
+          <span>Expression</span>
+            <input value={node.data?.expression ?? getInputDefault(node.type, "expression")} onChange={(event) => update('expression', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Expression" />
+          <span className="node-config-hint">See <a href="https://github.com/silentmatt/expr-eval/blob/master/README.md#expression-syntax" target="_blank" rel="noopener noreferrer">github.com/silentmatt/expr-eval</a> for available syntax.</span>
+        </label>
+      )}
+    </div>
+  }
   if (node.type === 'value_number') {
     return <div className="node-config"><NodeNumberInput value={node.data?.value ?? 0} onChange={(event) => update('value', numericNodeInputValue(event.target.value))} onPointerDown={(event) => event.stopPropagation()} aria-label="Number value" /></div>;
   }

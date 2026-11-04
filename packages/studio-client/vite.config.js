@@ -32,6 +32,7 @@ function retainRecentHashedAssets() {
 export default defineConfig({
   plugins: [react(), retainRecentHashedAssets()],
   server: {
+    host: true,
     port: 5173,
     allowedHosts: true,
     proxy: {

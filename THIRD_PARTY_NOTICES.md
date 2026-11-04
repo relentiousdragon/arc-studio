@@ -30,6 +30,7 @@ client, server, and desktop shell builds.
 | `vite` | 6.4.4 | MIT |
 | `ws` | 8.22.0 | MIT |
 | `dayjs` | 1.11.23 | MIT |
+| `expr-eval` | 2.0.2 | MIT |
 
 ## Rust packages
 
