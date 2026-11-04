@@ -76,7 +76,6 @@ export function evaluateMathNode(type, inputs, data = {}) {
     }
     case 'math_eval': {
       try {
-
         const expr = parser.parse(inputs.expression);
         const result = expr.evaluate();
         return { result: result, valid: Number.isFinite(result) }
