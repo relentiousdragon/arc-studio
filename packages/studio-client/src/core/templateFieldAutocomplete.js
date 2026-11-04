@@ -107,6 +107,11 @@ export function templateFieldSuggestions(query, context = {}) {
     if (!socket?.insert || (lower && !socket.insert.toLowerCase().includes(lower))) continue;
     push(socket.label, socket.insert);
   }
+  for (const entry of context.functions || []) {
+    const name = typeof entry === 'string' ? entry : entry?.insert || '';
+    if (!name || (lower && !name.toLowerCase().includes(lower))) continue;
+    push(typeof entry === 'string' ? name : entry.label || name, name);
+  }
   return list.slice(0, MAX_SUGGESTIONS);
 }
 
