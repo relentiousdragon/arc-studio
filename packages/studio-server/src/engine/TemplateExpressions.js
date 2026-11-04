@@ -127,6 +127,7 @@ const TEMPLATE_FILTER_NAMES = new Set([
   'title', 'titlecase', 'capitalize', 'replace', 'replacefirst', 'join', 'slice', 'length', 'json', 'default',
   'tonumber', 'tostring', 'totext', 'round', 'floor', 'ceil'
 ]);
+export const TEMPLATE_FUNCTION_NAMES = Object.freeze(Object.keys(MATH));
 export const RESERVED_TEMPLATE_FUNCTION_NAMES = new Set([
   ...Object.keys(MATH), ...TEMPLATE_FILTER_NAMES,
   'true', 'false', 'null', 'undefined', 'pi', 'e', 'tau'
