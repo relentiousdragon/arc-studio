@@ -8948,6 +8948,23 @@ function graphPin(node, direction, pinId, variables, graphLookup = null, connect
   const dynamicPins = resolveDynamicNodePins(definition, node, connections);
   const resolvedDynamicPin = dynamicPins?.[direction]?.find((pin) => pin.id === pinId);
   if (resolvedDynamicPin) return resolvedDynamicPin;
+  const execInputPin = (definition.inputs || []).find((pin) => pin.type === 'exec');
+  const hasExecOutput = (definition.outputs || []).some((pin) => pin.type === 'exec' && pin.id === 'exec');
+  if (direction === 'outputs' && execInputPin && hasExecOutput && !['parallel', 'parallel_join'].includes(node.type)) {
+    const mirrorMatch = new RegExp(`^${execInputPin.id}_(\\d+)$`).exec(pinId);
+    if (mirrorMatch) {
+      const highestConnected = connections.reduce((highest, wire) => {
+        if (wire.targetNodeId !== node.id) return highest;
+        if (wire.targetPinId === execInputPin.id) return Math.max(highest, 1);
+        const entryMatch = new RegExp(`^${execInputPin.id}_(\\d+)$`).exec(wire.targetPinId);
+        return entryMatch ? Math.max(highest, Number(entryMatch[1])) : highest;
+      }, 0);
+      const entryCount = Math.min(16, Math.max(1, highestConnected + 1));
+      const entryIndex = Number(mirrorMatch[1]);
+      if (entryIndex >= 2 && entryIndex <= entryCount) return { id: pinId, type: 'exec' };
+      return null;
+    }
+  }
   if (node.type === 'event_slash_command' && direction === 'outputs' && pinId.startsWith('option_')) {
     const option = flattenSlashParameters(node.data?.options).find((item) => item.pinId === pinId)?.option;
     if (option) return { id: pinId, type: ({ 4: 'number', 10: 'number', 5: 'boolean', 11: 'object' })[Number(option.type)] || 'string' };
