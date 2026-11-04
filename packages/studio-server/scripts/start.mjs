@@ -82,6 +82,26 @@ if (!serverOnly && desktopMode && (!fs.existsSync(clientIndex) || logoPaths.some
 }
 
 if (runServerOnly) process.env.ARC_SERVER_ONLY = '1';
-await import('../src/index.js');
+
+try {
+  await import('../src/index.js');
+} catch (error) {
+  let missingPackage = '';
+  if (error?.code === 'ERR_MODULE_NOT_FOUND') {
+    missingPackage = /Cannot find (?:package|module) '([^']+)'/.exec(String(error.message || ''))?.[1] || '';
+  }
+  if (!missingPackage || missingPackage.startsWith('.') || missingPackage.startsWith('/')) throw error;
+  const message = 'Some npm packages are missing or not installed. Run npm install in the ARC Studio repository root to install the missing packages, then start ARC Studio again.';
+  let reported = false;
+  try {
+    const { Logger } = await import('../src/engine/Logger.js');
+    const logger = new Logger();
+    logger.log('ERROR', `[Startup] ${message}`);
+    await new Promise((resolveClose) => logger.close(resolveClose));
+    reported = true;
+  } catch {}
+  if (!reported) console.error(`\x1b[31m[ERROR] ${message}\x1b[0m`);
+  process.exit(0);
+}
 
 // contributors: @relentiousdragon
