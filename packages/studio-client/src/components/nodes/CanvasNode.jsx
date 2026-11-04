@@ -14,6 +14,7 @@ import { apiUrl } from '../../core/api.js';
 import { onPageBlur } from '../../core/pageFocus.js';
 import { resolveVariableReference } from '../../core/projectVariables.js';
 import { getInputDefault } from '../../../../studio-server/src/engine/NodeSchemaDefinitions.js';
+import { TEMPLATE_FUNCTION_NAMES } from '../../../../studio-server/src/engine/TemplateExpressions.js';
 import { attachTemplateAutocomplete } from '../../core/templateFieldAutocomplete.js';
 //
 const slashCommandNamePattern = /^[-_'\p{L}\p{N}\p{sc=Deva}\p{sc=Thai}]{1,32}$/u;
@@ -162,11 +163,17 @@ function CanvasNodeView({
     }).map((item) => ({ path: item.path, label: item.label || item.path }));
     return [...new Map([...variablePaths, ...eventPaths].map((item) => [item.path, item])).values()];
   }, [graphVariables, eventTemplatePaths]);
-  const templateContextRef = React.useRef({ variables: [], paths: [], sockets: [] });
+  const templateContextRef = React.useRef({ variables: [], paths: [], sockets: [], functions: [] });
   templateContextRef.current = {
     variables: graphVariables.filter((variable) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(variable.name || '')).map((variable) => ({ label: variable.name, insert: variable.name })),
     paths: templatePaths,
-    sockets: nodeDef.inputs.filter((pin) => /^arg_\d+$/.test(pin.id)).map((pin) => ({ label: pin.label || pin.id, insert: pin.id.replace(/^arg_/, 'arg') }))
+    sockets: nodeDef.inputs.filter((pin) => /^arg_\d+$/.test(pin.id)).map((pin) => ({ label: pin.label || pin.id, insert: pin.id.replace(/^arg_/, 'arg') })),
+    functions: [
+      ...TEMPLATE_FUNCTION_NAMES.map((name) => ({ label: `${name}()`, insert: `${name}()` })),
+      ...(callableGraphs || [])
+        .filter((graph) => graph?.graphType === 'function' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(graph.name || ''))
+        .map((graph) => ({ label: `${graph.name}()`, insert: `${graph.name}()` }))
+    ]
   };
   const cardRef = React.useRef(null);
   React.useEffect(() => attachTemplateAutocomplete(cardRef.current, () => templateContextRef.current), [node.id]);
