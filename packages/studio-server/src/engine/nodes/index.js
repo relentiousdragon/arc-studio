@@ -128,6 +128,7 @@ import node_action_get_guild_role_permissions from './discord-actions/action_get
 import node_action_get_channel_member_permissions from './discord-actions/action_get_channel_member_permissions.js';
 import node_action_get_channel_role_permissions from './discord-actions/action_get_channel_role_permissions.js';
 import node_action_fetch_channel from './discord-actions/action_fetch_channel.js';
+import node_action_fetch_role from './discord-actions/action_fetch_role.js';
 import node_action_fetch_channel_messages from './discord-actions/action_fetch_channel_messages.js';
 import node_action_fetch_message from './discord-actions/action_fetch_message.js';
 import node_action_set_presence from './discord-actions/action_set_presence.js';
@@ -323,6 +324,7 @@ export const nodeDefinitions = [
   node_action_get_channel_member_permissions,
   node_action_get_channel_role_permissions,
   node_action_fetch_channel,
+  node_action_fetch_role,
   node_action_fetch_channel_messages,
   node_action_fetch_message,
   node_action_set_presence,
