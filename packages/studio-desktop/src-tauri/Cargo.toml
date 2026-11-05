@@ -20,3 +20,4 @@ url = "2"
 uuid = { version = "1", features = ["v4"] }
 discord-rich-presence = "1.1"
 tauri-plugin-updater = "2"
+tauri-plugin-notification = "2"
