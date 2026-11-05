@@ -5,7 +5,7 @@ const GUILD_NODE_TYPES = new Set([
   'action_fetch_user', 'action_fetch_guild', 'action_fetch_member',
   'action_get_guild_member_permissions', 'action_get_guild_role_permissions',
   'action_get_channel_member_permissions', 'action_get_channel_role_permissions',
-  'action_fetch_channel', 'action_fetch_channel_messages', 'action_fetch_message',
+  'action_fetch_channel', 'action_fetch_role', 'action_fetch_channel_messages', 'action_fetch_message',
   'action_create_thread', 'action_start_thread_from_message',
   'action_create_channel', 'action_edit_channel', 'action_delete_channel',
   'action_create_role', 'action_member_role', 'action_moderate_member',
@@ -14,6 +14,20 @@ const GUILD_NODE_TYPES = new Set([
 //
 export function isDiscordGuildNodeType(type) {
   return GUILD_NODE_TYPES.has(type);
+}
+
+function resolveChannelOverwrites(node, resolveInput) {
+  let overwrites = resolveInput('permission_overwrites', node.data?.permission_overwrites || []);
+  if (!overwrites?.length && Number(node.data?.overwriteCount) > 0) {
+    const targetInputs = Object.fromEntries(Object.keys(node.data || {}).filter((key) => /^target_id_\d+$/.test(key)).map((key) => [key, resolveInput(key, node.data[key])]));
+    overwrites = evaluateDataNode('data_permission_overwrites', targetInputs, node.data).overwrites;
+  }
+  if (!overwrites?.length) return null;
+  if (typeof overwrites === 'string') {
+    try { overwrites = JSON.parse(overwrites); } catch { throw new Error('Permission overwrites must be an array.'); }
+  }
+  if (!Array.isArray(overwrites) || overwrites.length > 100) throw new Error('Permission overwrites must be an array with at most 100 entries.');
+  return overwrites;
 }
 
 export async function executeDiscordGuildNode(node, {
@@ -122,14 +136,35 @@ export async function executeDiscordGuildNode(node, {
           if (typeof rest?.getChannel !== 'function') throw new Error('Get Channel Info requires a connected Discord REST client.');
           const channel = await rest.getChannel(channelId);
           if (!channel || typeof channel !== 'object' || Array.isArray(channel)) throw new Error('Discord did not return a valid channel object.');
+          const permissionOverwrites = Array.isArray(channel.permission_overwrites) ? channel.permission_overwrites : [];
           for (const [pinId, value] of Object.entries({
             channel, channel_id_out: channel.id || channelId, name: channel.name || '', type: Number(channel.type) || 0,
-            guild_id: channel.guild_id || '', parent_id: channel.parent_id || '', topic: channel.topic || '',
-            nsfw: Boolean(channel.nsfw), last_message_id: channel.last_message_id || '',
+            guild_id: channel.guild_id || '', parent_id: channel.parent_id || '', position: Number(channel.position) || 0,
+            permission_overwrites: permissionOverwrites, overwrite_count: permissionOverwrites.length,
+            topic: channel.topic || '', nsfw: Boolean(channel.nsfw), last_message_id: channel.last_message_id || '',
             flags: Number(channel.flags) || 0,
             obfuscated: ((Number(channel.flags) || 0) & ChannelFlags.CHANNEL_OBFUSCATED) !== 0
           })) setOutput(pinId, value);
           log(`[Get Channel Info] Fetched channel ${channel.id || channelId}.`);
+          setOutput('success', true);
+          return true;
+        } else if (node.type === 'action_fetch_role') {
+          const guildId = String(resolveInput('guild_id', node.data?.guild_id || '')).trim();
+          const roleId = String(resolveInput('role_id', node.data?.role_id || '')).trim();
+          if (!guildId || !roleId) throw new TypeError('Get Role Info needs a Server ID and Role ID.');
+          if (typeof rest?.getGuildRole !== 'function') throw new Error('Get Role Info requires a connected Discord REST client.');
+          const role = await rest.getGuildRole(guildId, roleId);
+          if (!role || typeof role !== 'object' || Array.isArray(role)) throw new Error('Discord did not return a valid role object.');
+          const color = Number(role.color) || 0;
+          for (const [pinId, value] of Object.entries({
+            role, role_id_out: role.id || roleId, name: role.name || '', color,
+            color_hex: `#${color.toString(16).padStart(6, '0')}`,
+            hoist: Boolean(role.hoist), mentionable: Boolean(role.mentionable), managed: Boolean(role.managed),
+            position: Number(role.position) || 0, permissions: String(role.permissions || '0'),
+            icon: role.icon || '', unicode_emoji: role.unicode_emoji || '', flags: Number(role.flags) || 0,
+            tags: role.tags && typeof role.tags === 'object' && !Array.isArray(role.tags) ? role.tags : {}
+          })) setOutput(pinId, value);
+          log(`[Get Role Info] Fetched role ${role.id || roleId} in server ${guildId}.`);
           setOutput('success', true);
           return true;
         } else if (node.type === 'action_fetch_channel_messages') {
@@ -232,17 +267,10 @@ export async function executeDiscordGuildNode(node, {
           if (!CREATE_CHANNEL_TYPE_IDS.includes(channelTypeId)) throw new Error('Create Channel type must be a valid Discord channel type (0 text, 2 voice, 4 category, 5 announcement, 13 stage, 15 forum, 16 media).');
           const body = { name, type: channelTypeId };
           const categoryId = String(resolveInput('category_id', (node.data?.category_id ?? node.data?.parent_id) || '')).trim();
-          const overwriteSource = resolveInput('permission_overwrites', node.data?.permission_overwrites || []);
+          const overwrites = resolveChannelOverwrites(node, resolveInput);
           const topic = String(resolveInput('topic', node.data?.topic || '')).slice(0, [15, 16].includes(channelTypeId) ? 4096 : 1024);
           if (categoryId) body.parent_id = categoryId;
-          if (overwriteSource?.length) {
-            let overwrites = overwriteSource;
-            if (typeof overwrites === 'string') {
-              try { overwrites = JSON.parse(overwrites); } catch { throw new Error('Permission overwrites must be an array.'); }
-            }
-            if (!Array.isArray(overwrites) || overwrites.length > 100) throw new Error('Permission overwrites must be an array with at most 100 entries.');
-            body.permission_overwrites = overwrites;
-          }
+          if (overwrites) body.permission_overwrites = overwrites;
           if (topic && [0, 5, 15, 16].includes(channelTypeId)) body.topic = topic;
           // Fields only apply to the channel types Discord creates them on.
           const setCreateField = (id, transform = (value) => value, allowedTypes) => {
@@ -309,18 +337,8 @@ export async function executeDiscordGuildNode(node, {
           } else {
             if (topic) body.topic = topic.slice(0, 1024);
             if (parentId) body.parent_id = parentId;
-            const overwriteSource = resolveInput('permission_overwrites', node.data?.permission_overwrites || []);
-            if (overwriteSource?.length) {
-              let overwrites = overwriteSource;
-              if (typeof overwrites === 'string') {
-                try { overwrites = JSON.parse(overwrites); } catch { throw new Error('Permission overwrites must be an array.'); }
-              }
-              if (!Array.isArray(overwrites) || overwrites.length > 100) throw new Error('Permission overwrites must be an array with at most 100 entries.');
-              body.permission_overwrites = overwrites;
-            } else if (Number(node.data?.overwriteCount) > 0) {
-              const targetInputs = Object.fromEntries(Object.keys(node.data || {}).filter((key) => /^target_id_\d+$/.test(key)).map((key) => [key, resolveInput(key, node.data[key])]));
-              body.permission_overwrites = evaluateDataNode('data_permission_overwrites', targetInputs, node.data).overwrites;
-            }
+            const overwrites = resolveChannelOverwrites(node, resolveInput);
+            if (overwrites) body.permission_overwrites = overwrites;
           }
           if (!threadId) {
             const setOptionalChannelField = (key, transform = (value) => value, { skipEmpty = false } = {}) => {
