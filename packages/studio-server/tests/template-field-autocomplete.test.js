@@ -1,6 +1,31 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { replaceTemplateToken, templateFieldSuggestions, templateTokenAt } from '../../studio-client/src/core/templateFieldAutocomplete.js';
+import { getNodeTemplateInputPins } from '../../studio-client/src/components/nodes/nodeDefinitions.js';
+import { TEMPLATE_SYSTEM_PATHS } from '../src/engine/TemplateExpressions.js';
+
+test('suggests the system chezcord permission namespace', () => {
+  const suggestions = templateFieldSuggestions('chezcord.', { paths: TEMPLATE_SYSTEM_PATHS });
+  assert.equal(suggestions[0]?.insert, 'chezcord.permissions}}');
+});
+
+test('suggests a user VIEW_CHANNELS variable beside the namespaced permission', () => {
+  const suggestions = templateFieldSuggestions('VIEW_CHANNELS', {
+    variables: [{ label: 'VIEW_CHANNELS', insert: 'VIEW_CHANNELS' }],
+    paths: TEMPLATE_SYSTEM_PATHS
+  });
+  assert.deepEqual(suggestions.map((item) => item.insert), ['VIEW_CHANNELS}}', 'chezcord.permissions.VIEW_CHANNELS}}']);
+});
+
+test('does not create a template input for the system chezcord namespace', () => {
+  const pins = getNodeTemplateInputPins(
+    { id: 'node-1', data: { text: '{{chezcord.permissions.VIEW_CHANNEL}}' } },
+    [{ id: 'text', type: 'string' }],
+    [],
+    []
+  );
+  assert.deepEqual(pins, []);
+});
 //
 test('keeps the opening braces when a suggestion is inserted after existing text', () => {
   const token = templateTokenAt('text{{var', 9);
