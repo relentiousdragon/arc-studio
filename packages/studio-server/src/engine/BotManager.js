@@ -830,7 +830,8 @@ export class BotManager {
       if (node.type === 'action_create_thread') {
         permissions.add('View Channels');
         const typeIsWired = graph.connections?.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'thread_type');
-        const threadType = String(node.data?.thread_type || 'public').toLowerCase();
+        const rawThreadType = node.data?.thread_type;
+        const threadType = [11, '11'].includes(rawThreadType) ? 'public' : [12, '12'].includes(rawThreadType) ? 'private' : String(rawThreadType || 'public').toLowerCase();
         if (typeIsWired || !['public', 'private'].includes(threadType)) {
           permissions.add('Create Public Threads');
           permissions.add('Create Private Threads');
@@ -1607,7 +1608,9 @@ export class BotManager {
         const dynamicName = name.includes('{{') || (Array.isArray(graphData.connections) && graphData.connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'name'));
         if (dynamicName) continue;
         const validName = /^(?=.{1,64}$)[A-Za-z0-9]+(?:_+[A-Za-z0-9]+|-[A-Za-z0-9]+)*$/.test(name);
-        if (!validName) throw new TypeError('Create Variable names must start and end with a letter or number, with letters, numbers, hyphens, or underscores inside.');
+        if (!validName) {
+          this.log('WARN', `Create Variable node “${node.id}” in graph “${graphData.name || tabId}” has an invalid name “${name || 'unnamed'}”: names must start and end with a letter or number, with letters, numbers, hyphens, or underscores inside. Fix the node before running the graph.`);
+        }
       }
     }
     if (Array.isArray(graphData.variables)) {
