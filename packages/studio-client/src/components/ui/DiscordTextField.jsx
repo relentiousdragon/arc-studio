@@ -102,15 +102,13 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
         || Math.min(284, 150 + Math.max(1, suggestions.length) * 34);
       const spaceAbove = Math.max(0, rect.top - gutter * 2);
       const spaceBelow = Math.max(0, window.innerHeight - rect.bottom - gutter * 2);
-      const showAbove = spaceAbove >= popupHeight || spaceAbove >= spaceBelow;
+      const showAbove = spaceBelow < Math.min(popupHeight, 284) && spaceAbove > spaceBelow;
       const availableSpace = showAbove ? spaceAbove : spaceBelow;
-      const maxHeight = Math.max(72, Math.min(284, availableSpace));
-      const height = Math.min(popupHeight, maxHeight);
-      const top = showAbove
-        ? Math.max(gutter, rect.top - height - 8)
-        : Math.min(window.innerHeight - height - gutter, rect.bottom + 8);
+      const maxHeight = Math.max(24, Math.min(284, availableSpace));
 
-      setPosition({ left, top, width, maxHeight });
+      setPosition(showAbove
+        ? { left, top: 'auto', bottom: window.innerHeight - rect.top + 8, width, maxHeight }
+        : { left, top: rect.bottom + 8, bottom: 'auto', width, maxHeight });
     };
     update();
     const frame = window.requestAnimationFrame(update);
@@ -241,7 +239,7 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
   return <>
     <Component {...fieldProps} data-template-autocomplete="native" data-soft-maxlength={props.maxLength ?? undefined} ref={inputRef} className={className} value={value} onFocus={handleFocus} onChange={onInputChange} onKeyDown={handleKeyDown} onPointerDown={onPointerDown} onContextMenu={handleContextMenu} />
     {textMenu && <div className="discord-text-context-menu" style={{ left: textMenu.x, top: textMenu.y }} role="menu"><button type="button" role="menuitem" onPointerDown={(event) => event.preventDefault()} onClick={(event) => { event.stopPropagation(); setTextMenu(null); onOpenTextEditor?.(); }}>Open in text editor</button></div>}
-    {(discordAutocomplete || templateAutocomplete) && match && position && showSuggestions && createPortal(<div ref={pickerRef} className="discord-emoji-suggestions" style={{ left: position.left, top: position.top, width: position.width, maxHeight: position.maxHeight, overflowY: 'auto' }} role="listbox" aria-label={match.kind === 'template' ? 'Template suggestions' : 'Emoji suggestions'}>
+    {(discordAutocomplete || templateAutocomplete) && match && position && showSuggestions && createPortal(<div ref={pickerRef} className="discord-emoji-suggestions" style={{ left: position.left, top: position.top, bottom: position.bottom, width: position.width, maxHeight: position.maxHeight, overflowY: 'auto' }} role="listbox" aria-label={match.kind === 'template' ? 'Template suggestions' : 'Emoji suggestions'}>
       <div className="discord-emoji-suggestion-heading">{match.kind === 'template' ? (match.filterStage ? 'FILTER' : match.pathStage ? 'VALUE PATH' : 'VARIABLE') : 'EMOJI'}{match.query ? ` · ${match.query}` : ''}</div>
       {suggestions.length ? suggestions.map((item, index) => <button type="button" role="option" aria-selected={index === selectedIndex} className={`discord-emoji-suggestion ${index === selectedIndex ? 'is-selected' : ''}`} key={item.key} onPointerDown={(event) => event.preventDefault()} onMouseEnter={() => setSelectedIndex(index)} onClick={() => selectSuggestion(item)}>
         {match.kind === 'template' ? <span className="discord-emoji-suggestion-glyph">{match.filterStage ? 'ƒ' : '{{'}</span> : item.isCustom ? <img src={item.image} alt="" /> : <span className="discord-emoji-suggestion-glyph">{item.emoji}</span>}
