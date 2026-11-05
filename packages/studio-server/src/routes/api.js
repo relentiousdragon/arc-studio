@@ -683,7 +683,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
   });
 
   router.post('/auth/logout', (req, res) => {
-    const token = req.headers['x-arc-token'] || req.headers.authorization?.replace(/^Bearer\s+/i, '') || req.query.token;
+    const token = req.headers['x-arc-token'] || req.headers.authorization?.replace(/^Bearer\s+/i, '');
     userStore.endSession(token);
     res.json({ success: true });
   });
