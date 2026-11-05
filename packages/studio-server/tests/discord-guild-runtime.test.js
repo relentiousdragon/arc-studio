@@ -57,11 +57,30 @@ test('guild runtime fetches users, servers, and members with normalized outputs'
   assert.equal(member.outputs.get('deaf'), true);
 
   const channel = createGuildHarness('action_fetch_channel', { channel_id: 'channel-1' }, {
-    rest: { getChannel: async () => ({ id: 'channel-1', flags: 1 << 17 }) }
+    rest: { getChannel: async () => ({
+      id: 'channel-1', flags: 1 << 17, position: 4,
+      permission_overwrites: [{ id: 'role-1', allow: '1024', deny: '0', type: 0 }]
+    }) }
   });
   await channel.execute();
   assert.equal(channel.outputs.get('flags'), 1 << 17);
   assert.equal(channel.outputs.get('obfuscated'), true);
+  assert.equal(channel.outputs.get('position'), 4);
+  assert.equal(channel.outputs.get('overwrite_count'), 1);
+  assert.deepEqual(channel.outputs.get('permission_overwrites'), [{ id: 'role-1', allow: '1024', deny: '0', type: 0 }]);
+
+  const role = createGuildHarness('action_fetch_role', { guild_id: 'guild-1', role_id: 'role-1' }, {
+    rest: { getGuildRole: async () => ({
+      id: 'role-1', name: 'Moderators', color: 0xff0000, position: 2, permissions: '8',
+      hoist: true, managed: false, mentionable: true, tags: { bot_id: 'app-1' }
+    }) }
+  });
+  await role.execute();
+  assert.equal(role.outputs.get('name'), 'Moderators');
+  assert.equal(role.outputs.get('color_hex'), '#ff0000');
+  assert.equal(role.outputs.get('position'), 2);
+  assert.equal(role.outputs.get('permissions'), '8');
+  assert.deepEqual(role.outputs.get('tags'), { bot_id: 'app-1' });
 });
 
 test('guild runtime fetches member and role permission bitfields', async () => {
@@ -149,6 +168,32 @@ test('guild runtime creates channels and roles and applies role changes', async 
   });
   await memberRole.execute();
   assert.deepEqual(calls[2], ['member-role', 'guild-1', 'user-1', 'role-1', 'cleanup']);
+
+  const studioOverwrites = createGuildHarness('action_create_channel', {
+    guild_id: 'guild-1',
+    name: 'rules',
+    channel_type: 0,
+    category_id: 'category-1',
+    position: 3,
+    overwriteCount: 1,
+    target_id_1: 'role-1',
+    target_type_1: 0,
+    allow_1: [],
+    deny_1: []
+  }, {
+    rest: { createGuildChannel: async (...args) => {
+      calls.push(['studio-overwrites', ...args]);
+      return { id: 'channel-2' };
+    } }
+  });
+  await studioOverwrites.execute();
+  assert.deepEqual(calls[3], ['studio-overwrites', 'guild-1', {
+    name: 'rules',
+    type: 0,
+    parent_id: 'category-1',
+    permission_overwrites: [{ id: 'role-1', type: 0 }],
+    position: 3
+  }, '']);
 });
 
 test('guild runtime applies thread and voice operations and preserves connected input semantics', async () => {
