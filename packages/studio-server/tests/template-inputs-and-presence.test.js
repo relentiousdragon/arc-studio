@@ -1,7 +1,39 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { GraphRunner } from '../src/engine/GraphRunner.js';
-import { getTemplateReferences, renderTextTemplate } from '../src/engine/TemplateExpressions.js';
+import { getTemplateReferences, isReservedTemplateRoot, renderTextTemplate, TEMPLATE_SYSTEM_PATHS, validateTemplateFunctionName } from '../src/engine/TemplateExpressions.js';
+
+it('resolves Discord permissions through the system chezcord namespace', () => {
+  const render = (template) => renderTextTemplate(template, () => undefined);
+  assert.equal(render('{{chezcord.permissions.VIEW_CHANNEL}}'), String(1n << 10n));
+  assert.equal(render('{{chezcord.permissions.VIEW_CHANNELS}}'), String(1n << 10n));
+  assert.equal(render('{{chezcord.permissions.ADMINISTRATOR}}'), String(1n << 3n));
+  assert.ok(TEMPLATE_SYSTEM_PATHS.some((item) => item.path === 'chezcord.permissions.VIEW_CHANNEL'));
+});
+
+it('does not treat the system chezcord root as an unresolved template reference', () => {
+  assert.deepEqual(getTemplateReferences('chezcord.permissions.VIEW_CHANNEL'), []);
+  assert.deepEqual(getTemplateReferences('chezcord.permissions.VIEW_CHANNEL + VAR'), ['VAR']);
+});
+
+it('reserves chezcord for the system template namespace', () => {
+  assert.equal(isReservedTemplateRoot('ChezCord'), true);
+  assert.match(validateTemplateFunctionName('chezcord'), /reserved/);
+});
+
+it('treats bare permission names as ordinary template variables', () => {
+  assert.equal(renderTextTemplate('{{VIEW_CHANNELS}}', () => undefined), '{{VIEW_CHANNELS}}');
+  assert.deepEqual(getTemplateReferences('VIEW_CHANNELS'), ['VIEW_CHANNELS']);
+  assert.equal(validateTemplateFunctionName('VIEW_CHANNELS'), '');
+});
+
+it('keeps a user variable named VIEW_CHANNELS separate from chezcord permissions', () => {
+  const values = { VIEW_CHANNELS: 'my channel list' };
+  const render = (template) => renderTextTemplate(template, (name) => values[name]);
+  assert.equal(render('{{VIEW_CHANNELS}}'), 'my channel list');
+  assert.equal(render('{{chezcord.permissions.VIEW_CHANNELS}}'), String(1n << 10n));
+  assert.deepEqual(getTemplateReferences('chezcord.permissions.VIEW_CHANNELS + VIEW_CHANNELS'), ['VIEW_CHANNELS']);
+});
 
 it('warns for undefined template values without interrupting rendering and accepts conditional fallbacks', () => {
   const warnings = [];
