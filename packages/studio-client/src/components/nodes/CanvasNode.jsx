@@ -1008,6 +1008,20 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       )}
     </div>;
   }
+  if (['action_get_guild_member_permissions', 'action_get_guild_role_permissions', 'action_get_channel_member_permissions', 'action_get_channel_role_permissions'].includes(node.type)) {
+    const channelScope = node.type.startsWith('action_get_channel_');
+    const memberTarget = node.type.endsWith('_member_permissions');
+    const scopeId = channelScope ? 'channel_id' : 'guild_id';
+    const scopeLabel = channelScope ? 'Channel ID' : 'Server ID';
+    const targetId = memberTarget ? 'user_id' : 'role_id';
+    const targetLabel = memberTarget ? 'Member ID' : 'Role ID';
+    return <div className="node-config node-config-stack">
+      {!isConnected(scopeId) && <FallbackField label={scopeLabel}><input value={node.data?.[scopeId] ?? ''} onChange={(event) => update(scopeId, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label={scopeLabel} /></FallbackField>}
+      {!isConnected(targetId) && <FallbackField label={targetLabel}><input value={node.data?.[targetId] ?? ''} onChange={(event) => update(targetId, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label={targetLabel} /></FallbackField>}
+      {channelScope && !isConnected('implicit') && <FallbackCheckbox label="Apply Implicit Masking" checked={node.data?.implicit ?? nodeDef.defaultData?.implicit ?? true} onChange={(value) => update('implicit', value)} />}
+      <span className="node-config-hint">Connect Permissions Bitfield to Check Permission to test a named permission.</span>
+    </div>;
+  }
   if (node.type.startsWith('action_') && ['action_create_channel', 'action_create_thread', 'action_start_thread_from_message', 'action_edit_channel', 'action_delete_channel', 'action_create_role', 'action_member_role', 'action_moderate_member', 'action_voice_channel_status', 'action_voice_state'].includes(node.type)) {
     const textField = (id, label, placeholder = 'Used when unconnected') => isConnected(id) ? null : <FallbackField key={id} label={label}><input value={node.data?.[id] ?? ''} onChange={(event) => update(id, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder={placeholder} aria-label={label} /></FallbackField>;
     const reason = textField('reason', 'Audit Log Reason');
