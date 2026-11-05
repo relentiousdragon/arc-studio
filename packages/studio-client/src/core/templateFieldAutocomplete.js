@@ -112,6 +112,11 @@ export function templateFieldSuggestions(query, context = {}) {
     if (!name || (lower && !name.toLowerCase().includes(lower))) continue;
     push(typeof entry === 'string' ? name : entry.label || name, name);
   }
+  for (const entry of context.constants || []) {
+    const name = typeof entry === 'string' ? entry : entry?.insert || '';
+    if (!name || (lower && !name.toLowerCase().includes(lower))) continue;
+    push(typeof entry === 'string' ? name : entry.label || name, name);
+  }
   return list.slice(0, MAX_SUGGESTIONS);
 }
 
