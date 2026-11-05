@@ -15,6 +15,7 @@
     "@simplewebauthn/browser": "^14.0.0",
     "@tauri-apps/api": "^2.12.4",
     "@tauri-apps/plugin-deep-link": "^2.6.3",
+    "@tauri-apps/plugin-notification": "^2.8.0",
     "@tauri-apps/plugin-updater": "^2.14.0",
     "emoji-picker-react": "^4.22.3",
     "lucide-react": "^0.475.0",
