@@ -231,6 +231,16 @@ const EVENT_PATHS = Object.freeze({
     ...USER_PATHS,
     { path: 'guild.name', label: 'Server name' }
   ],
+  event_guild_audit_log_entry_create: [
+    { path: 'audit_log.id', label: 'Audit log entry ID' },
+    { path: 'audit_log.guild_id', label: 'Server ID' },
+    { path: 'audit_log.action_type', label: 'Action type ID' },
+    { path: 'audit_log.target_id', label: 'Target ID' },
+    { path: 'audit_log.user_id', label: 'Acting user ID' },
+    { path: 'audit_log.reason', label: 'Reason' },
+    { path: 'audit_log.changes', label: 'Changes' },
+    { path: 'audit_log.options.count', label: 'Affected item count' }
+  ],
   event_role_create: [
     { path: 'role.id', label: 'Role ID' },
     { path: 'role.name', label: 'Role name' },
@@ -502,6 +512,7 @@ export function buildEventTemplateValues(type, payload, directory = {}) {
     } : null,
     scheduled_event: scheduledEventView(type, safePayload),
     automod: automodView(type, safePayload),
+    audit_log: type === 'event_guild_audit_log_entry_create' ? safePayload : null,
     websocket: websocketView(type, safePayload),
     cron: type === 'event_cron' ? {
       node_id: safePayload.cronNodeId || '',
