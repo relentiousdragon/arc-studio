@@ -149,6 +149,7 @@ import node_data_to_json from './values-data/data_to_json.js';
 import node_data_parse_json from './values-data/data_parse_json.js';
 import node_data_to_number from './values-data/data_to_number.js';
 import node_data_check_value from './values-data/data_check_value.js';
+import node_data_check_permission from './values-data/data_check_permission.js';
 import node_data_get_value_by_path from './values-data/data_get_value_by_path.js';
 import node_data_find_array_item from './values-data/data_find_array_item.js';
 import node_data_filter_array from './values-data/data_filter_array.js';
@@ -342,6 +343,7 @@ export const nodeDefinitions = [
   node_data_parse_json,
   node_data_to_number,
   node_data_check_value,
+  node_data_check_permission,
   node_data_get_value_by_path,
   node_data_find_array_item,
   node_data_filter_array,
