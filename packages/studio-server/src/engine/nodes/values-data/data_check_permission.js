@@ -1,4 +1,4 @@
-import { DISCORD_PERMISSION_FLAGS, discordPermissionLabel } from '../../DiscordPermissions.js';
+import { PermissionFlagEntries } from 'chezcord/constants';
 //
 export default {
   description: 'Checks one named Discord permission in a permission bitfield. Connect the Permissions Bitfield output from a guild or channel permission node.',
@@ -12,13 +12,13 @@ export default {
       placeholder: 'Connect a Permissions Bitfield output'
     },
     {
-      type: 'select', key: 'permission', inputId: 'permission', label: 'Permission', defaultValue: 'ViewChannel',
-      options: DISCORD_PERMISSION_FLAGS.map(({ name }) => ({ value: name, label: discordPermissionLabel(name) }))
+      type: 'select', key: 'permission', inputId: 'permission', label: 'Permission', defaultValue: 'VIEW_CHANNEL',
+      options: PermissionFlagEntries.map(({ name, label }) => ({ value: name, label }))
     }
   ],
   inputs: [
     { id: 'permissions', label: 'Permissions Bitfield', type: 'string', defaultValue: '' },
-    { id: 'permission', label: 'Permission', type: 'string', defaultValue: 'ViewChannel' }
+    { id: 'permission', label: 'Permission', type: 'string', defaultValue: 'VIEW_CHANNEL' }
   ],
   outputs: [
     { id: 'has_permission', label: 'Has Permission', type: 'boolean' },
