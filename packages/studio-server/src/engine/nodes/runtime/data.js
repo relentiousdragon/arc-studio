@@ -2,10 +2,13 @@ import dayjs from 'dayjs';
 import duration from 'dayjs/plugin/duration.js';
 import utc from 'dayjs/plugin/utc.js';
 import timezone from 'dayjs/plugin/timezone.js';
-import { DISCORD_PERMISSION_BIT_BY_NAME } from '../../DiscordPermissions.js';
+import { PermissionFlagEntries, PermissionFlags } from 'chezcord/constants';
 dayjs.extend(duration);
 dayjs.extend(utc);
 dayjs.extend(timezone);
+
+const permissionAliases = Object.freeze(Object.fromEntries(PermissionFlagEntries.flatMap(({ name, legacyName }) => [[name, name], [legacyName, name]])));
+const legacyPermissionFlags = Object.freeze(Object.fromEntries(PermissionFlagEntries.map(({ legacyName, mask }) => [legacyName, mask])));
 
 function regexSafetyError(pattern) {
   if (pattern.length > 256) return 'Regex pattern is limited to 256 characters.';
@@ -130,14 +133,14 @@ export function evaluateDataNode(type, inputs = {}, data = {}) {
     const text = typeof rawPermissions === 'string' ? rawPermissions.trim()
       : typeof rawPermissions === 'bigint' ? rawPermissions.toString()
         : typeof rawPermissions === 'number' && Number.isSafeInteger(rawPermissions) ? String(rawPermissions) : '';
-    const permissionBit = DISCORD_PERMISSION_BIT_BY_NAME[String(inputs.permission || '')];
-    if (!/^(?:0|[1-9]\d{0,31})$/.test(text) || permissionBit === undefined) {
+    const permissionName = permissionAliases[String(inputs.permission || '')];
+    const permissionMask = PermissionFlags[permissionName];
+    if (!/^(?:0|[1-9]\d{0,31})$/.test(text) || permissionMask === undefined) {
       return { has_permission: false, valid: false };
     }
     const permissions = BigInt(text);
-    const mask = 1n << BigInt(permissionBit);
-    const administrator = (permissions & (1n << 3n)) !== 0n;
-    return { has_permission: inputs.permission === 'Administrator' ? administrator : administrator || (permissions & mask) === mask, valid: true };
+    const administrator = (permissions & PermissionFlags.ADMINISTRATOR) !== 0n;
+    return { has_permission: permissionName === 'ADMINISTRATOR' ? administrator : administrator || (permissions & permissionMask) === permissionMask, valid: true };
   }
   if (type === 'data_check_value') {
     const value = inputs.value;
@@ -179,7 +182,7 @@ export function evaluateDataNode(type, inputs = {}, data = {}) {
     };
     const serializePermissions = (value, customBits = '') => {
       const names = Array.isArray(value) ? value : [];
-      const mask = names.reduce((total, name) => DISCORD_PERMISSION_BIT_BY_NAME[name] === undefined ? total : total | (1n << BigInt(DISCORD_PERMISSION_BIT_BY_NAME[name])), parsePermissionBits(customBits));
+      const mask = names.reduce((total, name) => legacyPermissionFlags[name] === undefined ? total : total | legacyPermissionFlags[name], parsePermissionBits(customBits));
       return mask ? mask.toString() : '';
     };
     const overwrites = [];
