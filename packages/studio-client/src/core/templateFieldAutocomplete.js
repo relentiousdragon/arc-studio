@@ -155,18 +155,25 @@ export function attachTemplateAutocomplete(container, getContext) {
     if (!rect.width && !rect.height) return;
     const caret = getCaretCoordinates(current, token.anchor);
     const gutter = 10;
+    const gap = 8;
     const width = Math.max(180, Math.min(286, rect.width || 240));
     const left = Math.max(gutter, Math.min(rect.left + caret.left - (current.scrollLeft || 0) - 8, window.innerWidth - width - gutter));
+    menu.style.left = `${left}px`;
+    menu.style.width = `${width}px`;
+    menu.style.maxHeight = 'none';
     const height = menu.getBoundingClientRect().height || Math.min(284, 120 + Math.max(1, items.length) * 34);
     const spaceAbove = Math.max(0, rect.top - gutter * 2);
     const spaceBelow = Math.max(0, window.innerHeight - rect.bottom - gutter * 2);
-    const showAbove = spaceAbove >= height || spaceAbove >= spaceBelow;
-    const maxHeight = Math.max(72, Math.min(284, showAbove ? spaceAbove : spaceBelow));
-    const renderedHeight = Math.min(height, maxHeight);
-    menu.style.left = `${left}px`;
-    menu.style.top = `${showAbove ? Math.max(gutter, rect.top - renderedHeight - 8) : Math.min(window.innerHeight - renderedHeight - gutter, rect.bottom + 8)}px`;
-    menu.style.width = `${width}px`;
+    const showAbove = spaceBelow < Math.min(height, 284) && spaceAbove > spaceBelow;
+    const maxHeight = Math.max(24, Math.min(284, showAbove ? spaceAbove : spaceBelow));
     menu.style.maxHeight = `${maxHeight}px`;
+    if (showAbove) {
+      menu.style.top = 'auto';
+      menu.style.bottom = `${window.innerHeight - rect.top + gap}px`;
+    } else {
+      menu.style.top = `${rect.bottom + gap}px`;
+      menu.style.bottom = 'auto';
+    }
   };
 
   const render = (element, query, suggestions) => {
