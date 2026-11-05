@@ -846,7 +846,7 @@ export class GraphRunner {
       try {
         const definition = NodeDefinitions[node.type];
         const pin = definition?.inputs?.find((item) => item.id === pinId);
-        const warning = fieldLimitWarning({ nodeType: node.type, pin, value });
+        const warning = fieldLimitWarning({ nodeType: node.type, pin, value, node });
         if (warning && !warnedFieldValues.has(`${node.id}:${pinId}`)) {
           warnedFieldValues.add(`${node.id}:${pinId}`);
           log(`[Warning] ${node.label || definition?.label || node.type} ${pin?.label || pinId}: ${warning}`);
