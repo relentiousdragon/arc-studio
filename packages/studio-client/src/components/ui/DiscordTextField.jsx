@@ -135,6 +135,12 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
   useEffect(() => setSelectedIndex(0), [match?.query]);
 
   useEffect(() => {
+    if (!match || !pickerRef.current) return;
+    const option = pickerRef.current.querySelectorAll('[role="option"]')[selectedIndex];
+    option?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [match, selectedIndex, suggestions.length]);
+
+  useEffect(() => {
     if (!textMenu) return undefined;
     const dismiss = (event) => {
       if (event.type === 'keydown' && event.key !== 'Escape') return;
