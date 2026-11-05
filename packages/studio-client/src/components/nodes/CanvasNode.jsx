@@ -14,7 +14,7 @@ import { apiUrl } from '../../core/api.js';
 import { onPageBlur } from '../../core/pageFocus.js';
 import { resolveVariableReference } from '../../core/projectVariables.js';
 import { getInputDefault } from '../../../../studio-server/src/engine/NodeSchemaDefinitions.js';
-import { TEMPLATE_FUNCTION_NAMES } from '../../../../studio-server/src/engine/TemplateExpressions.js';
+import { TEMPLATE_FUNCTION_NAMES, TEMPLATE_PERMISSION_CONSTANTS } from '../../../../studio-server/src/engine/TemplateExpressions.js';
 import { attachTemplateAutocomplete } from '../../core/templateFieldAutocomplete.js';
 //
 const slashCommandNamePattern = /^[-_'\p{L}\p{N}\p{sc=Deva}\p{sc=Thai}]{1,32}$/u;
@@ -190,7 +190,8 @@ function CanvasNodeView({
       ...(callableGraphs || [])
         .filter((graph) => graph?.graphType === 'function' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(graph.name || ''))
         .map((graph) => ({ label: `${graph.name}()`, insert: `${graph.name}()` }))
-    ]
+    ],
+    constants: TEMPLATE_PERMISSION_CONSTANTS.map(({ name, label }) => ({ label: `${name} · ${label}`, insert: name }))
   };
   const cardRef = React.useRef(null);
   React.useEffect(() => attachTemplateAutocomplete(cardRef.current, () => templateContextRef.current), [node.id]);
@@ -455,11 +456,14 @@ function renderSchemaControls(node, controls, update, connectedInputIds) {
         const options = (control.options || []).map((option) => ({ ...option, value: String(option.value) }));
         const selectedValue = value === '' ? control.defaultValue : value;
         return <FallbackField key={control.key} label={label}><AnimatedDropdown
-          value={String(selectedValue ?? '')}
+          value={control.multiple ? (Array.isArray(selectedValue) ? selectedValue.map(String) : selectedValue == null || selectedValue === '' ? [] : [String(selectedValue)]) : String(selectedValue ?? '')}
           options={options}
-          onChange={(next) => update(control.key, control.valueType === 'boolean' ? next === 'true' : control.valueType === 'number' ? Number(next) : next)}
+          onChange={(next) => update(control.key, control.multiple ? next : control.valueType === 'boolean' ? next === 'true' : control.valueType === 'number' ? Number(next) : next)}
           onPointerDown={(event) => event.stopPropagation()}
           ariaLabel={label}
+          multiple={Boolean(control.multiple)}
+          searchable={control.searchable ?? options.length >= 8}
+          searchThreshold={control.searchThreshold ?? 8}
           className="node-select"
         /></FallbackField>;
       }
