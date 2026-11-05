@@ -23246,6 +23246,11 @@ body.is-resizing-dock .popup-modal-studio {
   cursor: pointer;
 }
 
+.studio-preview-block[data-preview-scope="embed"]>.studio-preview-remove-button {
+  top: -9px;
+  right: -9px;
+}
+
 .studio-preview-block-controls {
   position: absolute;
   z-index: 8;
