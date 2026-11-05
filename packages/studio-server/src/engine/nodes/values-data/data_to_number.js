@@ -2,7 +2,7 @@ export default {
   "description": "Parses a complete decimal number, including sign and exponent. Invalid or non-finite input returns 0, check Valid before using it.",
   "type": "data_to_number",
   "category": "Values & Data",
-  "label": "Text to Number",
+  "label": "To Number",
   "color": "#06b6d4",
   "editorControls": [
     {
