@@ -59,7 +59,12 @@ const [studio, chezcord, desktop, studioClient] = await Promise.all([
 
 let commits = 'unavailable';
 try {
-  commits = compact(execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim());
+  const commitSubjects = execFileSync('git', ['log', '--format=%s', 'HEAD'], { cwd: root, encoding: 'utf8' })
+    .trim()
+    .split('\n')
+    .filter(Boolean);
+  const projectCommitCount = commitSubjects.filter((subject) => !subject.startsWith('docs: refresh README badges')).length;
+  commits = compact(projectCommitCount);
 } catch (error) {
   console.warn(`Commit count badge could not be updated: ${error.message}`);
 }
