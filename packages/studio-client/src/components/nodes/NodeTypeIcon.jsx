@@ -1,7 +1,7 @@
 import React from 'react';
 import {
   Activity, ArrowDown, ArrowLeftRight, ArrowUp, Asterisk, BarChart3, Calculator, CaseSensitive,
-  CircleDot, Database, Divide, Dices, GitBranch, GitCompare, GitFork, GitMerge, Hash, KeyRound,
+  CircleDot, ClipboardList, Database, Divide, Dices, GitBranch, GitCompare, GitFork, GitMerge, Hash, KeyRound,
   LockKeyhole, LogIn, LogOut, MessageSquare, MessageSquareReply, Minus,
   MousePointerClick, PanelsTopLeft, Percent, Pi, Plus, Power, Puzzle, Search, Send, ShieldCheck,
   Slash, SlidersHorizontal, Square, SquareFunction, Sigma, TextCursorInput,
@@ -41,6 +41,7 @@ const icons = {
   event_presence_update: Activity,
   event_guild_ban_add: ShieldCheck,
   event_guild_ban_remove: ShieldCheck,
+  event_guild_audit_log_entry_create: ClipboardList,
   event_scheduled_event_create: Timer,
   event_scheduled_event_update: Timer,
   event_scheduled_event_delete: Timer,
