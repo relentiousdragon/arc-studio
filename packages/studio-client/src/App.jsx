@@ -107,6 +107,7 @@ import { DEFAULT_SHORTCUTS, formatShortcut, getDefaultShortcut, shortcutMatches 
 import { playUiSound, unlockUiSounds } from './core/uiSounds.js';
 import { notifyDesktopInBackground, requestDesktopNotificationPermission } from './core/desktopNotifications.js';
 import { BuiltInNodeDefinitions, BundledNodeTypes, NODE_SCHEMA_VERSION, CLIENT_PROTOCOL_VERSION, NODE_REGISTRY_PROTOCOL_VERSION, SUPPORTED_NODE_REGISTRY_FEATURES, getNodeRegistryCompatibility, createDefaultNodeData, getAvailableNodeDefinitions, getNodeArgumentPins, getNodeRegistryDefinitions, getNodeTemplateInputPins, getTextTemplateSlots, isNodeTypeSupported, registerPluginNodeDefinitions, renderTextTemplate, resolveDynamicNodePins, setWorkspaceNodeDefinitions, validateTemplateFunctionName } from './components/nodes/nodeDefinitions.js';
+import { isReservedTemplateRoot, TEMPLATE_SYSTEM_PATHS } from '../../studio-server/src/engine/TemplateExpressions.js';
 import { createEmbedBlock, embedBlockPins, getEmbedBlocks } from './components/nodes/EmbedNodeBuilder.jsx';
 import { createDefaultModal } from './components/nodes/ModalNodeBuilder.jsx';
 import { evaluateMathNode } from '../../studio-server/src/engine/MathOperations.js';
@@ -438,7 +439,7 @@ function getEventTemplatePaths(graph) {
 }
 
 function getTemplateValuePaths(graph, node, variables) {
-  const paths = [];
+  const paths = TEMPLATE_SYSTEM_PATHS.map((item) => ({ path: item.path, label: item.label || item.path }));
   for (const variable of variables) {
     if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(variable.name || '')) collectTemplateValuePaths(variable.initialValue, variable.name, 0, paths);
   }
@@ -4268,6 +4269,7 @@ export function App() {
     event?.preventDefault?.();
     const name = String(nameDialog?.value || '').trim();
     if (!name) { setNameDialogError('Enter a graph name.'); return; }
+    if (isReservedTemplateRoot(name)) { setNameDialogError('“chezcord” is reserved for the system template namespace.'); return; }
     const graph = tabs.find((tab) => tab.id === nameDialog?.graphId) || savedGraphs.find((item) => item.id === nameDialog?.graphId);
     if (!graph) { setNameDialog(null); setNameDialogError(''); return; }
     const isFunctionGraph = graph.graphType === 'function' || (graph.nodes || []).some((node) => ['function_input', 'function_return'].includes(node.type));
