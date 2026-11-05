@@ -29,6 +29,7 @@ const OPTIMAL_GRAPH_WIRE_LIMIT = 20;
 const AUTO_REDUCED_GRAPH_WIRE_LIMIT = 10;
 const AUTO_GRAPH_WIRE_LIMIT = 20;
 const QUALITY_GRAPH_WIRE_LIMIT = 30;
+const FANOUT_WIRE_OPACITIES = [0.48, 0.62, 0.76];
 const NODE_CULL_OVERSCAN_MIN = 520;
 const NODE_CULL_OVERSCAN_MAX = 1120;
 const ZOOM_CULL_BUFFER = 420;
@@ -3779,6 +3780,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
     const fanoutOrder = wireFanout.orders.get(connection.id) || 0;
     const denseShades = [-13, -4, 5, -9, 2];
     const shade = fanout > 1 ? (fanoutOrder % 2 === 0 ? -12 : 5) : denseWiring ? denseShades[(wireFanout.indices.get(connection.id) || 0) % denseShades.length] : 0;
+    const wireOpacity = fanout > 1 ? FANOUT_WIRE_OPACITIES[fanoutOrder % FANOUT_WIRE_OPACITIES.length] : denseWiring ? 0.68 : 0.84;
     const muted = reduceWireColorNoise && !active && !isSelectedNodeWire;
     const baseColor = muted ? '#737d8b' : (shade ? shadeWireColor(pinColor, shade) : pinColor);
     const sourceColor = needsConversion ? (PinColors[sourceType] || '#9299a6') : baseColor;
@@ -3797,7 +3799,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
       <path d={path} className={`wire-visible ${active && wirePulse ? 'wire-visible-active' : ''} ${isSelectedNodeWire ? 'wire-connected-selected' : ''}`} data-tooltip={wireTooltip} style={{ '--wire-color': baseColor }} />
     );
     return (
-      <g key={connection.id} className={`wire-group ${fanout > 1 ? 'is-fanout' : ''} ${denseWiring ? 'is-dense' : ''} ${reduceWireColorNoise && !active && !isSelectedNodeWire ? 'is-muted' : ''} ${isLocked ? 'is-locked' : ''} ${isSelectedNodeWire ? 'is-connected-selected' : ''} ${isPrimarySelectedWire ? 'is-primary-selection' : ''} ${onSimulationPath ? 'is-simulation-path' : ''} ${isCurrentSimulationWire ? 'is-simulation-current' : ''}`} data-wire-id={connection.id} style={{ '--wire-opacity': fanout > 1 ? 0.66 : denseWiring ? 0.68 : 0.84 }}>
+      <g key={connection.id} className={`wire-group ${fanout > 1 ? 'is-fanout' : ''} ${denseWiring ? 'is-dense' : ''} ${reduceWireColorNoise && !active && !isSelectedNodeWire ? 'is-muted' : ''} ${isLocked ? 'is-locked' : ''} ${isSelectedNodeWire ? 'is-connected-selected' : ''} ${isPrimarySelectedWire ? 'is-primary-selection' : ''} ${onSimulationPath ? 'is-simulation-path' : ''} ${isCurrentSimulationWire ? 'is-simulation-current' : ''}`} data-wire-id={connection.id} style={{ '--wire-opacity': wireOpacity }}>
         <path d={path} className={`wire-hit-area${wireSpatialIndex && hoveredWireId === connection.id ? ' is-indexed-hit-target' : ''}`} data-tooltip={shiftHeld ? outputPreview : undefined} aria-label={settings.doubleClickWireToCut ? 'Single-click to reroute; double-click to disconnect' : 'Single-click to disconnect; double-click to reroute'} onClick={(event) => {
           if (settings.doubleClickWireToCut) {
             startWireFromConnection(event, connection, 'output');
