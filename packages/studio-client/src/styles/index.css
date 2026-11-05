@@ -3740,7 +3740,7 @@ body.is-resizing-sidebar * {
 }
 
 .wire-group.is-muted .wire-visible {
-  stroke-opacity: .32;
+  stroke-opacity: calc(var(--wire-opacity, .78) * .48);
   filter: none;
 }
 
