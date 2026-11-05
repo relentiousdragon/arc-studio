@@ -1,4 +1,4 @@
-export const NODE_REGISTRY_PROTOCOL_VERSION = 1;
+export const NODE_REGISTRY_PROTOCOL_VERSION = 2;
 export const CLIENT_PROTOCOL_VERSION = 1;
 
 export const SUPPORTED_DYNAMIC_PIN_KINDS = Object.freeze([
