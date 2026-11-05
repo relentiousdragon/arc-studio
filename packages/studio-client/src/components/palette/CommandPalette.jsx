@@ -7,6 +7,7 @@ export function CommandPalette({ isOpen, graphs = [], definitions = [], plugins 
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef(null);
+  const resultsRef = useRef(null);
 
   const allItems = useMemo(() => {
     const definitionsByType = new Map(definitions.map((definition) => [definition.type, definition]));
@@ -94,13 +95,20 @@ export function CommandPalette({ isOpen, graphs = [], definitions = [], plugins 
   }, [activeIndex, isOpen, items, onClose]);
 
   useEffect(() => setActiveIndex(0), [query]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const option = resultsRef.current?.querySelectorAll('[role="option"]')[activeIndex];
+    option?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [activeIndex, isOpen, items]);
+
   if (!isOpen) return null;
 
   let index = -1;
   return <div className="dialog-scrim command-palette-scrim" onMouseDown={(event) => event.target === event.currentTarget && onClose?.()}>
     <section className="command-palette" role="dialog" aria-modal="true" aria-label="Search ARC Studio">
       <div className="command-palette-search"><Search size={17} /><input ref={inputRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search… · ! nodes · @ nodes in graphs · # graphs" aria-label="Search graphs, nodes, and plugins. Use exclamation mark for nodes, at sign for nodes in graphs, or number sign for graphs." /><kbd>⌘ K</kbd><button type="button" onClick={onClose} aria-label="Close search"><X size={15} /></button></div>
-      <div className="command-palette-results" role="listbox">
+      <div ref={resultsRef} className="command-palette-results" role="listbox">
         {groups.map((group) => <div className="command-palette-group" key={group.label}>
           <div className="command-palette-heading">{group.label}</div>
           {group.items.map((item) => {
