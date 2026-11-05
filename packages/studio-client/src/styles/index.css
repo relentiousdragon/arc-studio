@@ -2960,9 +2960,6 @@ body.is-resizing-sidebar * {
 }
 
 .node-canvas {
-  --grid-size: 24px;
-  --grid-x: 0px;
-  --grid-y: 0px;
   position: absolute;
   inset: 0;
   overflow: hidden;
@@ -3547,6 +3544,10 @@ body.is-resizing-sidebar * {
   z-index: 15;
 }
 
+.wire-layer.wire-layer-connecting {
+  z-index: 31;
+}
+
 .canvas-arrow-layer {
   position: absolute;
   z-index: 1;
@@ -3674,6 +3675,14 @@ body.is-resizing-sidebar * {
   cursor: pointer;
 }
 
+.wire-layer-indexed .wire-hit-area {
+  pointer-events: none;
+}
+
+.wire-layer-indexed .wire-hit-area.is-indexed-hit-target {
+  pointer-events: stroke;
+}
+
 .wire-visible {
   fill: none;
   stroke: var(--wire-color);
@@ -3682,6 +3691,35 @@ body.is-resizing-sidebar * {
   pointer-events: none;
   filter: drop-shadow(0 1px 1px color-mix(in srgb, var(--wire-color) 12%, transparent));
   transition: stroke-width .2s ease, stroke-opacity .2s ease;
+}
+
+.wire-conversion {
+  opacity: .94;
+  color: var(--text-secondary);
+  transition: opacity .16s ease, color .16s ease, filter .16s ease;
+}
+
+.wire-conversion rect {
+  fill: color-mix(in srgb, var(--panel) 82%, var(--canvas));
+  stroke: color-mix(in srgb, var(--line) 82%, transparent);
+  stroke-width: .8;
+  vector-effect: non-scaling-stroke;
+  transition: fill .16s ease, stroke .16s ease;
+}
+
+.wire-group:hover .wire-conversion,
+.wire-group.is-primary-selection .wire-conversion,
+.wire-group.is-simulation-path .wire-conversion {
+  opacity: 1;
+  color: var(--text);
+  filter: drop-shadow(0 1px 2px color-mix(in srgb, var(--accent) 24%, transparent));
+}
+
+.wire-group:hover .wire-conversion rect,
+.wire-group.is-primary-selection .wire-conversion rect,
+.wire-group.is-simulation-path .wire-conversion rect {
+  fill: color-mix(in srgb, var(--panel) 78%, var(--accent));
+  stroke: color-mix(in srgb, var(--accent) 58%, var(--line));
 }
 
 .wire-group.is-fanout .wire-visible {
@@ -15754,6 +15792,77 @@ body[data-compact-context="true"] .context-menu-heading {
 .graph-library-group+.graph-library-group {
   margin-top: 2px;
 }
+
+.graph-library-group {
+  position: relative;
+  border-radius: 5px;
+}
+
+.graph-library-group.is-drop-before::before,
+.graph-library-group.is-drop-after::after {
+  position: absolute;
+  z-index: 3;
+  right: 3px;
+  left: 3px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent), 0 0 8px color-mix(in srgb, var(--accent) 55%, transparent);
+  content: '';
+  pointer-events: none;
+}
+
+.graph-library-group.is-drop-before::before { top: -2px; }
+.graph-library-group.is-drop-after::after { bottom: -2px; }
+
+.graph-library-group.is-drop-into .graph-library-subroot {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 16%, var(--panel-raised));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 42%, transparent);
+}
+
+.graph-library-group.is-drop-disabled .graph-library-subroot {
+  color: var(--faint);
+  background: color-mix(in srgb, var(--text) 4%, var(--panel));
+  box-shadow: inset 0 0 0 1px var(--line-soft);
+  cursor: not-allowed;
+  opacity: .58;
+}
+
+.graph-library-category-heading {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.graph-library-category-drag-handle {
+  display: grid;
+  flex: 0 0 21px;
+  place-items: center;
+  width: 21px;
+  height: 25px;
+  padding: 0;
+  border-radius: 4px;
+  color: var(--faint);
+  background: transparent;
+  cursor: grab;
+  opacity: .56;
+  transition: color .14s ease, background .14s ease, opacity .14s ease;
+}
+
+.graph-library-category-drag-handle:hover,
+.graph-library-category-drag-handle:focus-visible {
+  color: var(--text);
+  background: transparent;
+  opacity: 1;
+}
+
+.graph-library-category-heading:has(.graph-library-category-drag-handle:hover) .graph-library-subroot {
+  color: var(--text);
+  background: var(--panel-raised);
+}
+
+.graph-library-category-drag-handle:active { cursor: grabbing; }
 
 .graph-library-subroot {
   min-height: 27px;
