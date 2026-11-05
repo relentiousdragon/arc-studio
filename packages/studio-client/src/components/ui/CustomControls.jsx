@@ -41,6 +41,12 @@ export function AnimatedDropdown({
   }, [options, query]);
 
   useEffect(() => {
+    if (!open || !menuRef.current) return;
+    const option = menuRef.current.querySelectorAll('[role="option"]')[activeIndex];
+    option?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [activeIndex, open, filteredOptions.length]);
+
+  useEffect(() => {
     if (!open) return undefined;
     const closeOutside = (event) => {
       if (!rootRef.current?.contains(event.target) && !menuRef.current?.contains(event.target)) setOpen(false);
