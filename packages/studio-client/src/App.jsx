@@ -105,6 +105,7 @@ import { classifyArcUpdate, compareArcVersions } from './core/appUpdates.js';
 import { flattenSlashParameters, isValidSlashName, slashOptionPinId, validateSlashCommandOptions } from '../../studio-server/src/engine/SlashCommandOptions.js';
 import { DEFAULT_SHORTCUTS, formatShortcut, getDefaultShortcut, shortcutMatches } from './core/shortcuts.js';
 import { playUiSound, unlockUiSounds } from './core/uiSounds.js';
+import { notifyDesktopInBackground, requestDesktopNotificationPermission } from './core/desktopNotifications.js';
 import { BuiltInNodeDefinitions, BundledNodeTypes, NODE_SCHEMA_VERSION, CLIENT_PROTOCOL_VERSION, NODE_REGISTRY_PROTOCOL_VERSION, SUPPORTED_NODE_REGISTRY_FEATURES, getNodeRegistryCompatibility, createDefaultNodeData, getAvailableNodeDefinitions, getNodeArgumentPins, getNodeRegistryDefinitions, getNodeTemplateInputPins, getTextTemplateSlots, isNodeTypeSupported, registerPluginNodeDefinitions, renderTextTemplate, resolveDynamicNodePins, setWorkspaceNodeDefinitions, validateTemplateFunctionName } from './components/nodes/nodeDefinitions.js';
 import { createEmbedBlock, embedBlockPins, getEmbedBlocks } from './components/nodes/EmbedNodeBuilder.jsx';
 import { createDefaultModal } from './components/nodes/ModalNodeBuilder.jsx';
@@ -137,6 +138,7 @@ const DEFAULT_SETTINGS = {
   snapshotIntervalMinutes: 30,
   snapshotRetentionHours: 12,
   uiSounds: false,
+  desktopNotifications: true,
   autoUpdateChecks: true,
   compactContextMenus: false,
   discordRpcEnabled: true,
@@ -879,6 +881,7 @@ export function App() {
   const [activeProjectId, setActiveProjectId] = useState('');
   const activeProjectIdRef = useRef(activeProjectId);
   activeProjectIdRef.current = activeProjectId;
+  const remoteProjectNotificationPresenceRef = useRef({ projectId: '', userIds: null });
   const startupProjectHandledRef = useRef(false);
   const projectVariablesSaveRef = useRef({ timer: null, revision: 0, projectId: '', pending: false });
   const projectVariablesSavePendingFor = (projectId) => {
@@ -1337,6 +1340,96 @@ export function App() {
     if (!desktopMode) return;
     window.__TAURI_INTERNALS__?.invoke?.('mark_update_healthy').catch((error) => console.warn('Could not confirm ARC Studio started after its update:', error));
   }, [desktopMode]);
+
+  useEffect(() => {
+    const disableNotifications = () => {
+      setSettings((current) => {
+        if (!current.desktopNotifications) return current;
+        const next = { ...current, desktopNotifications: false };
+        safeStorageSet('arc_editor_settings', JSON.stringify(next));
+        return next;
+      });
+    };
+    window.addEventListener('arc:desktop-notifications-denied', disableNotifications);
+    return () => window.removeEventListener('arc:desktop-notifications-denied', disableNotifications);
+  }, []);
+
+  useEffect(() => {
+    if (!desktopMode || !settings.desktopNotifications) return undefined;
+    let active = true;
+    let attempted = false;
+    const requestPermission = async () => {
+      if (!active || attempted) return;
+      const granted = await requestDesktopNotificationPermission();
+      if (granted === null) return;
+      attempted = true;
+      if (granted !== 'granted') {
+        setSettings((current) => {
+          if (!current.desktopNotifications) return current;
+          const next = { ...current, desktopNotifications: false };
+          safeStorageSet('arc_editor_settings', JSON.stringify(next));
+          return next;
+        });
+        arcEvents.emit('toast:notify', {
+          title: 'Notifications unavailable',
+          message: 'Allow ARC Studio notifications in your system settings, then turn them on again in Editor Settings.',
+          type: 'warning'
+        });
+      }
+    };
+    void requestPermission();
+    window.addEventListener('focus', requestPermission);
+    document.addEventListener('visibilitychange', requestPermission);
+    return () => {
+      active = false;
+      window.removeEventListener('focus', requestPermission);
+      document.removeEventListener('visibilitychange', requestPermission);
+    };
+  }, [desktopMode, settings.desktopNotifications]);
+
+  useEffect(() => {
+    if (!desktopMode || workspaceMode !== 'local' || !settings.desktopNotifications) return;
+    if (!window.__ARC_STUDIO_CONFIG__?.startupError) return;
+    void notifyDesktopInBackground({
+      enabled: settings.desktopNotifications,
+      title: 'ARC Studio server failed to start',
+      body: 'Open ARC Studio to review the local workspace startup error.'
+    });
+  }, [desktopMode, settings.desktopNotifications, workspaceMode]);
+
+  useEffect(() => {
+    const collaboration = projectCollaboration;
+    const previous = remoteProjectNotificationPresenceRef.current;
+    if (!desktopMode || workspaceMode !== 'remote' || !authToken || !activeProjectId) {
+      remoteProjectNotificationPresenceRef.current = { projectId: '', userIds: null };
+      return;
+    }
+    if (collaboration.projectId !== activeProjectId) {
+      if (previous.projectId !== activeProjectId) remoteProjectNotificationPresenceRef.current = { projectId: activeProjectId, userIds: null };
+      return;
+    }
+
+    const users = Array.isArray(collaboration.users) ? collaboration.users : [];
+    const userIds = new Set(users.map((user) => String(user?.userId || '')).filter(Boolean));
+    if (previous.projectId !== activeProjectId || !previous.userIds) {
+      remoteProjectNotificationPresenceRef.current = { projectId: activeProjectId, userIds };
+      return;
+    }
+
+    const newUsers = users.filter((user) => user?.userId && String(user.userId) !== String(currentUser?.id || '')
+      && !previous.userIds.has(String(user.userId)));
+    remoteProjectNotificationPresenceRef.current = { projectId: activeProjectId, userIds };
+    if (!settings.desktopNotifications || !newUsers.length) return;
+
+    const message = newUsers.length === 1
+      ? 'Another workspace user opened the project you are in.'
+      : `${newUsers.length} workspace users opened the project you are in.`;
+    void notifyDesktopInBackground({
+      enabled: settings.desktopNotifications,
+      title: 'Project activity',
+      body: message
+    });
+  }, [activeProjectId, authToken, currentUser?.id, desktopMode, projectCollaboration, settings.desktopNotifications, workspaceMode]);
 
   useEffect(() => {
     if (!desktopMode) {
@@ -4238,7 +4331,12 @@ export function App() {
     anchor.download = `${(graph.name || 'graph').replace(/[^a-z0-9]/gi, '_').toLowerCase()}.arcgraph`;
     anchor.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }, [activeTabId, tabs]);
+    void notifyDesktopInBackground({
+      enabled: settings.desktopNotifications,
+      title: 'Graph export complete',
+      body: 'Your graph file is ready.'
+    });
+  }, [activeTabId, settings.desktopNotifications, tabs]);
 
   const ensureWorkspaceGraphsSaved = useCallback(async () => {
     if (!authToken) throw new Error('Sign in again before saving graphs.');
@@ -4528,7 +4626,7 @@ export function App() {
 
   const handleDeleteSavedGraphs = useCallback(async (graphs) => {
     const targets = [...new Map(graphs.filter((graph) => graph?.id).map((graph) => [graph.id, graph])).values()];
-    if (!authToken || !targets.length) return;
+    if (!authToken || !targets.length) return false;
     const names = targets.slice(0, 3).map((graph) => graph.name || 'Untitled graph').join(', ');
     const extra = targets.length > 3 ? ` and ${targets.length - 3} more` : '';
     const confirmation = targets.length === 1
@@ -4543,7 +4641,7 @@ export function App() {
       variant: 'danger',
       icon: Trash2
     });
-    if (!confirmed) return;
+    if (!confirmed) return false;
 
     const deletedIds = [];
     let nextDefaultGraphId = null;
@@ -4575,13 +4673,14 @@ export function App() {
         ? `${deletedIds.length} graph${deletedIds.length === 1 ? '' : 's'} deleted. ${deleteError.message}`
         : deleteError.message;
       arcEvents.emit('toast:notify', { title: 'Delete incomplete', message, type: 'error' });
-      return;
+      return false;
     }
     arcEvents.emit('toast:notify', {
       title: targets.length === 1 ? 'Graph deleted' : 'Graphs deleted',
       message: targets.length === 1 ? names : `${deletedIds.length} graphs removed from the Library`,
       type: 'success'
     });
+    return true;
   }, [activeTabId, authToken, requestConfirmation, tabs]);
   const handleDeleteSavedGraph = useCallback((graph) => handleDeleteSavedGraphs([graph]), [handleDeleteSavedGraphs]);
 
@@ -4616,7 +4715,8 @@ export function App() {
         if (node.type === 'action_create_thread') {
           permissions.add('View Channels');
           const typeIsWired = graph.connections?.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'thread_type');
-          const threadType = String(node.data?.thread_type || 'public').toLowerCase();
+          const rawThreadType = node.data?.thread_type;
+          const threadType = [11, '11'].includes(rawThreadType) ? 'public' : [12, '12'].includes(rawThreadType) ? 'private' : String(rawThreadType || 'public').toLowerCase();
           if (typeIsWired || !['public', 'private'].includes(threadType)) {
             permissions.add('Create Public Threads');
             permissions.add('Create Private Threads');
@@ -4723,6 +4823,11 @@ export function App() {
       anchor.download = 'arc-bot-export.zip';
       anchor.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      void notifyDesktopInBackground({
+        enabled: settings.desktopNotifications,
+        title: 'Bot export complete',
+        body: 'Your bot archive is ready.'
+      });
     } catch (error) {
       const alreadyRunning = /already running for this project/i.test(error.message || '');
       arcEvents.emit('toast:notify', { id: toastId, title: alreadyRunning ? 'Bot export in progress' : 'Export failed', message: alreadyRunning ? 'A collaborator is already building this project export.' : error.message, type: alreadyRunning ? 'info' : 'error', persistent: false, dismissible: true, duration: 5000 });
@@ -4730,7 +4835,7 @@ export function App() {
       exportInFlightRef.current = false;
       setExportInProgress(false);
     }
-  }, [activeProjectId, authToken, botProfile?.intentSummary, currentUser, graphLookup, projectVariables, savedGraphs, tabs]);
+  }, [activeProjectId, authToken, botProfile?.intentSummary, currentUser, graphLookup, projectVariables, savedGraphs, settings.desktopNotifications, tabs]);
 
   const applyHistorySnapshot = useCallback((snapshot, graphId) => {
     const saved = savedGraphsRef.current.find((graph) => graph.id === graphId);
@@ -5899,6 +6004,11 @@ export function App() {
         if (typeof invoke !== 'function') throw new Error('ARC Studio could not save the project file.');
         const receipt = await invoke('save_project_export', { filename, contents });
         const revealed = receipt?.revealed === true;
+        void notifyDesktopInBackground({
+          enabled: settings.desktopNotifications,
+          title: 'Project export complete',
+          body: 'Your project archive is ready in Downloads.'
+        });
         arcEvents.emit('toast:notify', {
           title: 'Project exported',
           message: `${revealed ? `Saved ${filename} to Downloads and opened its location.` : `Saved ${filename} to Downloads.`}${bundle.format === 'arc-project-encrypted' ? ' Password protected.' : ''}`,
@@ -7037,6 +7147,11 @@ export function App() {
       setAppUpdate(null);
       setDownloadedUpdateReady({ version: updateVersion });
       await update.close().catch(() => {});
+      void notifyDesktopInBackground({
+        enabled: settings.desktopNotifications,
+        title: 'ARC Studio update ready',
+        body: `Version ${updateVersion} is downloaded and ready to install.`
+      });
       arcEvents.emit('toast:notify', {
         id: 'arc-studio-update-progress',
         title: 'ARC Studio update ready',
@@ -7053,7 +7168,7 @@ export function App() {
       unlistenProgress?.();
       setUpdateInstalling(false);
     }
-  }, [desktopReleaseChannel, updateInstalling]);
+  }, [desktopReleaseChannel, settings.desktopNotifications, updateInstalling]);
 
   useEffect(() => {
     if (!desktopMode || desktopReleaseChannel !== 'stable' || settings.autoUpdateChecks === false || !networkOnline || updateInstalling || downloadedUpdateReady?.version || !appUpdate?.native || !appUpdate.version) return;
@@ -7533,7 +7648,7 @@ export function App() {
           {isLocked && <div className="canvas-lock-state"><LockKeyhole size={13} /> Locked</div>}
           </>}
 
-          {isLibraryOpen && <Suspense fallback={<LazyFeatureLoading label="Opening Library…" kind="sidebar" isDesktop={desktopMode} width={sidebarWidths.library} />}><GraphLibraryPanel definitions={availableNodeDefinitions} newNodesUserKey={newNodesUserKey} graphActivity={projectCollaboration.projectId === activeProjectId ? projectCollaboration.graphActivity || [] : []} sidebarWidth={sidebarWidths.library} onSidebarResize={(width) => handleSidebarResize('library', width)} activeSection={librarySection} onActiveSectionChange={setLibrarySection} usageScope={activeProjectId} desktopMode={desktopMode} canImportGraph={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onImportGraph={handleImportGraph} graphs={savedGraphs} graphValidationReports={graphValidationReportsMap} templates={graphTemplates} snapshots={graphSnapshots} nodePrefabs={nodePrefabs} embedAssets={embedAssets} graphVariables={availableVariables} defaultGraphId={defaultGraphId} activeGraph={activeGraph} openGraphIds={tabs.map((tab) => tab.id)} activeTabId={activeTabId} onClose={() => setIsLibraryOpen(false)} onOpenGraph={handleOpenGraph} onOpenGraphReview={handleOpenGraphReview} onUseTemplate={(template) => handleAddTab(template)} onCreateFunction={handleAddFunctionGraph} onDeleteGraph={handleDeleteSavedGraph} onDeleteGraphs={handleDeleteSavedGraphs} onDuplicateGraph={handleDuplicateGraph} onRenameGraph={handleRenameGraph} onSaveTemplate={handleSaveGraphTemplate} onDeleteTemplate={handleDeleteGraphTemplate} onSetDefault={handleSetDefaultGraph} onExportBot={handleExportBot} exportInProgress={exportInProgress} onAddNode={handlePlaceNode} onAddPrefab={(prefab) => handleDropNode({ type: 'prefab', prefabId: prefab.id })} onDeletePrefab={handleDeleteNodePrefab} onCreateEmbed={createEmbedAsset} onCreateComponentsV2={createComponentsV2Asset} onOpenEmbed={openEmbedAsset} onDeleteEmbed={handleDeleteEmbedAsset} onManageVariables={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(true); }} onCreateSnapshot={async (graph, name) => {
+          {isLibraryOpen && <Suspense fallback={<LazyFeatureLoading label="Opening Library…" kind="sidebar" isDesktop={desktopMode} width={sidebarWidths.library} />}><GraphLibraryPanel definitions={availableNodeDefinitions} newNodesUserKey={newNodesUserKey} graphActivity={projectCollaboration.projectId === activeProjectId ? projectCollaboration.graphActivity || [] : []} sidebarWidth={sidebarWidths.library} onSidebarResize={(width) => handleSidebarResize('library', width)} activeSection={librarySection} onActiveSectionChange={setLibrarySection} usageScope={activeProjectId} desktopMode={desktopMode} canImportGraph={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onImportGraph={handleImportGraph} graphs={savedGraphs} graphValidationReports={graphValidationReportsMap} templates={graphTemplates} snapshots={graphSnapshots} nodePrefabs={nodePrefabs} embedAssets={embedAssets} graphVariables={availableVariables} defaultGraphId={defaultGraphId} activeGraph={activeGraph} openGraphIds={tabs.map((tab) => tab.id)} activeTabId={activeTabId} onClose={() => setIsLibraryOpen(false)} onOpenGraph={handleOpenGraph} onOpenGraphReview={handleOpenGraphReview} onUseTemplate={(template) => handleAddTab(template)} onCreateGraph={handleAddBlankGraph} onCreateFunction={handleAddFunctionGraph} onDeleteGraph={handleDeleteSavedGraph} onDeleteGraphs={handleDeleteSavedGraphs} onDuplicateGraph={handleDuplicateGraph} onRenameGraph={handleRenameGraph} onSaveTemplate={handleSaveGraphTemplate} onDeleteTemplate={handleDeleteGraphTemplate} onSetDefault={handleSetDefaultGraph} onExportBot={handleExportBot} exportInProgress={exportInProgress} onAddNode={handlePlaceNode} onAddPrefab={(prefab) => handleDropNode({ type: 'prefab', prefabId: prefab.id })} onDeletePrefab={handleDeleteNodePrefab} onCreateEmbed={createEmbedAsset} onCreateComponentsV2={createComponentsV2Asset} onOpenEmbed={openEmbedAsset} onDeleteEmbed={handleDeleteEmbedAsset} onManageVariables={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(true); }} onCreateSnapshot={async (graph, name) => {
             await ensureWorkspaceGraphsSaved();
             const response = await fetch(apiUrl(`/api/graphs/${encodeURIComponent(graph.id)}/snapshots`), { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken }, body: JSON.stringify({ graph, name }) });
             const data = await response.json();
@@ -8716,7 +8831,7 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
       if (!hasInput('channel_id')) errors.push(`${label}: connect a parent channel ID.`);
       if (!hasInput('name')) errors.push(`${label}: enter a thread name.`);
       if (node.type === 'action_start_thread_from_message' && !hasInput('message_id')) errors.push(`${label}: connect a message ID.`);
-      if (node.type === 'action_create_thread' && !['public', 'private'].includes(String(node.data?.thread_type || 'public').toLowerCase())
+      if (node.type === 'action_create_thread' && ![11, '11', 12, '12', 'public', 'private'].includes(node.data?.thread_type ?? 11)
         && !connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'thread_type')) errors.push(`${label}: choose public or private thread type.`);
     }
     if (['action_reply_interaction', 'action_defer_reply', 'action_defer_update'].includes(node.type)) {
