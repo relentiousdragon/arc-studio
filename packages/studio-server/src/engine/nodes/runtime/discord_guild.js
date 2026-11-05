@@ -170,7 +170,11 @@ export async function executeDiscordGuildNode(node, {
           const messageId = String(resolveInput('message_id', node.data?.message_id || '')).trim();
           const messageIdConnected = Boolean(isInputConnected('message_id'));
           const name = String(resolveInput('name', node.data?.name || '')).trim();
-          const threadType = String(resolveInput('thread_type', node.data?.thread_type || 'public')).trim().toLowerCase();
+          const rawThreadType = resolveInput('thread_type', node.data?.thread_type ?? 11);
+          const threadTypeNumber = Number(rawThreadType);
+          const threadType = [11, 12].includes(threadTypeNumber)
+            ? (threadTypeNumber === 12 ? 'private' : 'public')
+            : String(rawThreadType || '').trim().toLowerCase();
           const autoArchiveDuration = Number(resolveInput('auto_archive_duration', node.data?.auto_archive_duration ?? 1440));
           const rateLimitPerUser = resolveInput('rate_limit_per_user', node.data?.rate_limit_per_user ?? 0);
           const invitable = Boolean(resolveInput('invitable', node.data?.invitable ?? true));
@@ -184,7 +188,7 @@ export async function executeDiscordGuildNode(node, {
             result = await rest.createThreadFromMessage(channelId, messageId, { name, autoArchiveDuration, rateLimitPerUser, reason });
             resultThreadType = 'public';
           } else {
-            if (!['public', 'private'].includes(threadType)) throw new Error('Create Thread type must be public or private.');
+            if (!['public', 'private'].includes(threadType)) throw new Error('Create Thread type must be public (11) or private (12).');
             if (typeof rest?.createThread !== 'function') throw new Error('Create Thread requires a connected Discord REST client.');
             result = await rest.createThread(channelId, {
               name, type: threadType, autoArchiveDuration, rateLimitPerUser, invitable, reason
@@ -215,13 +219,22 @@ export async function executeDiscordGuildNode(node, {
         } else if (node.type === 'action_create_channel') {
           const guildId = String(resolveInput('guild_id', node.data?.guild_id || '')).trim();
           const name = String(resolveInput('name', node.data?.name || '')).trim().slice(0, 100);
-          const channelType = String(resolveInput('channel_type', node.data?.channel_type || 'text')).toLowerCase();
-          const types = { text: 0, voice: 2, category: 4, announcement: 5, stage: 13 };
-          const body = { name, type: types[channelType] ?? 0 };
-          const parentId = String(resolveInput('parent_id', node.data?.parent_id || '')).trim();
+          const CHANNEL_TYPES = {
+            text: 0, voice: 2, category: 4, announcement: 5, news: 5, stage: 13, forum: 15, media: 16
+          };
+          const CREATE_CHANNEL_TYPE_IDS = [0, 2, 4, 5, 13, 15, 16];
+          const rawChannelType = resolveInput('channel_type', node.data?.channel_type ?? 0);
+          const channelTypeText = typeof rawChannelType === 'number' ? String(rawChannelType) : String(rawChannelType || '').trim().toLowerCase();
+          const legacyChannelType = CHANNEL_TYPES[channelTypeText];
+          const directChannelType = /^\d+$/.test(channelTypeText) ? Number(channelTypeText) : undefined;
+          let channelTypeId = legacyChannelType ?? directChannelType;
+          if (channelTypeId === undefined && String(rawChannelType ?? '').trim() === '') channelTypeId = 0;
+          if (!CREATE_CHANNEL_TYPE_IDS.includes(channelTypeId)) throw new Error('Create Channel type must be a valid Discord channel type (0 text, 2 voice, 4 category, 5 announcement, 13 stage, 15 forum, 16 media).');
+          const body = { name, type: channelTypeId };
+          const categoryId = String(resolveInput('category_id', (node.data?.category_id ?? node.data?.parent_id) || '')).trim();
           const overwriteSource = resolveInput('permission_overwrites', node.data?.permission_overwrites || []);
-          const topic = String(resolveInput('topic', node.data?.topic || '')).slice(0, 1024);
-          if (parentId) body.parent_id = parentId;
+          const topic = String(resolveInput('topic', node.data?.topic || '')).slice(0, [15, 16].includes(channelTypeId) ? 4096 : 1024);
+          if (categoryId) body.parent_id = categoryId;
           if (overwriteSource?.length) {
             let overwrites = overwriteSource;
             if (typeof overwrites === 'string') {
@@ -230,7 +243,36 @@ export async function executeDiscordGuildNode(node, {
             if (!Array.isArray(overwrites) || overwrites.length > 100) throw new Error('Permission overwrites must be an array with at most 100 entries.');
             body.permission_overwrites = overwrites;
           }
-          if (topic && [0, 5].includes(body.type)) body.topic = topic;
+          if (topic && [0, 5, 15, 16].includes(channelTypeId)) body.topic = topic;
+          // Fields only apply to the channel types Discord creates them on.
+          const setCreateField = (id, transform = (value) => value, allowedTypes) => {
+            const connected = Boolean(isInputConnected(id));
+            if (!Object.prototype.hasOwnProperty.call(node.data || {}, id) && !connected) return;
+            if (Array.isArray(allowedTypes) && !allowedTypes.includes(channelTypeId)) return;
+            const value = resolveInput(id, node.data?.[id]);
+            if (!connected && (value == null || value === '')) return;
+            const result = transform(value);
+            if (result !== undefined) body[id] = result;
+          };
+          setCreateField('rate_limit_per_user', (value) => Math.max(0, Math.min(21600, Math.trunc(Number(value) || 0))), [0, 2, 13, 15, 16]);
+          setCreateField('bitrate', (value) => Math.max(8000, Math.min(384000, Math.trunc(Number(value) || 8000))), [2, 13]);
+          setCreateField('user_limit', (value) => Math.max(0, Math.min(10000, Math.trunc(Number(value) || 0))), [2, 13]);
+          setCreateField('position', (value) => Math.max(0, Math.trunc(Number(value) || 0)));
+          setCreateField('default_auto_archive_duration', (value) => [60, 1440, 4320, 10080].includes(Number(value)) ? Number(value) : 1440, [0, 5, 15, 16]);
+          setCreateField('available_tags', (value) => {
+            let tags = value;
+            if (typeof tags === 'string') {
+              try { tags = JSON.parse(tags); } catch { throw new Error('Forum tags must be an array of tag objects.'); }
+            }
+            if (!Array.isArray(tags) || tags.length > 20) throw new Error('Forum tags must be an array with at most 20 entries.');
+            return tags;
+          }, [15, 16]);
+          setCreateField('nsfw', (value) => Boolean(value), [0, 2, 5, 13, 15, 16]);
+          setCreateField('flags', (value) => {
+            const flagBits = Math.trunc(Number(value) || 0);
+            if (!Number.isFinite(Number(value)) || flagBits < 0) throw new Error('Channel flags must be a non negative bitfield number.');
+            return flagBits;
+          }, [0, 2, 5, 15, 16]);
           if (!guildId || !name) throw new Error('Create Channel needs a server ID and channel name.');
           const result = await rest.createGuildChannel(guildId, body, resolveInput('reason', node.data?.reason || ''));
           setOutput('channel_id', result?.id || '');
