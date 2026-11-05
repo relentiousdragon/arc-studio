@@ -1012,6 +1012,15 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       )}
     </div>;
   }
+  if (['action_fetch_channel', 'action_fetch_role'].includes(node.type)) {
+    const roleInfo = node.type === 'action_fetch_role';
+    const idPin = roleInfo ? 'role_id' : 'channel_id';
+    return <div className="node-config node-config-stack">
+      {roleInfo && !isConnected('guild_id') && <FallbackField label="Server ID"><input value={node.data?.guild_id ?? ''} onChange={(event) => update('guild_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Server ID" /></FallbackField>}
+      {!isConnected(idPin) && <FallbackField label={roleInfo ? 'Role ID' : 'Channel ID'}><input value={node.data?.[idPin] ?? ''} onChange={(event) => update(idPin, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label={roleInfo ? 'Role ID' : 'Channel ID'} /></FallbackField>}
+      <span className="node-config-hint">{roleInfo ? 'Returns the role object, color, position, and permissions.' : 'Returns the channel object, position, and permission overwrites.'}</span>
+    </div>;
+  }
   if (['action_get_guild_member_permissions', 'action_get_guild_role_permissions', 'action_get_channel_member_permissions', 'action_get_channel_role_permissions'].includes(node.type)) {
     const channelScope = node.type.startsWith('action_get_channel_');
     const memberTarget = node.type.endsWith('_member_permissions');
@@ -1045,6 +1054,8 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
           {textField('guild_id', 'Server ID')}{textField('name', 'Channel name')}
           {!isConnected('channel_type') && <FallbackField label="Channel type"><AnimatedDropdown value={String(channelType)} options={channelTypeOptions} onChange={(value) => update('channel_type', Number(value))} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Channel type" className="node-select" /></FallbackField>}
           {textField('category_id', 'Category ID')}
+          {!isConnected('position') && <FallbackField label="Position in category"><NodeNumberInput min="0" max="5000" step="1" value={node.data?.position ?? 0} onChange={(event) => update('position', numericNodeInputValue(event.target.value, { min: 0, max: 5000, integer: true }))} onPointerDown={(event) => event.stopPropagation()} /><small className="node-config-hint">Lower numbers appear first within the selected category.</small></FallbackField>}
+          {!isConnected('permission_overwrites') && <button type="button" className="node-config-action node-config-studio-action" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onOpenPermissionStudio?.({ ...node, type: 'data_permission_overwrites', label: 'Channel Permission Overwrites' }); }}><Plus size={12} /> Edit channel permissions{Number(node.data?.overwriteCount) > 0 ? ` · ${node.data.overwriteCount}` : ''}</button>}
           {[0, 5, 15, 16].includes(channelType) && textField('topic', channelType === 15 || channelType === 16 ? 'Topic (up to 4096)' : 'Topic')}
           {!isConnected('rate_limit_per_user') && [0, 2, 13, 15, 16].includes(channelType) && <FallbackField label="Slowmode (seconds)"><NodeNumberInput allowEmpty min="0" max="21600" value={node.data?.rate_limit_per_user ?? ''} onChange={(event) => update('rate_limit_per_user', numericNodeInputValue(event.target.value, { min: 0, max: 21600, allowEmpty: true }))} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave unchanged" /><small className="node-config-hint">0–21,600 seconds · blank uses the default</small></FallbackField>}
           {!isConnected('bitrate') && [2, 13].includes(channelType) && <FallbackField label="Voice bitrate (bits/sec)"><NodeNumberInput min="8000" max="384000" step="1" value={node.data?.bitrate ?? 64000} onChange={(event) => update('bitrate', numericNodeInputValue(event.target.value, { min: 8000, max: 384000, integer: true, fallback: 64000 }))} onPointerDown={(event) => event.stopPropagation()} /><small className="node-config-hint">The server tier sets the actual cap; Stage channels cap at 64,000.</small></FallbackField>}
