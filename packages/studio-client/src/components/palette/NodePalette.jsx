@@ -10,6 +10,7 @@ export function NodePalette({ isOpen, onClose, onSelectNode, pluginDefinitionsRe
   const [activeIndex, setActiveIndex] = useState(0);
   const [newNodesRevision, setNewNodesRevision] = useState(0);
   const inputRef = useRef(null);
+  const resultsRef = useRef(null);
   const categories = ['All', ...new Set([...Object.values(NodeCategories), ...definitions.map((node) => node.category).filter(Boolean)])];
   const newNodes = useMemo(() => getVisibleNewNodeDefinitions(definitions.filter((node) => !node.hidden), newNodesUserKey), [definitions, newNodesUserKey, newNodesRevision, pluginDefinitionsRevision]);
   const showNewSection = !query.trim() && selectedCategory === 'All' && newNodes.length > 0;
@@ -54,6 +55,12 @@ export function NodePalette({ isOpen, onClose, onSelectNode, pluginDefinitionsRe
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [isOpen, navigableNodes, activeIndex, onClose, onSelectNode]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const option = resultsRef.current?.querySelectorAll('[role="option"]')[activeIndex];
+    option?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [activeIndex, isOpen, navigableNodes.length]);
+
   if (!isOpen) return null;
 
   return (
@@ -71,7 +78,7 @@ export function NodePalette({ isOpen, onClose, onSelectNode, pluginDefinitionsRe
         }}>
           {categories.map((category) => <button key={category} role="tab" aria-selected={selectedCategory === category} className={selectedCategory === category ? 'is-active' : ''} onClick={() => { setSelectedCategory(category); setActiveIndex(0); }}>{category}</button>)}
         </div>
-      <div className="palette-results" role="listbox">
+      <div ref={resultsRef} className="palette-results" role="listbox">
           {showNewSection && <section className="palette-new-section" aria-label="New nodes">
             <h3>New nodes <span>{newNodes.length}</span></h3>
             {newNodes.map((node, index) => <button key={`new-${node.type}`} type="button" role="option" aria-selected={activeIndex === index} className={`palette-result palette-new-result ${activeIndex === index ? 'is-active' : ''} ${node.loadFailed ? 'is-node-load-failed' : ''}`} disabled={Boolean(node.loadFailed)} title={node.loadFailed ? 'Failed to load this node' : undefined} onMouseEnter={() => setActiveIndex(index)} onClick={() => { onSelectNode?.(node.type); onClose?.(); }}>
