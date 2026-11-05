@@ -30,6 +30,7 @@ import node_event_voice_state_update from './events/event_voice_state_update.js'
 import node_event_presence_update from './events/event_presence_update.js';
 import node_event_guild_ban_add from './events/event_guild_ban_add.js';
 import node_event_guild_ban_remove from './events/event_guild_ban_remove.js';
+import node_event_guild_audit_log_entry_create from './events/event_guild_audit_log_entry_create.js';
 import node_event_scheduled_event_create from './events/event_scheduled_event_create.js';
 import node_event_scheduled_event_update from './events/event_scheduled_event_update.js';
 import node_event_scheduled_event_delete from './events/event_scheduled_event_delete.js';
@@ -231,6 +232,7 @@ export const nodeDefinitions = [
   node_event_presence_update,
   node_event_guild_ban_add,
   node_event_guild_ban_remove,
+  node_event_guild_audit_log_entry_create,
   node_event_scheduled_event_create,
   node_event_scheduled_event_update,
   node_event_scheduled_event_delete,
