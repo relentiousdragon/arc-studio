@@ -14,7 +14,7 @@ import { apiUrl } from '../../core/api.js';
 import { onPageBlur } from '../../core/pageFocus.js';
 import { resolveVariableReference } from '../../core/projectVariables.js';
 import { getInputDefault } from '../../../../studio-server/src/engine/NodeSchemaDefinitions.js';
-import { TEMPLATE_FUNCTION_NAMES, TEMPLATE_PERMISSION_CONSTANTS } from '../../../../studio-server/src/engine/TemplateExpressions.js';
+import { isReservedTemplateRoot, TEMPLATE_FUNCTION_NAMES, TEMPLATE_SYSTEM_PATHS } from '../../../../studio-server/src/engine/TemplateExpressions.js';
 import { attachTemplateAutocomplete } from '../../core/templateFieldAutocomplete.js';
 //
 const slashCommandNamePattern = /^[-_'\p{L}\p{N}\p{sc=Deva}\p{sc=Thai}]{1,32}$/u;
@@ -173,12 +173,13 @@ function CanvasNodeView({
   const update = (key, value, label) => onNodeDataChange?.(node.id, typeof key === 'object' ? key : { [key]: value }, label);
   const selectedVariable = resolveVariableReference(graphVariables, node.data?.variableId, node.data?.scope || 'graph');
   const templatePaths = React.useMemo(() => {
+    const systemPaths = TEMPLATE_SYSTEM_PATHS.map((item) => ({ path: item.path, label: item.label || item.path }));
     const variablePaths = graphVariables.flatMap((variable) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(variable.name || '') ? variableValuePaths(variable.initialValue, variable.name) : []);
     const eventPaths = (Array.isArray(eventTemplatePaths) ? eventTemplatePaths : []).filter((item) => {
       const root = String(item?.path || '').split(/[.[]/)[0].toLowerCase();
       return item?.path && root && !graphVariables.some((variable) => String(variable?.name || '').toLowerCase() === root);
     }).map((item) => ({ path: item.path, label: item.label || item.path }));
-    return [...new Map([...variablePaths, ...eventPaths].map((item) => [item.path, item])).values()];
+    return [...new Map([...systemPaths, ...variablePaths, ...eventPaths].map((item) => [item.path, item])).values()];
   }, [graphVariables, eventTemplatePaths]);
   const templateContextRef = React.useRef({ variables: [], paths: [], sockets: [], functions: [] });
   templateContextRef.current = {
@@ -188,10 +189,9 @@ function CanvasNodeView({
     functions: [
       ...TEMPLATE_FUNCTION_NAMES.map((name) => ({ label: `${name}()`, insert: `${name}()` })),
       ...(callableGraphs || [])
-        .filter((graph) => graph?.graphType === 'function' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(graph.name || ''))
+        .filter((graph) => graph?.graphType === 'function' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(graph.name || '') && !isReservedTemplateRoot(graph.name))
         .map((graph) => ({ label: `${graph.name}()`, insert: `${graph.name}()` }))
-    ],
-    constants: TEMPLATE_PERMISSION_CONSTANTS.map(({ name, label }) => ({ label: `${name} · ${label}`, insert: name }))
+    ]
   };
   const cardRef = React.useRef(null);
   React.useEffect(() => attachTemplateAutocomplete(cardRef.current, () => templateContextRef.current), [node.id]);
@@ -655,7 +655,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
               onPointerDown={(event) => event.stopPropagation()}
               placeholder={`Input ${index + 1}`}
               aria-label="Function input name"
-              className={!argument.name.trim() ? 'is-invalid' : ''}
+              className={!argument.name.trim() || isReservedTemplateRoot(argument.name) ? 'is-invalid' : ''}
             />
           </CharacterLimit>
           {(!legacy || argumentsList.length > 1) && <button
@@ -669,7 +669,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
             <Trash2 size={13} />
           </button>}
         </div>
-        {!argument.name.trim() && <span className="node-config-warning" role="status"><AlertTriangle size={11} /><span>Name required</span></span>}
+        {isReservedTemplateRoot(argument.name) ? <span className="node-config-warning" role="status"><AlertTriangle size={11} /><span>chezcord is reserved for the system template namespace</span></span> : !argument.name.trim() && <span className="node-config-warning" role="status"><AlertTriangle size={11} /><span>Name required</span></span>}
         <AnimatedDropdown value={argument.valueType} options={functionArgumentTypes} onChange={(value) => updateArgument(index, { valueType: value, defaultValue: defaultValueForType(functionInputPinType({ valueType: value })) })} onPointerDown={(event) => event.stopPropagation()} ariaLabel={`Type for ${argument.name || `Input ${index + 1}`}`} className="node-select" />
         <div className="function-input-option"><span>Optional input</span><AnimatedCheckbox checked={argument.optional} label="Optional input" onChange={(value) => updateArgument(index, { optional: value })} onPointerDown={(event) => event.stopPropagation()} /></div>
         {argument.optional && (argument.valueType === 'object'
