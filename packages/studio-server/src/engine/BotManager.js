@@ -2,7 +2,8 @@ import { Client, CommandStatistics, GatewayIntents, RESTClient } from 'chezcord'
 import { registerAsyncEventHandler } from './AsyncEventHandler.js';
 import { MockGateway } from './MockGateway.js';
 import { GraphRunner } from './GraphRunner.js';
-import { validateTemplateFunctionName } from './TemplateExpressions.js';
+import { isReservedTemplateRoot, validateTemplateFunctionName } from './TemplateExpressions.js';
+import { getFunctionInputArguments } from './FunctionGraphContract.js';
 import { GraphWebSocketManager } from './nodes/runtime/websocket.js';
 import { startCronScheduler } from './CronSchedule.js';
 import { waitForGatewayReady } from './GatewayReadyWaiter.js';
@@ -1283,6 +1284,7 @@ export class BotManager {
           : previousVariable?.secret && this.getSecretValue('project', '', item.id) !== undefined ? this.getSecretValue('project', '', item.id)
             : item.initialValue === SECRET_VARIABLE_MASK ? defaultSecretValue : item.initialValue
         : item.initialValue;
+      if (isReservedTemplateRoot(name)) throw new TypeError('“chezcord” is reserved for the system template namespace.');
       const validName = /^(?=.{1,64}$)[A-Za-z0-9]+(?:_+[A-Za-z0-9]+|-[A-Za-z0-9]+)*$/.test(name);
       const discordAppIdVariable = item.id === 'project_var_discord_app_id';
       const appLatencyVariable = item.id === APP_LATENCY_VARIABLE_ID;
@@ -1573,6 +1575,11 @@ export class BotManager {
     if (!graphData || !Array.isArray(graphData.nodes) || !Array.isArray(graphData.connections)) {
       throw new TypeError('A graph must include nodes and connections arrays.');
     }
+    if (isReservedTemplateRoot(graphData.name)) throw new TypeError('“chezcord” is reserved for the system template namespace.');
+    for (const node of graphData.nodes.filter((item) => item?.type === 'function_input')) {
+      const reservedArgument = getFunctionInputArguments(node).find((argument) => isReservedTemplateRoot(argument.name));
+      if (reservedArgument) throw new TypeError(`“${reservedArgument.name}” is reserved for the system template namespace.`);
+    }
     const previousGraph = this.graphs.get(tabId);
     if (isFunctionGraph(graphData) && (!previousGraph || previousGraph.name !== graphData.name)) {
       const nameError = validateTemplateFunctionName(graphData.name);
@@ -1591,6 +1598,7 @@ export class BotManager {
       const existingVariables = new Map((this.graphs.get(tabId)?.variables || []).map((variable) => [variable.id, variable]));
       for (const variable of graphData.variables) {
         const name = String(variable?.name || '').trim();
+        if (isReservedTemplateRoot(name)) throw new TypeError('“chezcord” is reserved for the system template namespace.');
         const validName = /^(?=.{1,64}$)[A-Za-z0-9]+(?:_+[A-Za-z0-9]+|-[A-Za-z0-9]+)*$/.test(name);
         if (!validName) throw new TypeError('Variable names must start and end with a letter or number, with letters, numbers, hyphens, or underscores inside.');
         if (names.has(name.toLowerCase())) throw new TypeError(`Variable name “${name}” is used more than once.`);
@@ -1608,7 +1616,9 @@ export class BotManager {
         const dynamicName = name.includes('{{') || (Array.isArray(graphData.connections) && graphData.connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'name'));
         if (dynamicName) continue;
         const validName = /^(?=.{1,64}$)[A-Za-z0-9]+(?:_+[A-Za-z0-9]+|-[A-Za-z0-9]+)*$/.test(name);
-        if (!validName) {
+        if (isReservedTemplateRoot(name)) {
+          this.log('WARN', `Create Variable node “${node.id}” in graph “${graphData.name || tabId}” uses the reserved name “${name}”. Rename it before running the graph.`);
+        } else if (!validName) {
           this.log('WARN', `Create Variable node “${node.id}” in graph “${graphData.name || tabId}” has an invalid name “${name || 'unnamed'}”: names must start and end with a letter or number, with letters, numbers, hyphens, or underscores inside. Fix the node before running the graph.`);
         }
       }
