@@ -1,6 +1,14 @@
+import { PermissionFlagEntries, PermissionFlags } from 'chezcord/constants';
+
 const MAX_EXPRESSION_LENGTH = 2048;
 const MAX_TOKENS = 256;
 //
+const TEMPLATE_PERMISSION_ALIASES = Object.freeze({ VIEW_CHANNELS: PermissionFlags.VIEW_CHANNEL });
+const TEMPLATE_PERMISSION_VALUES = Object.freeze({ ...PermissionFlags, ...TEMPLATE_PERMISSION_ALIASES });
+export const TEMPLATE_PERMISSION_CONSTANTS = Object.freeze([
+  ...PermissionFlagEntries.map(({ name, label, mask }) => Object.freeze({ name, label, value: mask.toString() })),
+  Object.freeze({ name: 'VIEW_CHANNELS', label: 'View Channels', value: PermissionFlags.VIEW_CHANNEL.toString() })
+]);
 function templateText(value) {
   if (value == null) return '';
   if (typeof value === 'object') { try { return JSON.stringify(value); } catch { return ''; } }
@@ -58,7 +66,9 @@ function parse(source) {
     else if (['!', '+', '-'].includes(token.value)) node = { kind: 'unary', op: token.value, value: primary(depth + 1) };
     else if (token.type === 'identifier') {
       const constants = { true: true, false: false, null: null, undefined: undefined, pi: Math.PI, e: Math.E, tau: Math.PI * 2 };
+      const permissionConstant = TEMPLATE_PERMISSION_VALUES[token.value.toUpperCase()];
       if (Object.hasOwn(constants, token.value.toLowerCase())) node = { kind: 'literal', value: constants[token.value.toLowerCase()] };
+      else if (permissionConstant !== undefined) node = { kind: 'literal', value: permissionConstant };
       else node = { kind: 'path', root: token.value, keys: [] };
     } else throw new Error('Expected a value.');
     while (true) {
@@ -130,7 +140,8 @@ const TEMPLATE_FILTER_NAMES = new Set([
 export const TEMPLATE_FUNCTION_NAMES = Object.freeze(Object.keys(MATH));
 export const RESERVED_TEMPLATE_FUNCTION_NAMES = new Set([
   ...Object.keys(MATH), ...TEMPLATE_FILTER_NAMES,
-  'true', 'false', 'null', 'undefined', 'pi', 'e', 'tau'
+  'true', 'false', 'null', 'undefined', 'pi', 'e', 'tau',
+  ...Object.keys(TEMPLATE_PERMISSION_VALUES).map((name) => name.toLowerCase())
 ]);
 export function validateTemplateFunctionName(value) {
   const name = String(value ?? '').trim();
@@ -227,7 +238,7 @@ export function applyTemplateTransforms(value, transforms = []) {
 
 export function getTemplateReferences(source) {
   const refs = new Set(); const parts = splitTemplatePipeline(source); const expr = parts[0] || '';
-  const constants = new Set(['true', 'false', 'null', 'undefined', 'pi', 'tau', 'e']);
+  const constants = new Set(['true', 'false', 'null', 'undefined', 'pi', 'tau', 'e', ...Object.keys(TEMPLATE_PERMISSION_VALUES).map((name) => name.toLowerCase())]);
   let quote = '';
   let escaped = false;
   for (let index = 0; index < expr.length;) {
