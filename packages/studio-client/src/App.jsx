@@ -3546,11 +3546,17 @@ export function App() {
               duration: 15000
             });
           } else if (msg.type === 'MOCK_DEBUG_STEP') {
-            setActivePulseNodeIds(msg.payload.step?.nodeId ? [msg.payload.step.nodeId] : []);
-            setActivePulseGraphId(msg.payload.tabId || null);
-            setActiveDebugStep(msg.payload.step || null);
-            setActiveSimulationOverlay((current) => appendSimulationStep(current, { ...msg.payload, debug: true }));
-            arcEvents.emit('simulation:debug-step', msg.payload);
+            const payload = msg.payload || {};
+            const step = payload.step || null;
+            setActivePulseNodeIds(step?.nodeId ? [step.nodeId] : []);
+            setActivePulseGraphId(payload.tabId || null);
+            setActiveDebugStep(step);
+            if (payload.tabId && step?.nodeId) {
+              setActiveTabId(payload.tabId);
+              setNodeFocusRequest({ graphId: payload.tabId, nodeId: step.nodeId, requestId: ++traceRequestIdRef.current });
+            }
+            setActiveSimulationOverlay((current) => appendSimulationStep(current, { ...payload, debug: true }));
+            arcEvents.emit('simulation:debug-step', payload);
           } else if (msg.type === 'MOCK_DEBUG_FINISHED') {
             setActivePulseNodeIds([]);
             setActivePulseGraphId(null);
