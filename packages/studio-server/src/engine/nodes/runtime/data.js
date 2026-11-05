@@ -2,6 +2,7 @@ import dayjs from 'dayjs';
 import duration from 'dayjs/plugin/duration.js';
 import utc from 'dayjs/plugin/utc.js';
 import timezone from 'dayjs/plugin/timezone.js';
+import { DISCORD_PERMISSION_BIT_BY_NAME } from '../../DiscordPermissions.js';
 dayjs.extend(duration);
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -124,6 +125,20 @@ function compareArrayItem(actual, expected, operator) {
 }
 
 export function evaluateDataNode(type, inputs = {}, data = {}) {
+  if (type === 'data_check_permission') {
+    const rawPermissions = inputs.permissions;
+    const text = typeof rawPermissions === 'string' ? rawPermissions.trim()
+      : typeof rawPermissions === 'bigint' ? rawPermissions.toString()
+        : typeof rawPermissions === 'number' && Number.isSafeInteger(rawPermissions) ? String(rawPermissions) : '';
+    const permissionBit = DISCORD_PERMISSION_BIT_BY_NAME[String(inputs.permission || '')];
+    if (!/^(?:0|[1-9]\d{0,31})$/.test(text) || permissionBit === undefined) {
+      return { has_permission: false, valid: false };
+    }
+    const permissions = BigInt(text);
+    const mask = 1n << BigInt(permissionBit);
+    const administrator = (permissions & (1n << 3n)) !== 0n;
+    return { has_permission: inputs.permission === 'Administrator' ? administrator : administrator || (permissions & mask) === mask, valid: true };
+  }
   if (type === 'data_check_value') {
     const value = inputs.value;
     const state = value === undefined ? 'missing' : value === null ? 'null' : typeof value === 'string' && value.trim() === '' ? 'empty' : 'value';
@@ -157,16 +172,6 @@ export function evaluateDataNode(type, inputs = {}, data = {}) {
     return { array: filtered, count: filtered.length };
   }
   if (type === 'data_permission_overwrites') {
-    const permissionBits = {
-      CreateInstantInvite: 0, KickMembers: 1, BanMembers: 2, Administrator: 3, ManageChannels: 4, ManageGuild: 5, AddReactions: 6, ViewAuditLog: 7,
-      PrioritySpeaker: 8, Stream: 9, ViewChannel: 10, SendMessages: 11, SendTTSMessages: 12, ManageMessages: 13, EmbedLinks: 14, AttachFiles: 15,
-      ReadMessageHistory: 16, MentionEveryone: 17, UseExternalEmojis: 18, ViewGuildInsights: 19, Connect: 20, Speak: 21, MuteMembers: 22,
-      DeafenMembers: 23, MoveMembers: 24, UseVAD: 25, ChangeNickname: 26, ManageNicknames: 27, ManageRoles: 28, ManageWebhooks: 29,
-      ManageGuildExpressions: 30, UseApplicationCommands: 31, RequestToSpeak: 32, ManageEvents: 33, ManageThreads: 34, CreatePublicThreads: 35,
-      CreatePrivateThreads: 36, UseExternalStickers: 37, SendMessagesInThreads: 38, UseEmbeddedActivities: 39, ModerateMembers: 40,
-      ViewCreatorMonetizationAnalytics: 41, UseSoundboard: 42, CreateGuildExpressions: 43, CreateEvents: 44, UseExternalSounds: 45,
-      SendVoiceMessages: 46, SetVoiceChannelStatus: 48, SendPolls: 49, UseExternalApps: 50, PinMessages: 51, BypassSlowmode: 52
-    };
     const parsePermissionBits = (value) => {
       const text = String(value ?? '').trim();
       if (!/^(?:\d+|0x[\da-f]+)$/i.test(text)) return 0n;
@@ -174,7 +179,7 @@ export function evaluateDataNode(type, inputs = {}, data = {}) {
     };
     const serializePermissions = (value, customBits = '') => {
       const names = Array.isArray(value) ? value : [];
-      const mask = names.reduce((total, name) => permissionBits[name] === undefined ? total : total | (1n << BigInt(permissionBits[name])), parsePermissionBits(customBits));
+      const mask = names.reduce((total, name) => DISCORD_PERMISSION_BIT_BY_NAME[name] === undefined ? total : total | (1n << BigInt(DISCORD_PERMISSION_BIT_BY_NAME[name])), parsePermissionBits(customBits));
       return mask ? mask.toString() : '';
     };
     const overwrites = [];
