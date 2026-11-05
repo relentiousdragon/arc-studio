@@ -1,6 +1,6 @@
 {
   "name": "arc-studio-server",
-  "version": "2026.1.1-nightly.10",
+  "version": "2026.1.1-nightly.11",
   "description": "ARC Studio Backend Server",
   "type": "module",
   "main": "src/index.js",
