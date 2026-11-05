@@ -133,14 +133,16 @@ export function evaluateDataNode(type, inputs = {}, data = {}) {
     const text = typeof rawPermissions === 'string' ? rawPermissions.trim()
       : typeof rawPermissions === 'bigint' ? rawPermissions.toString()
         : typeof rawPermissions === 'number' && Number.isSafeInteger(rawPermissions) ? String(rawPermissions) : '';
-    const permissionName = permissionAliases[String(inputs.permission || '')];
-    const permissionMask = PermissionFlags[permissionName];
-    if (!/^(?:0|[1-9]\d{0,31})$/.test(text) || permissionMask === undefined) {
+    const selectedPermissions = Array.isArray(inputs.permission) ? inputs.permission : [inputs.permission || 'VIEW_CHANNEL'];
+    const permissionNames = selectedPermissions.map((name) => permissionAliases[String(name)]).filter(Boolean);
+    const permissionMasks = permissionNames.map((name) => PermissionFlags[name]);
+    if (!/^(?:0|[1-9]\d{0,31})$/.test(text) || !permissionNames.length || permissionNames.length !== selectedPermissions.length || permissionMasks.some((mask) => mask === undefined)) {
       return { has_permission: false, valid: false };
     }
     const permissions = BigInt(text);
     const administrator = (permissions & PermissionFlags.ADMINISTRATOR) !== 0n;
-    return { has_permission: permissionName === 'ADMINISTRATOR' ? administrator : administrator || (permissions & permissionMask) === permissionMask, valid: true };
+    const hasPermission = permissionNames.every((name, index) => name === 'ADMINISTRATOR' ? administrator : administrator || (permissions & permissionMasks[index]) === permissionMasks[index]);
+    return { has_permission: hasPermission, valid: true };
   }
   if (type === 'data_check_value') {
     const value = inputs.value;
