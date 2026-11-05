@@ -1,7 +1,7 @@
 import { PermissionFlagEntries } from 'chezcord/constants';
 //
 export default {
-  description: 'Checks one named Discord permission in a permission bitfield. Connect the Permissions Bitfield output from a guild or channel permission node.',
+  description: 'Checks whether a permission bitfield includes every selected Discord permission. Connect the Permissions Bitfield output from a guild or channel permission node.',
   type: 'data_check_permission',
   category: 'Values & Data',
   label: 'Check Permission',
@@ -12,13 +12,13 @@ export default {
       placeholder: 'Connect a Permissions Bitfield output'
     },
     {
-      type: 'select', key: 'permission', inputId: 'permission', label: 'Permission', defaultValue: 'VIEW_CHANNEL',
+      type: 'select', key: 'permission', inputId: 'permission', label: 'Permissions', defaultValue: ['VIEW_CHANNEL'], multiple: true, searchable: true, searchThreshold: 8,
       options: PermissionFlagEntries.map(({ name, label }) => ({ value: name, label }))
     }
   ],
   inputs: [
     { id: 'permissions', label: 'Permissions Bitfield', type: 'string', defaultValue: '' },
-    { id: 'permission', label: 'Permission', type: 'string', defaultValue: 'VIEW_CHANNEL' }
+    { id: 'permission', label: 'Permissions', type: 'arg', defaultValue: ['VIEW_CHANNEL'] }
   ],
   outputs: [
     { id: 'has_permission', label: 'Has Permission', type: 'boolean' },
