@@ -1,5 +1,5 @@
 export default {
-  "description": "Fires for every new message. Use Split Text to break message content into parts.",
+  "description": "Fires for every new message. Server ID is empty in direct messages. Use Split Text to break message content into parts.",
   "type": "event_message_create",
   "dynamicPins": { "kind": "connected-output-arguments", "prefix": "argument_", "label": "Legacy Argument {index}", "type": "string", "max": 50 },
   "category": "Events",
@@ -50,6 +50,12 @@ export default {
       "id": "channel_id",
       "label": "Channel ID",
       "type": "string"
+    },
+    {
+      "id": "guild_id",
+      "label": "Server ID",
+      "type": "string",
+      "eventPath": "guild_id"
     },
     {
       "id": "is_bot",
