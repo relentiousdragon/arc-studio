@@ -3,8 +3,7 @@ export function createAuthMiddleware(userStore) {
     const token =
       req.headers['x-arc-token'] ||
       req.headers['x-arc-setup-key'] ||
-      req.headers['authorization']?.replace(/^Bearer\s+/i, '') ||
-      req.query.token;
+      req.headers['authorization']?.replace(/^Bearer\s+/i, '');
 
     if (!token) {
       return res.status(401).json({
