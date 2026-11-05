@@ -18,7 +18,7 @@ export function AnimatedCheckbox({ checked = false, onChange, label, className =
 
 export function AnimatedDropdown({
   value, onChange, options = [], placeholder = 'Select…', ariaLabel, className = '', onPointerDown,
-  searchable = options.length >= 8, disabled = false, multiple = false
+  searchable = options.length >= 8, searchThreshold = 8, disabled = false, multiple = false
 }) {
   const generatedId = useId();
   const rootRef = useRef(null);
@@ -72,7 +72,7 @@ export function AnimatedDropdown({
       const sideSpace = Math.max(0, Math.max(below, above));
       const maxHeight = Math.min(420 * uiScale, Math.max(0, viewportHeight - margin * 2), sideSpace);
       const menuChrome = 10 * uiScale;
-      const showSearch = searchRequested && options.length * 28 * uiScale + menuChrome > maxHeight;
+      const showSearch = searchRequested && (options.length >= searchThreshold || options.length * 28 * uiScale + menuChrome > maxHeight);
       const searchHeight = showSearch ? 42 * uiScale : 0;
       const fullHeight = options.length * 28 * uiScale + menuChrome + searchHeight;
       const desiredHeight = Math.min(maxHeight, fullHeight);
@@ -101,7 +101,7 @@ export function AnimatedDropdown({
       window.visualViewport?.removeEventListener('scroll', updatePosition);
       observer?.disconnect();
     };
-  }, [open, searchRequested, options.length, uiScale]);
+  }, [open, searchRequested, searchThreshold, options.length, uiScale]);
 
   useEffect(() => {
     if (open && menuPosition?.showSearch) searchRef.current?.focus();
