@@ -66,7 +66,7 @@ export function templatePathSuggestions(query, paths = [], limit = MAX_SUGGESTIO
       if (!segment) continue;
       if (partial && !segment.toLowerCase().startsWith(partial)) continue;
       const canonical = candidate.slice(0, typedPrefix.length + segment.length);
-      push(canonical);
+      push(canonical, segment);
     }
     return list.slice(0, limit);
   }
@@ -91,7 +91,7 @@ export function templateFieldSuggestions(query, context = {}) {
     list.push({ label: label || insert, insert: token, search: insert.toLowerCase() });
   };
   if (text.includes('.')) {
-    for (const item of templatePathSuggestions(text, context.paths || [])) push(item.path, item.label);
+    for (const item of templatePathSuggestions(text, context.paths || [])) push(item.label, item.path);
     return list.slice(0, MAX_SUGGESTIONS);
   }
   for (const variable of context.variables || []) {
@@ -135,9 +135,11 @@ export function attachTemplateAutocomplete(container, getContext) {
 
   const highlight = () => {
     if (!menu) return;
-    [...menu.querySelectorAll('[role="option"]')].forEach((button, index) => {
+    const options = [...menu.querySelectorAll('[role="option"]')];
+    options.forEach((button, index) => {
       button.classList.toggle('is-selected', index === activeIndex);
     });
+    options[activeIndex]?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   };
 
   const close = () => {
