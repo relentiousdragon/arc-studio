@@ -22,7 +22,11 @@ export const GatewayCapabilities = Object.freeze({
 });
 
 export const ChannelFlags = Object.freeze({
-  CHANNEL_OBFUSCATED: 1 << 17
+  PINNED: 1 << 1,
+  REQUIRE_TAG: 1 << 4,
+  HIDE_MEDIA_DOWNLOAD_OPTIONS: 1 << 15,
+  CHANNEL_OBFUSCATED: 1 << 17,
+  IS_SPOILER_CHANNEL: 1 << 21
 });
 
 export const GatewayCloseCodes = Object.freeze({
