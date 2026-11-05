@@ -74,16 +74,17 @@ export function AnimatedDropdown({
       const menuChrome = 10 * uiScale;
       const showSearch = searchRequested && (options.length >= searchThreshold || options.length * 28 * uiScale + menuChrome > maxHeight);
       const searchHeight = showSearch ? 42 * uiScale : 0;
-      const fullHeight = options.length * 28 * uiScale + menuChrome + searchHeight;
+      const fullHeight = filteredOptions.length * 28 * uiScale + menuChrome + searchHeight;
       const desiredHeight = Math.min(maxHeight, fullHeight);
       const placeBelow = below >= desiredHeight || below >= above;
       const available = Math.max(0, Math.min(desiredHeight, Math.max(0, placeBelow ? below : above)));
-      const top = placeBelow ? trigger.bottom + 4 : Math.max(margin, trigger.top - available - 4);
+      const top = placeBelow ? trigger.bottom + 4 : 'auto';
+      const bottom = placeBelow ? 'auto' : viewportHeight - trigger.top + 4;
       const optionsHeight = Math.max(0, available / uiScale - (showSearch ? 42 : 10));
       const menuWidth = width / uiScale;
-      setMenuPosition((current) => current && current.left === left && current.top === top && current.width === menuWidth && current.maxHeight === available / uiScale && current.optionsHeight === optionsHeight && current.showSearch === showSearch
+      setMenuPosition((current) => current && current.left === left && current.top === top && current.bottom === bottom && current.width === menuWidth && current.maxHeight === available / uiScale && current.optionsHeight === optionsHeight && current.showSearch === showSearch
         ? current
-        : { left, top, width: menuWidth, maxHeight: available / uiScale, optionsHeight, showSearch });
+        : { left, top, bottom, width: menuWidth, maxHeight: available / uiScale, optionsHeight, showSearch, placement: placeBelow ? 'below' : 'above' });
     };
     updatePosition();
     window.addEventListener('resize', updatePosition);
@@ -101,7 +102,7 @@ export function AnimatedDropdown({
       window.visualViewport?.removeEventListener('scroll', updatePosition);
       observer?.disconnect();
     };
-  }, [open, searchRequested, searchThreshold, options.length, uiScale]);
+  }, [open, searchRequested, searchThreshold, options.length, filteredOptions.length, uiScale]);
 
   useEffect(() => {
     if (open && menuPosition?.showSearch) searchRef.current?.focus();
@@ -171,7 +172,7 @@ export function AnimatedDropdown({
       id={`dropdown-${generatedId}`}
       role="listbox"
       aria-label={ariaLabel}
-      style={{ left: menuPosition?.left ?? -10000, top: menuPosition?.top ?? -10000, width: menuPosition?.width, maxHeight: menuPosition?.maxHeight, transform: `scale(${uiScale})`, transformOrigin: 'top left', '--dropdown-options-height': `${menuPosition?.optionsHeight ?? 220}px` }}
+      style={{ left: menuPosition?.left ?? -10000, top: menuPosition?.top ?? -10000, bottom: menuPosition?.bottom ?? 'auto', width: menuPosition?.width, maxHeight: menuPosition?.maxHeight, transform: `scale(${uiScale})`, transformOrigin: menuPosition?.placement === 'above' ? 'bottom left' : 'top left', '--dropdown-options-height': `${menuPosition?.optionsHeight ?? 220}px` }}
       onPointerDown={(event) => { event.stopPropagation(); onPointerDown?.(event); }}
     >
       {menuPosition?.showSearch && <label className="arc-dropdown-search"><Search size={13} /><input ref={searchRef} value={query} onChange={(event) => { setQuery(event.target.value); setActiveIndex(0); }} onKeyDown={handleKeyDown} placeholder="Search…" aria-label="Search options" /></label>}
