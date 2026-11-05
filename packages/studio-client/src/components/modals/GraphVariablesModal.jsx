@@ -4,6 +4,7 @@ import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
 import { SidebarResizeHandle } from '../ui/SidebarResizeHandle.jsx';
 import { AnimatedCheckbox, AnimatedDropdown } from '../ui/CustomControls.jsx';
+import { isReservedTemplateRoot } from '../../../../studio-server/src/engine/TemplateExpressions.js';
 
 const VARIABLE_TYPES = [
   { value: 'string', label: 'Text' },
@@ -93,6 +94,10 @@ export function GraphVariablesModal({ isOpen, onClose, variables = [], projectVa
       row?.classList.remove('field-shake');
       if (row) { void row.offsetWidth; row.classList.add('field-shake'); }
       window.setTimeout(() => row?.classList.remove('field-shake'), 360);
+      return;
+    }
+    if (isReservedTemplateRoot(cleanName)) {
+      setNameError('“chezcord” is reserved for the system template namespace.');
       return;
     }
     if (!isValidVariableName(cleanName) && !(['DISCORD_APP_ID', 'APP_LATENCY', 'GATEWAY_LATENCY', 'BOT_UPTIME', 'BOT_STATISTICS'].includes(cleanName) && (cleanName === 'BOT_STATISTICS' ? type === 'object' : type === 'number'))) {
@@ -302,6 +307,7 @@ function defaultForType(type) {
 }
 
 function isValidVariableName(name, type = '') {
+  if (isReservedTemplateRoot(name)) return false;
   if (['DISCORD_APP_ID', 'APP_LATENCY', 'GATEWAY_LATENCY', 'BOT_UPTIME'].includes(String(name || ''))) {
     return !type || type === 'number';
   }
