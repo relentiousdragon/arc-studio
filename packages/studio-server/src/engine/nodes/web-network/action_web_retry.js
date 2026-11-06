@@ -84,7 +84,7 @@ export default {
     },
     {
       "id": "ok",
-      "label": "2xx",
+      "label": "Success (2xx)",
       "type": "boolean"
     },
     {
