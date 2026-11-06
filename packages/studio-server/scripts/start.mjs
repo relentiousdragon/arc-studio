@@ -18,7 +18,7 @@ let runServerOnly = serverOnly;
 //
 function enableServerOnly(message) {
   console.warn(`[ARC Studio] ${message}`);
-  console.warn('[ARC Studio] Starting in server-only mode. The workspace connection page will remain available, and the browser editor build will be retried at next startup.');
+  console.warn('[ARC Studio] Starting in server-only mode. The browser editor build will be retried at next startup.');
   runServerOnly = true;
 }
 
@@ -101,7 +101,7 @@ try {
     reported = true;
   } catch {}
   if (!reported) console.error(`\x1b[31m[ERROR] ${message}\x1b[0m`);
-  process.exit(0);
+  process.exit(1);
 }
 
 // contributors: @relentiousdragon

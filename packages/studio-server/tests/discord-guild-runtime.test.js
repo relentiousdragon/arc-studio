@@ -57,11 +57,30 @@ test('guild runtime fetches users, servers, and members with normalized outputs'
   assert.equal(member.outputs.get('deaf'), true);
 
   const channel = createGuildHarness('action_fetch_channel', { channel_id: 'channel-1' }, {
-    rest: { getChannel: async () => ({ id: 'channel-1', flags: 1 << 17 }) }
+    rest: { getChannel: async () => ({
+      id: 'channel-1', flags: 1 << 17, position: 4,
+      permission_overwrites: [{ id: 'role-1', allow: '1024', deny: '0', type: 0 }]
+    }) }
   });
   await channel.execute();
   assert.equal(channel.outputs.get('flags'), 1 << 17);
   assert.equal(channel.outputs.get('obfuscated'), true);
+  assert.equal(channel.outputs.get('position'), 4);
+  assert.equal(channel.outputs.get('overwrite_count'), 1);
+  assert.deepEqual(channel.outputs.get('permission_overwrites'), [{ id: 'role-1', allow: '1024', deny: '0', type: 0 }]);
+
+  const role = createGuildHarness('action_fetch_role', { guild_id: 'guild-1', role_id: 'role-1' }, {
+    rest: { getGuildRole: async () => ({
+      id: 'role-1', name: 'Moderators', color: 0xff0000, position: 2, permissions: '8',
+      hoist: true, managed: false, mentionable: true, tags: { bot_id: 'app-1' }
+    }) }
+  });
+  await role.execute();
+  assert.equal(role.outputs.get('name'), 'Moderators');
+  assert.equal(role.outputs.get('color_hex'), '#ff0000');
+  assert.equal(role.outputs.get('position'), 2);
+  assert.equal(role.outputs.get('permissions'), '8');
+  assert.deepEqual(role.outputs.get('tags'), { bot_id: 'app-1' });
 });
 
 test('guild runtime fetches member and role permission bitfields', async () => {
@@ -149,6 +168,32 @@ test('guild runtime creates channels and roles and applies role changes', async 
   });
   await memberRole.execute();
   assert.deepEqual(calls[2], ['member-role', 'guild-1', 'user-1', 'role-1', 'cleanup']);
+
+  const studioOverwrites = createGuildHarness('action_create_channel', {
+    guild_id: 'guild-1',
+    name: 'rules',
+    channel_type: 0,
+    category_id: 'category-1',
+    position: 3,
+    overwriteCount: 1,
+    target_id_1: 'role-1',
+    target_type_1: 0,
+    allow_1: [],
+    deny_1: []
+  }, {
+    rest: { createGuildChannel: async (...args) => {
+      calls.push(['studio-overwrites', ...args]);
+      return { id: 'channel-2' };
+    } }
+  });
+  await studioOverwrites.execute();
+  assert.deepEqual(calls[3], ['studio-overwrites', 'guild-1', {
+    name: 'rules',
+    type: 0,
+    parent_id: 'category-1',
+    permission_overwrites: [{ id: 'role-1', type: 0 }],
+    position: 3
+  }, '']);
 });
 
 test('guild runtime applies thread and voice operations and preserves connected input semantics', async () => {
@@ -244,4 +289,125 @@ test('GraphRunner routes moderation errors through the failure execution output'
 
   assert.equal(result.error, null);
   assert.deepEqual(calls, [['channel-1', { content: 'Moderation failed' }]]);
+});
+
+test('guild runtime creates channels with numeric Discord types and per-type fields', async () => {
+  const calls = [];
+  const forum = createGuildHarness('action_create_channel', {
+    guild_id: 'guild-1',
+    name: 'ideas board',
+    channel_type: 15,
+    topic: 'Post ideas',
+    flags: 1 << 4,
+    default_auto_archive_duration: 10080
+  }, {
+    rest: { createGuildChannel: async (...args) => {
+      calls.push(['forum', ...args]);
+      return { id: 'forum-1' };
+    } }
+  });
+  await forum.execute();
+  assert.deepEqual(calls[0], ['forum', 'guild-1', {
+    name: 'ideas board',
+    type: 15,
+    topic: 'Post ideas',
+    flags: 16,
+    default_auto_archive_duration: 10080
+  }, '']);
+  assert.equal(forum.outputs.get('channel_id'), 'forum-1');
+  assert.equal(forum.outputs.get('success'), true);
+
+  const media = createGuildHarness('action_create_channel', {
+    guild_id: 'guild-1',
+    name: 'clip reel',
+    channel_type: 'media',
+    available_tags: [{ name: 'Clips' }]
+  }, {
+    rest: { createGuildChannel: async (...args) => {
+      calls.push(['media', ...args]);
+      return { id: 'media-1' };
+    } }
+  });
+  await media.execute();
+  assert.deepEqual(calls[1], ['media', 'guild-1', {
+    name: 'clip reel',
+    type: 16,
+    available_tags: [{ name: 'Clips' }]
+  }, '']);
+
+  const voice = createGuildHarness('action_create_channel', {
+    guild_id: 'guild-1',
+    name: 'voice lounge',
+    channel_type: 2,
+    bitrate: 96000,
+    user_limit: 15,
+    nsfw: true,
+    rate_limit_per_user: 5
+  }, {
+    rest: { createGuildChannel: async (...args) => {
+      calls.push(['voice', ...args]);
+      return { id: 'voice-1' };
+    } }
+  });
+  await voice.execute();
+  assert.deepEqual(calls[2], ['voice', 'guild-1', {
+    name: 'voice lounge',
+    type: 2,
+    bitrate: 96000,
+    user_limit: 15,
+    nsfw: true,
+    rate_limit_per_user: 5
+  }, '']);
+
+  const category = createGuildHarness('action_create_channel', {
+    guild_id: 'guild-1',
+    name: 'category folder',
+    channel_type: 4,
+    flags: 32
+  }, {
+    rest: { createGuildChannel: async (...args) => {
+      calls.push(['category', ...args]);
+      return { id: 'category-1' };
+    } }
+  });
+  await category.execute();
+  assert.deepEqual(calls[3], ['category', 'guild-1', {
+    name: 'category folder',
+    type: 4
+  }, '']);
+
+  const badType = createGuildHarness('action_create_channel', {
+    guild_id: 'guild-1',
+    name: 'not creatable',
+    channel_type: 1
+  }, {
+    rest: { createGuildChannel: async () => { calls.push(['bad']); return { id: 'never' }; } }
+  });
+  await assert.rejects(badType.execute(), /valid Discord channel type/);
+
+  const badFlags = createGuildHarness('action_create_channel', {
+    guild_id: 'guild-1',
+    name: 'bad flags',
+    channel_type: 0,
+    flags: -4
+  }, {
+    rest: { createGuildChannel: async () => ({ id: 'never' }) }
+  });
+  await assert.rejects(badFlags.execute(), /non negative bitfield/);
+
+  const privateThread = createGuildHarness('action_create_thread', {
+    channel_id: 'parent-1',
+    name: 'Private help',
+    thread_type: 12,
+    invitable: false
+  }, {
+    rest: { createThread: async (...args) => {
+      calls.push(['thread', ...args]);
+      return { id: 'thread-1', parent_id: args[0] };
+    } }
+  });
+  await privateThread.execute();
+  assert.equal(privateThread.outputs.get('thread_id'), 'thread-1');
+  assert.deepEqual(calls[4][2].type, 'private');
+  assert.deepEqual(calls[4][2].invitable, false);
 });

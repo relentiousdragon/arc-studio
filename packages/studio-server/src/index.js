@@ -462,7 +462,7 @@ function scheduleLiveGraphAutosave(projectId, graphId, delayMs = 1200) {
     } catch (error) {
       if (!liveGraphAutosaveFailures.has(key)) {
         liveGraphAutosaveFailures.add(key);
-        logger.log('ERROR', `Could not auto-save collaborative graph ${graphId}: ${error.message}`);
+        logger.log('ERROR', `Could not auto-save collaborative graph ${graphId} (“${state?.graph?.name || graphId}”): ${error.message}`);
         sendToCollaborationRoom(key, { type: 'GRAPH_AUTOSAVE_FAILED', payload: { projectId, graphId, message: 'The workspace could not save this graph yet. It will retry automatically.' } });
       }
       scheduleLiveGraphAutosave(projectId, graphId, 5000);

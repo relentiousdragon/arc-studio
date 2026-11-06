@@ -1,6 +1,38 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { replaceTemplateToken, templateFieldSuggestions, templateTokenAt } from '../../studio-client/src/core/templateFieldAutocomplete.js';
+import { getNodeTemplateInputPins } from '../../studio-client/src/components/nodes/nodeDefinitions.js';
+import { TEMPLATE_SYSTEM_PATHS } from '../src/engine/TemplateExpressions.js';
+
+test('suggests the system chezcord permission namespace', () => {
+  const suggestions = templateFieldSuggestions('chezcord.', { paths: TEMPLATE_SYSTEM_PATHS });
+  assert.equal(suggestions[0]?.insert, 'chezcord.permissions}}');
+});
+
+test('shows only the next permission segment after the parent path', () => {
+  const suggestions = templateFieldSuggestions('chezcord.permissions.VIEW_CHANNELS', { paths: TEMPLATE_SYSTEM_PATHS });
+  assert.deepEqual(suggestions.map((item) => ({ label: item.label, insert: item.insert })), [
+    { label: 'VIEW_CHANNELS', insert: 'chezcord.permissions.VIEW_CHANNELS}}' }
+  ]);
+});
+
+test('suggests a user VIEW_CHANNELS variable beside the namespaced permission', () => {
+  const suggestions = templateFieldSuggestions('VIEW_CHANNELS', {
+    variables: [{ label: 'VIEW_CHANNELS', insert: 'VIEW_CHANNELS' }],
+    paths: TEMPLATE_SYSTEM_PATHS
+  });
+  assert.deepEqual(suggestions.map((item) => item.insert), ['VIEW_CHANNELS}}', 'chezcord.permissions.VIEW_CHANNELS}}']);
+});
+
+test('does not create a template input for the system chezcord namespace', () => {
+  const pins = getNodeTemplateInputPins(
+    { id: 'node-1', data: { text: '{{chezcord.permissions.VIEW_CHANNEL}}' } },
+    [{ id: 'text', type: 'string' }],
+    [],
+    []
+  );
+  assert.deepEqual(pins, []);
+});
 //
 test('keeps the opening braces when a suggestion is inserted after existing text', () => {
   const token = templateTokenAt('text{{var', 9);
@@ -47,7 +79,7 @@ test('suggests only the next object level after a dot', () => {
       { path: 'var.other', label: 'var.other' }
     ]
   };
-  assert.deepEqual(templateFieldSuggestions('var.', context).map((item) => item.insert), ['var.child}}', 'var.other}}']);
+  assert.deepEqual(templateFieldSuggestions('var.', context).map((item) => [item.label, item.insert]), [['child', 'var.child}}'], ['other', 'var.other}}']]);
   assert.deepEqual(templateFieldSuggestions('var.child.', context).map((item) => item.insert), ['var.child.subchild}}']);
   assert.deepEqual(templateFieldSuggestions('var.child.subchild.', context).map((item) => item.insert), ['var.child.subchild.deep}}']);
   assert.deepEqual(templateFieldSuggestions('var.ch', context).map((item) => item.insert), ['var.child}}']);

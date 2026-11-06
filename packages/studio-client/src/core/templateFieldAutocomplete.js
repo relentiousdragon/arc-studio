@@ -66,7 +66,7 @@ export function templatePathSuggestions(query, paths = [], limit = MAX_SUGGESTIO
       if (!segment) continue;
       if (partial && !segment.toLowerCase().startsWith(partial)) continue;
       const canonical = candidate.slice(0, typedPrefix.length + segment.length);
-      push(canonical);
+      push(canonical, segment);
     }
     return list.slice(0, limit);
   }
@@ -91,7 +91,7 @@ export function templateFieldSuggestions(query, context = {}) {
     list.push({ label: label || insert, insert: token, search: insert.toLowerCase() });
   };
   if (text.includes('.')) {
-    for (const item of templatePathSuggestions(text, context.paths || [])) push(item.path, item.label);
+    for (const item of templatePathSuggestions(text, context.paths || [])) push(item.label, item.path);
     return list.slice(0, MAX_SUGGESTIONS);
   }
   for (const variable of context.variables || []) {
@@ -108,6 +108,11 @@ export function templateFieldSuggestions(query, context = {}) {
     push(socket.label, socket.insert);
   }
   for (const entry of context.functions || []) {
+    const name = typeof entry === 'string' ? entry : entry?.insert || '';
+    if (!name || (lower && !name.toLowerCase().includes(lower))) continue;
+    push(typeof entry === 'string' ? name : entry.label || name, name);
+  }
+  for (const entry of context.constants || []) {
     const name = typeof entry === 'string' ? entry : entry?.insert || '';
     if (!name || (lower && !name.toLowerCase().includes(lower))) continue;
     push(typeof entry === 'string' ? name : entry.label || name, name);
@@ -130,9 +135,11 @@ export function attachTemplateAutocomplete(container, getContext) {
 
   const highlight = () => {
     if (!menu) return;
-    [...menu.querySelectorAll('[role="option"]')].forEach((button, index) => {
+    const options = [...menu.querySelectorAll('[role="option"]')];
+    options.forEach((button, index) => {
       button.classList.toggle('is-selected', index === activeIndex);
     });
+    options[activeIndex]?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   };
 
   const close = () => {
@@ -150,18 +157,25 @@ export function attachTemplateAutocomplete(container, getContext) {
     if (!rect.width && !rect.height) return;
     const caret = getCaretCoordinates(current, token.anchor);
     const gutter = 10;
+    const gap = 8;
     const width = Math.max(180, Math.min(286, rect.width || 240));
     const left = Math.max(gutter, Math.min(rect.left + caret.left - (current.scrollLeft || 0) - 8, window.innerWidth - width - gutter));
+    menu.style.left = `${left}px`;
+    menu.style.width = `${width}px`;
+    menu.style.maxHeight = 'none';
     const height = menu.getBoundingClientRect().height || Math.min(284, 120 + Math.max(1, items.length) * 34);
     const spaceAbove = Math.max(0, rect.top - gutter * 2);
     const spaceBelow = Math.max(0, window.innerHeight - rect.bottom - gutter * 2);
-    const showAbove = spaceAbove >= height || spaceAbove >= spaceBelow;
-    const maxHeight = Math.max(72, Math.min(284, showAbove ? spaceAbove : spaceBelow));
-    const renderedHeight = Math.min(height, maxHeight);
-    menu.style.left = `${left}px`;
-    menu.style.top = `${showAbove ? Math.max(gutter, rect.top - renderedHeight - 8) : Math.min(window.innerHeight - renderedHeight - gutter, rect.bottom + 8)}px`;
-    menu.style.width = `${width}px`;
+    const showAbove = spaceBelow < Math.min(height, 284) && spaceAbove > spaceBelow;
+    const maxHeight = Math.max(24, Math.min(284, showAbove ? spaceAbove : spaceBelow));
     menu.style.maxHeight = `${maxHeight}px`;
+    if (showAbove) {
+      menu.style.top = 'auto';
+      menu.style.bottom = `${window.innerHeight - rect.top + gap}px`;
+    } else {
+      menu.style.top = `${rect.bottom + gap}px`;
+      menu.style.bottom = 'auto';
+    }
   };
 
   const render = (element, query, suggestions) => {

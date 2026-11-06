@@ -36,6 +36,16 @@ test('does not warn on dynamic or flexibly typed sockets', () => {
   assert.equal(fieldLimitWarning({ nodeType: 'action_send_message', pin: { id: 'anything', label: 'F', type: 'variable' }, value: 'general' }), '');
 });
 
+test('forum and media topics use 4096 character budget', () => {
+  const topicPin = { id: 'topic', label: 'Topic', type: 'string' };
+  const forumNode = { data: { channel_type: 15 } };
+  const legacyMediaNode = { data: { channel_type: 'media' } };
+  const textNode = { data: { channel_type: 0 } };
+  assert.equal(fieldLimitWarning({ nodeType: 'action_create_channel', pin: topicPin, value: 'x'.repeat(2000), node: forumNode }), '');
+  assert.equal(fieldLimitWarning({ nodeType: 'action_create_channel', pin: topicPin, value: 'x'.repeat(2000), node: legacyMediaNode }), '');
+  assert.match(fieldLimitWarning({ nodeType: 'action_create_channel', pin: topicPin, value: 'x'.repeat(1200), node: textNode }), /1024 character limit/);
+});
+
 test('graph runs log a warning when a resolved value breaks a field rule', async () => {
   const lines = [];
   const graph = {

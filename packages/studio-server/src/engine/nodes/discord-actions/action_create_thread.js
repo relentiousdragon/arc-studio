@@ -37,8 +37,8 @@ export default {
     {
       "id": "thread_type",
       "label": "Thread Type",
-      "type": "string",
-      "defaultValue": "public"
+      "type": "number",
+      "defaultValue": 11
     },
     {
       "id": "auto_archive_duration",

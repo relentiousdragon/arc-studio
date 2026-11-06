@@ -1,6 +1,6 @@
 [package]
 name = "arc-studio-desktop"
-version = "2026.1.1-nightly.10"
+version = "2026.1.1-nightly.11"
 description = "ARC Studio desktop application"
 license = "Apache-2.0"
 authors = ["ARC Studio Contributors"]
@@ -20,3 +20,4 @@ url = "2"
 uuid = { version = "1", features = ["v4"] }
 discord-rich-presence = "1.1"
 tauri-plugin-updater = "2"
+tauri-plugin-notification = "2"

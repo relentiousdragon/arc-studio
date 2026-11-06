@@ -35,14 +35,19 @@ const ID_LABELS = {
   role_id: 'role ID',
   interaction_id: 'interaction ID',
   application_id: 'application ID',
-  parent_id: 'channel ID'
+  parent_id: 'channel ID',
+  category_id: 'category ID'
 };
 const DYNAMIC_PIN_ID_PATTERN = /^(arg|slot|item|argument|part|value|input|output|case)_(\d+)$/;
 const FLEXIBLE_PIN_TYPES = new Set(['arg', 'any', 'variable', 'object', 'array']);
 //
-export function fieldLimitWarning({ nodeType, pin, value } = {}) {
+export function fieldLimitWarning({ nodeType, pin, value, node } = {}) {
   if (!pin || typeof value !== 'string') return '';
   if (DYNAMIC_PIN_ID_PATTERN.test(pin.id) || FLEXIBLE_PIN_TYPES.has(pin.type)) return '';
+  const createChannelTopicTypes = new Set(['15', '16', 'forum', 'media']);
+  if (nodeType === 'action_create_channel' && pin.id === 'topic' && createChannelTopicTypes.has(String(node?.data?.channel_type ?? '').trim().toLowerCase())) {
+    return '';
+  }
   const text = value.trim();
   if (!text || text.includes('{{')) return '';
   if (pin.type === 'number' && !Number.isFinite(Number(text))) {

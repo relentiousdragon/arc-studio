@@ -527,6 +527,13 @@ export class RESTClient {
     return this.request('GET', `/guilds/${guildId}/roles`);
   }
 
+  getGuildRole(guildId, roleId) {
+    const serverId = String(guildId || '').trim();
+    const targetRoleId = String(roleId || '').trim();
+    if (!serverId || !targetRoleId) throw new TypeError('Server and role IDs are required.');
+    return this.request('GET', `/guilds/${encodeURIComponent(serverId)}/roles/${encodeURIComponent(targetRoleId)}`);
+  }
+
   createGuildRole(guildId, role, reason) {
     if (!guildId) throw new TypeError('A guild ID is required.');
     const headers = reason ? { 'X-Audit-Log-Reason': encodeURIComponent(String(reason).slice(0, 512)) } : {};

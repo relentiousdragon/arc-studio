@@ -13,7 +13,7 @@ import {
 import { PluginStore } from './PluginStore.js';
 import { EmbedBuilder, parseEmoji } from 'chezcord';
 import { evaluateMathNode } from './MathOperations.js';
-import { getTemplateReferences, renderTextTemplate } from './TemplateExpressions.js';
+import { getTemplateReferences, isReservedTemplateRoot, renderTextTemplate } from './TemplateExpressions.js';
 import { buildEventTemplateValues } from './EventTemplatePaths.js';
 import { fieldLimitWarning } from './FieldLimits.js';
 //
@@ -846,7 +846,7 @@ export class GraphRunner {
       try {
         const definition = NodeDefinitions[node.type];
         const pin = definition?.inputs?.find((item) => item.id === pinId);
-        const warning = fieldLimitWarning({ nodeType: node.type, pin, value });
+        const warning = fieldLimitWarning({ nodeType: node.type, pin, value, node });
         if (warning && !warnedFieldValues.has(`${node.id}:${pinId}`)) {
           warnedFieldValues.add(`${node.id}:${pinId}`);
           log(`[Warning] ${node.label || definition?.label || node.type} ${pin?.label || pinId}: ${warning}`);
@@ -1222,7 +1222,9 @@ export class GraphRunner {
           const renderedName = renderNodeTemplate(targetNode, String(targetNode.data?.name || ''));
           const name = String(resolveDataInput(targetNode, 'name', renderedName) ?? '').trim().slice(0, 64);
           const validName = /^(?=.{1,64}$)[A-Za-z0-9]+(?:_+[A-Za-z0-9]+|-[A-Za-z0-9]+)*$/.test(name);
-          if (!validName) {
+          if (isReservedTemplateRoot(name)) {
+            log(`[Variable] Create skipped: “${name}” is reserved for the system template namespace.`);
+          } else if (!validName) {
             log(`[Variable] Create skipped: “${name || 'unnamed'}” is not a valid variable name.`);
           } else {
             const definitions = scope === 'project' ? projectVariableDefinitions : localVariableDefinitions;

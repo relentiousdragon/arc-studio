@@ -4,11 +4,13 @@ import { getArcUiScale } from '../../core/uiScale.js';
 import { arcEvents } from '../../core/ArcEvents.js';
 import { readAppStorage, writeAppStorage } from '../../core/storage.js';
 import { onPageBlur } from '../../core/pageFocus.js';
-import { AlertCircle, AlertTriangle, BookmarkPlus, Braces, Calculator, ChevronDown, ChevronRight, Clock3, Copy, Database, Download, FileCode2, FileUp, FolderTree, GitCompare, Layers, MoreHorizontal, PackageOpen, Pencil, Play, Plus, Puzzle, RotateCcw, Save, Search, Sparkles, Star, Trash2, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, BookmarkPlus, Braces, Calculator, ChevronDown, ChevronRight, Clock3, Copy, Database, Download, FileCode2, FileUp, FolderTree, GitCompare, GripVertical, Layers, MoreHorizontal, PackageOpen, Pencil, Play, Plus, Puzzle, RotateCcw, Save, Search, Sparkles, Star, Trash2, X } from 'lucide-react';
 import { BuiltInNodeDefinitions, createDefaultNodeData, getVisibleNewNodeDefinitions, isNodeDefinitionNew, markNewNodeDefinitionsSeen } from '../nodes/nodeDefinitions.js';
 import { NodeTypeIcon } from '../nodes/NodeTypeIcon.jsx';
-import { CharacterLimit } from '../ui/Inputs.jsx';
+import { CharacterLimit, TextInput } from '../ui/Inputs.jsx';
 import { SidebarResizeHandle } from '../ui/SidebarResizeHandle.jsx';
+import { Modal } from '../ui/Modal.jsx';
+import { Button } from '../ui/Button.jsx';
 import { createSearchIndex } from '../palette/nodeSearch.js';
 import { readLibraryUsage, recordLibraryItemUsage } from '../../core/libraryUsage.js';
 
@@ -16,6 +18,7 @@ export { recordLibraryItemUsage };
 
 const EXPANSION_STORAGE_KEY = 'arc_library_expansion_by_project';
 const DEFAULT_EXPANDED_GRAPH_GROUPS = { 'Slash Commands': true, Messages: true, Components: true, 'Member Events': true, Functions: true, Other: true };
+const BUILT_IN_GRAPH_CATEGORIES = ['Slash Commands', 'Messages', 'Message Events', 'Components', 'Member Events', 'Voice & Presence', 'Bot Events', 'Channel Events', 'Roles', 'Moderation Events', 'Invites', 'Cron Jobs', 'Scheduled Events', 'Functions', 'Other'];
 const readGraphCategories = (key) => { try { const value = JSON.parse(readAppStorage(key) || '{}'); return value && typeof value === 'object' && !Array.isArray(value) ? value : {}; } catch { return {}; } };
 //
 function readLibraryExpansion() {
@@ -27,7 +30,7 @@ function readLibraryExpansion() {
 }
 
 export function GraphLibraryPanel({
-  graphs = [], graphValidationReports = new Map(), templates = [], snapshots = [], nodePrefabs = [], embedAssets = [], graphVariables = [], graphActivity = [], definitions = BuiltInNodeDefinitions, newNodesUserKey = 'anonymous', defaultGraphId, activeGraph, openGraphIds = [], activeTabId, usageScope = 'default', desktopMode = false, canImportGraph = true, sidebarWidth = 320, activeSection: activeSectionProp, onActiveSectionChange, onSidebarResize, onClose, onOpenGraph, onOpenGraphReview, onImportGraph, onUseTemplate, onCreateFunction, onDeleteGraph, onDeleteGraphs, onDuplicateGraph, onRenameGraph, onSaveTemplate, onDeleteTemplate, onSetDefault, onExportGraph, onExportBot, exportInProgress = false, onAddNode, onAddPrefab, onDeletePrefab, onCreateEmbed, onCreateComponentsV2, onOpenEmbed, onDeleteEmbed, onManageVariables, onCreateSnapshot, onDeleteSnapshot, onRestoreSnapshot
+  graphs = [], graphValidationReports = new Map(), templates = [], snapshots = [], nodePrefabs = [], embedAssets = [], graphVariables = [], graphActivity = [], definitions = BuiltInNodeDefinitions, newNodesUserKey = 'anonymous', defaultGraphId, activeGraph, openGraphIds = [], activeTabId, usageScope = 'default', desktopMode = false, canImportGraph = true, sidebarWidth = 320, activeSection: activeSectionProp, onActiveSectionChange, onSidebarResize, onClose, onOpenGraph, onOpenGraphReview, onImportGraph, onUseTemplate, onCreateGraph, onCreateFunction, onDeleteGraph, onDeleteGraphs, onDuplicateGraph, onRenameGraph, onSaveTemplate, onDeleteTemplate, onSetDefault, onExportGraph, onExportBot, exportInProgress = false, onAddNode, onAddPrefab, onDeletePrefab, onCreateEmbed, onCreateComponentsV2, onOpenEmbed, onDeleteEmbed, onManageVariables, onCreateSnapshot, onDeleteSnapshot, onRestoreSnapshot
 }) {
   const uiScale = getArcUiScale();
   const [query, setQuery] = useState('');
@@ -39,6 +42,9 @@ export function GraphLibraryPanel({
   const categoryStorageKey = `arc_library_graph_categories:${usageScope || 'default'}`;
   const [graphCategories, setGraphCategories] = useState(() => readGraphCategories(categoryStorageKey));
   const [categoryDrag, setCategoryDrag] = useState(null);
+  const [categoryDropTarget, setCategoryDropTarget] = useState(null);
+  const [graphMoveDropTarget, setGraphMoveDropTarget] = useState(null);
+  const [libraryDragEdge, setLibraryDragEdge] = useState(null);
   const [libraryDragGhost, setLibraryDragGhost] = useState(null);
   const [selectedLibraryNodeTypes, setSelectedLibraryNodeTypes] = useState([]);
   const [selectedGraphKeys, setSelectedGraphKeys] = useState([]);
@@ -49,6 +55,42 @@ export function GraphLibraryPanel({
   const [snapshotError, setSnapshotError] = useState('');
   const [, setNewNodeRevision] = useState(0);
   const [compareSnapshot, setCompareSnapshot] = useState(null);
+  const [showCategoryModal, setShowCategoryModal] = useState(false);
+  const [categoryModalMode, setCategoryModalMode] = useState('create');
+  const [categoryModalName, setCategoryModalName] = useState('');
+  const [categoryModalTarget, setCategoryModalTarget] = useState(null);
+  const libraryTreeRef = useRef(null);
+  const categoryNameRef = useRef(null);
+
+  const handleCategoryModalConfirm = () => {
+    const name = categoryModalName.trim();
+    if (!name) return;
+    if (categoryModalMode === 'create') {
+      const taken = Object.entries(graphCategories).some(([id, category]) => id !== '__order' && category?.name?.toLowerCase() === name.toLowerCase());
+      if (taken) return;
+      setGraphCategories((current) => ({ ...current, [`category:${Date.now()}`]: { name, graphIds: [] } }));
+    } else {
+      const target = categoryModalTarget;
+      if (!target) return;
+      setGraphCategories((current) => {
+        const existingCategoryId = target.categoryId && current[target.categoryId]
+          ? target.categoryId
+          : Object.entries(current).find(([id, category]) => id !== '__order' && category?.name === target.groupName)?.[0];
+        if (!existingCategoryId) return current;
+        const nameTaken = Object.entries(current).some(([id, category]) => id !== '__order' && id !== existingCategoryId && category?.name?.toLowerCase() === name.toLowerCase());
+        if (nameTaken) return current;
+        const next = { ...current };
+        const category = { ...next[existingCategoryId] };
+        delete category.source;
+        next[existingCategoryId] = { ...category, name };
+        if (Array.isArray(next.__order)) next.__order = next.__order.map((item) => item === target.groupName ? name : item);
+        return next;
+      });
+    }
+    setShowCategoryModal(false);
+    setCategoryModalName('');
+    setCategoryModalTarget(null);
+  };
   const uniqueSelectedGraphKeys = [...new Set(selectedGraphKeys)];
   const isSearching = Boolean(query.trim());
   useEffect(() => {
@@ -97,6 +139,88 @@ export function GraphLibraryPanel({
   const filteredGraphs = search(graphSearchIndex, graphs);
   const filteredTemplates = search(templateSearchIndex, templates);
   const graphGroups = groupGraphs(filteredGraphs, graphCategories);
+  const graphCategoryById = useMemo(() => {
+    const categories = new Map();
+    for (const [name, items] of groupGraphs(graphs, graphCategories)) {
+      for (const graph of items) categories.set(String(graph.id), name);
+    }
+    return categories;
+  }, [graphs, graphCategories]);
+  const isGraphMoveDisabled = (graphIds, groupName) => {
+    const ids = [...new Set((graphIds || []).map(String))];
+    return ids.length > 0 && ids.every((id) => graphCategoryById.get(id) === groupName);
+  };
+  const getDraggedGraphIds = (event) => {
+    if (window.__arcGraphMovePayload?.graphIds?.length) return window.__arcGraphMovePayload.graphIds;
+    try { return JSON.parse(event.dataTransfer?.getData('application/x-arc-graph-move') || 'null')?.graphIds || []; } catch { return []; }
+  };
+  const handleCreateGraphInCategory = (groupName) => {
+    const graph = onCreateGraph?.();
+    if (!graph?.id) return;
+    const categoryId = Object.entries(graphCategories).find(([id, category]) => id !== '__order' && category?.name === groupName)?.[0];
+    if (categoryId) setGraphCategories((current) => ({ ...current, [categoryId]: { ...current[categoryId], graphIds: [...new Set([...(current[categoryId]?.graphIds || []), graph.id])] } }));
+    setContextMenu(null);
+  };
+  const deleteCategory = async (categoryId) => {
+    const category = graphCategories[categoryId];
+    if (!category) return;
+    setContextMenu(null);
+    const categoryGraphIds = [...new Set(category.graphIds || [])];
+    const categoryGraphs = graphs.filter((graph) => categoryGraphIds.includes(graph.id));
+    if (!categoryGraphs.length) {
+      setGraphCategories((current) => {
+        const next = { ...current };
+        delete next[categoryId];
+        next.__order = (next.__order || []).filter((name) => name !== category.name);
+        return next;
+      });
+    } else {
+      const deleted = await onDeleteGraphs?.(categoryGraphs);
+      if (!deleted) return;
+      setGraphCategories((current) => {
+        const next = { ...current };
+        delete next[categoryId];
+        next.__order = (next.__order || []).filter((name) => name !== category.name);
+        return next;
+      });
+    }
+  };
+
+  const finishCategoryReorder = (event, targetName, targetElement) => {
+    if (!categoryDrag) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const bounds = targetElement?.getBoundingClientRect();
+    const position = bounds && event.clientY > bounds.top + bounds.height / 2 ? 'after' : 'before';
+    const names = graphGroups.map(([name]) => name).filter((name) => name !== categoryDrag);
+    const targetIndex = names.indexOf(targetName);
+    if (targetIndex < 0) return;
+    names.splice(targetIndex + (position === 'after' ? 1 : 0), 0, categoryDrag);
+    setGraphCategories((current) => ({ ...current, __order: names }));
+    setCategoryDrag(null);
+    setCategoryDropTarget(null);
+  };
+  const moveGraphsToCategory = (graphIds, groupName) => {
+    const ids = [...new Set((graphIds || []).map(String))];
+    if (!ids.length || isGraphMoveDisabled(ids, groupName)) return;
+    const categoryId = Object.entries(graphCategories).find(([id, category]) => id !== '__order' && category?.name === groupName)?.[0];
+    const targetCategoryId = categoryId || (BUILT_IN_GRAPH_CATEGORIES.includes(groupName) ? `system:${groupName}` : null);
+    setGraphCategories((current) => {
+      const next = Object.fromEntries(Object.entries(current).map(([id, category]) => [id, id === '__order' ? category : {
+        ...category,
+        graphIds: (category.graphIds || []).filter((graphId) => !ids.includes(String(graphId)))
+      }]));
+      if (targetCategoryId) {
+        const currentTarget = next[targetCategoryId] || { name: groupName, graphIds: [], ...(BUILT_IN_GRAPH_CATEGORIES.includes(groupName) ? { source: 'system' } : {}) };
+        next[targetCategoryId] = { ...currentTarget, graphIds: [...new Set([...(currentTarget.graphIds || []), ...ids])] };
+      }
+      for (const [id, category] of Object.entries(next)) {
+        if (id !== '__order' && category?.source === 'system' && !category.graphIds?.length) delete next[id];
+      }
+      return next;
+    });
+    setGraphMoveDropTarget(null);
+  };
   const graphLastSeen = new Map(graphActivity.map((entry) => [entry.graphId, entry]));
   const searchNodes = search(nodeSearchIndex, definitions.filter((node) => !node.hidden));
   const nodeGroups = groupNodes(searchNodes);
@@ -256,13 +380,20 @@ export function GraphLibraryPanel({
 
   const startGraphDrag = (event, graph) => {
     hideNativeDragImage(event);
+    setLibraryDragEdge(null);
     const payload = { type: 'graph-call', graphId: graph.id };
+    const graphIds = uniqueSelectedGraphKeys.includes(graphSelectionKey(graph))
+      ? uniqueSelectedGraphKeys.map((key) => graphs.find((item) => graphSelectionKey(item) === key)?.id).filter(Boolean)
+      : [graph.id];
+    window.__arcGraphMovePayload = { graphIds };
+    try { event.dataTransfer.setData('application/x-arc-graph-move', JSON.stringify({ graphIds })); } catch {}
     window.__arcGraphDragPayload = payload;
     setLibraryTransferData(event, 'application/x-arc-graph-call', payload);
+    try { event.dataTransfer.effectAllowed = 'copyMove'; } catch {}
     startLibraryGhost(event, { type: 'function_call', label: graph.name || 'Untitled graph', color: '#7a889b' });
   };
 
-  const finishGraphDrag = () => { window.__arcGraphDragPayload = null; clearLibraryDragPayload(); setLibraryDragGhost(null); };
+  const finishGraphDrag = () => { window.__arcGraphDragPayload = null; window.__arcGraphMovePayload = null; clearLibraryDragPayload(); setLibraryDragGhost(null); setGraphMoveDropTarget(null); setLibraryDragEdge(null); };
 
   const beginPointerDrag = (event, payload) => {
     if (!desktopMode || event.button !== 0) return;
@@ -341,6 +472,72 @@ export function GraphLibraryPanel({
       clearPointerDrag();
     };
   }, [desktopMode]);
+
+  useEffect(() => {
+    if (!desktopMode) return undefined;
+    const onPointerMove = (event) => {
+      const payload = event.detail?.payload;
+      if (payload?.type !== 'graph-call') return;
+      const tree = libraryTreeRef.current;
+      const bounds = tree?.getBoundingClientRect();
+      let edge = null;
+      if (bounds && event.detail.clientY >= bounds.top && event.detail.clientY <= bounds.bottom) {
+        const edgeSize = Math.min(72, bounds.height * 0.16);
+        if (event.detail.clientY < bounds.top + edgeSize) {
+          const strength = Math.min(1, Math.max(0, (bounds.top + edgeSize - event.detail.clientY) / edgeSize));
+          if (strength > 0) edge = { direction: -1, strength: Math.round(strength * 20) / 20 };
+        } else if (event.detail.clientY > bounds.bottom - edgeSize) {
+          const strength = Math.min(1, Math.max(0, (event.detail.clientY - (bounds.bottom - edgeSize)) / edgeSize));
+          if (strength > 0) edge = { direction: 1, strength: Math.round(strength * 20) / 20 };
+        }
+      }
+      setLibraryDragEdge((current) => current?.direction === edge?.direction && current?.strength === edge?.strength ? current : edge);
+      const target = document.elementFromPoint(event.detail.clientX, event.detail.clientY)?.closest?.('[data-graph-category]');
+      setGraphMoveDropTarget(target ? {
+        name: target.dataset.graphCategory,
+        disabled: isGraphMoveDisabled(payload.graphIds || [payload.graphId], target.dataset.graphCategory)
+      } : null);
+    };
+    const onPointerDrop = (event) => {
+      const payload = event.detail?.payload;
+      if (payload?.type !== 'graph-call') return;
+      const target = document.elementFromPoint(event.detail.clientX, event.detail.clientY)?.closest?.('[data-graph-category]');
+      if (target) moveGraphsToCategory(payload.graphIds || [payload.graphId], target.dataset.graphCategory);
+      setLibraryDragEdge(null);
+      setGraphMoveDropTarget(null);
+    };
+    window.addEventListener('arc-library-pointermove', onPointerMove);
+    window.addEventListener('arc-library-pointerdrop', onPointerDrop);
+    return () => {
+      window.removeEventListener('arc-library-pointermove', onPointerMove);
+      window.removeEventListener('arc-library-pointerdrop', onPointerDrop);
+    };
+  }, [desktopMode, graphCategories, graphCategoryById]);
+
+  useEffect(() => {
+    if (!libraryDragEdge) return undefined;
+    const tree = libraryTreeRef.current;
+    if (!tree) return undefined;
+    let frame = 0;
+    let previousTime = 0;
+    const scroll = (time) => {
+      if (previousTime) {
+        const elapsed = Math.min(40, time - previousTime);
+        const speed = 240 * libraryDragEdge.strength ** 1.6;
+        tree.scrollTop += libraryDragEdge.direction * speed * elapsed / 1000;
+        const atTop = tree.scrollTop <= 0 && libraryDragEdge.direction < 0;
+        const atBottom = tree.scrollTop + tree.clientHeight >= tree.scrollHeight - 1 && libraryDragEdge.direction > 0;
+        if (atTop || atBottom) {
+          setLibraryDragEdge(null);
+          return;
+        }
+      }
+      previousTime = time;
+      frame = window.requestAnimationFrame(scroll);
+    };
+    frame = window.requestAnimationFrame(scroll);
+    return () => window.cancelAnimationFrame(frame);
+  }, [libraryDragEdge]);
 
   useEffect(() => {
     if (!contextMenu) return undefined;
@@ -426,9 +623,16 @@ export function GraphLibraryPanel({
     }} title={node.loadFailed ? 'Failed to load this node' : `${node.description || ''}${selected ? ' · Drag to add selected nodes' : ''}`} aria-label={node.pluginAdapter ? `${node.label}. Plugin node from ${node.pluginName || node.pluginId || 'an installed plugin'}` : undefined}><NodeTypeIcon type={node.type} color={node.color} size={14} /><span>{node.label}</span>{isNodeDefinitionNew(node, Date.now(), newNodesUserKey) && <i className="node-new-badge">NEW</i>}{node.pluginAdapter && <span className="node-plugin-origin library-plugin-origin" title={`Plugin node from ${node.pluginName || node.pluginId || 'an installed plugin'}`} aria-label={`Plugin node from ${node.pluginName || node.pluginId || 'an installed plugin'}`}><Puzzle size={12} /></span>}</button>;
   };
 
-  return <aside className="graph-library-panel" aria-label="Graph library" style={{ '--arc-sidebar-width': `${sidebarWidth}px` }} onDragOver={(event) => { event.preventDefault(); try { event.dataTransfer.dropEffect = 'copy'; } catch {} }} onDrop={ignoreLibraryDrop}>
+  return <aside className="graph-library-panel" aria-label="Graph library" style={{ '--arc-sidebar-width': `${sidebarWidth}px` }} onDragOver={(event) => {
+    event.preventDefault();
+    try {
+      const target = event.target instanceof Element ? event.target.closest('[data-graph-category]') : null;
+      const disabled = target && window.__arcGraphMovePayload && isGraphMoveDisabled(getDraggedGraphIds(event), target.dataset.graphCategory);
+      event.dataTransfer.dropEffect = disabled ? 'none' : categoryDrag || window.__arcGraphMovePayload ? 'move' : 'copy';
+    } catch {}
+  }} onDrop={ignoreLibraryDrop}>
     <SidebarResizeHandle width={sidebarWidth} defaultWidth={320} onResize={onSidebarResize} />
-    <header className="graph-library-header"><span><FolderTree size={15} /> Library</span><div className="graph-library-header-actions">{activeGroupKind && activeGroupNames.length > 0 && <button className="graph-library-expand-all" onClick={toggleAllGroups} aria-label={`${allGroupsExpanded ? 'Collapse' : 'Expand'} all ${activeGroupKind} groups`} title={`${allGroupsExpanded ? 'Collapse' : 'Expand'} all ${activeGroupKind} groups`}><ChevronDown size={12} /><span>{allGroupsExpanded ? 'Collapse all' : 'Expand all'}</span></button>}{activeSection === 'graphs' && <button className="icon-button compact" aria-label="Create graph category" title="Create category" onClick={() => { const name = window.prompt('Category name'); if (name?.trim()) setGraphCategories((current) => ({ ...current, [`category:${Date.now()}`]: { name: name.trim(), graphIds: [] } })); }}><Plus size={14} /></button>}<input ref={importGraphInputRef} type="file" accept=".arcgraph,application/vnd.arc-studio.graph+json" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) onImportGraph?.(file); event.target.value = ''; }} /><button className="icon-button compact" onClick={() => importGraphInputRef.current?.click()} disabled={!canImportGraph} aria-label="Import graph file" title={canImportGraph ? 'Import .arcgraph file' : 'Graph editing access required'}><FileUp size={14} /></button><button className="icon-button compact" onClick={onClose} aria-label="Close graph library"><X size={14} /></button></div></header>
+    <header className="graph-library-header"><span><FolderTree size={15} /> Library</span><div className="graph-library-header-actions">{activeGroupKind && activeGroupNames.length > 0 && <button className="graph-library-expand-all" onClick={toggleAllGroups} aria-label={`${allGroupsExpanded ? 'Collapse' : 'Expand'} all ${activeGroupKind} groups`} title={`${allGroupsExpanded ? 'Collapse' : 'Expand'} all ${activeGroupKind} groups`}><ChevronDown size={12} /><span>{allGroupsExpanded ? 'Collapse all' : 'Expand all'}</span></button>}{activeSection === 'graphs' && <button className="icon-button compact" aria-label="Create graph category" title="Create category" onClick={() => { setCategoryModalMode('create'); setCategoryModalTarget(null); setCategoryModalName(''); setShowCategoryModal(true); }}><Plus size={14} /></button>}<input ref={importGraphInputRef} type="file" accept=".arcgraph,application/vnd.arc-studio.graph+json" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) onImportGraph?.(file); event.target.value = ''; }} /><button className="icon-button compact" onClick={() => importGraphInputRef.current?.click()} disabled={!canImportGraph} aria-label="Import graph file" title={canImportGraph ? 'Import .arcgraph file' : 'Graph editing access required'}><FileUp size={14} /></button><button className="icon-button compact" onClick={onClose} aria-label="Close graph library"><X size={14} /></button></div></header>
     <div className="graph-library-tabs" role="tablist" aria-label="Library sections">
       {[
         ['graphs', 'Graphs', FolderTree],
@@ -438,7 +642,30 @@ export function GraphLibraryPanel({
       ].map(([id, label, Icon]) => <button key={id} role="tab" aria-selected={activeSection === id} className={activeSection === id ? 'is-active' : ''} onClick={() => setActiveSection(id)}><Icon size={13} /><span>{label}</span></button>)}
     </div>
     <label className="graph-library-search"><Search size={13} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`Filter ${activeSection}`} aria-label={`Filter ${activeSection}`} /></label>
-    <div className={`graph-library-tree${['graph', 'graph-group'].includes(contextMenu?.kind) ? ' is-context-menu-open' : ''}`} role="tree">
+    <div ref={libraryTreeRef} className={`graph-library-tree${['graph', 'graph-group'].includes(contextMenu?.kind) ? ' is-context-menu-open' : ''}`} role="tree" onWheel={(event) => {
+      const nativeDrag = Boolean(categoryDrag || window.__arcGraphMovePayload || window.__arcLibraryPointerDragActive && window.__arcLibraryPointerDrag?.payload?.type === 'graph-call');
+      if (!nativeDrag) return;
+      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? event.currentTarget.clientHeight : 1;
+      event.currentTarget.scrollTop += event.deltaY * unit;
+      event.preventDefault();
+      event.stopPropagation();
+    }} onDragOver={(event) => {
+      const dragging = Boolean(categoryDrag || window.__arcGraphMovePayload);
+      if (!dragging) { setLibraryDragEdge(null); return; }
+      const bounds = event.currentTarget.getBoundingClientRect();
+      const edgeSize = Math.min(72, bounds.height * 0.16);
+      let next = null;
+      if (event.clientY < bounds.top + edgeSize) {
+        const strength = Math.min(1, Math.max(0, (bounds.top + edgeSize - event.clientY) / edgeSize));
+        if (strength > 0) next = { direction: -1, strength: Math.round(strength * 20) / 20 };
+      } else if (event.clientY > bounds.bottom - edgeSize) {
+        const strength = Math.min(1, Math.max(0, (event.clientY - (bounds.bottom - edgeSize)) / edgeSize));
+        if (strength > 0) next = { direction: 1, strength: Math.round(strength * 20) / 20 };
+      }
+      setLibraryDragEdge((current) => current?.direction === next?.direction && current?.strength === next?.strength ? current : next);
+    }} onDragLeave={(event) => {
+      if (!event.currentTarget.contains(event.relatedTarget)) setLibraryDragEdge(null);
+    }}>
       {activeSection === 'graphs' && <>
         {uniqueSelectedGraphKeys.length > 0 && <div className="graph-library-selection-hint" role="status"><span>{uniqueSelectedGraphKeys.length} graph{uniqueSelectedGraphKeys.length === 1 ? '' : 's'} selected</span><button type="button" onClick={() => { setSelectedGraphKeys([]); graphSelectionAnchorRef.current = null; }} aria-label="Deselect all graphs">Deselect all</button></div>}
         {frequentGraphs.length > 0 && <section className="graph-library-frequent">
@@ -457,10 +684,53 @@ export function GraphLibraryPanel({
             ) : null}</span>{lastSeen?.username && <small>{lastSeen.username} · {formatGraphLastSeen(lastSeen.updatedAt)}</small>}</span>{openGraphIds.includes(graph.id) && !active && <span className="graph-library-open-indicator" title="Open in another tab" aria-label="Open in another tab"><Layers size={11} /></span>}</button>;
           })}</div>
         </section>}
-        {graphGroups.map(([groupName, items]) => <section className="graph-library-group" key={groupName}>
-          <button className="graph-library-root graph-library-subroot" draggable={!isSearching} onDragStart={(event) => { setCategoryDrag(groupName); event.dataTransfer.setData('text/plain', groupName); event.dataTransfer.effectAllowed = 'move'; }} onDragOver={(event) => { if (categoryDrag && categoryDrag !== groupName) event.preventDefault(); }} onDrop={(event) => { event.preventDefault(); const from = categoryDrag || event.dataTransfer.getData('text/plain'); if (from && from !== groupName) { const order = graphGroups.map(([name]) => name); const next = order.filter((name) => name !== from); next.splice(Math.max(0, next.indexOf(groupName)), 0, from); setGraphCategories((current) => ({ ...current, __order: next })); } setCategoryDrag(null); }} onDragEnd={() => setCategoryDrag(null)} onClick={() => { if (!isSearching) updateExpandedGroups('graphs', (current) => ({ ...current, [groupName]: !current[groupName] })); }} onContextMenu={(event) => { event.preventDefault(); setContextMenu({ kind: 'graph-group', groupName, graphIds: items.map((item) => item.id), graphKeys: items.map(graphSelectionKey), x: event.clientX, y: event.clientY }); }} aria-expanded={isSearching || Boolean(expandedGroups[groupName])} role="treeitem">
-            {isSearching || expandedGroups[groupName] ? <ChevronDown size={12} /> : <ChevronRight size={12} />}{groupName === 'Functions' ? <Calculator size={13} /> : <FolderTree size={13} />}<span>{groupName}</span><small>{items.length}</small>
-          </button>
+        {graphGroups.map(([groupName, items]) => <section data-graph-category={groupName} className={`graph-library-group${categoryDropTarget?.name === groupName ? ` is-drop-${categoryDropTarget.position}` : ''}${graphMoveDropTarget?.name === groupName ? ` is-drop-into${graphMoveDropTarget.disabled ? ' is-drop-disabled' : ''}` : ''}`} key={groupName} onDragOver={(event) => {
+          const movingGraph = Boolean(window.__arcGraphMovePayload) || Array.from(event.dataTransfer?.types || []).includes('application/x-arc-graph-move');
+          if (movingGraph) {
+            event.preventDefault();
+            const graphIds = getDraggedGraphIds(event);
+            const disabled = isGraphMoveDisabled(graphIds, groupName);
+            event.dataTransfer.dropEffect = disabled ? 'none' : 'move';
+            setGraphMoveDropTarget((current) => current?.name === groupName && current?.disabled === disabled ? current : { name: groupName, disabled });
+            return;
+          }
+          if (!categoryDrag || categoryDrag === groupName) return;
+          event.preventDefault();
+          const bounds = event.currentTarget.getBoundingClientRect();
+          const nextTarget = { name: groupName, position: event.clientY > bounds.top + bounds.height / 2 ? 'after' : 'before' };
+          setCategoryDropTarget((current) => current?.name === nextTarget.name && current?.position === nextTarget.position ? current : nextTarget);
+        }} onDrop={(event) => {
+          if (categoryDrag) finishCategoryReorder(event, groupName, event.currentTarget);
+          else {
+            let payload = window.__arcGraphMovePayload;
+            try { payload ||= JSON.parse(event.dataTransfer.getData('application/x-arc-graph-move') || 'null'); } catch {}
+            if (payload?.graphIds?.length && !isGraphMoveDisabled(payload.graphIds, groupName)) {
+              event.preventDefault();
+              event.stopPropagation();
+              moveGraphsToCategory(payload.graphIds, groupName);
+              window.__arcGraphMovePayload = null;
+              window.__arcGraphDragPayload = null;
+              clearLibraryDragPayload();
+              setLibraryDragGhost(null);
+            }
+          }
+        }} onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget)) { setCategoryDropTarget(null); setGraphMoveDropTarget(null); }
+        }}>
+          <div className="graph-library-category-heading">
+          <button type="button" className="graph-library-category-drag-handle" draggable={!isSearching} aria-label={`Drag to reorder ${groupName}`} title="Drag to reorder category" onDragStart={(event) => {
+              event.stopPropagation();
+              hideNativeDragImage(event);
+              setLibraryDragEdge(null);
+              setCategoryDrag(groupName);
+              event.dataTransfer.setData('application/x-arc-category-order', groupName);
+              event.dataTransfer.effectAllowed = 'move';
+            }} onDragEnd={() => { setCategoryDrag(null); setCategoryDropTarget(null); setLibraryDragEdge(null); }}><GripVertical size={13} /></button>
+            <button className="graph-library-root graph-library-subroot" onClick={() => { if (!isSearching) updateExpandedGroups('graphs', (current) => ({ ...current, [groupName]: !current[groupName] })); }} onContextMenu={(event) => { event.preventDefault(); const categoryId = Object.entries(graphCategories || {}).find(([id, category]) => id !== '__order' && category?.name === groupName)?.[0];
+              setContextMenu({ kind: 'graph-group', groupName, categoryId, graphIds: items.map((item) => item.id), graphKeys: items.map(graphSelectionKey), x: event.clientX, y: event.clientY }); }} aria-expanded={isSearching || Boolean(expandedGroups[groupName])} role="treeitem">
+              {isSearching || expandedGroups[groupName] ? <ChevronDown size={12} /> : <ChevronRight size={12} />}{groupName === 'Functions' ? <Calculator size={13} /> : <FolderTree size={13} />}<span>{groupName}</span><small>{items.length}</small>
+            </button>
+          </div>
           {(isSearching || expandedGroups[groupName]) && <div className="graph-library-children" role="group">{items.map((graph) => {
             const isOpen = openGraphIds.includes(graph.id);
             const lastSeen = graphLastSeen.get(graph.id);
@@ -471,7 +741,12 @@ export function GraphLibraryPanel({
             const errorCount = report?.errors?.length || 0;
             const warningCount = report?.warnings?.length || 0;
             return <div key={graphKey} className={`graph-library-item ${active ? 'is-active' : ''}${selected ? ' is-multi-selected' : ''} ${contextMenu?.kind === 'graph' && graphSelectionKey(contextMenu.graph) === graphKey ? 'is-context-menu-open' : ''}`} role="treeitem" aria-selected={selected} aria-current={active ? 'page' : undefined}>
-              <button className={`graph-library-entry${lastSeen?.username ? ' graph-library-entry-with-activity' : ''}`} aria-pressed={selected} draggable={!desktopMode} onPointerDown={(event) => beginPointerDrag(event, { type: 'graph-call', graphId: graph.id })} onClickCapture={suppressClickAfterDrag} onDragStart={(event) => startGraphDrag(event, graph)} onDragEnd={finishGraphDrag} onClick={(event) => handleGraphClick(event, graph)} onContextMenu={(event) => openContextMenu(event, graph)} title={lastSeen?.username ? `Last here: ${lastSeen.username} · ${formatGraphLastSeen(lastSeen.updatedAt)}. Drag into the canvas to call this graph.` : 'Drag into the canvas to call this graph'}>
+              <button className={`graph-library-entry${lastSeen?.username ? ' graph-library-entry-with-activity' : ''}`} aria-pressed={selected} draggable={!desktopMode} onPointerDown={(event) => {
+                const graphIds = uniqueSelectedGraphKeys.includes(graphKey)
+                  ? uniqueSelectedGraphKeys.map((key) => graphs.find((item) => graphSelectionKey(item) === key)?.id).filter(Boolean)
+                  : [graph.id];
+                beginPointerDrag(event, { type: 'graph-call', graphId: graph.id, graphIds });
+              }} onClickCapture={suppressClickAfterDrag} onDragStart={(event) => startGraphDrag(event, graph)} onDragEnd={finishGraphDrag} onClick={(event) => handleGraphClick(event, graph)} onContextMenu={(event) => openContextMenu(event, graph)} title={lastSeen?.username ? `Last here: ${lastSeen.username} · ${formatGraphLastSeen(lastSeen.updatedAt)}. Drag into the canvas to call this graph or onto a category to move it.` : 'Drag into the canvas to call this graph or onto a category to move it'}>
                 <FileCode2 size={14} /><span className="graph-library-entry-copy"><span className="graph-library-entry-title"><span>{graph.name || 'Untitled graph'}</span>{defaultGraphId === graph.id && <Star className="graph-default-star" size={11} fill="currentColor" title="Default for new graphs" />}{errorCount > 0 ? (
                   <span role="button" tabIndex={0} className="graph-library-issue is-error" title={`${errorCount} blocking error${errorCount === 1 ? '' : 's'}`} aria-label={`${errorCount} blocking error${errorCount === 1 ? '' : 's'}`} onClick={(event) => { event.stopPropagation(); event.preventDefault(); onOpenGraphReview?.(graph); }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.stopPropagation(); event.preventDefault(); onOpenGraphReview?.(graph); } }}><AlertCircle size={13} /></span>
                 ) : warningCount > 0 ? (
@@ -581,9 +856,19 @@ export function GraphLibraryPanel({
           setContextMenu(null);
         }}><X size={14} /> {contextMenu.graphKeys?.length > 1 ? `Delete ${contextMenu.graphKeys.length} selected graphs` : 'Delete saved graph'}</button>
       </> : contextMenu.kind === 'graph-group' ? <>
+        <button onClick={() => handleCreateGraphInCategory(contextMenu.groupName)}><Plus size={14} /> Create graph here</button>
         <button onClick={() => { setSelectedGraphKeys([...new Set(contextMenu.graphKeys || [])]); graphSelectionAnchorRef.current = null; setContextMenu(null); }}><FileCode2 size={14} /> Select all {contextMenu.groupName} graphs</button>
-        <button onClick={() => { const name = window.prompt('New category name'); if (name?.trim()) setGraphCategories((current) => ({ ...current, [`category:${Date.now()}`]: { name: name.trim(), graphIds: [] } })); setContextMenu(null); }}><Plus size={14} /> Create category</button>
-        <button onClick={() => { const name = window.prompt('Rename category', contextMenu.groupName); if (name?.trim() && name.trim() !== contextMenu.groupName) { const ids = contextMenu.graphIds || []; setGraphCategories((current) => ({ ...Object.fromEntries(Object.entries(current).map(([id, category]) => [id, id === '__order' ? category : { ...category, graphIds: (category.graphIds || []).filter((graphId) => !ids.includes(graphId)) }])), [`category:${Date.now()}`]: { name: name.trim(), graphIds: ids } })); } setContextMenu(null); }}><Pencil size={14} /> Rename category</button>
+        <button onClick={() => { setCategoryModalMode('create'); setCategoryModalTarget(null); setCategoryModalName(''); setShowCategoryModal(true); setContextMenu(null); }}><Plus size={14} /> Create category</button>
+        {contextMenu.categoryId && <>
+          <button onClick={() => {
+            setCategoryModalMode('rename');
+            setCategoryModalTarget({ categoryId: contextMenu.categoryId, groupName: contextMenu.groupName, graphIds: [...(contextMenu.graphIds || [])] });
+            setCategoryModalName(contextMenu.groupName || '');
+            setShowCategoryModal(true);
+            setContextMenu(null);
+          }}><Pencil size={14} /> Rename category</button>
+          <button className="is-danger" onClick={() => deleteCategory(contextMenu.categoryId)}><Trash2 size={14} /> Delete category{graphCategories[contextMenu.categoryId]?.graphIds?.length ? ` and ${graphCategories[contextMenu.categoryId].graphIds.length} graphs` : ''}</button>
+        </>}
       </> : contextMenu.kind === 'prefab' ? <>
         <button onClick={() => { onAddPrefab?.(contextMenu.graph); setContextMenu(null); }}><FileCode2 size={14} /> Add to graph</button>
         <button className="is-danger" onClick={() => { onDeletePrefab?.(contextMenu.graph); setContextMenu(null); }}><X size={14} /> Delete saved node</button>
@@ -621,6 +906,20 @@ export function GraphLibraryPanel({
         {libraryDragGhost.pluginAdapter && <span className="node-plugin-origin library-plugin-origin" title="Plugin node"><Puzzle size={12} /></span>}
       </div>,
       document.body
+    )}
+    {showCategoryModal && (
+      <Modal
+        isOpen={showCategoryModal}
+        onClose={() => { setShowCategoryModal(false); setCategoryModalName(''); setCategoryModalTarget(null); }}
+        title={categoryModalMode === 'create' ? 'Create category' : 'Rename category'}
+        initialFocusRef={categoryNameRef}
+      >
+        <TextInput label="Category name" value={categoryModalName} onChange={(event) => setCategoryModalName(event.target.value)} inputRef={categoryNameRef} autoFocus />
+        <footer className="modal-footer">
+          <Button variant="secondary" onClick={() => { setShowCategoryModal(false); setCategoryModalName(''); setCategoryModalTarget(null); }}>Cancel</Button>
+          <Button variant="primary" onClick={handleCategoryModalConfirm}>{categoryModalMode === 'create' ? 'Create' : 'Rename'}</Button>
+        </footer>
+      </Modal>
     )}
   </aside>;
 }
@@ -727,13 +1026,13 @@ function formatGraphLastSeen(value) {
 }
 
 function groupGraphs(graphs, categoryState = {}) {
-  const order = ['Slash Commands', 'Messages', 'Message Events', 'Components', 'Member Events', 'Voice & Presence', 'Bot Events', 'Channel Events', 'Roles', 'Moderation Events', 'Invites', 'Cron Jobs', 'Scheduled Events', 'Functions', 'Other'];
+  const order = BUILT_IN_GRAPH_CATEGORIES;
   const assignments = new Map();
   const customCategories = [];
   for (const [id, category] of Object.entries(categoryState || {})) {
     if (id === '__order' || !category || typeof category !== 'object') continue;
     if (typeof category.name === 'string' && category.name.trim()) {
-      customCategories.push(category.name);
+      if (category.source !== 'system' && !customCategories.includes(category.name)) customCategories.push(category.name);
       for (const graphId of Array.isArray(category.graphIds) ? category.graphIds : []) assignments.set(graphId, category.name);
     }
   }
@@ -753,7 +1052,7 @@ function groupGraphs(graphs, categoryState = {}) {
     else if (eventTypes.includes('event_voice_state_update') || eventTypes.includes('event_presence_update')) group = 'Voice & Presence';
     else if (eventTypes.some((type) => type.startsWith('event_channel_'))) group = 'Channel Events';
     else if (eventTypes.some((type) => type.startsWith('event_role_'))) group = 'Roles';
-    else if (eventTypes.some((type) => type.startsWith('event_guild_ban_') || type === 'event_automod_action')) group = 'Moderation Events';
+    else if (eventTypes.some((type) => type.startsWith('event_guild_ban_') || type === 'event_automod_action' || type === 'event_guild_audit_log_entry_create')) group = 'Moderation Events';
     else if (eventTypes.some((type) => type.startsWith('event_invite_'))) group = 'Invites';
     else if (eventTypes.includes('event_cron')) group = 'Cron Jobs';
     else if (eventTypes.includes('event_bot_ready')) group = 'Bot Events';

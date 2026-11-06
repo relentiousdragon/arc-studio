@@ -1,6 +1,25 @@
+import { PermissionFlagEntries, PermissionFlags } from 'chezcord/constants';
+
 const MAX_EXPRESSION_LENGTH = 2048;
 const MAX_TOKENS = 256;
 //
+const TEMPLATE_PERMISSION_ALIASES = Object.freeze({ VIEW_CHANNELS: PermissionFlags.VIEW_CHANNEL });
+const TEMPLATE_PERMISSION_VALUES = Object.freeze({ ...PermissionFlags, ...TEMPLATE_PERMISSION_ALIASES });
+const TEMPLATE_PERMISSION_ENTRIES = Object.freeze([
+  ...PermissionFlagEntries.map(({ name, label }) => Object.freeze({ name, label })),
+  Object.freeze({ name: 'VIEW_CHANNELS', label: 'View Channels' })
+]);
+export const TEMPLATE_SYSTEM_ROOT = 'chezcord';
+const TEMPLATE_SYSTEM_VALUES = Object.freeze({
+  [TEMPLATE_SYSTEM_ROOT]: Object.freeze({ permissions: TEMPLATE_PERMISSION_VALUES })
+});
+export const TEMPLATE_SYSTEM_PATHS = Object.freeze(TEMPLATE_PERMISSION_ENTRIES.map(({ name, label }) => Object.freeze({
+  path: `${TEMPLATE_SYSTEM_ROOT}.permissions.${name}`,
+  label: `${TEMPLATE_SYSTEM_ROOT}.permissions.${name} · ${label}`
+})));
+export function isReservedTemplateRoot(value) {
+  return String(value ?? '').trim().toLowerCase() === TEMPLATE_SYSTEM_ROOT;
+}
 function templateText(value) {
   if (value == null) return '';
   if (typeof value === 'object') { try { return JSON.stringify(value); } catch { return ''; } }
@@ -130,11 +149,13 @@ const TEMPLATE_FILTER_NAMES = new Set([
 export const TEMPLATE_FUNCTION_NAMES = Object.freeze(Object.keys(MATH));
 export const RESERVED_TEMPLATE_FUNCTION_NAMES = new Set([
   ...Object.keys(MATH), ...TEMPLATE_FILTER_NAMES,
-  'true', 'false', 'null', 'undefined', 'pi', 'e', 'tau'
+  'true', 'false', 'null', 'undefined', 'pi', 'e', 'tau',
+  ...Object.keys(TEMPLATE_SYSTEM_VALUES).map((name) => name.toLowerCase())
 ]);
 export function validateTemplateFunctionName(value) {
   const name = String(value ?? '').trim();
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return 'Function graph names must be one word using letters, numbers, or underscores, and start with a letter or underscore.';
+  if (isReservedTemplateRoot(name)) return `“${name}” is reserved for the system template namespace.`;
   if (RESERVED_TEMPLATE_FUNCTION_NAMES.has(name.toLowerCase())) return `“${name}” is reserved for a template function or filter.`;
   return '';
 }
@@ -143,7 +164,10 @@ function evaluate(ast, resolveSlot, options = {}) {
   switch (ast.kind) {
     case 'literal': return { found: true, value: ast.value };
     case 'path': {
-      let value = resolveSlot?.(ast.root, `{{${ast.root}}}`); if (value === undefined) return { found: false, value };
+      let value = Object.hasOwn(TEMPLATE_SYSTEM_VALUES, ast.root)
+        ? TEMPLATE_SYSTEM_VALUES[ast.root]
+        : resolveSlot?.(ast.root, `{{${ast.root}}}`);
+      if (value === undefined) return { found: false, value };
       for (const key of ast.keys) { if (['__proto__', 'prototype', 'constructor'].includes(String(key)) || value == null || !Object.hasOwn(Object(value), key)) return { found: false, value: undefined }; value = value[key]; }
       return { found: true, value };
     }
@@ -158,7 +182,7 @@ function evaluate(ast, resolveSlot, options = {}) {
     case 'unary': { const v = evaluate(ast.value, resolveSlot, options); return { found: v.found, value: ast.op === '!' ? !v.value : safeResult(ast.op === '-' ? -number(v.value) : number(v.value)) }; }
     case 'conditional': { const test = evaluate(ast.test, resolveSlot, options); return evaluate(test.value ? ast.yes : ast.no, resolveSlot, options); }
     case 'call': {
-      if (ast.args.length > 50) return { found: false, value: undefined };
+      if (ast.args.length > 50 || Object.hasOwn(TEMPLATE_SYSTEM_VALUES, ast.name)) return { found: false, value: undefined };
       const args = ast.args.map((arg) => evaluate(arg, resolveSlot, options)); if (args.some((arg) => !arg.found)) return { found: false, value: undefined };
       const values = args.map((arg) => arg.value);
       const fn = MATH[ast.name];
@@ -227,7 +251,7 @@ export function applyTemplateTransforms(value, transforms = []) {
 
 export function getTemplateReferences(source) {
   const refs = new Set(); const parts = splitTemplatePipeline(source); const expr = parts[0] || '';
-  const constants = new Set(['true', 'false', 'null', 'undefined', 'pi', 'tau', 'e']);
+  const constants = new Set(['true', 'false', 'null', 'undefined', 'pi', 'tau', 'e', TEMPLATE_SYSTEM_ROOT]);
   let quote = '';
   let escaped = false;
   for (let index = 0; index < expr.length;) {

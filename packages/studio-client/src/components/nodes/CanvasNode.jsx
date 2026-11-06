@@ -14,7 +14,7 @@ import { apiUrl } from '../../core/api.js';
 import { onPageBlur } from '../../core/pageFocus.js';
 import { resolveVariableReference } from '../../core/projectVariables.js';
 import { getInputDefault } from '../../../../studio-server/src/engine/NodeSchemaDefinitions.js';
-import { TEMPLATE_FUNCTION_NAMES } from '../../../../studio-server/src/engine/TemplateExpressions.js';
+import { isReservedTemplateRoot, TEMPLATE_FUNCTION_NAMES, TEMPLATE_SYSTEM_PATHS } from '../../../../studio-server/src/engine/TemplateExpressions.js';
 import { attachTemplateAutocomplete } from '../../core/templateFieldAutocomplete.js';
 //
 const slashCommandNamePattern = /^[-_'\p{L}\p{N}\p{sc=Deva}\p{sc=Thai}]{1,32}$/u;
@@ -143,6 +143,23 @@ function numericNodeInputValue(value, { min = -Infinity, max = Infinity, fallbac
   return Number.isFinite(bounded) ? bounded : fallback;
 }
 
+const LEGACY_CHANNEL_TYPES = { text: 0, voice: 2, category: 4, announcement: 5, stage: 13, forum: 15, media: 16 };
+
+export function resolveChannelTypeValue(value, fallback = 0) {
+  if (typeof value === 'number') return value;
+  const text = String(value ?? '').trim();
+  if (/^\d+$/.test(text)) return Number(text);
+  return LEGACY_CHANNEL_TYPES[text.toLowerCase()] ?? fallback;
+}
+
+function resolveThreadTypeValue(value, fallback = 11) {
+  if (typeof value === 'number') return value;
+  const text = String(value ?? '').trim().toLowerCase();
+  if (text === 'public') return 11;
+  if (text === 'private') return 12;
+  return /^\d+$/.test(text) ? Number(text) : fallback;
+}
+
 function CanvasNodeView({
   node, definition, loadFailed = false, authToken = '', connectedInputIds = new Set(), graphVariables = [], eventTemplatePaths = [], templatePreviewValues = {}, callableGraphs = [], selected = false, illuminated = false, simulationMetric = null, simulationActive = false, isLocked = false, findOptions = null, isFindCurrent = false,
   snappedPin = null, appEmojis = [], modalFieldOptions = [], componentsV2SourceConnected = false, onSelect, onDelete, onNodeDataChange, onPinStartConnect, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph
@@ -156,12 +173,13 @@ function CanvasNodeView({
   const update = (key, value, label) => onNodeDataChange?.(node.id, typeof key === 'object' ? key : { [key]: value }, label);
   const selectedVariable = resolveVariableReference(graphVariables, node.data?.variableId, node.data?.scope || 'graph');
   const templatePaths = React.useMemo(() => {
+    const systemPaths = TEMPLATE_SYSTEM_PATHS.map((item) => ({ path: item.path, label: item.label || item.path }));
     const variablePaths = graphVariables.flatMap((variable) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(variable.name || '') ? variableValuePaths(variable.initialValue, variable.name) : []);
     const eventPaths = (Array.isArray(eventTemplatePaths) ? eventTemplatePaths : []).filter((item) => {
       const root = String(item?.path || '').split(/[.[]/)[0].toLowerCase();
       return item?.path && root && !graphVariables.some((variable) => String(variable?.name || '').toLowerCase() === root);
     }).map((item) => ({ path: item.path, label: item.label || item.path }));
-    return [...new Map([...variablePaths, ...eventPaths].map((item) => [item.path, item])).values()];
+    return [...new Map([...systemPaths, ...variablePaths, ...eventPaths].map((item) => [item.path, item])).values()];
   }, [graphVariables, eventTemplatePaths]);
   const templateContextRef = React.useRef({ variables: [], paths: [], sockets: [], functions: [] });
   templateContextRef.current = {
@@ -171,7 +189,7 @@ function CanvasNodeView({
     functions: [
       ...TEMPLATE_FUNCTION_NAMES.map((name) => ({ label: `${name}()`, insert: `${name}()` })),
       ...(callableGraphs || [])
-        .filter((graph) => graph?.graphType === 'function' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(graph.name || ''))
+        .filter((graph) => graph?.graphType === 'function' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(graph.name || '') && !isReservedTemplateRoot(graph.name))
         .map((graph) => ({ label: `${graph.name}()`, insert: `${graph.name}()` }))
     ]
   };
@@ -438,11 +456,14 @@ function renderSchemaControls(node, controls, update, connectedInputIds) {
         const options = (control.options || []).map((option) => ({ ...option, value: String(option.value) }));
         const selectedValue = value === '' ? control.defaultValue : value;
         return <FallbackField key={control.key} label={label}><AnimatedDropdown
-          value={String(selectedValue ?? '')}
+          value={control.multiple ? (Array.isArray(selectedValue) ? selectedValue.map(String) : selectedValue == null || selectedValue === '' ? [] : [String(selectedValue)]) : String(selectedValue ?? '')}
           options={options}
-          onChange={(next) => update(control.key, control.valueType === 'boolean' ? next === 'true' : control.valueType === 'number' ? Number(next) : next)}
+          onChange={(next) => update(control.key, control.multiple ? next : control.valueType === 'boolean' ? next === 'true' : control.valueType === 'number' ? Number(next) : next)}
           onPointerDown={(event) => event.stopPropagation()}
           ariaLabel={label}
+          multiple={Boolean(control.multiple)}
+          searchable={control.searchable ?? options.length >= 8}
+          searchThreshold={control.searchThreshold ?? 8}
           className="node-select"
         /></FallbackField>;
       }
@@ -634,7 +655,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
               onPointerDown={(event) => event.stopPropagation()}
               placeholder={`Input ${index + 1}`}
               aria-label="Function input name"
-              className={!argument.name.trim() ? 'is-invalid' : ''}
+              className={!argument.name.trim() || isReservedTemplateRoot(argument.name) ? 'is-invalid' : ''}
             />
           </CharacterLimit>
           {(!legacy || argumentsList.length > 1) && <button
@@ -648,7 +669,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
             <Trash2 size={13} />
           </button>}
         </div>
-        {!argument.name.trim() && <span className="node-config-warning" role="status"><AlertTriangle size={11} /><span>Name required</span></span>}
+        {isReservedTemplateRoot(argument.name) ? <span className="node-config-warning" role="status"><AlertTriangle size={11} /><span>chezcord is reserved for the system template namespace</span></span> : !argument.name.trim() && <span className="node-config-warning" role="status"><AlertTriangle size={11} /><span>Name required</span></span>}
         <AnimatedDropdown value={argument.valueType} options={functionArgumentTypes} onChange={(value) => updateArgument(index, { valueType: value, defaultValue: defaultValueForType(functionInputPinType({ valueType: value })) })} onPointerDown={(event) => event.stopPropagation()} ariaLabel={`Type for ${argument.name || `Input ${index + 1}`}`} className="node-select" />
         <div className="function-input-option"><span>Optional input</span><AnimatedCheckbox checked={argument.optional} label="Optional input" onChange={(value) => updateArgument(index, { optional: value })} onPointerDown={(event) => event.stopPropagation()} /></div>
         {argument.optional && (argument.valueType === 'object'
@@ -991,22 +1012,67 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       )}
     </div>;
   }
+  if (['action_fetch_channel', 'action_fetch_role'].includes(node.type)) {
+    const roleInfo = node.type === 'action_fetch_role';
+    const idPin = roleInfo ? 'role_id' : 'channel_id';
+    return <div className="node-config node-config-stack">
+      {roleInfo && !isConnected('guild_id') && <FallbackField label="Server ID"><input value={node.data?.guild_id ?? ''} onChange={(event) => update('guild_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Server ID" /></FallbackField>}
+      {!isConnected(idPin) && <FallbackField label={roleInfo ? 'Role ID' : 'Channel ID'}><input value={node.data?.[idPin] ?? ''} onChange={(event) => update(idPin, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label={roleInfo ? 'Role ID' : 'Channel ID'} /></FallbackField>}
+      <span className="node-config-hint">{roleInfo ? 'Returns the role object, color, position, and permissions.' : 'Returns the channel object, position, and permission overwrites.'}</span>
+    </div>;
+  }
+  if (['action_get_guild_member_permissions', 'action_get_guild_role_permissions', 'action_get_channel_member_permissions', 'action_get_channel_role_permissions'].includes(node.type)) {
+    const channelScope = node.type.startsWith('action_get_channel_');
+    const memberTarget = node.type.endsWith('_member_permissions');
+    const scopeId = channelScope ? 'channel_id' : 'guild_id';
+    const scopeLabel = channelScope ? 'Channel ID' : 'Server ID';
+    const targetId = memberTarget ? 'user_id' : 'role_id';
+    const targetLabel = memberTarget ? 'Member ID' : 'Role ID';
+    return <div className="node-config node-config-stack">
+      {!isConnected(scopeId) && <FallbackField label={scopeLabel}><input value={node.data?.[scopeId] ?? ''} onChange={(event) => update(scopeId, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label={scopeLabel} /></FallbackField>}
+      {!isConnected(targetId) && <FallbackField label={targetLabel}><input value={node.data?.[targetId] ?? ''} onChange={(event) => update(targetId, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label={targetLabel} /></FallbackField>}
+      {channelScope && !isConnected('implicit') && <FallbackCheckbox label="Apply Implicit Masking" checked={node.data?.implicit ?? nodeDef.defaultData?.implicit ?? true} onChange={(value) => update('implicit', value)} />}
+      <span className="node-config-hint">Connect Permissions Bitfield to Check Permission to test a named permission.</span>
+    </div>;
+  }
   if (node.type.startsWith('action_') && ['action_create_channel', 'action_create_thread', 'action_start_thread_from_message', 'action_edit_channel', 'action_delete_channel', 'action_create_role', 'action_member_role', 'action_moderate_member', 'action_voice_channel_status', 'action_voice_state'].includes(node.type)) {
     const textField = (id, label, placeholder = 'Used when unconnected') => isConnected(id) ? null : <FallbackField key={id} label={label}><input value={node.data?.[id] ?? ''} onChange={(event) => update(id, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder={placeholder} aria-label={label} /></FallbackField>;
     const reason = textField('reason', 'Audit Log Reason');
     return <div className="node-config node-config-stack">
-      {node.type === 'action_create_channel' && <>
-        {textField('guild_id', 'Server ID')}{textField('name', 'Channel name')}
-        {!isConnected('channel_type') && <FallbackField label="Channel type"><AnimatedDropdown value={node.data?.channel_type || 'text'} options={['text', 'voice', 'category', 'announcement', 'stage'].map((value) => ({ value, label: value[0].toUpperCase() + value.slice(1) }))} onChange={(value) => update('channel_type', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Channel type" className="node-select" /></FallbackField>}
-        {textField('parent_id', 'Category ID')}{['text', 'announcement'].includes(node.data?.channel_type || 'text') && textField('topic', 'Topic')}{reason}
-      </>}
+      {node.type === 'action_create_channel' && (() => {
+        const channelType = resolveChannelTypeValue(node.data?.channel_type ?? 0, 0);
+        const channelTypeOptions = [
+          { value: '0', label: 'Text' },
+          { value: '2', label: 'Voice' },
+          { value: '4', label: 'Category' },
+          { value: '5', label: 'Announcement' },
+          { value: '13', label: 'Stage' },
+          { value: '15', label: 'Forum' },
+          { value: '16', label: 'Media' }
+        ];
+        return <>
+          {textField('guild_id', 'Server ID')}{textField('name', 'Channel name')}
+          {!isConnected('channel_type') && <FallbackField label="Channel type"><AnimatedDropdown value={String(channelType)} options={channelTypeOptions} onChange={(value) => update('channel_type', Number(value))} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Channel type" className="node-select" /></FallbackField>}
+          {textField('category_id', 'Category ID')}
+          {!isConnected('position') && <FallbackField label="Position in category"><NodeNumberInput min="0" max="5000" step="1" value={node.data?.position ?? 0} onChange={(event) => update('position', numericNodeInputValue(event.target.value, { min: 0, max: 5000, integer: true }))} onPointerDown={(event) => event.stopPropagation()} /><small className="node-config-hint">Lower numbers appear first within the selected category.</small></FallbackField>}
+          {!isConnected('permission_overwrites') && <button type="button" className="node-config-action node-config-studio-action" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onOpenPermissionStudio?.({ ...node, type: 'data_permission_overwrites', label: 'Channel Permission Overwrites' }); }}><Plus size={12} /> Edit channel permissions{Number(node.data?.overwriteCount) > 0 ? ` · ${node.data.overwriteCount}` : ''}</button>}
+          {[0, 5, 15, 16].includes(channelType) && textField('topic', channelType === 15 || channelType === 16 ? 'Topic (up to 4096)' : 'Topic')}
+          {!isConnected('rate_limit_per_user') && [0, 2, 13, 15, 16].includes(channelType) && <FallbackField label="Slowmode (seconds)"><NodeNumberInput allowEmpty min="0" max="21600" value={node.data?.rate_limit_per_user ?? ''} onChange={(event) => update('rate_limit_per_user', numericNodeInputValue(event.target.value, { min: 0, max: 21600, allowEmpty: true }))} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave unchanged" /><small className="node-config-hint">0–21,600 seconds · blank uses the default</small></FallbackField>}
+          {!isConnected('bitrate') && [2, 13].includes(channelType) && <FallbackField label="Voice bitrate (bits/sec)"><NodeNumberInput min="8000" max="384000" step="1" value={node.data?.bitrate ?? 64000} onChange={(event) => update('bitrate', numericNodeInputValue(event.target.value, { min: 8000, max: 384000, integer: true, fallback: 64000 }))} onPointerDown={(event) => event.stopPropagation()} /><small className="node-config-hint">The server tier sets the actual cap; Stage channels cap at 64,000.</small></FallbackField>}
+          {!isConnected('user_limit') && [2, 13].includes(channelType) && <FallbackField label="User limit (0 = unlimited)"><NodeNumberInput min="0" max="10000" step="1" value={node.data?.user_limit ?? 0} onChange={(event) => update('user_limit', numericNodeInputValue(event.target.value, { min: 0, max: 10000, integer: true }))} onPointerDown={(event) => event.stopPropagation()} /><small className="node-config-hint">Voice channels: 0–99 · Stage channels: up to 10,000</small></FallbackField>}
+          {!isConnected('default_auto_archive_duration') && [0, 5, 15, 16].includes(channelType) && <FallbackField label="Default thread archive"><AnimatedDropdown value={String(node.data?.default_auto_archive_duration ?? 1440)} options={[60, 1440, 4320, 10080].map((value) => ({ value: String(value), label: `${value >= 1440 ? `${value / 1440} day${value > 1440 ? 's' : ''}` : `${value} minutes`}` }))} onChange={(value) => update('default_auto_archive_duration', Number(value))} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Default thread archive duration" className="node-select" /></FallbackField>}
+          {!isConnected('flags') && [0, 2, 5, 15, 16].includes(channelType) && <FallbackField label="Channel flags"><NodeNumberInput min="0" max="2147483647" step="1" value={node.data?.flags ?? 0} onChange={(event) => update('flags', numericNodeInputValue(event.target.value, { min: 0, max: 2147483647, integer: true }))} onPointerDown={(event) => event.stopPropagation()} /><small className="node-config-hint">Discord flags bitfield. Forum or media: REQUIRE_TAG 16 requires tags, media 32768 hides download options, spoiler channels use 2097152.</small></FallbackField>}
+          {!isConnected('nsfw') && channelType !== 4 && <FallbackCheckbox label="Age restricted" checked={Boolean(node.data?.nsfw)} onChange={(value) => update('nsfw', value)} />}
+          {reason}
+        </>;
+      })()}
       {node.type === 'action_create_thread' && <>
         {textField('channel_id', 'Parent Channel ID')}{textField('name', 'Thread name')}
         {textField('message_id', 'Message ID (optional)')}
-        {!(isConnected('message_id') || String(node.data?.message_id || '').trim()) && !isConnected('thread_type') && <FallbackField label="Thread type"><AnimatedDropdown value={node.data?.thread_type || 'public'} options={[{ value: 'public', label: 'Public thread' }, { value: 'private', label: 'Private thread' }]} onChange={(value) => update('thread_type', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Thread type" className="node-select" /></FallbackField>}
+        {!(isConnected('message_id') || String(node.data?.message_id || '').trim()) && !isConnected('thread_type') && <FallbackField label="Thread type"><AnimatedDropdown value={String(resolveThreadTypeValue(node.data?.thread_type ?? 11))} options={[{ value: '11', label: 'Public thread' }, { value: '12', label: 'Private thread' }]} onChange={(value) => update('thread_type', Number(value))} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Thread type" className="node-select" /></FallbackField>}
         {!isConnected('auto_archive_duration') && <FallbackField label="Auto archive"><AnimatedDropdown value={String(node.data?.auto_archive_duration ?? 1440)} options={[60, 1440, 4320, 10080].map((value) => ({ value: String(value), label: `${value >= 1440 ? `${value / 1440} day${value > 1440 ? 's' : ''}` : `${value} minutes`}` }))} onChange={(value) => update('auto_archive_duration', Number(value))} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Thread auto archive duration" className="node-select" /></FallbackField>}
         {!isConnected('rate_limit_per_user') && <FallbackField label="Slowmode (seconds)"><NodeNumberInput min="0" max="21600" value={node.data?.rate_limit_per_user ?? 0} onChange={(event) => update('rate_limit_per_user', numericNodeInputValue(event.target.value, { min: 0, max: 21600 }))} onPointerDown={(event) => event.stopPropagation()} /><small className="node-config-hint">0 disables slowmode.</small></FallbackField>}
-        {!(isConnected('message_id') || String(node.data?.message_id || '').trim()) && (node.data?.thread_type || 'public') === 'private' && !isConnected('invitable') && <FallbackCheckbox label="Members can invite" checked={node.data?.invitable ?? true} onChange={(value) => update('invitable', value)} />}
+        {!(isConnected('message_id') || String(node.data?.message_id || '').trim()) && resolveThreadTypeValue(node.data?.thread_type ?? 11) === 12 && !isConnected('invitable') && <FallbackCheckbox label="Members can invite" checked={node.data?.invitable ?? true} onChange={(value) => update('invitable', value)} />}
         {reason}
       </>}
       {node.type === 'action_start_thread_from_message' && <>

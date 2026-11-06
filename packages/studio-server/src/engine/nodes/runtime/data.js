@@ -2,9 +2,13 @@ import dayjs from 'dayjs';
 import duration from 'dayjs/plugin/duration.js';
 import utc from 'dayjs/plugin/utc.js';
 import timezone from 'dayjs/plugin/timezone.js';
+import { PermissionFlagEntries, PermissionFlags } from 'chezcord/constants';
 dayjs.extend(duration);
 dayjs.extend(utc);
 dayjs.extend(timezone);
+
+const permissionAliases = Object.freeze(Object.fromEntries(PermissionFlagEntries.flatMap(({ name, legacyName }) => [[name, name], [legacyName, name]])));
+const legacyPermissionFlags = Object.freeze(Object.fromEntries(PermissionFlagEntries.map(({ legacyName, mask }) => [legacyName, mask])));
 
 function regexSafetyError(pattern) {
   if (pattern.length > 256) return 'Regex pattern is limited to 256 characters.';
@@ -124,6 +128,22 @@ function compareArrayItem(actual, expected, operator) {
 }
 
 export function evaluateDataNode(type, inputs = {}, data = {}) {
+  if (type === 'data_check_permission') {
+    const rawPermissions = inputs.permissions;
+    const text = typeof rawPermissions === 'string' ? rawPermissions.trim()
+      : typeof rawPermissions === 'bigint' ? rawPermissions.toString()
+        : typeof rawPermissions === 'number' && Number.isSafeInteger(rawPermissions) ? String(rawPermissions) : '';
+    const selectedPermissions = Array.isArray(inputs.permission) ? inputs.permission : [inputs.permission || 'VIEW_CHANNEL'];
+    const permissionNames = selectedPermissions.map((name) => permissionAliases[String(name)]).filter(Boolean);
+    const permissionMasks = permissionNames.map((name) => PermissionFlags[name]);
+    if (!/^(?:0|[1-9]\d{0,31})$/.test(text) || !permissionNames.length || permissionNames.length !== selectedPermissions.length || permissionMasks.some((mask) => mask === undefined)) {
+      return { has_permission: false, valid: false };
+    }
+    const permissions = BigInt(text);
+    const administrator = (permissions & PermissionFlags.ADMINISTRATOR) !== 0n;
+    const hasPermission = permissionNames.every((name, index) => name === 'ADMINISTRATOR' ? administrator : administrator || (permissions & permissionMasks[index]) === permissionMasks[index]);
+    return { has_permission: hasPermission, valid: true };
+  }
   if (type === 'data_check_value') {
     const value = inputs.value;
     const state = value === undefined ? 'missing' : value === null ? 'null' : typeof value === 'string' && value.trim() === '' ? 'empty' : 'value';
@@ -157,16 +177,6 @@ export function evaluateDataNode(type, inputs = {}, data = {}) {
     return { array: filtered, count: filtered.length };
   }
   if (type === 'data_permission_overwrites') {
-    const permissionBits = {
-      CreateInstantInvite: 0, KickMembers: 1, BanMembers: 2, Administrator: 3, ManageChannels: 4, ManageGuild: 5, AddReactions: 6, ViewAuditLog: 7,
-      PrioritySpeaker: 8, Stream: 9, ViewChannel: 10, SendMessages: 11, SendTTSMessages: 12, ManageMessages: 13, EmbedLinks: 14, AttachFiles: 15,
-      ReadMessageHistory: 16, MentionEveryone: 17, UseExternalEmojis: 18, ViewGuildInsights: 19, Connect: 20, Speak: 21, MuteMembers: 22,
-      DeafenMembers: 23, MoveMembers: 24, UseVAD: 25, ChangeNickname: 26, ManageNicknames: 27, ManageRoles: 28, ManageWebhooks: 29,
-      ManageGuildExpressions: 30, UseApplicationCommands: 31, RequestToSpeak: 32, ManageEvents: 33, ManageThreads: 34, CreatePublicThreads: 35,
-      CreatePrivateThreads: 36, UseExternalStickers: 37, SendMessagesInThreads: 38, UseEmbeddedActivities: 39, ModerateMembers: 40,
-      ViewCreatorMonetizationAnalytics: 41, UseSoundboard: 42, CreateGuildExpressions: 43, CreateEvents: 44, UseExternalSounds: 45,
-      SendVoiceMessages: 46, SetVoiceChannelStatus: 48, SendPolls: 49, UseExternalApps: 50, PinMessages: 51, BypassSlowmode: 52
-    };
     const parsePermissionBits = (value) => {
       const text = String(value ?? '').trim();
       if (!/^(?:\d+|0x[\da-f]+)$/i.test(text)) return 0n;
@@ -174,7 +184,7 @@ export function evaluateDataNode(type, inputs = {}, data = {}) {
     };
     const serializePermissions = (value, customBits = '') => {
       const names = Array.isArray(value) ? value : [];
-      const mask = names.reduce((total, name) => permissionBits[name] === undefined ? total : total | (1n << BigInt(permissionBits[name])), parsePermissionBits(customBits));
+      const mask = names.reduce((total, name) => legacyPermissionFlags[name] === undefined ? total : total | legacyPermissionFlags[name], parsePermissionBits(customBits));
       return mask ? mask.toString() : '';
     };
     const overwrites = [];

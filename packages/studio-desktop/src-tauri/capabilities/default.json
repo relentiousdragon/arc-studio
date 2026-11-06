@@ -9,6 +9,9 @@
     "core:window:allow-start-dragging",
     "core:window:allow-toggle-maximize",
     "deep-link:default",
-    "updater:default"
+    "updater:default",
+    "notification:allow-is-permission-granted",
+    "notification:allow-request-permission",
+    "notification:allow-notify"
   ]
 }

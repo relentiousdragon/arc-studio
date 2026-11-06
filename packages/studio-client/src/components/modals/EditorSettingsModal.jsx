@@ -5,6 +5,7 @@ import { Toggle, SelectInput, TextInput } from '../ui/Inputs.jsx';
 import { Button } from '../ui/Button.jsx';
 import { PasskeySettingsSection } from './PasskeySettingsSection.jsx';
 import { arcEvents } from '../../core/ArcEvents.js';
+import { requestDesktopNotificationPermission } from '../../core/desktopNotifications.js';
 import { DEFAULT_SHORTCUTS, formatShortcut, getDefaultShortcut, getShortcutReservation, normalizeShortcutBinding, shortcutFromEvent } from '../../core/shortcuts.js';
 import { apiUrl } from '../../core/api.js';
 import studioPackage from '../../../package.json';
@@ -250,6 +251,11 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
       <div className="settings-section-heading"><span>Appearance and interaction</span></div>
       <SelectInput label="Color theme" value={themeChoice} options={[{ value: 'system', label: 'Use system setting' }, { value: 'dark', label: 'Dark' }, { value: 'light', label: 'Light' }]} onChange={onThemeChange} />
       <Toggle label="Interface sounds" description="Play subtle sounds for controls and notifications" checked={settings.uiSounds ?? false} onChange={(value) => update('uiSounds', value)} />
+      {desktopMode && <Toggle label="Background notifications" description="On by default. Notify when exports finish, an update is ready, or the local server fails to start. Requires system permission." checked={settings.desktopNotifications ?? true} onChange={async (value) => {
+        if (!value) { update('desktopNotifications', false); return; }
+        if (await requestDesktopNotificationPermission() === 'granted') update('desktopNotifications', true);
+        else arcEvents.emit('toast:notify', { title: 'Notifications unavailable', message: 'Allow ARC Studio notifications in your system settings, then enable them here.', type: 'warning' });
+      }} />}
       <Toggle label="Compact context menus" description="Use tighter spacing in right-click menus" checked={settings.compactContextMenus ?? false} onChange={(value) => update('compactContextMenus', value)} />
     </div>}
 

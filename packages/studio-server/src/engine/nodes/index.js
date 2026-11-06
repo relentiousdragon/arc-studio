@@ -30,6 +30,7 @@ import node_event_voice_state_update from './events/event_voice_state_update.js'
 import node_event_presence_update from './events/event_presence_update.js';
 import node_event_guild_ban_add from './events/event_guild_ban_add.js';
 import node_event_guild_ban_remove from './events/event_guild_ban_remove.js';
+import node_event_guild_audit_log_entry_create from './events/event_guild_audit_log_entry_create.js';
 import node_event_scheduled_event_create from './events/event_scheduled_event_create.js';
 import node_event_scheduled_event_update from './events/event_scheduled_event_update.js';
 import node_event_scheduled_event_delete from './events/event_scheduled_event_delete.js';
@@ -127,6 +128,7 @@ import node_action_get_guild_role_permissions from './discord-actions/action_get
 import node_action_get_channel_member_permissions from './discord-actions/action_get_channel_member_permissions.js';
 import node_action_get_channel_role_permissions from './discord-actions/action_get_channel_role_permissions.js';
 import node_action_fetch_channel from './discord-actions/action_fetch_channel.js';
+import node_action_fetch_role from './discord-actions/action_fetch_role.js';
 import node_action_fetch_channel_messages from './discord-actions/action_fetch_channel_messages.js';
 import node_action_fetch_message from './discord-actions/action_fetch_message.js';
 import node_action_set_presence from './discord-actions/action_set_presence.js';
@@ -148,6 +150,7 @@ import node_data_to_json from './values-data/data_to_json.js';
 import node_data_parse_json from './values-data/data_parse_json.js';
 import node_data_to_number from './values-data/data_to_number.js';
 import node_data_check_value from './values-data/data_check_value.js';
+import node_data_check_permission from './values-data/data_check_permission.js';
 import node_data_get_value_by_path from './values-data/data_get_value_by_path.js';
 import node_data_find_array_item from './values-data/data_find_array_item.js';
 import node_data_filter_array from './values-data/data_filter_array.js';
@@ -231,6 +234,7 @@ export const nodeDefinitions = [
   node_event_presence_update,
   node_event_guild_ban_add,
   node_event_guild_ban_remove,
+  node_event_guild_audit_log_entry_create,
   node_event_scheduled_event_create,
   node_event_scheduled_event_update,
   node_event_scheduled_event_delete,
@@ -320,6 +324,7 @@ export const nodeDefinitions = [
   node_action_get_channel_member_permissions,
   node_action_get_channel_role_permissions,
   node_action_fetch_channel,
+  node_action_fetch_role,
   node_action_fetch_channel_messages,
   node_action_fetch_message,
   node_action_set_presence,
@@ -340,6 +345,7 @@ export const nodeDefinitions = [
   node_data_parse_json,
   node_data_to_number,
   node_data_check_value,
+  node_data_check_permission,
   node_data_get_value_by_path,
   node_data_find_array_item,
   node_data_filter_array,
