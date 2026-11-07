@@ -93,8 +93,16 @@ export async function executeDiscordGuildNode(node, {
           setOutput('success', true);
           return true;
         } else if (node.type === 'action_get_guild_member_permissions') {
-          const guildId = String(resolveInput('guild_id', node.data?.guild_id || '')).trim();
-          const userId = String(resolveInput('user_id', node.data?.user_id || '')).trim();
+          const guildId = String(resolveInput('guild_id', node.data?.guild_id || '')
+            || options.eventPayload?.guild_id
+            || options.eventPayload?.message?.guild_id
+            || options.eventPayload?.channel?.guild_id
+            || '').trim();
+          const userId = String(resolveInput('user_id', node.data?.user_id || '')
+            || options.eventPayload?.member?.user?.id
+            || options.eventPayload?.user?.id
+            || options.eventPayload?.author?.id
+            || '').trim();
           if (!guildId || !userId) throw new TypeError('Get Guild Member Permissions needs a Server ID and User ID.');
           if (typeof rest?.getGuildMemberPermissions !== 'function') throw new Error('Get Guild Member Permissions requires a connected Discord REST client.');
           const result = await rest.getGuildMemberPermissions(guildId, userId);
