@@ -148,6 +148,7 @@ export function EmbedNodeBuilder({
   onOpenStudio,
   onOpenTextStudio,
   templateSuggestions = [],
+  templateFunctions = [],
   validation = {},
   connectedInputIds = new Set(),
   wiredFields = {},
@@ -161,7 +162,9 @@ export function EmbedNodeBuilder({
   onFocusBlock
 }) {
   const blocks = getEmbedBlocks(data);
-  const visibleBlocks = blocks.filter((block) => block.type !== 'color' && (!focusOnly || block.id === focusedBlockId));
+  const timestampBlock = blocks.find((block) => block.type === 'timestamp');
+  const footerBlock = blocks.find((block) => block.type === 'footer');
+  const visibleBlocks = blocks.filter((block) => block.type !== 'color' && (!footerBlock || block.type !== 'timestamp') && (!focusOnly || block.id === focusedBlockId || (block.type === 'footer' && focusedBlockId === timestampBlock?.id)));
   const [dropTarget, setDropTarget] = useState(null);
   const [collapsedBlockIds, setCollapsedBlockIds] = useState(() => mode === 'studio' ? new Set(blocks.map((block) => block.id)) : new Set());
   const [recentColors, setRecentColors] = useState(() => {
@@ -190,7 +193,29 @@ export function EmbedNodeBuilder({
   };
 
   const addBlock = (type, index = blocks.length) => {
-    if (type === 'timestamp' && !blocks.some((block) => block.type === 'footer')) return;
+    if (type === 'timestamp') {
+      const footer = blocks.find((block) => block.type === 'footer');
+      if (!footer) {
+        const newFooter = createEmbedBlock('footer');
+        const newTimestamp = createEmbedBlock('timestamp');
+        const next = [...blocks, newFooter, newTimestamp];
+        onFocusBlock?.(newFooter.id);
+        onChange?.(next);
+        return;
+      }
+      const existing = blocks.find((b) => b.type === 'timestamp');
+      if (existing) {
+        onFocusBlock?.(footer.id);
+        return;
+      }
+      const block = createEmbedBlock('timestamp');
+      const footerIndex = blocks.indexOf(footer);
+      const next = [...blocks];
+      next.splice(footerIndex + 1, 0, block);
+      onFocusBlock?.(footer.id);
+      onChange?.(next);
+      return;
+    }
     if (type !== 'field' && blocks.some((block) => block.type === type)) {
       const existing = blocks.find((b) => b.type === type);
       if (existing) {
@@ -303,7 +328,7 @@ export function EmbedNodeBuilder({
       <label className={`embed-block-field ${message ? 'has-error' : ''}`}>
         <div className="embed-field-label-row">
           <span>{label}</span>
-          <span className="embed-field-char-count">{String(block[key] || '').length} / {maxLength}</span>
+          <span className={`embed-field-char-count ${String(block[key] || '').length > maxLength ? 'is-over-limit' : ''}`}>{String(block[key] || '').length} / {maxLength}</span>
         </div>
         {String(block[key] || '').length > LONG_TEXT_THRESHOLD ? (
           <DiscordLongTextField value={block[key] || ''} onOpenEditor={() => openTextEditor(block[key] || '')} label={label} maxLength={maxLength} />
@@ -319,6 +344,13 @@ export function EmbedNodeBuilder({
             placeholder={label}
             aria-invalid={message ? 'true' : undefined}
             onPointerDown={(event) => event.stopPropagation()}
+            templateAutocomplete
+            discordAutocomplete
+            graphVariables={graphVariables}
+            templateValuePaths={templateValuePaths}
+            templateSuggestions={templateSuggestions}
+            templateFunctions={templateFunctions}
+            appEmojis={appEmojis}
           />
         ) : allowEmoji ? (
           <Field
@@ -328,6 +360,7 @@ export function EmbedNodeBuilder({
             graphVariables={graphVariables}
             templateValuePaths={templateValuePaths}
             templateSuggestions={templateSuggestions}
+            templateFunctions={templateFunctions}
             onOpenTextEditor={() => openTextEditor(block[key] || '')}
             type={multiline ? undefined : 'text'}
             inputMode={url ? 'url' : undefined}
@@ -348,6 +381,7 @@ export function EmbedNodeBuilder({
             graphVariables={graphVariables}
             templateValuePaths={templateValuePaths}
             templateSuggestions={templateSuggestions}
+            templateFunctions={templateFunctions}
             onOpenTextEditor={() => openTextEditor(block[key] || '')}
             type={multiline ? undefined : 'text'}
             inputMode={url ? 'url' : undefined}
@@ -366,39 +400,44 @@ export function EmbedNodeBuilder({
     );
   };
 
+  const renderTimestampControls = (timestamp) => {
+    if (!timestamp) return null;
+    const dateValue = toLocalDateTime(timestamp.value);
+    const now = timestamp.now ?? false;
+    const wire = mode === 'studio' ? wiredFields?.[`block_${timestamp.id}_value`] : null;
+    return (
+      <div className="embed-timestamp-settings">
+        {wire && <label className="embed-block-field is-wire-connected"><div className="embed-field-label-row"><span>Timestamp Value</span><span className="embed-field-char-count">Wire connected</span></div><input value="" disabled placeholder={wire.token} aria-label="Timestamp supplied by wire" /><small className="embed-wire-field-note">Connected to {wire.source || wire.label}. The wire value is used.</small></label>}
+        {!wire && (mode === 'studio' || !connectedInputIds.has(`block_${timestamp.id}_value`)) && (
+          <label className="embed-block-field">
+            <div className="embed-field-label-row">
+              <span>Timestamp Value</span>
+            </div>
+            <div className="embed-timestamp-control">
+              <input
+                type="datetime-local"
+                value={now ? '' : dateValue}
+                disabled={now}
+                onChange={(event) => patchBlock(timestamp.id, { value: event.target.value ? new Date(event.target.value).toISOString() : '' })}
+                onPointerDown={(event) => event.stopPropagation()}
+              />
+            </div>
+          </label>
+        )}
+        <div className="embed-block-inline">
+          <AnimatedCheckbox checked={now} disabled={Boolean(wire)} onChange={(checked) => patchBlock(timestamp.id, { now: checked })} label="Use current time when sent" />
+          <span>Use current time when message is sent</span>
+        </div>
+      </div>
+    );
+  };
+
   const blockFields = (block) => {
     if (block.type === 'title') return stringInput(block, 'value', 'Title Text', 256, false, false, true);
     if (block.type === 'description') return stringInput(block, 'value', 'Message Description', 4096, true, false, true);
     if (block.type === 'url') return stringInput(block, 'url', 'Title Link URL', 2048, false, true);
     if (block.type === 'timestamp') {
-      const dateValue = toLocalDateTime(block.value);
-      const now = block.now ?? false;
-      const wire = mode === 'studio' ? wiredFields?.[`block_${block.id}_value`] : null;
-      return (
-        <div className="embed-timestamp-settings">
-          {wire && <label className="embed-block-field is-wire-connected"><div className="embed-field-label-row"><span>Timestamp Value</span><span className="embed-field-char-count">Wire connected</span></div><input value="" disabled placeholder={wire.token} aria-label="Timestamp supplied by wire" /><small className="embed-wire-field-note">Connected to {wire.source || wire.label}. The wire value is used.</small></label>}
-          {!wire && (mode === 'studio' || !connectedInputIds.has(`block_${block.id}_value`)) && (
-            <label className="embed-block-field">
-              <div className="embed-field-label-row">
-                <span>Timestamp Value</span>
-              </div>
-              <div className="embed-timestamp-control">
-                <input
-                  type="datetime-local"
-                  value={now ? '' : dateValue}
-                  disabled={now}
-                  onChange={(event) => patchBlock(block.id, { value: event.target.value ? new Date(event.target.value).toISOString() : '' })}
-                  onPointerDown={(event) => event.stopPropagation()}
-                />
-              </div>
-            </label>
-          )}
-          <div className="embed-block-inline">
-            <AnimatedCheckbox checked={now} disabled={Boolean(wire)} onChange={(checked) => patchBlock(block.id, { now: checked })} label="Use current time when sent" />
-            <span>Use current time when message is sent</span>
-          </div>
-        </div>
-      );
+      return renderTimestampControls(block);
     }
     if (block.type === 'color') {
       const wire = mode === 'studio' ? wiredFields?.[`block_${block.id}_value`] : null;
@@ -460,10 +499,38 @@ export function EmbedNodeBuilder({
       );
     }
     if (block.type === 'footer') {
+      const activeTimestamp = blocks.find((b) => b.type === 'timestamp');
       return (
         <>
           {stringInput(block, 'text', 'Footer Text', 2048, false, false, true)}
           {stringInput(block, 'icon', 'Footer Icon URL', 2048, false, true)}
+          <div className="embed-footer-timestamp-section" style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--border-subtle, rgba(255, 255, 255, 0.08))' }}>
+            <div className="embed-field-label-row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+              <span style={{ fontSize: '0.8125rem', fontWeight: 600, color: 'var(--text-muted, #949ba4)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Clock3 size={14} /> Timestamp
+              </span>
+              {activeTimestamp ? (
+                <button
+                  type="button"
+                  className="embed-block-action"
+                  style={{ fontSize: '0.75rem', color: 'var(--text-danger, #ed4245)', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 6px' }}
+                  onClick={() => removeBlock(activeTimestamp.id)}
+                >
+                  Remove timestamp
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="embed-block-action"
+                  style={{ fontSize: '0.75rem', color: 'var(--accent, #5865f2)', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 6px', display: 'flex', alignItems: 'center', gap: 4 }}
+                  onClick={() => addBlock('timestamp')}
+                >
+                  <Plus size={12} /> Add timestamp
+                </button>
+              )}
+            </div>
+            {activeTimestamp && renderTimestampControls(activeTimestamp)}
+          </div>
         </>
       );
     }
@@ -518,7 +585,6 @@ export function EmbedNodeBuilder({
           {EmbedBlockTypes.filter((t) => t.type !== 'color').map(({ type, label, icon: Icon }) => {
             const isField = type === 'field';
             const isAdded = !isField && blocks.some((b) => b.type === type);
-            const needsFooter = type === 'timestamp' && !blocks.some((block) => block.type === 'footer');
             const countLabel = isField ? ` (${fieldCount}/25)` : '';
 
             return (
@@ -526,14 +592,13 @@ export function EmbedNodeBuilder({
                 key={type}
                 type="button"
                 className={`embed-quick-chip ${isAdded ? 'is-added' : ''}`}
-                disabled={needsFooter}
-                draggable={!needsFooter && !(isAdded && type !== 'field')}
+                draggable={!(isAdded && type !== 'field')}
                 onDragStart={(event) => {
                   event.dataTransfer.effectAllowed = 'copy';
                   event.dataTransfer.setData('application/x-arc-studio-palette', JSON.stringify({ kind: 'palette', scope: 'embed', type }));
                 }}
                 onClick={() => addBlock(type)}
-                title={needsFooter ? 'Add a footer block before adding a timestamp.' : isAdded ? `${label} is already added (click to view)` : `Add ${label}`}
+                title={isAdded ? `${label} is already added (click to view)` : `Add ${label}`}
               >
                 {isAdded ? <Check size={12} className="embed-chip-check" /> : <Plus size={12} />}
                 <Icon size={12} />
@@ -544,13 +609,13 @@ export function EmbedNodeBuilder({
         </div>
 
         {/* Discord Embed Color Bar */}
-        {!focusOnly && <div className="embed-color-bar">
+        {(!focusOnly || !focusedBlockId) && <div className={`embed-color-bar ${focusOnly ? 'is-focus-only' : ''}`}>
           <span className="embed-color-bar-label">
             <Palette size={13} />
             <span>Accent Color</span>
           </span>
-        <div className="embed-color-bar-swatches">
-            <button type="button" className={`embed-color-none ${activeColor ? '' : 'is-active'}`} onClick={() => setColor(null)} title="No accent color" aria-label="No accent color"><CircleOff size={15} /></button>
+          <div className="embed-color-bar-swatches">
+            <button type="button" className={`embed-color-none ${activeColor ? '' : 'is-active'}`} onClick={() => setColor(null)} title="Default Discord color" aria-label="Default Discord color"><CircleOff size={15} /></button>
             {(recentColors.length ? recentColors.map((value, index) => ({ value, label: index === 0 ? 'Most recent color' : 'Palette color' })) : DISCORD_COLOR_PRESETS).map((preset) => (
               <button
                 key={preset.value}
@@ -558,7 +623,7 @@ export function EmbedNodeBuilder({
                 className={`embed-color-dot ${activeColor && activeColor.toUpperCase() === preset.value.toUpperCase() ? 'is-active' : ''}`}
                 style={{ backgroundColor: preset.value }}
                 title={preset.label}
-              onClick={() => setColor(preset.value)}
+                onClick={() => setColor(preset.value)}
               />
             ))}
             <input
@@ -569,6 +634,27 @@ export function EmbedNodeBuilder({
               className="embed-color-picker-input"
             />
           </div>
+          {focusOnly && (
+            <div className="embed-color-hex-row" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '8px' }}>
+              <input
+                type="text"
+                className="studio-field"
+                style={{ width: '100px', fontFamily: 'monospace', fontSize: '12px' }}
+                value={activeColor || ''}
+                placeholder="#5865F2"
+                maxLength={7}
+                onChange={(e) => {
+                  const val = e.target.value.trim();
+                  if (/^#?[0-9a-fA-F]{0,6}$/.test(val)) {
+                    const formatted = val.startsWith('#') ? val : val ? `#${val}` : '';
+                    if (/^#[0-9a-fA-F]{6}$/.test(formatted)) setColor(formatted, true);
+                    else if (!formatted) setColor(null);
+                  }
+                }}
+              />
+              <span className="node-config-hint" style={{ margin: 0 }}>Border color for the embed card</span>
+            </div>
+          )}
         </div>}
       </div>
 
