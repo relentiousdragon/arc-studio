@@ -6,6 +6,8 @@ import {
   GatewayOpcodes,
   ButtonStyles,
   ComponentTypes,
+  MODIFY_COMPONENT_STYLE_OPTIONS,
+  DISCORD_OBJECT_PROPERTIES,
   EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
@@ -69,6 +71,16 @@ describe('Constants & Bitfields', () => {
 
     const defaultAvatarUrl = CDN.avatar('123456789012345678', null);
     assert.match(defaultAvatarUrl, /https:\/\/cdn\.discordapp\.com\/embed\/avatars\//);
+  });
+
+  test('Component style options and Discord object properties constants', () => {
+    assert.ok(Array.isArray(MODIFY_COMPONENT_STYLE_OPTIONS));
+    assert.equal(MODIFY_COMPONENT_STYLE_OPTIONS.length, 6);
+    assert.equal(typeof DISCORD_OBJECT_PROPERTIES, 'object');
+    assert.ok(Array.isArray(DISCORD_OBJECT_PROPERTIES.message));
+    assert.ok(Array.isArray(DISCORD_OBJECT_PROPERTIES.user));
+    assert.ok(Array.isArray(DISCORD_OBJECT_PROPERTIES.channel));
+    assert.ok(Array.isArray(DISCORD_OBJECT_PROPERTIES.guild));
   });
 });
 
@@ -464,5 +476,48 @@ describe('Client presence updates', () => {
     assert.equal(sentPresence.status, 'dnd');
     assert.deepEqual(sentPresence.activities, [{ name: 'Custom Status', type: 4, state: 'Hello', emoji: { name: 'sparkles', id: '123456789012345678' } }]);
     assert.equal(client.presence.status, 'dnd');
+  });
+});
+
+describe('Collectors & Await Helpers', () => {
+  test('InteractionCollector collects matching interaction and fires filterFailed', async () => {
+    const client = new Client();
+    const collector = client.createInteractionCollector(
+      (interaction) => interaction.data?.custom_id === 'yes_button',
+      { timeout: 500, max: 2 }
+    );
+
+    const collected = [];
+    const failed = [];
+    collector.on('collect', (i) => collected.push(i));
+    collector.on('filterFailed', (i) => failed.push(i));
+
+    client.emit('interactionCreate', { id: '1', data: { custom_id: 'no_button' } });
+    client.emit('interactionCreate', { id: '2', data: { custom_id: 'yes_button' } });
+
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0].id, '1');
+    assert.equal(collected.length, 1);
+    assert.equal(collected[0].id, '2');
+
+    collector.stop('test');
+    assert.equal(collector.ended, true);
+  });
+
+  test('awaitInteraction resolves matching interaction or times out', async () => {
+    const client = new Client();
+    const failed = [];
+    const promise = client.awaitInteraction(
+      (interaction) => interaction.data?.custom_id === 'target',
+      { timeout: 100, onFilterFailed: (i) => failed.push(i) }
+    );
+
+    client.emit('interactionCreate', { id: 'bad', data: { custom_id: 'wrong' } });
+    client.emit('interactionCreate', { id: 'good', data: { custom_id: 'target' } });
+
+    const result = await promise;
+    assert.equal(result?.id, 'good');
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0].id, 'bad');
   });
 });
