@@ -4,6 +4,14 @@ export default {
   "category": "Values & Data",
   "label": "Set Object Property",
   "color": "#06b6d4",
+  "defaultData": {
+    "key": "",
+    "value": ""
+  },
+  "editorControls": [
+    { "key": "key", "label": "Property", "type": "text", "placeholder": "property_name" },
+    { "key": "value", "label": "Value", "type": "text", "placeholder": "Value to assign" }
+  ],
   "inputs": [
     {
       "id": "object",
