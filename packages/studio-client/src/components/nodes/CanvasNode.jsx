@@ -614,6 +614,23 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       </details>
     </div>;
   }
+  if (['event_button_click', 'event_select_menu', 'event_modal_submit'].includes(node.type)) {
+    const isButton = node.type === 'event_button_click';
+    const isMenu = node.type === 'event_select_menu';
+    const label = isButton ? 'button' : isMenu ? 'select menu' : 'modal';
+    return <div className="node-config node-config-stack">
+      <FallbackField label="Custom ID filter (Optional)">
+        <input
+          value={node.data?.custom_id ?? ''}
+          onChange={(event) => update('custom_id', event.target.value)}
+          onPointerDown={(event) => event.stopPropagation()}
+          placeholder={`Leave blank for any ${label}`}
+          aria-label="Custom ID filter"
+        />
+      </FallbackField>
+      <span className="node-config-hint">Executes when the interaction Custom ID matches this value. Leave blank to trigger on all {label}s.</span>
+    </div>;
+  }
   if (node.type === 'action_set_presence') {
     const activityTypes = [{ value: '0', label: 'Playing' }, { value: '1', label: 'Streaming' }, { value: '2', label: 'Listening' }, { value: '3', label: 'Watching' }, { value: '5', label: 'Competing' }];
     const statuses = [{ value: 'online', label: 'Online' }, { value: 'idle', label: 'Idle' }, { value: 'dnd', label: 'Do not disturb' }, { value: 'invisible', label: 'Invisible' }];
@@ -736,7 +753,41 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       </FallbackField>}
     </div>;
   }
-  if (node.type === 'data_array_get' && !isConnected('index')) {
+  if (node.type === 'data_string_join') {
+    return <div className="node-config node-config-stack">
+      {!isConnected('separator') && <FallbackField label="Separator"><input value={node.data?.separator ?? ', '} onChange={(event) => update('separator', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder=", " aria-label="Join separator" /></FallbackField>}
+    </div>;
+  }
+  if (node.type === 'data_object_get') {
+    return <div className="node-config node-config-stack">
+      {!isConnected('key') && <FallbackField label="Property"><input value={node.data?.key ?? ''} onChange={(event) => update('key', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="property_name" aria-label="Property key" /></FallbackField>}
+    </div>;
+  }
+  if (node.type === 'data_object_set') {
+    return <div className="node-config node-config-stack">
+      {!isConnected('key') && <FallbackField label="Property"><input value={node.data?.key ?? ''} onChange={(event) => update('key', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="property_name" aria-label="Property key" /></FallbackField>}
+      {!isConnected('value') && templateInput('value', 'Value', { placeholder: 'Value to assign' })}
+    </div>;
+  }
+  if (node.type === 'data_text_replace') {
+    return <div className="node-config node-config-stack">
+      {templateInput('text', 'Source text', { multiline: true, placeholder: 'Original text' })}
+      {!isConnected('search') && <FallbackField label="Find"><input value={node.data?.search ?? ''} onChange={(event) => update('search', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Text to find" aria-label="Text to find" /></FallbackField>}
+      {!isConnected('replacement') && templateInput('replacement', 'Replace with', { placeholder: 'Replacement text' })}
+      {!isConnected('all') && <FallbackCheckbox label="Find all occurrences" checked={node.data?.all !== false} onChange={(checked) => update('all', checked)} />}
+    </div>;
+  }
+  if (node.type === 'data_parse_json') {
+    return <div className="node-config node-config-stack">
+      {templateInput('json', 'JSON text', { multiline: true, placeholder: '{"key": "value"}' })}
+    </div>;
+  }
+  if (['data_text_lowercase', 'data_text_uppercase', 'data_text_titlecase', 'data_text_trim'].includes(node.type)) {
+    return <div className="node-config node-config-stack">
+      {templateInput('text', 'Text', { placeholder: 'Enter text' })}
+    </div>;
+  }
+  if (['data_array_get', 'data_array_set'].includes(node.type) && !isConnected('index')) {
     return <div className="node-config node-config-stack"><FallbackField label="Index"><NodeNumberInput min="0" step="1" value={node.data?.index ?? 0} onChange={(event) => update('index', numericNodeInputValue(event.target.value, { min: 0, integer: true }))} onPointerDown={(event) => event.stopPropagation()} placeholder="0" aria-label="Array item index" /></FallbackField><span className="node-config-hint">Zero-based index</span></div>;
   }
   if (node.type === 'data_regex') {
@@ -1012,6 +1063,34 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       )}
     </div>;
   }
+  if (['action_console_log', 'action_console_warn', 'action_console_error'].includes(node.type)) {
+    return <div className="node-config node-config-stack">
+      {templateInput('message', 'Message', { multiline: true, placeholder: 'Message to log' })}
+    </div>;
+  }
+  if (['action_fetch_user', 'action_fetch_guild', 'action_fetch_member', 'action_fetch_message', 'action_fetch_channel_messages'].includes(node.type)) {
+    const isUser = node.type === 'action_fetch_user';
+    const isGuild = node.type === 'action_fetch_guild';
+    const isMember = node.type === 'action_fetch_member';
+    const isMessage = node.type === 'action_fetch_message';
+    const isMessages = node.type === 'action_fetch_channel_messages';
+    return <div className="node-config node-config-stack">
+      {isUser && !isConnected('user_id') && <FallbackField label="User ID"><input value={node.data?.user_id ?? ''} onChange={(event) => update('user_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="User ID" aria-label="User ID" /></FallbackField>}
+      {isGuild && !isConnected('guild_id') && <FallbackField label="Server ID"><input value={node.data?.guild_id ?? ''} onChange={(event) => update('guild_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Server ID" aria-label="Server ID" /></FallbackField>}
+      {isMember && <>
+        {!isConnected('guild_id') && <FallbackField label="Server ID"><input value={node.data?.guild_id ?? ''} onChange={(event) => update('guild_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Server ID" aria-label="Server ID" /></FallbackField>}
+        {!isConnected('user_id') && <FallbackField label="User ID"><input value={node.data?.user_id ?? ''} onChange={(event) => update('user_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="User ID" aria-label="User ID" /></FallbackField>}
+      </>}
+      {isMessage && <>
+        {!isConnected('channel_id') && <FallbackField label="Channel ID"><input value={node.data?.channel_id ?? ''} onChange={(event) => update('channel_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Channel ID" aria-label="Channel ID" /></FallbackField>}
+        {!isConnected('message_id') && <FallbackField label="Message ID"><input value={node.data?.message_id ?? ''} onChange={(event) => update('message_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Message ID" aria-label="Message ID" /></FallbackField>}
+      </>}
+      {isMessages && <>
+        {!isConnected('channel_id') && <FallbackField label="Channel ID"><input value={node.data?.channel_id ?? ''} onChange={(event) => update('channel_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Channel ID" aria-label="Channel ID" /></FallbackField>}
+        {!isConnected('limit') && <FallbackField label="Message limit (1–100)"><NodeNumberInput min={1} max={100} value={node.data?.limit ?? 50} onChange={(event) => update('limit', numericNodeInputValue(event.target.value, { min: 1, max: 100, integer: true, fallback: 50 }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Message limit" /></FallbackField>}
+      </>}
+    </div>;
+  }
   if (['action_fetch_channel', 'action_fetch_role'].includes(node.type)) {
     const roleInfo = node.type === 'action_fetch_role';
     const idPin = roleInfo ? 'role_id' : 'channel_id';
@@ -1061,6 +1140,9 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
           {!isConnected('bitrate') && [2, 13].includes(channelType) && <FallbackField label="Voice bitrate (bits/sec)"><NodeNumberInput min="8000" max="384000" step="1" value={node.data?.bitrate ?? 64000} onChange={(event) => update('bitrate', numericNodeInputValue(event.target.value, { min: 8000, max: 384000, integer: true, fallback: 64000 }))} onPointerDown={(event) => event.stopPropagation()} /><small className="node-config-hint">The server tier sets the actual cap; Stage channels cap at 64,000.</small></FallbackField>}
           {!isConnected('user_limit') && [2, 13].includes(channelType) && <FallbackField label="User limit (0 = unlimited)"><NodeNumberInput min="0" max="10000" step="1" value={node.data?.user_limit ?? 0} onChange={(event) => update('user_limit', numericNodeInputValue(event.target.value, { min: 0, max: 10000, integer: true }))} onPointerDown={(event) => event.stopPropagation()} /><small className="node-config-hint">Voice channels: 0–99 · Stage channels: up to 10,000</small></FallbackField>}
           {!isConnected('default_auto_archive_duration') && [0, 5, 15, 16].includes(channelType) && <FallbackField label="Default thread archive"><AnimatedDropdown value={String(node.data?.default_auto_archive_duration ?? 1440)} options={[60, 1440, 4320, 10080].map((value) => ({ value: String(value), label: `${value >= 1440 ? `${value / 1440} day${value > 1440 ? 's' : ''}` : `${value} minutes`}` }))} onChange={(value) => update('default_auto_archive_duration', Number(value))} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Default thread archive duration" className="node-select" /></FallbackField>}
+          {!isConnected('default_thread_rate_limit_per_user') && [0, 5, 15, 16].includes(channelType) && <FallbackField label="Default thread slowmode (seconds)"><NodeNumberInput allowEmpty min="0" max="21600" value={node.data?.default_thread_rate_limit_per_user ?? ''} onChange={(event) => update('default_thread_rate_limit_per_user', numericNodeInputValue(event.target.value, { min: 0, max: 21600, allowEmpty: true }))} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave unchanged" /><small className="node-config-hint">0–21,600 seconds · blank uses default</small></FallbackField>}
+          {[2, 13].includes(channelType) && textField('rtc_region', 'Voice region (blank = automatic)')}
+          {!isConnected('video_quality_mode') && [2, 13].includes(channelType) && <FallbackField label="Voice video quality"><AnimatedDropdown value={String(node.data?.video_quality_mode ?? '1')} onChange={(value) => update('video_quality_mode', Number(value))} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Voice video quality" options={[{ value: '1', label: 'Automatic' }, { value: '2', label: '720p' }]} className="node-select" /></FallbackField>}
           {!isConnected('flags') && [0, 2, 5, 15, 16].includes(channelType) && <FallbackField label="Channel flags"><NodeNumberInput min="0" max="2147483647" step="1" value={node.data?.flags ?? 0} onChange={(event) => update('flags', numericNodeInputValue(event.target.value, { min: 0, max: 2147483647, integer: true }))} onPointerDown={(event) => event.stopPropagation()} /><small className="node-config-hint">Discord flags bitfield. Forum or media: REQUIRE_TAG 16 requires tags, media 32768 hides download options, spoiler channels use 2097152.</small></FallbackField>}
           {!isConnected('nsfw') && channelType !== 4 && <FallbackCheckbox label="Age restricted" checked={Boolean(node.data?.nsfw)} onChange={(value) => update('nsfw', value)} />}
           {reason}
@@ -1099,6 +1181,9 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
           {!isConnected('user_limit') && <FallbackField label="User limit (0 = unlimited)"><NodeNumberInput allowEmpty min="0" max="10000" step="1" value={node.data?.user_limit ?? ''} onChange={(event) => update('user_limit', numericNodeInputValue(event.target.value, { min: 0, max: 10000, integer: true, allowEmpty: true }))} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave unchanged" /><small className="node-config-hint">Voice channels: 0–99 · Stage channels: up to 10,000</small></FallbackField>}
           {textField('rtc_region', 'Voice region (blank = automatic)')}
           {!isConnected('video_quality_mode') && <FallbackField label="Voice video quality"><AnimatedDropdown value={String(node.data?.video_quality_mode ?? '')} onChange={(value) => update('video_quality_mode', value === '' ? '' : Number(value))} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Voice video quality" options={[{ value: '', label: 'Leave unchanged' }, { value: '1', label: 'Automatic' }, { value: '2', label: '720p' }]} className="node-select" /></FallbackField>}
+          {!isConnected('position') && <FallbackField label="Position in category"><NodeNumberInput allowEmpty min="0" max="5000" step="1" value={node.data?.position ?? ''} onChange={(event) => update('position', numericNodeInputValue(event.target.value, { min: 0, max: 5000, integer: true, allowEmpty: true }))} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave unchanged" /><small className="node-config-hint">Lower numbers appear first within the selected category.</small></FallbackField>}
+          {!isConnected('flags') && <FallbackField label="Channel flags"><NodeNumberInput allowEmpty min="0" max="2147483647" step="1" value={node.data?.flags ?? ''} onChange={(event) => update('flags', numericNodeInputValue(event.target.value, { min: 0, max: 2147483647, integer: true, allowEmpty: true }))} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave unchanged" /><small className="node-config-hint">Discord flags bitfield.</small></FallbackField>}
+          {!isConnected('default_thread_rate_limit_per_user') && <FallbackField label="Default thread slowmode (seconds)"><NodeNumberInput allowEmpty min="0" max="21600" value={node.data?.default_thread_rate_limit_per_user ?? ''} onChange={(event) => update('default_thread_rate_limit_per_user', numericNodeInputValue(event.target.value, { min: 0, max: 21600, allowEmpty: true }))} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave unchanged" /><small className="node-config-hint">0–21,600 seconds · blank keeps the current value</small></FallbackField>}
           {!isConnected('default_auto_archive_duration') && <FallbackField label="Default thread archive"><AnimatedDropdown value={String(node.data?.default_auto_archive_duration ?? '')} onChange={(value) => update('default_auto_archive_duration', value === '' ? '' : Number(value))} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Default thread archive duration" options={[{ value: '', label: 'Leave unchanged' }, ...[60, 1440, 4320, 10080].map((value) => ({ value: String(value), label: `${value >= 1440 ? value / 1440 + ' day' + (value > 1440 ? 's' : '') : value + ' minutes'}` }))]} className="node-select" /></FallbackField>}
         </>}
         {reason}
