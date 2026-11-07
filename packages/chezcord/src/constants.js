@@ -194,10 +194,18 @@ export const ButtonStyles = Object.freeze({
 });
 
 export const CDN = Object.freeze({
-  avatar: (userId, avatarHash, format = 'png', size = 512) =>
-    avatarHash
-      ? `${CDN_BASE}/avatars/${userId}/${avatarHash}.${avatarHash.startsWith('a_') ? 'gif' : format}?size=${size}`
-      : `${CDN_BASE}/embed/avatars/${Number(BigInt(userId) >> 22n) % 6}.png`,
+  avatar: (userId, avatarHash, format = 'png', size = 512) => {
+    if (avatarHash) {
+      return `${CDN_BASE}/avatars/${userId}/${avatarHash}.${avatarHash.startsWith('a_') ? 'gif' : format}?size=${size}`;
+    }
+    let defaultIndex = 0;
+    try {
+      defaultIndex = Math.abs(Number(BigInt(userId) >> 22n) % 6);
+    } catch {
+      defaultIndex = 0;
+    }
+    return `${CDN_BASE}/embed/avatars/${defaultIndex}.png`;
+  },
   banner: (userId, bannerHash, format = 'png', size = 1024) =>
     bannerHash ? `${CDN_BASE}/banners/${userId}/${bannerHash}.${bannerHash.startsWith('a_') ? 'gif' : format}?size=${size}` : null,
   guildIcon: (guildId, iconHash, format = 'png', size = 512) =>
