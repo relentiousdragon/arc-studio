@@ -17,8 +17,8 @@ import { readLibraryUsage, recordLibraryItemUsage } from '../../core/libraryUsag
 export { recordLibraryItemUsage };
 
 const EXPANSION_STORAGE_KEY = 'arc_library_expansion_by_project';
-const DEFAULT_EXPANDED_GRAPH_GROUPS = { 'Slash Commands': true, Messages: true, Components: true, 'Member Events': true, Functions: true, Other: true };
-const BUILT_IN_GRAPH_CATEGORIES = ['Slash Commands', 'Messages', 'Message Events', 'Components', 'Member Events', 'Voice & Presence', 'Bot Events', 'Channel Events', 'Roles', 'Moderation Events', 'Invites', 'Cron Jobs', 'Scheduled Events', 'Functions', 'Other'];
+const DEFAULT_EXPANDED_GRAPH_GROUPS = { 'Slash Commands': true, 'Context Commands': true, Messages: true, Components: true, 'Member Events': true, Functions: true, Other: true };
+const BUILT_IN_GRAPH_CATEGORIES = ['Slash Commands', 'Context Commands', 'Messages', 'Message Events', 'Components', 'Member Events', 'Voice & Presence', 'Bot Events', 'Channel Events', 'Roles', 'Moderation Events', 'Invites', 'Cron Jobs', 'Scheduled Events', 'Functions', 'Other'];
 const readGraphCategories = (key) => { try { const value = JSON.parse(readAppStorage(key) || '{}'); return value && typeof value === 'object' && !Array.isArray(value) ? value : {}; } catch { return {}; } };
 //
 function readLibraryExpansion() {
@@ -1044,6 +1044,7 @@ function groupGraphs(graphs, categoryState = {}) {
     if (graph.graphType === 'function') group = 'Functions';
     else if (eventTypes.length > 1) group = 'Other';
     else if (eventTypes.includes('event_slash_command')) group = 'Slash Commands';
+    else if (eventTypes.some((type) => ['event_user_command', 'event_message_command'].includes(type))) group = 'Context Commands';
     else if (eventTypes.includes('event_message_create')) group = 'Messages';
     else if (eventTypes.some((type) => type.startsWith('event_message_') || type.startsWith('event_reaction_'))) group = 'Message Events';
     else if (eventTypes.some((type) => ['event_button_click', 'event_select_menu', 'event_modal_submit'].includes(type))) group = 'Components';
