@@ -44,7 +44,7 @@ export function AttachmentUrlInput({ value = '', onChange, attachments = [], ima
   const selectedUnsupported = imageOnly && currentFilename && attachments.some((file) => String(file?.filename || '').toLowerCase() === currentFilename && !isImageAttachment(file));
   const selectableMatches = matches.filter((file) => !imageOnly || isImageAttachment(file));
   const activeFile = selectableMatches.length ? selectableMatches[Math.min(activeIndex, selectableMatches.length - 1)] : null;
-  const showSuggestions = focused && !hasOtherScheme && !isTypingCommonScheme && !COMPLETE_FILE_EXTENSION.test(query) && attachments.length > 0;
+  const showSuggestions = focused && !hasOtherScheme && !isTypingCommonScheme && !COMPLETE_FILE_EXTENSION.test(query) && attachments.length > 0 && !rawValue.includes('{{');
 
   React.useEffect(() => { setActiveIndex(0); }, [normalizedQuery, imageOnly]);
 
