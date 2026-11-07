@@ -14,6 +14,7 @@ import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
 import { DiscordTextField } from '../ui/DiscordTextField.jsx';
 import { CustomEmoji } from '../ui/CustomEmoji.jsx';
+import { playUiSound, unlockUiSounds } from '../../core/uiSounds.js';
 //
 const GRID_SIZE = 24;
 const NODE_WIDTH = 248;
@@ -22,7 +23,7 @@ const EMPTY_TEMPLATE_PREVIEW_VALUES = Object.freeze({});
 const EMPTY_REMOTE_NODE_STATE = Object.freeze({});
 const warnedFailedNodeTypes = new Set();
 const COLLABORATOR_COLORS = ['#63b3ed', '#f687b3', '#68d391', '#f6ad55', '#b794f4', '#4fd1c5', '#fc8181', '#90cdf4', '#fbd38d', '#9ae6b4'];
-const LARGE_GRAPH_NODE_LIMIT = 48;
+const LARGE_GRAPH_NODE_LIMIT = 28;
 const LARGE_GRAPH_WIRE_LIMIT = 64;
 const FAST_GRAPH_WIRE_LIMIT = 10;
 const OPTIMAL_GRAPH_WIRE_LIMIT = 20;
@@ -45,10 +46,12 @@ const textInputPopupOpen = () => typeof document !== 'undefined' && Boolean(docu
 const graphChatEmojiPattern = /^<(a?):([a-zA-Z0-9_~]{2,32}):(\d+)>$/;
 //
 const CONVERTIBLE_TYPES = new Set(['string', 'number']);
-const isConvertiblePair = (a, b) => CONVERTIBLE_TYPES.has(a) && CONVERTIBLE_TYPES.has(b) && a !== b;
+const isConvertiblePair = (a, b) => (CONVERTIBLE_TYPES.has(a) && CONVERTIBLE_TYPES.has(b) && a !== b) || (a === 'arg' && (b === 'string' || b === 'number'));
 export const getConversionType = (outputType, inputType) => {
   if (outputType === 'number' && inputType === 'string') return 'number-to-string';
   if (outputType === 'string' && inputType === 'number') return 'string-to-number';
+  if (outputType === 'arg' && inputType === 'string') return 'arg-to-string';
+  if (outputType === 'arg' && inputType === 'number') return 'arg-to-number';
   return null;
 };
 const lerpPoint = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
@@ -333,41 +336,8 @@ function RemoteWirePreview({ peer, computePath }) {
   </g>;
 }
 
-function getWireCutSegments(pathElement, event) {
-  try {
-    const length = pathElement.getTotalLength();
-    const matrix = pathElement.getScreenCTM();
-    const svg = pathElement.ownerSVGElement;
-    if (!length || !matrix || !svg) return [];
-    const click = svg.createSVGPoint();
-    click.x = event.clientX;
-    click.y = event.clientY;
-    const localClick = click.matrixTransform(matrix.inverse());
-    let splitAt = 0;
-    let nearest = Infinity;
-    const samples = 100;
-    for (let index = 0; index <= samples; index += 1) {
-      const distance = length * index / samples;
-      const point = pathElement.getPointAtLength(distance);
-      const delta = (point.x - localClick.x) ** 2 + (point.y - localClick.y) ** 2;
-      if (delta < nearest) { nearest = delta; splitAt = distance; }
-    }
-    const buildSegment = (from, to, step) => {
-      const points = [];
-      for (let distance = from; step > 0 ? distance <= to : distance >= to; distance += step) {
-        points.push(pathElement.getPointAtLength(Math.max(0, Math.min(length, distance))));
-      }
-      points.push(pathElement.getPointAtLength(to));
-      const d = points.map((point, index) => `${index ? 'L' : 'M'} ${point.x} ${point.y}`).join(' ');
-      const pathLength = points.slice(1).reduce((total, point, index) => total + Math.hypot(point.x - points[index].x, point.y - points[index].y), 0);
-      return { d, length: pathLength + 1 };
-    };
-    const stride = Math.max(length / 36, 1);
-    return [buildSegment(splitAt, 0, -stride), buildSegment(splitAt, length, stride)].filter((segment) => segment.d && segment.length > 1);
-  } catch { return []; }
-}
-
 export function NodeCanvas({
+  isActive = true,
   nodes: suppliedNodes = [], connections: suppliedConnections = [], graphId = '', projectId = '', focusRequest = null, followRequest = null, onFollowComplete, activePulseNodeIds = [], debugStep = null, simulationOverlay = null, onClearSimulationOverlay, onDebugAction, settings = {}, isLocked = false, canvasLocked = isLocked, canWriteGraphs = true, desktopMode = false, shortcutPlatform = 'windows', authToken = '', graphName = 'Untitled graph',
   tagGroups = [], notes = [], arrows = [], transientArrows = [], currentUser = null, projectOwnerId = '', noteEditLocks = {}, collaborationOnline = false, collaborationReady = false, collaborationMotionSupported = false, collaborationClientId = '', onRequestNoteEditLock, onReleaseNoteEditLock, onNotesChange, onArrowsChange, onCanvasArrowAction, onTagGroupsChange, onRequestCreateTagGroup, onRequestEditTagGroup, onRenameNode,
   graphVariables = [], eventTemplatePaths = [], functionGraphs = [], callableGraphs = functionGraphs, appEmojis = [], nodeDefinitions = BuiltInNodeDefinitions, nodeDefinitionsReady = false, onNodesChange, onConnectionsChange, onOpenPalette, onViewportCenterChange, onSelectedNodeChange, onSelectedNodeCountChange, onOpenLibrary, onOpenVariables,
@@ -560,6 +530,7 @@ export function NodeCanvas({
   const [selectedNoteIds, setSelectedNoteIds] = useState([]);
   const [selectedArrowIds, setSelectedArrowIds] = useState([]);
   const [shiftHeld, setShiftHeld] = useState(false);
+  const [altHeld, setAltHeld] = useState(false);
   const [deleteConfirmationIds, setDeleteConfirmationIds] = useState(null);
   const [deleteConfirmationNoteIds, setDeleteConfirmationNoteIds] = useState([]);
   const [deleteConfirmationArrowIds, setDeleteConfirmationArrowIds] = useState([]);
@@ -792,6 +763,12 @@ export function NodeCanvas({
   const connectingWireRef = useRef(connectingWire);
   connectingWireRef.current = connectingWire;
   const [wireCutAnimations, setWireCutAnimations] = useState([]);
+  const wirePendingClickRef = useRef(null);
+  useEffect(() => {
+    return () => {
+      if (wirePendingClickRef.current) window.clearTimeout(wirePendingClickRef.current.timer);
+    };
+  }, []);
   const [hoveredWireId, setHoveredWireId] = useState(null);
   const [contextMenu, setContextMenu] = useState(null);
   const [viewportSectionId, setViewportSectionId] = useState(null);
@@ -946,7 +923,10 @@ export function NodeCanvas({
   };
   const spaceDownRef = useRef(false);
   const altDownRef = useRef(false);
+  const wireCutDragRef = useRef(null);
+  const suppressWireClickUntilRef = useRef(0);
   const cancelConnectingWire = useCallback(() => {
+    suppressWireClickUntilRef.current = Date.now() + 400;
     const current = connectingWireRef.current;
     if (current?.originalConnection && !current.clickToConnect) onConnectionsChange?.([...connections.filter((item) => item.id !== current.originalConnection.id), current.originalConnection]);
     setConnectingWire(null);
@@ -1026,21 +1006,26 @@ export function NodeCanvas({
     });
   };
   useLayoutEffect(() => {
+    if (!isActive) return undefined;
     const publishCenter = () => publishViewportCenterRef.current?.();
     const observer = typeof ResizeObserver === 'function' && containerRef.current ? new ResizeObserver(publishCenter) : null;
     if (observer && containerRef.current) observer.observe(containerRef.current);
     window.addEventListener('resize', publishCenter);
     return () => { observer?.disconnect(); window.removeEventListener('resize', publishCenter); };
-  }, []);
+  }, [isActive]);
   useLayoutEffect(() => {
-    publishViewportCenterRef.current?.();
-  }, [pan, zoom, onViewportCenterChange]);
+    if (isActive) publishViewportCenterRef.current?.();
+  }, [isActive, pan, zoom, onViewportCenterChange]);
 
   useEffect(() => {
+    if (!isActive) return undefined;
     const onKeyDown = (event) => {
       if (canvasFindOpen && event.key === 'Escape') return;
       if (event.key === 'Shift') setShiftHeld(true);
-      if (event.key === 'Alt') altDownRef.current = true;
+      if (event.key === 'Alt') {
+        altDownRef.current = true;
+        setAltHeld(true);
+      }
       const shortcutBlocked = isTextTarget(event.target) || (event.target instanceof HTMLElement && Boolean(event.target.closest('[role="dialog"]')));
       if (event.code === 'Space' && !event.repeat && !shortcutBlocked) spaceDownRef.current = true;
       if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 'a' && !shortcutBlocked) {
@@ -1144,9 +1129,12 @@ export function NodeCanvas({
     const onKeyUp = (event) => {
       if (event.code === 'Space') spaceDownRef.current = false;
       if (event.key === 'Shift') setShiftHeld(false);
-      if (event.key === 'Alt') altDownRef.current = false;
+      if (event.key === 'Alt') {
+        altDownRef.current = false;
+        setAltHeld(false);
+      }
     };
-    const onBlur = () => { spaceDownRef.current = false; altDownRef.current = false; setShiftHeld(false); };
+    const onBlur = () => { spaceDownRef.current = false; altDownRef.current = false; setAltHeld(false); setShiftHeld(false); };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('blur', onBlur);
@@ -1155,7 +1143,7 @@ export function NodeCanvas({
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', onBlur);
     };
-  }, [selectedNodeId, selectedNodeIds, selectedNoteIds, selectedArrowIds, canvasArrows, connectingWire, drawingArrow, isLocked, canvasLocked, nodes, connections, onOpenPalette, cancelConnectingWire, pan, zoom, notes, contextMenu, onRequestCreateTagGroup, currentUser, onNotesChange, onCollaborationAction, graphChatEnabled, collaborationReady, graphId, graphChatComposerOpen, canvasFindOpen, settings.shortcuts?.addNote]);
+  }, [isActive, selectedNodeId, selectedNodeIds, selectedNoteIds, selectedArrowIds, canvasArrows, connectingWire, drawingArrow, isLocked, canvasLocked, nodes, connections, onOpenPalette, cancelConnectingWire, pan, zoom, notes, contextMenu, onRequestCreateTagGroup, currentUser, onNotesChange, onCollaborationAction, graphChatEnabled, collaborationReady, graphId, graphChatComposerOpen, canvasFindOpen, settings.shortcuts?.addNote]);
 
   useEffect(() => {
     if (!contextMenu) return undefined;
@@ -1604,6 +1592,7 @@ export function NodeCanvas({
     if (!container) return undefined;
     const refreshCanvasGeometry = () => {
       const bounds = container.getBoundingClientRect();
+      if (!bounds.width && !bounds.height) return;
       const sidebar = container.parentElement?.querySelector('.project-sidebar, .graph-library-panel, .plugin-store-sidebar, .bot-settings-sidebar, .graph-variables-sidebar');
       const dock = document.querySelector('.control-dock');
       const tools = container.querySelector('.canvas-tools');
@@ -1635,6 +1624,27 @@ export function NodeCanvas({
       window.removeEventListener('resize', refreshCanvasGeometry);
     };
   }, []);
+
+  useEffect(() => {
+    if (!isActive) return;
+    const container = containerRef.current;
+    if (!container) return;
+    const bounds = container.getBoundingClientRect();
+    if (!bounds.width && !bounds.height) return;
+    const sidebar = container.parentElement?.querySelector('.project-sidebar, .graph-library-panel, .plugin-store-sidebar, .bot-settings-sidebar, .graph-variables-sidebar');
+    const dock = document.querySelector('.control-dock');
+    const tools = container.querySelector('.canvas-tools');
+    canvasGeometryRef.current = {
+      bounds: { left: bounds.left, top: bounds.top, right: bounds.right, bottom: bounds.bottom, width: bounds.width, height: bounds.height },
+      scale: measureCanvasDisplayScale(container),
+      width: container.clientWidth,
+      height: container.clientHeight,
+      sidebar: sidebar?.getBoundingClientRect() || null,
+      dock: dock?.getBoundingClientRect() || null,
+      tools: tools?.getBoundingClientRect() || null
+    };
+    refreshWireLayout((revision) => revision + 1);
+  }, [isActive]);
 
   const showLibraryDragPreview = useCallback((payload, clientX, clientY) => {
     const container = containerRef.current;
@@ -1733,7 +1743,7 @@ export function NodeCanvas({
   }, [applyComponentsV2AssetToTarget, nodes, onNodesChange, onNodeDrop, pan, zoom]);
 
   useEffect(() => {
-    if (!desktopMode) return undefined;
+    if (!desktopMode || !isActive) return undefined;
     const onPointerMove = (event) => showLibraryDragPreview(event.detail?.payload, event.detail?.clientX, event.detail?.clientY);
     const onPointerDrop = (event) => {
       const { payload, clientX, clientY } = event.detail || {};
@@ -1822,6 +1832,9 @@ export function NodeCanvas({
     const output = start.direction === 'output' ? start : candidate;
     const input = start.direction === 'input' ? start : candidate;
     if (output.pinType === 'exec' || input.pinType === 'exec') return output.pinType === 'exec' && input.pinType === 'exec';
+    if (output.pinType === 'arg') {
+      return ['string', 'number', 'object', 'array', 'arg', 'any'].includes(input.pinType);
+    }
     return output.pinType === input.pinType || output.pinType === 'any' || input.pinType === 'any' || input.pinType === 'arg' || isConvertiblePair(output.pinType, input.pinType);
   }, []);
 
@@ -1921,7 +1934,7 @@ export function NodeCanvas({
 
   const selectCanvasArrow = (event, arrow) => {
     if (event.button !== 0) return;
-    const additive = event.metaKey || event.ctrlKey || event.shiftKey;
+    const additive = event.metaKey || event.ctrlKey;
     const nextIds = additive
       ? selectedArrowIds.includes(arrow.id) ? selectedArrowIds.filter((id) => id !== arrow.id) : [...selectedArrowIds, arrow.id]
       : [arrow.id];
@@ -1947,7 +1960,7 @@ export function NodeCanvas({
   const beginArrowDrag = (event, arrow) => {
     if (event.button !== 0) return;
     event.stopPropagation();
-    const additive = event.metaKey || event.ctrlKey || event.shiftKey;
+    const additive = event.metaKey || event.ctrlKey;
     if (additive) {
       selectCanvasArrow(event, arrow);
       return;
@@ -1994,7 +2007,7 @@ export function NodeCanvas({
 
   const handleNoteSelectionPointerDown = (event, noteId) => {
     if (event.button !== 0) return false;
-    const additive = event.metaKey || event.ctrlKey || event.shiftKey;
+    const additive = event.metaKey || event.ctrlKey;
     const nextIds = additive
       ? selectedNoteIds.includes(noteId) ? selectedNoteIds.filter((id) => id !== noteId) : [...selectedNoteIds, noteId]
       : [noteId];
@@ -2219,13 +2232,13 @@ export function NodeCanvas({
       if (Number.isInteger(event.pointerId)) containerRef.current?.setPointerCapture?.(event.pointerId);
       return;
     }
-    if (event.button !== 0 || !isCanvasTarget) return;
+    if (event.button !== 0 || !isCanvasTarget || event.altKey || altDownRef.current) return;
     if (event.button === 0 && isCanvasTarget) {
       const focused = document.activeElement;
       if (focused instanceof HTMLElement && focused !== document.body && focused !== document.documentElement) focused.blur();
     }
     event.preventDefault();
-    selectionStartRef.current = { x: event.clientX, y: event.clientY, additive: event.shiftKey || event.metaKey || event.ctrlKey };
+    selectionStartRef.current = { x: event.clientX, y: event.clientY, additive: event.metaKey || event.ctrlKey };
     setSelectionBox({ x1: event.clientX, y1: event.clientY, x2: event.clientX, y2: event.clientY });
     if (Number.isInteger(event.pointerId)) containerRef.current?.setPointerCapture?.(event.pointerId);
   };
@@ -2256,6 +2269,31 @@ export function NodeCanvas({
 
   const movePointer = (event) => {
     pointerPositionRef.current = { x: event.clientX, y: event.clientY };
+    if (typeof event.altKey === 'boolean' && event.altKey !== altDownRef.current) {
+      altDownRef.current = event.altKey;
+      setAltHeld(event.altKey);
+    }
+    if (wireCutDragRef.current?.active) {
+      const drag = wireCutDragRef.current;
+      const dx = event.clientX - drag.lastX;
+      const dy = event.clientY - drag.lastY;
+      const dist = Math.hypot(dx, dy);
+      const steps = Math.max(1, Math.min(25, Math.ceil(dist / 6)));
+      for (let s = 1; s <= steps; s += 1) {
+        const sx = drag.lastX + (dx * s) / steps;
+        const sy = drag.lastY + (dy * s) / steps;
+        const wire = findNearbyWire(sx, sy, 16);
+        if (wire && !drag.cutIds.has(wire.id)) {
+          drag.cutIds.add(wire.id);
+          const wireGroup = [...(canvasWorldRef.current?.querySelectorAll('[data-wire-id]') || [])].find((el) => el.dataset.wireId === wire.id);
+          const pathElement = wireGroup?.querySelector('.wire-hit-area') || wireGroup?.querySelector('.wire-visible');
+          cutWire({ currentTarget: pathElement, clientX: sx, clientY: sy }, wire);
+        }
+      }
+      drag.lastX = event.clientX;
+      drag.lastY = event.clientY;
+      return;
+    }
     updateHoveredWire(event);
     activatePendingPinDrag(event);
     const touchNodeGesture = touchNodeGestureRef.current;
@@ -2429,7 +2467,7 @@ export function NodeCanvas({
       }
       const groupDeltaX = x - draggingNode.initialX;
       const groupDeltaY = y - draggingNode.initialY;
-      setDraggingNode((current) => current ? { ...current, historyStarted: true, deltaX: groupDeltaX, deltaY: groupDeltaY } : current);
+      setDraggingNode((current) => current ? { ...current, historyStarted: true, deltaX: groupDeltaX, deltaY: groupDeltaY, shiftKey: event.shiftKey } : current);
       return;
     }
     if (draggingNote) {
@@ -2683,10 +2721,15 @@ export function NodeCanvas({
         const height = rect?.height && scale ? rect.height / scale : cachedSize?.height || estimateNodeCardHeight(node, getNodeDefinition(node));
         return node.x >= group.left && node.y >= group.top && node.x + width <= group.left + group.width && node.y + height <= group.top + group.height;
       };
+      const isShiftAction = Boolean(finishedDraggingNode?.shiftKey || event.shiftKey);
       const nextGroups = tagGroups.map((group) => {
         const layout = tagGroupLayouts.find((item) => item.id === group.id);
-        let nodeIds = (group.nodeIds || []).filter((id) => !selectedIds.includes(id) || isInsideGroup(id, layout));
-        if (targetGroup?.id === group.id) nodeIds = [...new Set([...nodeIds, ...selectedIds.filter((id) => isInsideGroup(id, layout))])];
+        let nodeIds = (group.nodeIds || []).filter((id) => {
+          if (!selectedIds.includes(id)) return true;
+          if (isShiftAction) return isInsideGroup(id, layout);
+          return true;
+        });
+        if (isShiftAction && targetGroup?.id === group.id) nodeIds = [...new Set([...nodeIds, ...selectedIds.filter((id) => isInsideGroup(id, layout))])];
         return nodeIds.length === (group.nodeIds || []).length && nodeIds.every((id, index) => id === group.nodeIds[index])
           ? group
           : { ...group, nodeIds };
@@ -2760,6 +2803,7 @@ export function NodeCanvas({
       else if (activeWire.originalConnection) onConnectionsChange?.([...connections.filter((item) => item.id !== activeWire.originalConnection.id), activeWire.originalConnection]);
       else if (targetCard?.dataset.nodeCardId) shakeNode(targetCard.dataset.nodeCardId);
       setConnectingWire(null);
+      suppressWireClickUntilRef.current = Date.now() + 400;
     }
     if (finalSelectedNodeIds.length || finalSelectedNoteIds.length || finalSelectedArrowIds.length || marqueeStart) onCollaborationAction?.({ kind: 'selection', cursor: finishCursor, selectedNodeIds: finalSelectedNodeIds, selectedNoteIds: finalSelectedNoteIds, selectedArrowIds: finalSelectedArrowIds, nodePositions: finishedNodePositions, notePositions: finishedNotePositions }, true);
     else if (finishCursor) onCollaborationAction?.({ kind: 'cursor', cursor: finishCursor, mode: 'move', selectedNodeIds, nodePositions: finishedNodePositions, notePositions: finishedNotePositions }, true);
@@ -2772,6 +2816,11 @@ export function NodeCanvas({
     canvasInteractionActiveRef.current = false;
     movePointer(event);
     pendingPinDragRef.current = null;
+    if (wireCutDragRef.current?.active) {
+      wireCutDragRef.current = null;
+      suppressWireClickUntilRef.current = Date.now() + 400;
+      return;
+    }
     const touchNodeGesture = touchNodeGestureRef.current;
     if (event.pointerType === 'touch' && touchNodeGesture?.pointerId === event.pointerId) {
       window.clearTimeout(touchNodeGesture.timer);
@@ -2914,6 +2963,32 @@ export function NodeCanvas({
       containerRef.current.setPointerCapture?.(event.pointerId);
       return;
     }
+    const isWireHit = Boolean(event.target instanceof Element && event.target.closest('[data-wire-id]')) || Boolean(findNearbyWire(event.clientX, event.clientY, 16));
+    const isCardHit = Boolean(event.target instanceof Element && event.target.closest('[data-node-card-id]'));
+    if (event.button === 0 && (event.altKey || altDownRef.current) && !event.shiftKey && !canvasLocked
+      && containerRef.current?.contains(event.target)
+      && (isWireHit || !isCardHit)
+      && !(event.target instanceof Element && event.target.closest('button, input, textarea, select, .node-config, [data-arrow-control-id], .canvas-tools, .canvas-breadcrumbs'))) {
+      const initialWire = findNearbyWire(event.clientX, event.clientY, 16);
+      const cutIds = new Set();
+      if (initialWire) {
+        cutIds.add(initialWire.id);
+        const wireGroup = [...(canvasWorldRef.current?.querySelectorAll('[data-wire-id]') || [])].find((el) => el.dataset.wireId === initialWire.id);
+        const pathElement = wireGroup?.querySelector('.wire-hit-area') || wireGroup?.querySelector('.wire-visible');
+        cutWire({ currentTarget: pathElement, clientX: event.clientX, clientY: event.clientY }, initialWire);
+      }
+      wireCutDragRef.current = {
+        active: true,
+        pointerId: event.pointerId,
+        lastX: event.clientX,
+        lastY: event.clientY,
+        cutIds
+      };
+      if (Number.isInteger(event.pointerId)) containerRef.current?.setPointerCapture?.(event.pointerId);
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     const row = event.target instanceof Element ? event.target.closest('.node-pin-row') : null;
     if (event.button !== 0 || !row || !containerRef.current?.contains(row)) {
       pinDoubleClickRef.current = null;
@@ -2998,33 +3073,40 @@ export function NodeCanvas({
 
   const cutWire = (event, connection) => {
     if (isLocked) return;
+    if (settings.uiSounds !== false) {
+      unlockUiSounds();
+      playUiSound('cut');
+    }
     const existingTimer = wireCutTimersRef.current.get(connection.id);
     if (existingTimer) window.clearTimeout(existingTimer);
+    onConnectionsChange?.(connections.filter((item) => item.id !== connection.id));
     if (settings.reduceMotion) {
       setWireCutAnimations((current) => current.filter((item) => item.id !== connection.id));
       wireCutTimersRef.current.delete(connection.id);
-      onConnectionsChange?.(connections.filter((item) => item.id !== connection.id));
       return;
     }
-    const pathElement = event.currentTarget;
-    const segments = getWireCutSegments(pathElement, event);
+    const wireGroup = [...(canvasWorldRef.current?.querySelectorAll('[data-wire-id]') || [])].find((el) => el.dataset.wireId === connection.id);
+    const pathElement = event?.currentTarget || wireGroup?.querySelector('.wire-hit-area') || wireGroup?.querySelector('.wire-visible');
+    const pathD = pathElement?.getAttribute?.('d') || '';
+    const length = pathElement?.getTotalLength ? pathElement.getTotalLength() : 200;
     const sourceNode = nodeById.get(connection.sourceNodeId);
     const targetNode = nodeById.get(connection.targetNodeId);
     const sourcePin = getNodeDefinition(sourceNode)?.outputs?.find((pin) => pin.id === connection.sourcePinId);
     const targetPin = getNodeDefinition(targetNode)?.inputs?.find((pin) => pin.id === connection.targetPinId);
     const pinType = sourcePin?.colorType || sourcePin?.type || targetPin?.colorType || targetPin?.type;
-    setWireCutAnimations((current) => [...current.filter((item) => item.id !== connection.id), { id: connection.id, segments, color: PinColors[pinType] || '#9299a6' }]);
-    const timer = window.setTimeout(() => {
-      wireCutTimersRef.current.delete(connection.id);
-      setWireCutAnimations((current) => current.filter((item) => item.id !== connection.id));
-      onConnectionsChange?.(connections.filter((item) => item.id !== connection.id));
-    }, 230);
-    wireCutTimersRef.current.set(connection.id, timer);
+    if (pathD) {
+      setWireCutAnimations((current) => [...current.filter((item) => item.id !== connection.id), { id: connection.id, d: pathD, length, color: PinColors[pinType] || '#9299a6' }]);
+      const timer = window.setTimeout(() => {
+        wireCutTimersRef.current.delete(connection.id);
+        setWireCutAnimations((current) => current.filter((item) => item.id !== connection.id));
+      }, 180);
+      wireCutTimersRef.current.set(connection.id, timer);
+    }
   };
 
   const beginNodeDrag = (event, node) => {
     if (isLocked || event.button !== 0 || spaceDownRef.current || event.target.closest('button, input, textarea, select, [data-pin-id], .node-config')) return;
-    if (event.metaKey || event.ctrlKey || event.shiftKey) {
+    if (event.metaKey || event.ctrlKey) {
       const nextIds = selectedNodeIds.includes(node.id) ? selectedNodeIds.filter((id) => id !== node.id) : [...selectedNodeIds, node.id];
       selectNodes(nextIds, nextIds.includes(node.id) ? node.id : nextIds[nextIds.length - 1] || null, { preserveNotes: true });
       return;
@@ -3035,7 +3117,7 @@ export function NodeCanvas({
     selectNodes(nextIds, node.id);
     const movingIds = nextIds.includes(node.id) ? nextIds : [node.id];
     const initialPositions = Object.fromEntries(nodes.filter((item) => movingIds.includes(item.id)).map((item) => [item.id, { x: item.x, y: item.y }]));
-    setDraggingNode({ id: node.id, nodeIds: movingIds, initialPositions, startX: event.clientX, startY: event.clientY, startPan: viewportRef.current.pan, initialX: node.x, initialY: node.y, historyStarted: false, altKey: event.altKey });
+    setDraggingNode({ id: node.id, nodeIds: movingIds, initialPositions, startX: event.clientX, startY: event.clientY, startPan: viewportRef.current.pan, initialX: node.x, initialY: node.y, historyStarted: false, altKey: event.altKey, shiftKey: event.shiftKey });
     containerRef.current?.setPointerCapture?.(event.pointerId);
   };
 
@@ -3131,10 +3213,11 @@ export function NodeCanvas({
   }, [canvasFindOpen]);
 
   useEffect(() => {
+    if (!isActive) return undefined;
     const closeCanvasFind = () => setCanvasFindOpen(false);
     window.addEventListener('arc:canvas-find-close', closeCanvasFind);
     return () => window.removeEventListener('arc:canvas-find-close', closeCanvasFind);
-  }, []);
+  }, [isActive]);
 
   useEffect(() => {
     setCanvasFindIndex((current) => current >= canvasFindResults.results.length ? -1 : current);
@@ -3150,6 +3233,7 @@ export function NodeCanvas({
   }, [canvasFindOpen]);
 
   useEffect(() => {
+    if (!isActive) return undefined;
     const onKeyDown = (event) => {
       if (event.defaultPrevented) return;
       const command = event.metaKey || event.ctrlKey;
@@ -3184,7 +3268,7 @@ export function NodeCanvas({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [canvasFindOpen, navigateCanvasFind]);
+  }, [isActive, canvasFindOpen, navigateCanvasFind]);
 
   const handledFollowRequestRef = useRef(null);
   useEffect(() => {
@@ -3322,10 +3406,23 @@ export function NodeCanvas({
     const members = nodes.filter((node) => (group.nodeIds || []).includes(node.id));
     const noteMembers = notes.filter((note) => (group.noteIds || []).includes(note.id));
     if (!members.length && !noteMembers.length) return null;
+    const isShiftHeld = Boolean(draggingNode?.shiftKey);
     const measuredNodes = members.map((node) => {
       const cachedSize = nodeWorldSizeCacheRef.current.sizes.get(node.id);
-      const initialPosition = draggingNode && (draggingNode.altKey || altDownRef.current) ? draggingNode.initialPositions?.[node.id] : null;
-      return { x: initialPosition?.x ?? node.x, y: initialPosition?.y ?? node.y, width: cachedSize?.width || NODE_WIDTH, height: cachedSize?.height || estimateNodeCardHeight(node, getNodeDefinition(node)) };
+      const isDragging = draggingNode && (draggingNode.nodeIds || [draggingNode.id]).includes(node.id);
+      let posX = node.x;
+      let posY = node.y;
+      if (isDragging) {
+        if (isShiftHeld) {
+          const initial = draggingNode.initialPositions?.[node.id];
+          posX = initial?.x ?? node.x;
+          posY = initial?.y ?? node.y;
+        } else {
+          posX = node.x + (draggingNode.deltaX || 0);
+          posY = node.y + (draggingNode.deltaY || 0);
+        }
+      }
+      return { x: posX, y: posY, width: cachedSize?.width || NODE_WIDTH, height: cachedSize?.height || estimateNodeCardHeight(node, getNodeDefinition(node)) };
     });
     const measured = measuredNodes.length ? measuredNodes : noteMembers.map((note) => ({ x: note.x, y: note.y, width: 224, height: 156 }));
     const side = 28;
@@ -3523,7 +3620,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
     const sameQueryInputs = previousQueryInputs
       && queryInputs.length === previousQueryInputs.length
       && queryInputs.every((value, index) => value === previousQueryInputs[index]);
-    if (isWheelZooming && sameQueryInputs && visibleNodeIdsCacheRef.current
+    if (sameQueryInputs && visibleNodeIdsCacheRef.current
       && boundsContain(visibleNodeCullBoundsRef.current, visibleBounds)) return visibleNodeIdsCacheRef.current;
     visibleNodeQueryInputsRef.current = queryInputs;
     const zoomBuffer = isWheelZooming ? ZOOM_CULL_BUFFER / zoom : 0;
@@ -3736,7 +3833,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
   };
   const canvasNodeHandlers = useMemo(() => ({
     onSelect: (id, event) => {
-      if (!event?.metaKey && !event?.ctrlKey && !event?.shiftKey) canvasNodeActionsRef.current.selectNodes?.([id], id);
+      if (!event?.metaKey && !event?.ctrlKey) canvasNodeActionsRef.current.selectNodes?.([id], id);
     },
     onDelete: (id) => canvasNodeActionsRef.current.deleteNode?.(id),
     onNodeDataChange: (id, data, label) => canvasNodeActionsRef.current.updateNodeData?.(id, data, label),
@@ -3782,7 +3879,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
     const shade = fanout > 1 ? (fanoutOrder % 2 === 0 ? -12 : 5) : denseWiring ? denseShades[(wireFanout.indices.get(connection.id) || 0) % denseShades.length] : 0;
     const wireOpacity = fanout > 1 ? FANOUT_WIRE_OPACITIES[fanoutOrder % FANOUT_WIRE_OPACITIES.length] : denseWiring ? 0.68 : 0.84;
     const muted = reduceWireColorNoise && !active && !isSelectedNodeWire;
-    const baseColor = muted ? '#737d8b' : (shade ? shadeWireColor(pinColor, shade) : pinColor);
+    const baseColor = shade ? shadeWireColor(pinColor, shade) : pinColor;
     const sourceColor = needsConversion ? (PinColors[sourceType] || '#9299a6') : baseColor;
     const targetColor = needsConversion ? (PinColors[targetType] || '#9299a6') : baseColor;
     const wireTooltip = onSimulationPath ? `Simulation path${isCurrentSimulationWire ? ' · current wire' : ''}${latestSimulationStep?.sincePreviousNodeMs != null && isCurrentSimulationWire ? ` · ${latestSimulationStep.sincePreviousNodeMs.toFixed(2)} ms since previous node` : ''}` : undefined;
@@ -3800,23 +3897,79 @@ const previewOutput = (node, outputId, seen = new Set()) => {
     );
     return (
       <g key={connection.id} className={`wire-group ${fanout > 1 ? 'is-fanout' : ''} ${denseWiring ? 'is-dense' : ''} ${reduceWireColorNoise && !active && !isSelectedNodeWire ? 'is-muted' : ''} ${isLocked ? 'is-locked' : ''} ${isSelectedNodeWire ? 'is-connected-selected' : ''} ${isPrimarySelectedWire ? 'is-primary-selection' : ''} ${onSimulationPath ? 'is-simulation-path' : ''} ${isCurrentSimulationWire ? 'is-simulation-current' : ''}`} data-wire-id={connection.id} style={{ '--wire-opacity': wireOpacity }}>
-        <path d={path} className={`wire-hit-area${wireSpatialIndex && hoveredWireId === connection.id ? ' is-indexed-hit-target' : ''}`} data-tooltip={shiftHeld ? outputPreview : undefined} aria-label={settings.doubleClickWireToCut ? 'Single-click to reroute; double-click to disconnect' : 'Single-click to disconnect; double-click to reroute'} onClick={(event) => {
-          if (settings.doubleClickWireToCut) {
+        <path d={path} className={`wire-hit-area${wireSpatialIndex && hoveredWireId === connection.id ? ' is-indexed-hit-target' : ''}`} data-tooltip={shiftHeld ? outputPreview : undefined} aria-label={settings.requireModifierToCutWires ? `Click or drag with ${shortcutPlatform === 'macos' ? 'Option' : 'Alt'} to disconnect, or click to reroute` : (settings.doubleClickWireToCut ? 'Single click to reroute, double click to disconnect' : 'Single click to disconnect, double click to reroute')} onClick={(event) => {
+          if (Date.now() < suppressWireClickUntilRef.current) return;
+          const altOrOptionHeld = Boolean(event.altKey || altDownRef.current);
+          if (settings.requireModifierToCutWires && !altOrOptionHeld) {
             startWireFromConnection(event, connection, 'output');
             return;
           }
-          cutWire(event, connection);
+          if (altOrOptionHeld) {
+            if (wirePendingClickRef.current) {
+              window.clearTimeout(wirePendingClickRef.current.timer);
+              wirePendingClickRef.current = null;
+            }
+            cutWire(event, connection);
+            return;
+          }
+          if (settings.doubleClickWireToCut) {
+            if (wirePendingClickRef.current?.connectionId === connection.id || event.detail >= 2) {
+              if (wirePendingClickRef.current) {
+                window.clearTimeout(wirePendingClickRef.current.timer);
+                wirePendingClickRef.current = null;
+              }
+              setConnectingWire(null);
+              cutWire(event, connection);
+              return;
+            }
+            const eventPayload = {
+              clientX: event.clientX,
+              clientY: event.clientY,
+              pointerId: event.pointerId,
+              currentTarget: event.currentTarget
+            };
+            const timer = window.setTimeout(() => {
+              wirePendingClickRef.current = null;
+              startWireFromConnection(eventPayload, connection, 'output');
+            }, 220);
+            wirePendingClickRef.current = { connectionId: connection.id, timer };
+            return;
+          }
+          if (wirePendingClickRef.current?.connectionId === connection.id || event.detail >= 2) {
+            if (wirePendingClickRef.current) {
+              window.clearTimeout(wirePendingClickRef.current.timer);
+              wirePendingClickRef.current = null;
+            }
+            setWireCutAnimations((current) => current.filter((item) => item.id !== connection.id));
+            startWireFromConnection(event, connection, 'output');
+            return;
+          }
+          const eventPayload = {
+            clientX: event.clientX,
+            clientY: event.clientY,
+            pointerId: event.pointerId,
+            currentTarget: event.currentTarget
+          };
+          const timer = window.setTimeout(() => {
+            wirePendingClickRef.current = null;
+            cutWire(eventPayload, connection);
+          }, 220);
+          wirePendingClickRef.current = { connectionId: connection.id, timer };
         }} onDoubleClick={(event) => {
           if (isLocked) return;
+          if (Date.now() < suppressWireClickUntilRef.current) return;
+          const altOrOptionHeld = Boolean(event.altKey || altDownRef.current);
+          if (settings.requireModifierToCutWires && !altOrOptionHeld) return;
           event.preventDefault();
           event.stopPropagation();
-          if (settings.doubleClickWireToCut) {
+          if (wirePendingClickRef.current) {
+            window.clearTimeout(wirePendingClickRef.current.timer);
+            wirePendingClickRef.current = null;
+          }
+          if (settings.doubleClickWireToCut || altOrOptionHeld) {
             setConnectingWire(null);
             cutWire(event, connection);
           } else {
-            const timer = wireCutTimersRef.current.get(connection.id);
-            if (timer) window.clearTimeout(timer);
-            wireCutTimersRef.current.delete(connection.id);
             setWireCutAnimations((current) => current.filter((item) => item.id !== connection.id));
             startWireFromConnection(event, connection, 'output');
           }
@@ -3878,7 +4031,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
     const sameQueryInputs = previousQueryInputs
       && queryInputs.length === previousQueryInputs.length
       && queryInputs.every((value, index) => value === previousQueryInputs[index]);
-    if (isWheelZooming && sameQueryInputs && visibleWireIdsCacheRef.current
+    if (sameQueryInputs && visibleWireIdsCacheRef.current
       && boundsContain(visibleWireCullBoundsRef.current, visibleBounds)) return visibleWireIdsCacheRef.current;
     visibleWireQueryInputsRef.current = queryInputs;
     const zoomBuffer = isWheelZooming ? ZOOM_CULL_BUFFER / zoom : 0;
@@ -3925,22 +4078,22 @@ const previewOutput = (node, outputId, seen = new Set()) => {
   const elevatedConnectionIds = useMemo(() => new Set(elevatedConnections.map((wire) => wire.id)), [elevatedConnections]);
   const visibleBaseConnections = useMemo(() => visibleConnections.filter((wire) => !elevatedConnectionIds.has(wire.id)), [visibleConnections, elevatedConnectionIds]);
   const visibleElevatedConnections = useMemo(() => visibleConnections.filter((wire) => elevatedConnectionIds.has(wire.id)), [visibleConnections, elevatedConnectionIds]);
-  const findNearbyWire = (clientX, clientY) => {
+  const findNearbyWire = (clientX, clientY, customHitRadius) => {
     const bounds = canvasGeometryRef.current.bounds;
     const container = containerRef.current;
-    if (!wireSpatialIndex || !bounds || !container || !(zoom > 0)) return null;
+    if (!bounds || !container || !(zoom > 0)) return null;
     const displayScale = getCanvasDisplayScale(container);
     const point = {
       x: ((clientX - bounds.left) / displayScale - pan.x) / zoom,
       y: ((clientY - bounds.top) / displayScale - pan.y) / zoom
     };
-    const hitRadius = 10 / (displayScale * zoom);
-    const candidates = new Set(wireSpatialIndex.query({
+    const hitRadius = (customHitRadius ?? 10) / (displayScale * zoom);
+    const candidates = new Set(wireSpatialIndex ? wireSpatialIndex.query({
       left: point.x - hitRadius,
       top: point.y - hitRadius,
       right: point.x + hitRadius,
       bottom: point.y + hitRadius
-    }));
+    }) : connections);
     for (const nodeId of [...(localNodePositionById?.keys() || []), ...remoteNodePositionById.keys()]) {
       for (const connection of nodeConnectionsById.get(nodeId)?.incident || EMPTY_NODE_CONNECTIONS.incident) candidates.add(connection);
     }
@@ -3999,26 +4152,68 @@ const previewOutput = (node, outputId, seen = new Set()) => {
     setHoveredWireId((current) => current === (nearest?.id || null) ? current : nearest?.id || null);
   };
   const handleIndexedWireClick = (event) => {
+    if (Date.now() < suppressWireClickUntilRef.current) return;
     if (!wireSpatialIndex || event.target instanceof Element && event.target.closest('[data-wire-id], [data-node-card-id], [data-note-id], [data-tag-group-id], [data-arrow-id], [data-arrow-control-id], .canvas-note-timeline, .canvas-chat-bubble, button, input, textarea, select, .canvas-tools, .canvas-breadcrumbs')) return;
     const connection = findNearbyWire(event.clientX, event.clientY);
     if (!connection || isLocked) return;
     const wireGroup = [...(canvasWorldRef.current?.querySelectorAll('[data-wire-id]') || [])].find((element) => element.dataset.wireId === connection.id);
-    const pathElement = wireGroup?.querySelector('.wire-hit-area');
+    const pathElement = wireGroup?.querySelector('.wire-hit-area') || wireGroup?.querySelector('.wire-visible');
     if (!pathElement) return;
+    const altOrOptionHeld = Boolean(event.altKey || altDownRef.current);
+    if (settings.requireModifierToCutWires && !altOrOptionHeld) return;
     event.preventDefault();
     event.stopPropagation();
+    if (altOrOptionHeld) {
+      if (wirePendingClickRef.current) {
+        window.clearTimeout(wirePendingClickRef.current.timer);
+        wirePendingClickRef.current = null;
+      }
+      cutWire({ currentTarget: pathElement, clientX: event.clientX, clientY: event.clientY }, connection);
+      return;
+    }
     if (settings.doubleClickWireToCut) {
-      if (event.detail >= 2) {
+      if (wirePendingClickRef.current?.connectionId === connection.id || event.detail >= 2) {
+        if (wirePendingClickRef.current) {
+          window.clearTimeout(wirePendingClickRef.current.timer);
+          wirePendingClickRef.current = null;
+        }
         setConnectingWire(null);
         cutWire({ currentTarget: pathElement, clientX: event.clientX, clientY: event.clientY }, connection);
-      } else startWireFromConnection(event, connection, 'output');
-    } else if (event.detail >= 2) {
-      const timer = wireCutTimersRef.current.get(connection.id);
-      if (timer) window.clearTimeout(timer);
-      wireCutTimersRef.current.delete(connection.id);
-      setWireCutAnimations((current) => current.filter((item) => item.id !== connection.id));
-      startWireFromConnection(event, connection, 'output');
-    } else cutWire({ currentTarget: pathElement, clientX: event.clientX, clientY: event.clientY }, connection);
+      } else {
+        const eventPayload = {
+          clientX: event.clientX,
+          clientY: event.clientY,
+          pointerId: event.pointerId,
+          currentTarget: pathElement
+        };
+        const timer = window.setTimeout(() => {
+          wirePendingClickRef.current = null;
+          startWireFromConnection(eventPayload, connection, 'output');
+        }, 220);
+        wirePendingClickRef.current = { connectionId: connection.id, timer };
+      }
+    } else {
+      if (wirePendingClickRef.current?.connectionId === connection.id || event.detail >= 2) {
+        if (wirePendingClickRef.current) {
+          window.clearTimeout(wirePendingClickRef.current.timer);
+          wirePendingClickRef.current = null;
+        }
+        setWireCutAnimations((current) => current.filter((item) => item.id !== connection.id));
+        startWireFromConnection(event, connection, 'output');
+      } else {
+        const eventPayload = {
+          clientX: event.clientX,
+          clientY: event.clientY,
+          pointerId: event.pointerId,
+          currentTarget: pathElement
+        };
+        const timer = window.setTimeout(() => {
+          wirePendingClickRef.current = null;
+          cutWire(eventPayload, connection);
+        }, 220);
+        wirePendingClickRef.current = { connectionId: connection.id, timer };
+      }
+    }
   };
   const effectiveCanvasQuality = canvasQualityMode === 'auto' ? autoCanvasQuality : canvasQualityMode;
   const visibleCanvas = { left: 0, top: 0, right: canvasWidth, bottom: canvasHeight };
@@ -4085,10 +4280,12 @@ const previewOutput = (node, outputId, seen = new Set()) => {
   return (
     <div
       ref={containerRef}
-      className={`node-canvas ${isPanning ? 'is-panning' : ''} ${draggingNode ? 'is-dragging-node' : ''} ${connectingWire ? 'is-connecting-wire' : ''} ${connectingWire?.clickToConnect ? 'is-click-connecting' : ''} ${graphChatComposerOpen ? 'has-graph-chat-composer' : ''}`}
+      className={`node-canvas ${isPanning ? 'is-panning' : ''} ${isWheelPanning ? 'is-wheel-panning' : ''} ${isWheelZooming ? 'is-wheel-zooming' : ''} ${isPanning || isWheelPanning || isWheelZooming ? 'is-navigating-camera' : ''} ${draggingNode ? 'is-dragging-node' : ''} ${connectingWire ? 'is-connecting-wire' : ''} ${connectingWire?.clickToConnect ? 'is-click-connecting' : ''} ${graphChatComposerOpen ? 'has-graph-chat-composer' : ''} ${(altHeld || altDownRef.current) && !isLocked && !isPanning && !connectingWire && !drawingArrow ? 'is-cutting-wires' : ''}`}
+      style={{ display: isActive ? undefined : 'none' }}
       data-performance={performanceReduced ? 'reduced' : 'normal'}
       data-canvas-quality={effectiveCanvasQuality}
       data-pin-descriptions={settings.pinDescriptionsAlways || shiftHeld ? 'true' : undefined}
+      data-cut-require-modifier={settings.requireModifierToCutWires ? 'true' : undefined}
       onPointerDownCapture={handlePinPointerDownCapture}
       onPointerDown={startPan}
       onPointerMove={queuePointerMove}
@@ -4114,6 +4311,10 @@ const previewOutput = (node, outputId, seen = new Set()) => {
         if (pointerMoveFrameRef.current) window.cancelAnimationFrame(pointerMoveFrameRef.current);
         pointerMoveFrameRef.current = 0; pendingPointerMoveRef.current = null; canvasInteractionActiveRef.current = false;
         pendingPinDragRef.current = null;
+        if (wireCutDragRef.current?.active) {
+          wireCutDragRef.current = null;
+          suppressWireClickUntilRef.current = Date.now() + 400;
+        }
         window.clearTimeout(touchNodeGestureRef.current?.timer);
         touchNodeGestureRef.current = null;
         touchPointersRef.current.clear(); touchPinchRef.current = null;
@@ -4285,6 +4486,8 @@ const previewOutput = (node, outputId, seen = new Set()) => {
                 loadFailed={nodeLoadFailed}
                 authToken={authToken}
                 connectedInputIds={connectedInputIds.get(node.id) || EMPTY_PIN_SET}
+                incomingConnections={connectionByNodePin.incoming.get(node.id)}
+                nodeById={nodeById}
                 componentsV2SourceConnected={Boolean(connectionByNodePin.incoming.get(node.id)?.get('components') && ['build_components', 'modify_components_v2'].includes(nodeById.get(connectionByNodePin.incoming.get(node.id).get('components').sourceNodeId)?.type))}
                 graphVariables={canvasGraphVariables}
                 eventTemplatePaths={eventTemplatePaths}
@@ -4313,7 +4516,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
 
         <svg className={`wire-layer wire-layer-selected${wireSpatialIndex ? ' wire-layer-indexed' : ''}${connectingWire ? ' wire-layer-connecting' : ''}`} width="20000" height="20000" aria-label="Elevated connections">
           {visibleElevatedConnections.map((connection) => renderWire(connection, true, true))}
-          {wireCutAnimations.flatMap((animation) => animation.segments.map((segment, index) => <path key={`${animation.id}-${index}`} d={segment.d} className="wire-cut-segment" style={{ '--wire-color': animation.color, '--wire-cut-length': `${segment.length}px` }} />))}
+          {wireCutAnimations.map((animation) => <path key={animation.id} d={animation.d} className="wire-cut-segment" style={{ '--wire-color': animation.color, '--wire-cut-length': `${animation.length}px` }} />)}
           {connectingWire && <path
             d={connectingWire.direction === 'output'
               ? computePath(connectingWire.startPos.x, connectingWire.startPos.y, connectingWire.currentPos.x, connectingWire.currentPos.y)
@@ -4340,7 +4543,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
           return <article key={note.id} data-note-id={note.id} className={`canvas-note-card ${note.locked ? 'is-locked' : ''} ${selectedNoteIds.includes(note.id) ? 'is-selected' : ''} ${remoteOwner || lockHeldByOther ? 'is-collaborator-active' : ''} ${remoteActions.some((peer) => peer.action?.kind === 'note-drag' && (peer.action.noteId === note.id || peer.action.noteIds?.includes(note.id))) ? 'is-collaborator-dragging' : ''} ${remotePosition ? 'is-remote-moving' : ''} ${remoteActions.some((peer) => peer.action?.selectedNoteIds?.includes(note.id)) ? 'is-collaborator-selected' : ''}`} style={{ left: displayPosition.x, top: displayPosition.y, '--note-color': note.color || '#f6d365', '--collaborator-color': remoteOwner?.color || noteLock?.color || '#b794f4' }} onPointerDown={(event) => { event.stopPropagation(); if (!(event.target instanceof Element) || !event.target.closest('.canvas-note-header')) handleNoteSelectionPointerDown(event, note.id); }} onContextMenu={(event) => { event.stopPropagation(); openContextMenu(event); }}>
             <header className="canvas-note-header" onPointerDown={(event) => {
               if (event.button !== 0 || event.target instanceof Element && event.target.closest('button') || !mayEdit || lockHeldByOther) return;
-              if (event.metaKey || event.ctrlKey || event.shiftKey) { event.stopPropagation(); handleNoteSelectionPointerDown(event, note.id); return; }
+              if (event.metaKey || event.ctrlKey) { event.stopPropagation(); handleNoteSelectionPointerDown(event, note.id); return; }
               if (!selectedNoteIds.includes(note.id)) handleNoteSelectionPointerDown(event, note.id);
               event.preventDefault(); event.stopPropagation();
               const movingNotes = (selectedNoteIds.includes(note.id) ? notes.filter((item) => selectedNoteIds.includes(item.id)) : [note])
