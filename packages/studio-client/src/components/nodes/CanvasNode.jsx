@@ -1321,7 +1321,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       <span className="node-config-hint">Connect Permissions Bitfield to Check Permission to test a named permission.</span>
     </div>;
   }
-  if (node.type.startsWith('action_') && ['action_create_channel', 'action_create_thread', 'action_start_thread_from_message', 'action_edit_channel', 'action_delete_channel', 'action_create_role', 'action_member_role', 'action_moderate_member', 'action_voice_channel_status', 'action_voice_state'].includes(node.type)) {
+  if (node.type.startsWith('action_') && ['action_create_channel', 'action_create_thread', 'action_start_thread_from_message', 'action_edit_channel', 'action_delete_channel', 'action_delete_message', 'action_create_role', 'action_member_role', 'action_moderate_member', 'action_voice_channel_status', 'action_voice_state'].includes(node.type)) {
     const textField = (id, label, placeholder = 'Used when unconnected') => isConnected(id) ? null : <FallbackField key={id} label={label}><input value={node.data?.[id] ?? ''} onChange={(event) => update(id, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder={placeholder} aria-label={label} /></FallbackField>;
     const reason = textField('reason', 'Audit Log Reason');
     return <div className="node-config node-config-stack">
@@ -1396,6 +1396,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
         {reason}
       </>}
       {node.type === 'action_delete_channel' && <>{textField('channel_id', 'Channel ID')}{reason}<span className="node-config-warning"><AlertTriangle size={12} /> Deleting a channel cannot be undone.</span></>}
+      {node.type === 'action_delete_message' && <>{textField('channel_id', 'Channel ID')}{textField('message_id', 'Message ID')}{reason}<span className="node-config-hint">Permanently deletes a message. Deleting another user's message requires Manage Messages.</span></>}
       {node.type === 'action_create_role' && <>
         {textField('guild_id', 'Server ID')}{textField('name', 'Role name')}
         {!isConnected('color') && <FallbackField label="Color (RGB number)"><NodeNumberInput min="0" max="16777215" value={node.data?.color ?? 0} onChange={(event) => update('color', numericNodeInputValue(event.target.value, { min: 0, max: 16777215, integer: true }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Role RGB color number" /></FallbackField>}

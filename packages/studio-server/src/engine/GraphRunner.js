@@ -1539,7 +1539,7 @@ export class GraphRunner {
             log
           });
           if (result !== false) currentExecWires.push(...(result === 'failure' ? findExecOutputs(targetNode.id, 'failure_exec') : findExecContinuation(targetNode.id, wire.targetPinId)));
-        } else if (['action_send_message', 'action_edit_message'].includes(targetNode.type)) {
+        } else if (['action_send_message', 'action_edit_message', 'action_delete_message'].includes(targetNode.type)) {
           const { executeDiscordMessageNode } = await import('./nodes/runtime/discord_messages.js');
           await executeDiscordMessageNode(targetNode, {
             resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),

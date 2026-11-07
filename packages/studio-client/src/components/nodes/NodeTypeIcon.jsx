@@ -5,7 +5,7 @@ import {
   LockKeyhole, LogIn, LogOut, MessageSquare, MessageSquareReply, Minus,
   MousePointerClick, PanelsTopLeft, Percent, Pi, Plus, Power, Puzzle, Search, Send, ShieldCheck,
   Slash, SlidersHorizontal, Square, SquareFunction, Sigma, TextCursorInput,
-  Timer, ToggleLeft, TrendingUp, Type, UnlockKeyhole, User, UserRoundPlus, Workflow, RefreshCw, ListFilter
+  Timer, ToggleLeft, TrendingUp, Trash2, Type, UnlockKeyhole, User, UserRoundPlus, Workflow, RefreshCw, ListFilter
 } from 'lucide-react';
 //
 const icons = {
@@ -67,6 +67,7 @@ const icons = {
   delay: Timer,
   action_send_message: Send,
   action_edit_message: MessageSquareReply,
+  action_delete_message: Trash2,
   action_reply_interaction: MessageSquareReply,
   action_await_interaction: Timer,
   action_defer_reply: MessageSquareReply,

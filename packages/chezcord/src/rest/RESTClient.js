@@ -616,6 +616,13 @@ export class RESTClient {
     return this.request('PATCH', `/channels/${channelId}/messages/${messageId}`, { body: buildMultipartBody(payload || {}) });
   }
 
+  deleteMessage(channelId, messageId, reason) {
+    if (!channelId || !messageId) throw new TypeError('Channel ID and Message ID are required to delete a message.');
+    const headers = {};
+    if (reason) headers['X-Audit-Log-Reason'] = encodeURIComponent(String(reason));
+    return this.request('DELETE', `/channels/${channelId}/messages/${messageId}`, { headers });
+  }
+
   createInteractionResponse(interactionId, interactionToken, responseData, { withResponse = false } = {}) {
     if (interactionId == null || !String(interactionId).trim()) throw new TypeError('An interaction ID is required.');
     if (interactionToken == null || !String(interactionToken).trim()) throw new TypeError('An interaction token is required.');

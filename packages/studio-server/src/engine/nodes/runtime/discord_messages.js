@@ -1,6 +1,6 @@
 import { validateDiscordSemanticValue } from '../../DiscordValueValidation.js';
 
-const MESSAGE_NODE_TYPES = new Set(['action_send_message', 'action_edit_message']);
+const MESSAGE_NODE_TYPES = new Set(['action_send_message', 'action_edit_message', 'action_delete_message']);
 //
 export function isDiscordMessageNodeType(type) {
   return MESSAGE_NODE_TYPES.has(type);
@@ -18,6 +18,21 @@ export async function executeDiscordMessageNode(node, {
   log
 }) {
   if (!isDiscordMessageNodeType(node?.type)) return false;
+
+  if (node.type === 'action_delete_message') {
+    const channelId = validateDiscordSemanticValue(resolveInput('channel_id', node.data?.channel_id || ''), 'channel_id', 'Channel ID', { simulation, allowEmpty: true });
+    const messageId = validateDiscordSemanticValue(resolveInput('message_id', node.data?.message_id || ''), 'message_id', 'Message ID', { simulation, allowEmpty: true });
+    const reason = String(resolveInput('reason', node.data?.reason || '')).trim();
+    if (!channelId || !messageId) {
+      setOutput?.('success', false);
+      log('[Action Delete Message] Error: Missing Channel ID or Message ID');
+    } else {
+      await rest.deleteMessage(channelId, messageId, reason || undefined);
+      setOutput?.('success', true);
+      log(`[Action Delete Message] Deleted message ${messageId} from channel ${channelId}`);
+    }
+    return true;
+  }
 
   if (node.type === 'action_send_message') {
     const channelId = validateDiscordSemanticValue(resolveInput('channel_id', node.data?.channel_id || ''), 'channel_id', 'Channel ID', { simulation, allowEmpty: true });

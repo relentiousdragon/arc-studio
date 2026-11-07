@@ -54,7 +54,7 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
     [['action_http_download', 'action_web_fetch', 'action_web_retry'], 'network.js'],
     [['action_websocket_connect', 'action_websocket_send', 'action_websocket_close'], 'websocket.js'],
     [['action_set_presence'], 'discord_presence.js'],
-    [['action_send_message', 'action_edit_message'], 'discord_messages.js'],
+    [['action_send_message', 'action_edit_message', 'action_delete_message'], 'discord_messages.js'],
     [[
       'action_reply_interaction', 'action_defer_reply', 'action_defer_update', 'action_await_interaction',
       'action_edit_interaction_reply', 'action_show_modal', 'action_respond_autocomplete'

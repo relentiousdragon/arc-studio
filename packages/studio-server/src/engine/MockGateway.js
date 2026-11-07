@@ -268,6 +268,9 @@ export class MockGateway extends EventEmitter {
         outputSink.push({ type: 'DELETE_CHANNEL', channelId, reason, timestamp: new Date().toISOString() });
         return { id: channelId };
       },
+      deleteMessage: async (channelId, messageId, reason) => {
+        outputSink.push({ type: 'DELETE_MESSAGE', channelId, messageId, reason, timestamp: new Date().toISOString() });
+      },
       createGuildRole: async (guildId, role, reason) => {
         const id = `mock_role_${Date.now()}`;
         outputSink.push({ type: 'CREATE_ROLE', guildId, role, reason, timestamp: new Date().toISOString() });
