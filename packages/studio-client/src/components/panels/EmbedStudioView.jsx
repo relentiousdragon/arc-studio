@@ -243,6 +243,7 @@ export function EmbedStudioView({
   templateValuePaths = [],
   templatePreviewValues = {},
   templateSuggestions = [],
+  templateFunctions = [],
   connectedTemplateArguments = [],
   botProfile = null,
   botStatus = 'DISCONNECTED',
@@ -1486,12 +1487,13 @@ export function EmbedStudioView({
                 templateValuePaths={templateValuePaths}
                 templatePreviewValues={templatePreviewValues}
                 templateSuggestions={templateSuggestions}
+                templateFunctions={templateFunctions}
                 onChange={onBlocksChange}
                 onOpenTextStudio={onOpenTextStudio}
                 validation={validation}
               />
             ) : componentsV2Enabled ? (
-              <ComponentsV2Builder value={componentsV2Layout} focusedBlockId={focusedV2BlockId} focusedItemId={focusedV2ItemId} focusedSectionItem={focusedV2SectionItem} focusedComponentId={selectedComponentId} onSelectComponent={setSelectedComponentId} focusOnly onSelectBlock={setFocusedV2BlockId} onChange={onComponentsV2LayoutChange} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} appEmojis={appEmojis} attachments={attachedFiles} />
+              <ComponentsV2Builder value={componentsV2Layout} focusedBlockId={focusedV2BlockId} focusedItemId={focusedV2ItemId} focusedSectionItem={focusedV2SectionItem} focusedComponentId={selectedComponentId} onSelectComponent={setSelectedComponentId} focusOnly onSelectBlock={setFocusedV2BlockId} onChange={onComponentsV2LayoutChange} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} templateFunctions={templateFunctions} appEmojis={appEmojis} attachments={attachedFiles} />
             ) : (
               <MessageComponentsBuilder
                 rows={components}
@@ -1511,7 +1513,11 @@ export function EmbedStudioView({
             )}
           </div>
 
-          {((activeTab === 'embed' && !focusedEmbedBlockId) || (activeTab === 'components' && !(componentsV2Enabled ? focusedV2BlockId : focusedComponentRowId))) && <div className="studio-selection-hint">Select an item in the preview to edit it.</div>}
+          {((activeTab === 'embed' && !focusedEmbedBlockId) || (activeTab === 'components' && !(componentsV2Enabled ? focusedV2BlockId : focusedComponentRowId))) && (
+            <div className="studio-selection-hint">
+              {activeTab === 'embed' ? 'Select an item in the preview to edit its text, or configure the accent color above.' : 'Select an item in the preview to edit it.'}
+            </div>
+          )}
 
           {!componentsV2Enabled && componentErrors.length > 0 && (
             <div className="embed-studio-validation-banner" role="alert">
