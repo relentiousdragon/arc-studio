@@ -497,7 +497,7 @@ export function NodeCanvas({
   const autoQualityControllerRef = useRef(null);
   if (!autoQualityControllerRef.current) autoQualityControllerRef.current = createAutoCanvasQualityController();
   const autoQualityCooldownTimerRef = useRef(0);
-  const canvasQualityMode = ['auto', 'fast', 'optimal', 'quality'].includes(settings.canvasQuality) ? settings.canvasQuality : 'auto';
+  const canvasQualityMode = ['auto', 'fast', 'optimal', 'quality'].includes(settings.canvasQuality) ? settings.canvasQuality : 'fast';
   const canvasQualityModeRef = useRef(canvasQualityMode);
   canvasQualityModeRef.current = canvasQualityMode;
   const performanceReduced = canvasQualityMode === 'auto' && autoCanvasQuality === 'fast';
