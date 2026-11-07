@@ -15,11 +15,15 @@ export function isDiscordInteractionNodeType(type) {
   return INTERACTION_NODE_TYPES.has(type);
 }
 
-function buildMessagePayload(content, embed, components, files) {
+function buildMessagePayload(content, embed, components, files, isComponentsConnected = false) {
   return {
     ...(content ? { content } : {}),
     ...(embed ? { embeds: [embed] } : {}),
-    ...(Array.isArray(components) && components.length ? { components } : {}),
+    ...(isComponentsConnected
+      ? { components: Array.isArray(components) ? components : [] }
+      : Array.isArray(components) && components.length
+        ? { components }
+        : {}),
     ...(files?.length ? { files } : {})
   };
 }
@@ -116,9 +120,9 @@ export async function executeDiscordInteractionNode(node, {
   }
 
   if (node.type === 'action_reply_interaction') {
-    const applicationId = semanticInput('application_id', node.data?.application_id || state.applicationId || '', 'application_id', 'Application ID', true);
+    const applicationId = semanticInput('application_id', node.data?.application_id || eventPayload?.application_id || state.applicationId || '', 'application_id', 'Application ID', true);
     const interactionId = semanticInput('interaction_id', node.data?.interaction_id || eventPayload?.id || state.interactionId || '', 'interaction_id', 'Interaction ID', true);
-    const interactionToken = semanticInput('interaction_token', node.data?.interaction_token || '', 'interaction_token', 'Interaction token', true);
+    const interactionToken = semanticInput('interaction_token', node.data?.interaction_token || eventPayload?.token || state.interactionToken || '', 'interaction_token', 'Interaction token', true);
     const content = String(resolveInput('content', node.data?.content || '')).slice(0, 2000);
     const embed = resolveInput('embed', null) || (Array.isArray(node.data?.blocks) ? buildEmbed() : null);
     const components = resolveComponents();
@@ -136,10 +140,12 @@ export async function executeDiscordInteractionNode(node, {
       log('[Action Reply] Error: Missing interaction token');
     } else {
       if (interactionId) state.interactionId = interactionId;
+      if (interactionToken) state.interactionToken = interactionToken;
+      if (applicationId) state.applicationId = applicationId;
       log(`[Action Reply] Sending interaction response (ephemeral: ${ephemeral}).`);
       const responseData = componentsV2
         ? { flags: 32768 | (ephemeral ? 64 : 0), components: components.components, ...(files?.length ? { files } : {}) }
-        : { ...buildMessagePayload(content, embed, components, files), flags: ephemeral ? 64 : 0 };
+        : { ...buildMessagePayload(content, embed, components, files, isInputConnected('components')), flags: ephemeral ? 64 : 0 };
       if (state.deferred) {
         if (!applicationId) throw new Error('Replying after a defer needs the Application ID output from the event node.');
         if (typeof rest.editOriginalInteractionResponse !== 'function') throw new Error('This REST connection cannot edit a deferred interaction response.');
@@ -216,7 +222,7 @@ export async function executeDiscordInteractionNode(node, {
     log('[Edit Interaction Reply] Editing original interaction response.');
     const payload = componentsV2
       ? { flags: 32768, content: null, embeds: [], components: components.components, ...(files?.length ? { files } : {}) }
-      : buildMessagePayload(content, embed, components, files);
+      : buildMessagePayload(content, embed, components, files, isInputConnected('components'));
     if (typeof rest.editOriginalInteractionResponse !== 'function') throw new Error('This REST connection cannot edit interaction responses.');
     await rest.editOriginalInteractionResponse(applicationId, interactionToken, payload);
     setOutput?.('success', true);
