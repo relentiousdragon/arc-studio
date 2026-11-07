@@ -14,8 +14,9 @@ import { apiUrl } from '../../core/api.js';
 import { onPageBlur } from '../../core/pageFocus.js';
 import { resolveVariableReference } from '../../core/projectVariables.js';
 import { getInputDefault } from '../../../../studio-server/src/engine/NodeSchemaDefinitions.js';
-import { isReservedTemplateRoot, TEMPLATE_FUNCTION_NAMES, TEMPLATE_SYSTEM_PATHS } from '../../../../studio-server/src/engine/TemplateExpressions.js';
-import { attachTemplateAutocomplete } from '../../core/templateFieldAutocomplete.js';
+import { isReservedTemplateRoot, TEMPLATE_FUNCTION_NAMES, TEMPLATE_SYSTEM_PATHS, validateTemplateSyntax } from '../../../../studio-server/src/engine/TemplateExpressions.js';
+import { attachTemplateAutocomplete, BUILTIN_TEMPLATE_FUNCTIONS } from '../../core/templateFieldAutocomplete.js';
+import { MODIFY_COMPONENT_STYLE_OPTIONS, DISCORD_OBJECT_PROPERTIES } from 'chezcord';
 //
 const slashCommandNamePattern = /^[-_'\p{L}\p{N}\p{sc=Deva}\p{sc=Thai}]{1,32}$/u;
 const componentsV2PropertyOptions = [
@@ -31,6 +32,8 @@ const componentsV2PropertyOptions = [
   { value: 'accessory.url', label: 'Accessory URL' },
   { value: 'accessory.customId', label: 'Accessory custom ID' }
 ];
+
+export { MODIFY_COMPONENT_STYLE_OPTIONS, DISCORD_OBJECT_PROPERTIES };
 const defaultValueForType = (type) => type === 'number' ? 0 : type === 'boolean' ? false : type === 'array' ? [] : type === 'object' ? {} : '';
 const eventSocketHints = {
   application_id: 'Discord application (bot) ID associated with this interaction',
@@ -160,8 +163,173 @@ function resolveThreadTypeValue(value, fallback = 11) {
   return /^\d+$/.test(text) ? Number(text) : fallback;
 }
 
+export function resolveInferredObjectProperties(pinIds, incomingConnections, nodeById) {
+  const pinList = Array.isArray(pinIds) ? pinIds : [pinIds];
+  let wire = null;
+  for (const pinId of pinList) {
+    wire = incomingConnections?.get?.(pinId);
+    if (wire) break;
+  }
+  if (!wire) {
+    return [
+      ...DISCORD_OBJECT_PROPERTIES.message,
+      ...DISCORD_OBJECT_PROPERTIES.user,
+      ...DISCORD_OBJECT_PROPERTIES.member,
+      ...DISCORD_OBJECT_PROPERTIES.channel,
+      ...DISCORD_OBJECT_PROPERTIES.guild,
+      ...DISCORD_OBJECT_PROPERTIES.interaction
+    ];
+  }
+  const sourceNode = nodeById?.get?.(wire.sourceNodeId);
+  const sourcePin = String(wire.sourcePinId || '').toLowerCase();
+  const sourceNodeType = String(sourceNode?.type || '').toLowerCase();
+
+  if (sourcePin.includes('author') || sourcePin === 'user' || sourcePin.endsWith('_user')) {
+    return DISCORD_OBJECT_PROPERTIES.user;
+  }
+  if (sourcePin.includes('member')) {
+    return DISCORD_OBJECT_PROPERTIES.member;
+  }
+  if (sourcePin.includes('message')) {
+    return DISCORD_OBJECT_PROPERTIES.message;
+  }
+  if (sourcePin.includes('channel')) {
+    return DISCORD_OBJECT_PROPERTIES.channel;
+  }
+  if (sourcePin.includes('guild') || sourcePin.includes('server')) {
+    return DISCORD_OBJECT_PROPERTIES.guild;
+  }
+  if (sourcePin.includes('role')) {
+    return DISCORD_OBJECT_PROPERTIES.role;
+  }
+  if (sourcePin.includes('interaction')) {
+    return DISCORD_OBJECT_PROPERTIES.interaction;
+  }
+  if (sourcePin.includes('emoji')) {
+    return DISCORD_OBJECT_PROPERTIES.emoji;
+  }
+
+  if (sourceNodeType.includes('message')) return DISCORD_OBJECT_PROPERTIES.message;
+  if (sourceNodeType.includes('member')) return DISCORD_OBJECT_PROPERTIES.member;
+  if (sourceNodeType.includes('user')) return DISCORD_OBJECT_PROPERTIES.user;
+  if (sourceNodeType.includes('channel')) return DISCORD_OBJECT_PROPERTIES.channel;
+  if (sourceNodeType.includes('role')) return DISCORD_OBJECT_PROPERTIES.role;
+  if (sourceNodeType.includes('guild')) return DISCORD_OBJECT_PROPERTIES.guild;
+  if (sourceNodeType.includes('interaction') || sourceNodeType.includes('button') || sourceNodeType.includes('select')) {
+    return DISCORD_OBJECT_PROPERTIES.interaction;
+  }
+
+  return [
+    ...DISCORD_OBJECT_PROPERTIES.message,
+    ...DISCORD_OBJECT_PROPERTIES.user,
+    ...DISCORD_OBJECT_PROPERTIES.member,
+    ...DISCORD_OBJECT_PROPERTIES.channel,
+    ...DISCORD_OBJECT_PROPERTIES.guild,
+    ...DISCORD_OBJECT_PROPERTIES.interaction
+  ];
+}
+
+function PropertySuggestInput({ value, onChange, placeholder, ariaLabel, suggestions = [] }) {
+  const [open, setOpen] = React.useState(false);
+  const [selectedIndex, setSelectedIndex] = React.useState(0);
+  const containerRef = React.useRef(null);
+  const inputRef = React.useRef(null);
+
+  const query = String(value ?? '').toLowerCase().trim();
+  const filtered = React.useMemo(() => {
+    if (!query) return suggestions.slice(0, 16);
+    return suggestions
+      .filter((item) => item.key.toLowerCase().includes(query) || (item.label && item.label.toLowerCase().includes(query)) || (item.desc && item.desc.toLowerCase().includes(query)))
+      .slice(0, 16);
+  }, [suggestions, query]);
+
+  const selectItem = (item) => {
+    onChange(item.key);
+    setOpen(false);
+    inputRef.current?.focus();
+  };
+
+  const handleKeyDown = (event) => {
+    if (!open) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        setOpen(true);
+      }
+      return;
+    }
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      setSelectedIndex((prev) => (prev + 1) % Math.max(1, filtered.length));
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      setSelectedIndex((prev) => (prev - 1 + filtered.length) % Math.max(1, filtered.length));
+    } else if (event.key === 'Enter' || event.key === 'Tab') {
+      if (filtered[selectedIndex]) {
+        event.preventDefault();
+        selectItem(filtered[selectedIndex]);
+      }
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      setOpen(false);
+    }
+  };
+
+  React.useEffect(() => {
+    const onDocClick = (e) => {
+      if (containerRef.current && !containerRef.current.contains(e.target)) {
+        setOpen(false);
+      }
+    };
+    window.addEventListener('pointerdown', onDocClick);
+    return () => window.removeEventListener('pointerdown', onDocClick);
+  }, []);
+
+  return (
+    <div className="property-suggest-wrap" ref={containerRef}>
+      <input
+        ref={inputRef}
+        value={value ?? ''}
+        onChange={(e) => {
+          onChange(e.target.value);
+          setOpen(true);
+          setSelectedIndex(0);
+        }}
+        onFocus={() => {
+          setOpen(true);
+          setSelectedIndex(0);
+        }}
+        onKeyDown={handleKeyDown}
+        onPointerDown={(e) => e.stopPropagation()}
+        placeholder={placeholder}
+        aria-label={ariaLabel}
+        autoCapitalize="off"
+        autoCorrect="off"
+        spellCheck="false"
+      />
+      {open && filtered.length > 0 && (
+        <div className="property-suggest-menu" onPointerDown={(e) => e.stopPropagation()}>
+          {filtered.map((item, idx) => (
+            <div
+              key={`${item.key}-${idx}`}
+              className={`property-suggest-item${idx === selectedIndex ? ' is-selected' : ''}`}
+              onMouseEnter={() => setSelectedIndex(idx)}
+              onClick={() => selectItem(item)}
+            >
+              <div className="property-suggest-row">
+                <span className="property-suggest-name">{item.key}</span>
+                {item.label && <span className="property-suggest-label">{item.label}</span>}
+              </div>
+              {item.desc && <span className="property-suggest-desc">{item.desc}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CanvasNodeView({
-  node, definition, loadFailed = false, authToken = '', connectedInputIds = new Set(), graphVariables = [], eventTemplatePaths = [], templatePreviewValues = {}, callableGraphs = [], selected = false, illuminated = false, simulationMetric = null, simulationActive = false, isLocked = false, findOptions = null, isFindCurrent = false,
+  node, definition, loadFailed = false, authToken = '', connectedInputIds = new Set(), incomingConnections, nodeById, graphVariables = [], eventTemplatePaths = [], templatePreviewValues = {}, callableGraphs = [], selected = false, illuminated = false, simulationMetric = null, simulationActive = false, isLocked = false, findOptions = null, isFindCurrent = false,
   snappedPin = null, appEmojis = [], modalFieldOptions = [], componentsV2SourceConnected = false, onSelect, onDelete, onNodeDataChange, onPinStartConnect, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph
 }) {
   const nodeDef = definition || { label: node.label || node.type, color: '#778196', category: 'Node', inputs: [], outputs: [] };
@@ -181,13 +349,18 @@ function CanvasNodeView({
     }).map((item) => ({ path: item.path, label: item.label || item.path }));
     return [...new Map([...systemPaths, ...variablePaths, ...eventPaths].map((item) => [item.path, item])).values()];
   }, [graphVariables, eventTemplatePaths]);
+  const templateFunctions = React.useMemo(() => {
+    return (callableGraphs || [])
+      .filter((graph) => graph?.graphType === 'function' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(graph.name || '') && !isReservedTemplateRoot(graph.name))
+      .map((graph) => ({ name: graph.name, label: `${graph.name}()` }));
+  }, [callableGraphs]);
   const templateContextRef = React.useRef({ variables: [], paths: [], sockets: [], functions: [] });
   templateContextRef.current = {
     variables: graphVariables.filter((variable) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(variable.name || '')).map((variable) => ({ label: variable.name, insert: variable.name })),
     paths: templatePaths,
     sockets: nodeDef.inputs.filter((pin) => /^arg_\d+$/.test(pin.id)).map((pin) => ({ label: pin.label || pin.id, insert: pin.id.replace(/^arg_/, 'arg') })),
     functions: [
-      ...TEMPLATE_FUNCTION_NAMES.map((name) => ({ label: `${name}()`, insert: `${name}()` })),
+      ...BUILTIN_TEMPLATE_FUNCTIONS.map((fn) => ({ label: fn.label, insert: fn.insert })),
       ...(callableGraphs || [])
         .filter((graph) => graph?.graphType === 'function' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(graph.name || '') && !isReservedTemplateRoot(graph.name))
         .map((graph) => ({ label: `${graph.name}()`, insert: `${graph.name}()` }))
@@ -271,7 +444,7 @@ function CanvasNodeView({
         <div className="node-pin-column node-pin-outputs">{outputs.map((pin, index) => renderPin(pin, 'output', index))}</div>
       </div>
       {!loadFailed && isDeprecated && <div className="node-config node-deprecated-message" role="note"><AlertTriangle size={13} /><span>{nodeDef.deprecationMessage}</span></div>}
-      {!loadFailed && !isDeprecated && !nodeDef.requiresGenericEditor && renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues, componentsV2SourceConnected, templatePaths)}
+      {!loadFailed && !isDeprecated && !nodeDef.requiresGenericEditor && renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues, componentsV2SourceConnected, templatePaths, incomingConnections, nodeById)}
       {!loadFailed && !isDeprecated && (nodeDef.requiresGenericEditor || nodeDef.editorOnlyInputs?.length > 0) && <div className="node-config node-config-stack node-schema-fallback">
         {nodeDef.requiresGenericEditor && <span className="node-config-hint">This workspace schema differs from this client’s editor. These values are used by the workspace server.</span>}
         {nodeDef.editorOnlyInputs.filter((pin) => pin.type !== 'exec' && !connectedInputIds.has(pin.id)).map((pin) => {
@@ -300,6 +473,8 @@ function areCanvasNodePropsEqual(previous, next) {
     if (key === 'node') return true;
     if (key === 'graphVariables') return equalDefinitionValue(previous[key], next[key]);
     if (key === 'callableGraphs') return equalCallableGraphOptions(previous[key], next[key], nextNode || previousNode);
+    if (key === 'incomingConnections') return previous[key] === next[key];
+    if (key === 'nodeById') return previous[key] === next[key];
     return Object.is(previous[key], next[key]);
   });
 }
@@ -482,8 +657,11 @@ function renderSchemaControls(node, controls, update, connectedInputIds) {
   </div>;
 }
 
-function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues, componentsV2SourceConnected = false, templatePaths = []) {
+function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues, componentsV2SourceConnected = false, templatePaths = [], incomingConnections = null, nodeById = null) {
   const isConnected = (pinId) => connectedInputIds.has(pinId);
+  const templateFunctions = (callableGraphs || [])
+    .filter((graph) => graph?.graphType === 'function' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(graph.name || '') && !isReservedTemplateRoot(graph.name))
+    .map((graph) => ({ name: graph.name, label: `${graph.name}()` }));
   if (node.type === 'branch_switch') {
     const cases = nodeDef.inputs.filter((pin) => /^case_\d+$/.test(pin.id));
     return <div className="node-config node-config-stack">
@@ -499,30 +677,41 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     const openTextEditor = () => onOpenTextStudio?.(node, id, label, value, maxLength);
     const valuePaths = templatePaths;
     const templateSuggestions = nodeDef.inputs.filter((pin) => /^arg_\d+$/.test(pin.id)).map((pin) => ({ name: pin.id.replace(/^arg_/, 'arg'), label: pin.label }));
-    if (value.length > LONG_TEXT_THRESHOLD) return <DiscordLongTextField value={value} onOpenEditor={openTextEditor} label={label} maxLength={maxLength} />;
-    return <CharacterLimit value={value} maxLength={maxLength}><DiscordTextField onOpenTextEditor={openTextEditor} discordAutocomplete={autocomplete} templateAutocomplete templateValuePaths={valuePaths} templateSuggestions={templateSuggestions} graphVariables={graphVariables} as="textarea" rows={2} maxLength={maxLength} value={value} appEmojis={appEmojis} onChange={(event) => update(id, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder={placeholder} aria-label={label} /></CharacterLimit>;
+    const syntaxError = validateTemplateSyntax(value);
+    const field = value.length > LONG_TEXT_THRESHOLD
+      ? <DiscordLongTextField value={value} onOpenEditor={openTextEditor} label={label} maxLength={maxLength} />
+      : <CharacterLimit value={value} maxLength={maxLength}><DiscordTextField onOpenTextEditor={openTextEditor} discordAutocomplete={autocomplete} templateAutocomplete templateValuePaths={valuePaths} templateSuggestions={templateSuggestions} templateFunctions={templateFunctions} graphVariables={graphVariables} as="textarea" rows={2} maxLength={maxLength} value={value} appEmojis={appEmojis} onChange={(event) => update(id, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder={placeholder} aria-label={label} /></CharacterLimit>;
+    return <>
+      {field}
+      {syntaxError && <div className="node-config-warning template-syntax-warning" role="alert"><AlertTriangle size={12} /><span>{syntaxError}</span></div>}
+    </>;
   };
   const templateInput = (id, label, { multiline = false, maxLength = 8192, inputMode, placeholder = 'Used when unconnected', defaultValue } = {}) => {
     if (isConnected(id)) return null;
     const value = String(node.data?.[id] ?? defaultValue ?? '');
     const valuePaths = templatePaths;
     const templateSuggestions = nodeDef.inputs.filter((pin) => /^arg_\d+$/.test(pin.id)).map((pin) => ({ name: pin.id.replace(/^arg_/, 'arg'), label: pin.label }));
-    return <FallbackField label={label}><DiscordTextField
-      as={multiline ? 'textarea' : 'input'}
-      rows={multiline ? 2 : undefined}
-      maxLength={maxLength}
-      inputMode={inputMode}
-      value={value}
-      graphVariables={graphVariables}
-      templateValuePaths={valuePaths}
-      templateSuggestions={templateSuggestions}
-      templateAutocomplete
-      onOpenTextEditor={() => onOpenTextStudio?.(node, id, label, value, maxLength)}
-      onChange={(event) => update(id, event.target.value)}
-      onPointerDown={(event) => event.stopPropagation()}
-      placeholder={placeholder}
-      aria-label={label}
-    /></FallbackField>;
+    const syntaxError = validateTemplateSyntax(value);
+    return <>
+      <FallbackField label={label}><DiscordTextField
+        as={multiline ? 'textarea' : 'input'}
+        rows={multiline ? 2 : undefined}
+        maxLength={maxLength}
+        inputMode={inputMode}
+        value={value}
+        graphVariables={graphVariables}
+        templateValuePaths={valuePaths}
+        templateSuggestions={templateSuggestions}
+        templateFunctions={templateFunctions}
+        templateAutocomplete
+        onOpenTextEditor={() => onOpenTextStudio?.(node, id, label, value, maxLength)}
+        onChange={(event) => update(id, event.target.value)}
+        onPointerDown={(event) => event.stopPropagation()}
+        placeholder={placeholder}
+        aria-label={label}
+      /></FallbackField>
+      {syntaxError && <div className="node-config-warning template-syntax-warning" role="alert"><AlertTriangle size={12} /><span>{syntaxError}</span></div>}
+    </>;
   };
   const comparisonInput = (id, label) => {
     const value = String(node.data?.[id] ?? '');
@@ -534,6 +723,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       graphVariables={graphVariables}
       templateValuePaths={valuePaths}
       templateSuggestions={templateSuggestions}
+      templateFunctions={templateFunctions}
       discordAutocomplete
       templateAutocomplete
       onChange={(event) => update(id, event.target.value)}
@@ -639,7 +829,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       {!isConnected('activity_type') && <FallbackField label="Activity type"><AnimatedDropdown value={String(node.data?.activity_type ?? 0)} options={activityTypes} onChange={(value) => update('activity_type', Number(value))} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Presence activity type" className="node-select" /></FallbackField>}
       {Number(node.data?.activity_type) === 1 && String(node.data?.activity_text ?? 'ARC Studio').trim() && templateInput('stream_url', 'Stream URL', { maxLength: 2048, inputMode: 'url', placeholder: 'https://twitch.tv/your-channel' })}
       {!isConnected('status') && <FallbackField label="Status"><AnimatedDropdown value={node.data?.status ?? 'online'} options={statuses} onChange={(value) => update('status', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Bot presence status" className="node-select" /></FallbackField>}
-      {!isConnected('custom_status_text') && <FallbackField label="Custom status"><DiscordTextField value={node.data?.custom_status_text ?? ''} maxLength={128} appEmojis={appEmojis} graphVariables={graphVariables} templateValuePaths={templatePaths} templateAutocomplete discordAutocomplete onOpenTextEditor={() => onOpenTextStudio?.(node, 'custom_status_text', 'Custom status', String(node.data?.custom_status_text ?? ''), 128)} onChange={(event) => update('custom_status_text', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave blank to clear" aria-label="Custom status text" /></FallbackField>}
+      {!isConnected('custom_status_text') && <FallbackField label="Custom status"><DiscordTextField value={node.data?.custom_status_text ?? ''} maxLength={128} appEmojis={appEmojis} graphVariables={graphVariables} templateValuePaths={templatePaths} templateFunctions={templateFunctions} templateAutocomplete discordAutocomplete onOpenTextEditor={() => onOpenTextStudio?.(node, 'custom_status_text', 'Custom status', String(node.data?.custom_status_text ?? ''), 128)} onChange={(event) => update('custom_status_text', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave blank to clear" aria-label="Custom status text" /></FallbackField>}
       <span className="node-config-hint">Activity and custom status accept {'{{variables}}'}, event values, and custom emoji.</span>
     </div>;
   }
@@ -759,13 +949,15 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     </div>;
   }
   if (node.type === 'data_object_get') {
+    const objectProps = resolveInferredObjectProperties('object', incomingConnections, nodeById);
     return <div className="node-config node-config-stack">
-      {!isConnected('key') && <FallbackField label="Property"><input value={node.data?.key ?? ''} onChange={(event) => update('key', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="property_name" aria-label="Property key" /></FallbackField>}
+      {!isConnected('key') && <FallbackField label="Property"><PropertySuggestInput value={node.data?.key ?? ''} onChange={(value) => update('key', value)} suggestions={objectProps} placeholder="property_name or author.id" ariaLabel="Property key" /></FallbackField>}
     </div>;
   }
   if (node.type === 'data_object_set') {
+    const objectProps = resolveInferredObjectProperties('object', incomingConnections, nodeById);
     return <div className="node-config node-config-stack">
-      {!isConnected('key') && <FallbackField label="Property"><input value={node.data?.key ?? ''} onChange={(event) => update('key', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="property_name" aria-label="Property key" /></FallbackField>}
+      {!isConnected('key') && <FallbackField label="Property"><PropertySuggestInput value={node.data?.key ?? ''} onChange={(value) => update('key', value)} suggestions={objectProps} placeholder="property_name" ariaLabel="Property key" /></FallbackField>}
       {!isConnected('value') && templateInput('value', 'Value', { placeholder: 'Value to assign' })}
     </div>;
   }
@@ -809,15 +1001,17 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     </div>;
   }
   if (node.type === 'data_get_value_by_path') {
+    const pathProps = resolveInferredObjectProperties(['value', 'data'], incomingConnections, nodeById);
     return <div className="node-config node-config-stack">
-      {!isConnected('path') && <FallbackField label="Path"><input value={node.data?.path ?? ''} onChange={(event) => update('path', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="user.profile.name or items[0].id" aria-label="Value path" /></FallbackField>}
+      {!isConnected('path') && <FallbackField label="Path"><PropertySuggestInput value={node.data?.path ?? ''} onChange={(value) => update('path', value)} suggestions={pathProps} placeholder="user.profile.name or items[0].id" ariaLabel="Value path" /></FallbackField>}
       {!isConnected('fallback') && <FallbackField label="Fallback"><input value={node.data?.fallback ?? ''} onChange={(event) => update('fallback', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when the path is missing" aria-label="Path lookup fallback" /></FallbackField>}
     </div>;
   }
   if (node.type === 'data_find_array_item' || node.type === 'data_filter_array') {
     const comparisonOptions = [{ value: 'equals', label: 'Equals' }, { value: 'not_equals', label: 'Does not equal' }, { value: 'contains', label: 'Contains' }, { value: 'starts_with', label: 'Starts with' }, { value: 'ends_with', label: 'Ends with' }, { value: 'greater_than', label: 'Greater than' }, { value: 'greater_or_equal', label: 'At least' }, { value: 'less_than', label: 'Less than' }, { value: 'less_or_equal', label: 'At most' }, { value: 'exists', label: 'Path exists' }, { value: 'is_empty', label: 'Is empty' }];
+    const arrayProps = resolveInferredObjectProperties(['array'], incomingConnections, nodeById);
     return <div className="node-config node-config-stack">
-      {!isConnected('path') && <FallbackField label="Property path (optional)"><input value={node.data?.path ?? ''} onChange={(event) => update('path', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="id or user.name; blank checks each item" aria-label="Array item property path" /></FallbackField>}
+      {!isConnected('path') && <FallbackField label="Property path (optional)"><PropertySuggestInput value={node.data?.path ?? ''} onChange={(value) => update('path', value)} suggestions={arrayProps} placeholder="id or user.name; blank checks each item" ariaLabel="Array item property path" /></FallbackField>}
       {node.type === 'data_filter_array' && !isConnected('operator') && <FallbackField label="Comparison"><AnimatedDropdown value={node.data?.operator || 'equals'} options={comparisonOptions} onChange={(value) => update('operator', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Array filter comparison" className="node-select" /></FallbackField>}
       {!isConnected('value') && !['exists', 'is_empty'].includes(node.data?.operator) && <FallbackField label="Match value">{comparisonInput('value', 'Array match value')}</FallbackField>}
     </div>;
@@ -948,7 +1142,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     const openTextEditor = () => onOpenTextStudio?.(node, 'template', 'Text template', value);
     const valuePaths = templatePaths;
     const templateSuggestions = nodeDef.inputs.filter((pin) => /^arg_\d+$/.test(pin.id)).map((pin) => ({ name: pin.id.replace(/^arg_/, 'arg'), label: pin.label }));
-    return <div className="node-config node-config-stack">{value.length > LONG_TEXT_THRESHOLD ? <DiscordLongTextField value={value} onOpenEditor={openTextEditor} label="Text template" /> : <DiscordTextField onOpenTextEditor={openTextEditor} as="textarea" rows={2} value={value} appEmojis={appEmojis} graphVariables={graphVariables} discordAutocomplete templateAutocomplete templateValuePaths={valuePaths} templateSuggestions={templateSuggestions} onChange={(event) => update('template', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Type text with {{name}}" aria-label="Text template" />}<TemplateVariableHints value={node.data?.template} graphVariables={graphVariables} inputSlots={nodeDef.inputs.filter((pin) => pin.id.startsWith('slot_'))} connectedInputIds={connectedInputIds} templatePreviewValues={templatePreviewValues} /></div>;
+    return <div className="node-config node-config-stack">{value.length > LONG_TEXT_THRESHOLD ? <DiscordLongTextField value={value} onOpenEditor={openTextEditor} label="Text template" /> : <DiscordTextField onOpenTextEditor={openTextEditor} as="textarea" rows={2} value={value} appEmojis={appEmojis} graphVariables={graphVariables} discordAutocomplete templateAutocomplete templateValuePaths={valuePaths} templateSuggestions={templateSuggestions} templateFunctions={templateFunctions} onChange={(event) => update('template', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Type text with {{name}}" aria-label="Text template" />}<TemplateVariableHints value={node.data?.template} graphVariables={graphVariables} inputSlots={nodeDef.inputs.filter((pin) => pin.id.startsWith('slot_'))} connectedInputIds={connectedInputIds} templatePreviewValues={templatePreviewValues} /></div>;
   }
   if (node.type === 'data_permission_overwrites') {
     return <div className="node-config node-config-stack">
@@ -958,7 +1152,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
   if (node.type === 'build_embed') {
     const templateValuePaths = templatePaths;
     const templateSuggestions = nodeDef.inputs.filter((pin) => /^arg_\d+$/.test(pin.id)).map((pin) => ({ name: pin.id.replace(/^arg_/, 'arg'), label: pin.label }));
-    return <EmbedNodeBuilder data={node.data || {}} connectedInputIds={connectedInputIds} appEmojis={appEmojis} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} templatePreviewValues={templatePreviewValues} onChange={(blocks) => update('blocks', blocks)} onOpenStudio={() => onOpenEmbedStudio?.(node)} onOpenTextStudio={(label, value, maxLength, applyValue, parentBlockContext) => onOpenTextStudio?.(node, null, label, value, maxLength, applyValue, '', parentBlockContext)} />;
+    return <EmbedNodeBuilder data={node.data || {}} connectedInputIds={connectedInputIds} appEmojis={appEmojis} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} templateFunctions={templateFunctions} templatePreviewValues={templatePreviewValues} onChange={(blocks) => update('blocks', blocks)} onOpenStudio={() => onOpenEmbedStudio?.(node)} onOpenTextStudio={(label, value, maxLength, applyValue, parentBlockContext) => onOpenTextStudio?.(node, null, label, value, maxLength, applyValue, '', parentBlockContext)} />;
   }
   if (node.type === 'build_components') {
     return <div className="node-config node-config-stack"><span className="node-config-hint">Build a Discord Components V2 message with text, sections, galleries, files, separators, containers, and interactive controls.</span><button type="button" className="node-config-action node-config-studio-action" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onOpenEmbedStudio?.(node); }}><Plus size={12} /> Open Component Studio{node.data?.componentsV2?.length ? ` · ${node.data.componentsV2.length} blocks` : ''}</button></div>;
@@ -996,8 +1190,11 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
   }
   if (node.type === 'modify_components') {
     return <div className="node-config node-config-stack">
-      {!isConnected('custom_id') && <label className="node-config-fallback"><span>Target Custom ID</span><input value={node.data?.custom_id ?? 'all'} onChange={(event) => update('custom_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="all or button_id" aria-label="Target Custom ID" /></label>}
+      {!isConnected('custom_id') && <label className="node-config-fallback"><span>Target Custom ID</span><input value={node.data?.custom_id ?? 'all'} onChange={(event) => update('custom_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="all or custom_id" aria-label="Target Custom ID" /></label>}
       {!isConnected('disabled') && <div className="function-input-option"><span>Disabled</span><AnimatedCheckbox checked={node.data?.disabled ?? true} label="Disabled" onChange={(val) => update('disabled', val)} onPointerDown={(event) => event.stopPropagation()} /></div>}
+      {!isConnected('label') && <label className="node-config-fallback"><span>New Button Label</span><input value={node.data?.label ?? ''} onChange={(event) => update('label', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave empty to keep existing" aria-label="New Button Label" /></label>}
+      {!isConnected('style') && <FallbackField label="New Button Style"><AnimatedDropdown value={node.data?.style ?? ''} options={MODIFY_COMPONENT_STYLE_OPTIONS} onChange={(val) => update('style', val)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="New Button Style" className="node-select" /></FallbackField>}
+      {!isConnected('placeholder') && <label className="node-config-fallback"><span>New Select Placeholder</span><input value={node.data?.placeholder ?? ''} onChange={(event) => update('placeholder', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave empty to keep existing" aria-label="New Select Placeholder" /></label>}
     </div>;
   }
   if (node.type === 'modify_components_v2') {
@@ -1106,7 +1303,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     const scopeId = channelScope ? 'channel_id' : 'guild_id';
     const scopeLabel = channelScope ? 'Channel ID' : 'Server ID';
     const targetId = memberTarget ? 'user_id' : 'role_id';
-    const targetLabel = memberTarget ? 'Member ID' : 'Role ID';
+    const targetLabel = memberTarget ? 'User ID' : 'Role ID';
     return <div className="node-config node-config-stack">
       {!isConnected(scopeId) && <FallbackField label={scopeLabel}><input value={node.data?.[scopeId] ?? ''} onChange={(event) => update(scopeId, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label={scopeLabel} /></FallbackField>}
       {!isConnected(targetId) && <FallbackField label={targetLabel}><input value={node.data?.[targetId] ?? ''} onChange={(event) => update(targetId, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label={targetLabel} /></FallbackField>}
@@ -1337,6 +1534,7 @@ function AttachmentPicker({ files = [], authToken = '', onChange }) {
   const [error, setError] = React.useState('');
   const [imagePreview, setImagePreview] = React.useState(null);
   const [imageZoomed, setImageZoomed] = React.useState(false);
+  const [imageZoomOrigin, setImageZoomOrigin] = React.useState({ x: 50, y: 50 });
   const [urlEntryOpen, setUrlEntryOpen] = React.useState(false);
   const [url, setUrl] = React.useState('');
   const [filename, setFilename] = React.useState('');
@@ -1346,9 +1544,9 @@ function AttachmentPicker({ files = [], authToken = '', onChange }) {
   const fileInputRef = React.useRef(null);
   React.useEffect(() => {
     if (!imagePreview) return undefined;
-    const closeOnEscape = (event) => { if (event.key === 'Escape') { setImagePreview(null); setImageZoomed(false); } };
+    const closeOnEscape = (event) => { if (event.key === 'Escape') { setImagePreview(null); setImageZoomed(false); setImageZoomOrigin({ x: 50, y: 50 }); } };
     document.addEventListener('keydown', closeOnEscape);
-    const removePageBlurListener = onPageBlur(() => { setImagePreview(null); setImageZoomed(false); });
+    const removePageBlurListener = onPageBlur(() => { setImagePreview(null); setImageZoomed(false); setImageZoomOrigin({ x: 50, y: 50 }); });
     return () => {
       document.removeEventListener('keydown', closeOnEscape);
       removePageBlurListener();
@@ -1438,7 +1636,7 @@ function AttachmentPicker({ files = [], authToken = '', onChange }) {
         const image = String(file.contentType || '').toLowerCase().startsWith('image/') || /^data:image\//i.test(String(file.data || '')) || /\.(apng|avif|bmp|gif|jpe?g|png|svg|webp)$/i.test(String(file.filename || file.name || ''));
         const source = typeof file.data === 'string' && file.data.startsWith('data:image/') ? file.data : '';
         return <div className="node-attachment-item" key={`${file.filename}-${index}`}>
-          {image && source && <button className="node-attachment-open-image" type="button" aria-label={`Preview ${file.filename}`} title="Open image preview" onClick={() => { setImagePreview({ filename: file.filename, source }); setImageZoomed(false); }}><img src={source} alt="" /></button>}
+          {image && source && <button className="node-attachment-open-image" type="button" aria-label={`Preview ${file.filename}`} title="Open image preview" onClick={() => { setImagePreview({ filename: file.filename, source }); setImageZoomed(false); setImageZoomOrigin({ x: 50, y: 50 }); }}><img src={source} alt="" /></button>}
           <span title={file.url || undefined}>{file.filename}{file.url ? ' · URL' : ''}</span>
           <button className="node-attachment-remove" type="button" onClick={() => remove(index)} aria-label={`Remove ${file.filename}`} title={`Remove ${file.filename}`}><X size={12} /></button>
         </div>;
@@ -1454,11 +1652,22 @@ function AttachmentPicker({ files = [], authToken = '', onChange }) {
         <button role="menuitem" onClick={() => { setUrlEntryOpen(true); setContextMenu(null); setError(''); }}><span>Use URL</span></button>
       </div>, document.body)}
     </div>
-    {imagePreview && createPortal(<div className={`discord-gallery-lightbox${imageZoomed ? ' is-image-zoomed' : ''}`} role="dialog" aria-modal="true" aria-label={`Image preview: ${imagePreview.filename}`} onClick={(event) => { if (event.target === event.currentTarget) { setImagePreview(null); setImageZoomed(false); } }}>
-      <button type="button" className="discord-gallery-lightbox-close" aria-label="Close image viewer" title="Close image viewer" onClick={() => { setImagePreview(null); setImageZoomed(false); }}><X size={20} /></button>
+    {imagePreview && createPortal(<div className={`discord-gallery-lightbox${imageZoomed ? ' is-image-zoomed' : ''}`} role="dialog" aria-modal="true" aria-label={`Image preview: ${imagePreview.filename}`} onClick={(event) => { if (event.target === event.currentTarget) { setImagePreview(null); setImageZoomed(false); setImageZoomOrigin({ x: 50, y: 50 }); } }}>
+      <button type="button" className="discord-gallery-lightbox-close" aria-label="Close image viewer" title="Close image viewer" onClick={() => { setImagePreview(null); setImageZoomed(false); setImageZoomOrigin({ x: 50, y: 50 }); }}><X size={20} /></button>
       <figure className="discord-gallery-lightbox-content">
-        <button className={`discord-gallery-lightbox-image-frame${imageZoomed ? ' is-zoomed' : ''}`} type="button" aria-label={imageZoomed ? 'Zoom out' : 'Zoom in'} aria-pressed={imageZoomed} title="Click to zoom in or out" onClick={() => setImageZoomed((value) => !value)}>
-          <img className={`discord-gallery-lightbox-image${imageZoomed ? ' is-zoomed' : ''}`} src={imagePreview.source} alt={imagePreview.filename} />
+        <button className={`discord-gallery-lightbox-image-frame${imageZoomed ? ' is-zoomed' : ''}`} type="button" aria-label={imageZoomed ? 'Zoom out' : 'Zoom in'} aria-pressed={imageZoomed} title="Click to zoom in or out" onClick={(event) => {
+          if (imageZoomed) {
+            setImageZoomed(false);
+            return;
+          }
+          const image = event.currentTarget.querySelector('.discord-gallery-lightbox-image') || event.currentTarget;
+          const bounds = image.getBoundingClientRect();
+          const originX = bounds.width ? Math.max(0, Math.min(100, ((event.clientX - bounds.left) / bounds.width) * 100)) : 50;
+          const originY = bounds.height ? Math.max(0, Math.min(100, ((event.clientY - bounds.top) / bounds.height) * 100)) : 50;
+          setImageZoomOrigin({ x: originX, y: originY });
+          setImageZoomed(true);
+        }}>
+          <img className={`discord-gallery-lightbox-image${imageZoomed ? ' is-zoomed' : ''}`} style={imageZoomed ? { transformOrigin: `${imageZoomOrigin.x}% ${imageZoomOrigin.y}%` } : undefined} src={imagePreview.source} alt={imagePreview.filename} />
         </button>
         <figcaption>{imagePreview.filename}</figcaption>
         <small>Click the image to zoom</small>
