@@ -392,6 +392,12 @@ export function evaluateDataNode(type, inputs = {}, data = {}) {
     const text = String(inputs.text ?? '');
     const search = String(inputs.search ?? '');
     if (!search) return { text, replacements: 0 };
+    if (inputs.all === false) {
+      const idx = text.indexOf(search);
+      if (idx === -1) return { text, replacements: 0 };
+      const replacement = String(inputs.replacement ?? '');
+      return { text: text.slice(0, idx) + replacement + text.slice(idx + search.length), replacements: 1 };
+    }
     const parts = text.split(search);
     return { text: parts.join(String(inputs.replacement ?? '')), replacements: parts.length - 1 };
   }
