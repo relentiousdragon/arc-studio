@@ -1,5 +1,5 @@
 export default {
-  "description": "Waits for both branches from one Parallel node, then continues once. For mutually exclusive If/Else paths, connect their exec wires directly to the same action node.",
+  "description": "Waits for all concurrent branches from one Parallel node, then continues once. For mutually exclusive If/Else paths, connect their exec wires directly to the same action node.",
   "type": "parallel_join",
   "category": "Logic & Flow",
   "label": "Join",
