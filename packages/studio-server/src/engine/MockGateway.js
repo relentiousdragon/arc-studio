@@ -26,7 +26,7 @@ export class MockGateway extends EventEmitter {
       SLASH_COMMAND: {
         id: '120000000000000010',
         application_id: '120000000000000099',
-        type: 2, // APPLICATION_COMMAND
+        type: 2, 
         token: 'mock_interaction_token_abcdef123456',
         channel_id: '120000000000000002',
         guild_id: '120000000000000000',
@@ -46,13 +46,81 @@ export class MockGateway extends EventEmitter {
           ]
         }
       },
+      USER_COMMAND: {
+        id: '120000000000000011',
+        application_id: '120000000000000099',
+        type: 2, 
+        token: 'mock_interaction_token_user_cmd',
+        channel_id: '120000000000000002',
+        guild_id: '120000000000000000',
+        member: {
+          user: {
+            id: '990000000000000001',
+            username: 'BaldDude68',
+            discriminator: '0',
+            bot: false
+          }
+        },
+        data: {
+          id: '120000000000000021',
+          name: 'User Info',
+          type: 2,
+          target_id: '990000000000000002',
+          resolved: {
+            users: {
+              '990000000000000002': { id: '990000000000000002', username: 'TargetUser', global_name: 'Target User', bot: false }
+            },
+            members: {
+              '990000000000000002': { user: { id: '990000000000000002', username: 'TargetUser' }, nick: 'Target Member' }
+            }
+          }
+        }
+      },
+      MESSAGE_COMMAND: {
+        id: '120000000000000012',
+        application_id: '120000000000000099',
+        type: 2,
+        token: 'mock_interaction_token_msg_cmd',
+        channel_id: '120000000000000002',
+        guild_id: '120000000000000000',
+        member: {
+          user: {
+            id: '990000000000000001',
+            username: 'BaldDude68',
+            discriminator: '0',
+            bot: false
+          }
+        },
+        data: {
+          id: '120000000000000022',
+          name: 'Bookmark',
+          type: 3,
+          target_id: '120000000000000001',
+          resolved: {
+            messages: {
+              '120000000000000001': {
+                id: '120000000000000001',
+                content: 'Sample target message for context command',
+                author: { id: '990000000000000003', username: 'AuthorUser', bot: false },
+                channel_id: '120000000000000002'
+              }
+            }
+          }
+        }
+      },
       BUTTON_CLICK: {
         id: '120000000000000030',
         application_id: '120000000000000099',
-        type: 3, // MESSAGE_COMPONENT
+        type: 3, 
         token: 'mock_button_token_xyz987',
         channel_id: '120000000000000002',
         guild_id: '120000000000000000',
+        message: {
+          id: '120000000000000020',
+          channel_id: '120000000000000002',
+          guild_id: '120000000000000000',
+          content: 'Simulated prompt message'
+        },
         member: {
           user: {
             id: '990000000000000001',
@@ -213,6 +281,28 @@ export class MockGateway extends EventEmitter {
       },
       setVoiceChannelStatus: async (channelId, status, reason) => {
         outputSink.push({ type: 'SET_VOICE_CHANNEL_STATUS', channelId, status, reason, timestamp: new Date().toISOString() });
+      },
+      getGuildMemberPermissions: async (guildId, userId) => {
+        outputSink.push({ type: 'GET_GUILD_MEMBER_PERMISSIONS', guildId, userId, timestamp: new Date().toISOString() });
+        return { permissions: '1071698660929' };
+      },
+      getGuildRolePermissions: async (guildId, roleId) => {
+        outputSink.push({ type: 'GET_GUILD_ROLE_PERMISSIONS', guildId, roleId, timestamp: new Date().toISOString() });
+        return { permissions: '1071698660929' };
+      },
+      getChannelMemberPermissions: async (channelId, userId) => {
+        outputSink.push({ type: 'GET_CHANNEL_MEMBER_PERMISSIONS', channelId, userId, timestamp: new Date().toISOString() });
+        return { permissions: '1071698660929' };
+      },
+      getChannelRolePermissions: async (channelId, roleId) => {
+        outputSink.push({ type: 'GET_CHANNEL_ROLE_PERMISSIONS', channelId, roleId, timestamp: new Date().toISOString() });
+        return { permissions: '1071698660929' };
+      },
+      getGuild: async (guildId) => {
+        return { id: String(guildId || '120000000000000000'), name: 'Simulated Server', owner_id: '990000000000000001', member_count: 42 };
+      },
+      getGuildMember: async (guildId, userId) => {
+        return { user: { id: String(userId || '990000000000000001'), username: 'SimulatedUser' }, roles: [], permissions: '1071698660929' };
       }
     };
   }
