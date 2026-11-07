@@ -56,7 +56,7 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
     [['action_set_presence'], 'discord_presence.js'],
     [['action_send_message', 'action_edit_message'], 'discord_messages.js'],
     [[
-      'action_reply_interaction', 'action_defer_reply', 'action_defer_update',
+      'action_reply_interaction', 'action_defer_reply', 'action_defer_update', 'action_await_interaction',
       'action_edit_interaction_reply', 'action_show_modal', 'action_respond_autocomplete'
     ], 'discord_interactions.js'],
     [[
@@ -761,12 +761,30 @@ async function deploySlashCommands() {
   const desired = [];
   const names = new Set();
   for (const graph of graphs) for (const node of graph.nodes || []) {
-    if (node.type !== 'event_slash_command') continue;
-    const name = String(node.data?.commandName || '').trim().toLowerCase();
+    if (!['event_slash_command', 'event_user_command', 'event_message_command'].includes(node.type)) continue;
+    const rawName = String(node.data?.commandName || '').trim();
+    if (node.type === 'event_user_command' || node.type === 'event_message_command') {
+      const type = node.type === 'event_user_command' ? 2 : 3;
+      const key = type + ':' + rawName.toLowerCase();
+      if (!rawName) throw new Error('Every context command needs a name before deployment.');
+      if (names.has(key)) throw new Error('Duplicate context command "' + rawName + '" is configured in more than one graph.');
+      names.add(key);
+      desired.push({
+        name: rawName,
+        description: '',
+        type,
+        ...(node.data?.defaultMemberPermissions ? { default_member_permissions: String(node.data.defaultMemberPermissions) } : {}),
+        ...(Array.isArray(node.data?.integrationTypes) ? { integration_types: node.data.integrationTypes } : {}),
+        ...(Array.isArray(node.data?.contexts) ? { contexts: node.data.contexts } : {})
+      });
+      continue;
+    }
+    const name = rawName.toLowerCase();
     const description = String(node.data?.description || '').trim();
     if (!name || !description) throw new Error('Every slash command needs a name and description before deployment.');
-    if (names.has(name)) throw new Error('Duplicate slash command /' + name + ' is configured in more than one graph.');
-    names.add(name);
+    const key = '1:' + name;
+    if (names.has(key)) throw new Error('Duplicate slash command /' + name + ' is configured in more than one graph.');
+    names.add(key);
     const optionErrors = validateSlashCommandOptions(node.data?.options || [], name);
     if (optionErrors.length) throw new Error(optionErrors.join(' '));
     if (flattenSlashParameters(node.data?.options).some(({ option }) => option?.autocomplete && option?.dynamicAutocomplete)
@@ -776,15 +794,16 @@ async function deploySlashCommands() {
     const options = normalizeSlashCommandOptions(node.data?.options || []);
     desired.push({ name, description, type: 1, ...(options.length ? { options } : {}), ...(node.data?.defaultMemberPermissions ? { default_member_permissions: String(node.data.defaultMemberPermissions) } : {}), ...(Array.isArray(node.data?.integrationTypes) ? { integration_types: node.data.integrationTypes } : {}), ...(Array.isArray(node.data?.contexts) ? { contexts: node.data.contexts } : {}) });
   }
-  if (desired.length > 100) throw new Error('Discord allows at most 100 global slash commands.');
   const current = await client.rest.getGlobalApplicationCommands(application.id);
-  const desiredByName = new Map(desired.map((command) => [command.name, command]));
+  const commandKey = (cmd) => (Number(cmd?.type || 1)) + ':' + String(cmd?.name || '').toLowerCase();
+  const desiredByKey = new Map(desired.map((command) => [commandKey(command), command]));
   const payload = (Array.isArray(current) ? current : []).map((command) => {
     const raw = Object.fromEntries(['name', 'name_localizations', 'description', 'description_localizations', 'options', 'default_member_permissions', 'dm_permission', 'default_permission', 'integration_types', 'contexts', 'nsfw', 'type'].filter((key) => command[key] !== undefined).map((key) => [key, command[key]]));
-    return Number(command.type || 1) === 1 && desiredByName.has(String(command.name).toLowerCase()) ? { ...raw, ...desiredByName.get(String(command.name).toLowerCase()) } : raw;
+    const key = commandKey(command);
+    return desiredByKey.has(key) ? { ...raw, ...desiredByKey.get(key) } : raw;
   });
-  const existingNames = new Set((Array.isArray(current) ? current : []).filter((item) => Number(item.type || 1) === 1).map((item) => String(item.name).toLowerCase()));
-  for (const command of desired) if (!existingNames.has(command.name)) payload.push(command);
+  const existingKeys = new Set((Array.isArray(current) ? current : []).map(commandKey));
+  for (const command of desired) if (!existingKeys.has(commandKey(command))) payload.push(command);
   await client.rest.bulkOverwriteGlobalApplicationCommands(application.id, payload);
   return { deployed: desired.length };
 }
