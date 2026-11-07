@@ -329,8 +329,13 @@ export function evaluateDataNode(type, inputs = {}, data = {}) {
   }
   if (type === 'data_object_get') {
     const object = inputs.object && typeof inputs.object === 'object' && !Array.isArray(inputs.object) ? inputs.object : {};
-    const key = String(inputs.key ?? '');
-    return { value: Object.hasOwn(object, key) ? object[key] : null, exists: Object.hasOwn(object, key) };
+    const key = String(inputs.key ?? '').trim();
+    if (Object.hasOwn(object, key)) return { value: object[key], exists: true };
+    if (key.includes('.') || key.includes('[')) {
+      const result = readDataPath(object, key);
+      return { value: result.exists ? result.value : null, exists: result.exists };
+    }
+    return { value: null, exists: false };
   }
   if (type === 'data_object_set') {
     const object = inputs.object && typeof inputs.object === 'object' && !Array.isArray(inputs.object) ? inputs.object : {};
