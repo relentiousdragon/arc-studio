@@ -16,6 +16,7 @@ export default {
   outputs: [
     { id: 'exec', label: 'Exec', type: 'exec' },
     { id: 'message', label: 'Source Message Object', type: 'object', eventPath: 'message' },
+    { id: 'message_id', label: 'Message ID', type: 'string', eventPath: 'message.id' },
     { id: 'custom_id', label: 'Custom ID', type: 'string' },
     { id: 'user_id', label: 'User ID', type: 'string' },
     { id: 'guild_id', label: 'Server ID', type: 'string', eventPath: 'guild_id' },
