@@ -124,7 +124,7 @@ const DEFAULT_SETTINGS = {
   snapToGrid: true,
   zoomCanvasWithScroll: false,
   canvasRightClickPan: false,
-  canvasQuality: 'auto',
+  canvasQuality: 'fast',
   wirePulse: true,
   wireStyle: 'bezier',
   doubleClickWireToCut: false,
@@ -7857,9 +7857,14 @@ export function App() {
             })}
             {(graphSwitchingLoading || (!workspaceHydrated && Boolean(authToken) && !needsSetup)) && (
               <div className="canvas-graph-loading-overlay" role="status" aria-live="polite">
-                <div className="canvas-graph-loading-badge">
-                  <span className="context-dot" /> Loading {graphLoadingName || activeGraph?.name || 'graph'}...
-                </div>
+                <span className="canvas-graph-loading-text">Loading {graphLoadingName || activeGraph?.name || 'graph'}...</span>
+              </div>
+            )}
+            {!graphSwitchingLoading && workspaceHydrated && !activeTabId && !needsSetup && (
+              <div className="canvas-empty-hint">
+                <span className="empty-hint-glyph"><Plus size={17} /></span>
+                <span>No graph open</span>
+                <button onClick={() => handleAddTab()}>New graph <span className="context-shortcut" aria-label="Shift plus A"><kbd>Shift</kbd><kbd>A</kbd></span></button>
               </div>
             )}
           </div>
