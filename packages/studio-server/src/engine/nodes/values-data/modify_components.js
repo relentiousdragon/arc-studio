@@ -33,6 +33,12 @@ export default {
       "label": "New Style (Optional)",
       "type": "string",
       "defaultValue": ""
+    },
+    {
+      "id": "placeholder",
+      "label": "New Placeholder (Select Menus)",
+      "type": "string",
+      "defaultValue": ""
     }
   ],
   "outputs": [
