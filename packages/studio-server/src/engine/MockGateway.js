@@ -150,7 +150,7 @@ export class MockGateway extends EventEmitter {
   /**
    * @param {Array} outputSink
    */
-  createMockREST(outputSink) {
+  createMockREST(outputSink, contextPayload = null) {
     return {
       createMessage: async (channelId, payload) => {
         const normalizedPayload = typeof payload === 'string' ? { content: payload } : { ...(payload || {}) };
@@ -284,25 +284,30 @@ export class MockGateway extends EventEmitter {
       },
       getGuildMemberPermissions: async (guildId, userId) => {
         outputSink.push({ type: 'GET_GUILD_MEMBER_PERMISSIONS', guildId, userId, timestamp: new Date().toISOString() });
-        return { permissions: '1071698660929' };
+        const permissions = String(contextPayload?.member?.permissions || contextPayload?.permissions || '1071698660929');
+        return { permissions };
       },
       getGuildRolePermissions: async (guildId, roleId) => {
         outputSink.push({ type: 'GET_GUILD_ROLE_PERMISSIONS', guildId, roleId, timestamp: new Date().toISOString() });
-        return { permissions: '1071698660929' };
+        const permissions = String(contextPayload?.member?.permissions || contextPayload?.permissions || '1071698660929');
+        return { permissions };
       },
       getChannelMemberPermissions: async (channelId, userId) => {
         outputSink.push({ type: 'GET_CHANNEL_MEMBER_PERMISSIONS', channelId, userId, timestamp: new Date().toISOString() });
-        return { permissions: '1071698660929' };
+        const permissions = String(contextPayload?.member?.permissions || contextPayload?.permissions || '1071698660929');
+        return { permissions };
       },
       getChannelRolePermissions: async (channelId, roleId) => {
         outputSink.push({ type: 'GET_CHANNEL_ROLE_PERMISSIONS', channelId, roleId, timestamp: new Date().toISOString() });
-        return { permissions: '1071698660929' };
+        const permissions = String(contextPayload?.member?.permissions || contextPayload?.permissions || '1071698660929');
+        return { permissions };
       },
       getGuild: async (guildId) => {
         return { id: String(guildId || '120000000000000000'), name: 'Simulated Server', owner_id: '990000000000000001', member_count: 42 };
       },
       getGuildMember: async (guildId, userId) => {
-        return { user: { id: String(userId || '990000000000000001'), username: 'SimulatedUser' }, roles: [], permissions: '1071698660929' };
+        const permissions = String(contextPayload?.member?.permissions || contextPayload?.permissions || '1071698660929');
+        return { user: { id: String(userId || '990000000000000001'), username: 'SimulatedUser' }, roles: [], permissions };
       }
     };
   }
