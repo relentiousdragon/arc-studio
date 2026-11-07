@@ -4716,7 +4716,7 @@ export function App() {
         if (['action_send_message', 'action_edit_message'].includes(node.type)) {
           permissions.add('View Channels');
           permissions.add('Send Messages');
-          if (node.type === 'action_send_message' && (String(node.data?.thread_id || '').trim() || graph.connections?.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'thread_id'))) permissions.add('Send Messages in Threads');
+          if (node.type === 'action_send_message' && (String(node.data?.thread_id || '').trim() || graph.connections?.some((wire) => wire.targetNodeId === node.id && (wire.targetPinId === 'thread_id' || wire.sourcePinId === 'thread_id')))) permissions.add('Send Messages in Threads');
           if (node.data?.embed || node.data?.blocks?.length || graph.connections?.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'embed')) permissions.add('Embed Links');
           if (node.data?.files?.length || graph.connections?.some((wire) => ['files', 'file_data'].includes(wire.targetPinId) && wire.targetNodeId === node.id)) permissions.add('Attach Files');
         }
@@ -8812,8 +8812,8 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
     if (['action_send_message', 'action_edit_message'].includes(node.type)) {
       const isEdit = node.type === 'action_edit_message';
       const label = node.label || (isEdit ? 'Edit Message' : 'Send Message');
-      const hasChannel = Boolean(String(node.data?.channel_id ?? '').trim()) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'channel_id');
-      const hasThread = !isEdit && (Boolean(String(node.data?.thread_id ?? '').trim()) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'thread_id'));
+      const hasChannel = Boolean(String(node.data?.channel_id ?? '').trim()) || connections.some((wire) => wire.targetNodeId === node.id && (wire.targetPinId === 'channel_id' || wire.targetPinId === 'thread_id'));
+      const hasThread = !isEdit && (Boolean(String(node.data?.thread_id ?? '').trim()) || connections.some((wire) => wire.targetNodeId === node.id && (wire.targetPinId === 'thread_id' || wire.sourcePinId === 'thread_id')));
       const hasMessageId = Boolean(String(node.data?.message_id ?? '').trim()) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'message_id');
       const hasContentWire = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'content');
       const hasEmbedWire = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'embed');
