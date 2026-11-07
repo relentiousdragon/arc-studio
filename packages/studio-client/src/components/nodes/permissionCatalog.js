@@ -13,8 +13,14 @@ export const DISCORD_PERMISSION_GROUPS = [
 export const DISCORD_PERMISSIONS = DISCORD_PERMISSION_GROUPS.flatMap((group) => group.permissions.map(([key, label, bit, contexts]) => ({ key, label, bit, contexts: contexts?.split(',') || [] })));
 
 export function permissionsToBitfield(permissions) {
-  const selected = new Set(Array.isArray(permissions) ? permissions : []);
-  return DISCORD_PERMISSIONS.reduce((bits, permission) => selected.has(permission.key) ? bits | (1n << BigInt(permission.bit)) : bits, 0n).toString();
+  const selected = new Set(Array.isArray(permissions) ? permissions.map(String) : []);
+  return DISCORD_PERMISSIONS.reduce((bits, permission) => {
+    const screaming = permission.key.replace(/([A-Z])/g, '_$1').toUpperCase().replace(/^_/, '');
+    if (selected.has(permission.key) || selected.has(screaming) || selected.has(permission.label)) {
+      return bits | (1n << BigInt(permission.bit));
+    }
+    return bits;
+  }, 0n).toString();
 }
 
 export function bitfieldToPermissions(value) {
