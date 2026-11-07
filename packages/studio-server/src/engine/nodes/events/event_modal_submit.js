@@ -13,6 +13,8 @@ export default {
   inputs: [],
   outputs: [
     { id: 'exec', label: 'Exec', type: 'exec' },
+    { id: 'message', label: 'Source Message Object', type: 'object', eventPath: 'message' },
+    { id: 'message_id', label: 'Message ID', type: 'string', eventPath: 'message.id' },
     { id: 'custom_id', label: 'Custom ID', type: 'string', eventPath: 'data.custom_id' },
     { id: 'submitted_values', label: 'Submitted Values', type: 'object', eventPath: 'data.components' },
     { id: 'user_id', label: 'User ID', type: 'string', eventPath: 'member.user.id' },
