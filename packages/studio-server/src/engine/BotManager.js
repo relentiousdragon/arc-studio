@@ -824,7 +824,7 @@ export class BotManager {
         permissions.add('View Channels');
         permissions.add('Send Messages');
         if (node.type === 'action_send_message'
-          && (String(node.data?.thread_id || '').trim() || graph.connections?.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'thread_id'))) {
+          && (String(node.data?.thread_id || '').trim() || graph.connections?.some((wire) => wire.targetNodeId === node.id && (wire.targetPinId === 'thread_id' || wire.sourcePinId === 'thread_id')))) {
           permissions.add('Send Messages in Threads');
         }
       }
@@ -1836,9 +1836,17 @@ export class BotManager {
         : null;
       const listeningGraphs = [...this.graphs.values()].filter((graph) => graph.graphType !== 'function'
         && (!onlyGraphId || graph.id === onlyGraphId)
-        && (graph.nodes || []).some((node) => NodeDefinitions[node.type]?.gatewayEvent === normalizedEventName
-          && (!String(normalizedEventName).startsWith('WEBSOCKET_') || !String(node.data?.filter_connection_id || '').trim()
-            || String(node.data.filter_connection_id).trim() === String(payload?.connectionId || ''))));
+        && (graph.nodes || []).some((node) => {
+          const definition = NodeDefinitions[node.type];
+          if (definition?.gatewayEvent !== normalizedEventName) return false;
+          if (String(normalizedEventName).startsWith('WEBSOCKET_') && String(node.data?.filter_connection_id || '').trim()
+            && String(node.data.filter_connection_id).trim() !== String(payload?.connectionId || '')) return false;
+          if (node.type === 'event_slash_command' && String(node.data?.commandName || '').trim()
+            && String(node.data.commandName).trim().toLowerCase() !== String(payload?.data?.name || '').trim().toLowerCase()) return false;
+          if (['event_button_click', 'event_select_menu', 'event_modal_submit'].includes(node.type) && String(node.data?.custom_id || '').trim()
+            && String(node.data.custom_id).trim() !== String(payload?.data?.custom_id || '').trim()) return false;
+          return true;
+        }));
       await Promise.all(listeningGraphs.map(async (graph) => {
         if (this.graphs.get(graph.id) !== graph) return;
         const isReadyEvent = normalizedEventName === 'READY';
