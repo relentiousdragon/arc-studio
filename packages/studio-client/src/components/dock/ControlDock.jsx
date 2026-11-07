@@ -1,7 +1,7 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Activity, AlertTriangle, Archive, Check, ChevronDown, ChevronLeft, ChevronUp, CircleCheck, CircleX, ClipboardCopy, Cpu, FileText,
+  Activity, AlertTriangle, Archive, Check, ChevronDown, ChevronLeft, ChevronUp, CircleCheck, CircleX, ClipboardCopy, Cpu, ExternalLink, FileText,
   GitCompare, PictureInPicture2, Play, Plus, Save, Search, ShieldCheck, Smile, Square, StepForward, Terminal, Trash2, Upload, X
 } from 'lucide-react';
 import { arcEvents } from '../../core/ArcEvents.js';
@@ -15,6 +15,12 @@ import { CustomEmoji } from '../ui/CustomEmoji.jsx';
 import { getArcUiScale } from '../../core/uiScale.js';
 import { BuiltInNodeDefinitions } from '../nodes/nodeDefinitions.js';
 import { Modal } from '../ui/Modal.jsx';
+import { DISCORD_PERMISSIONS, permissionsToBitfield, bitfieldToPermissions } from '../nodes/permissionCatalog.js';
+
+const PERMISSION_DROPDOWN_OPTIONS = DISCORD_PERMISSIONS.map((perm) => ({ value: perm.key, label: perm.label }));
+const DEFAULT_MOCK_PERMISSIONS = Object.freeze([
+  'ViewChannel', 'SendMessages', 'EmbedLinks', 'AttachFiles', 'ReadMessageHistory', 'UseApplicationCommands', 'AddReactions'
+]);
 
 const EMPTY_DEBUG_VALUES = [];
 //
@@ -57,6 +63,20 @@ function flattenReviewedSlashOptions(options = [], parents = []) {
     return [{ key: name, name, description: `${typeLabel} · ${option.required ? 'Required' : 'Optional'} · ${option.description || ''}${details.length ? ` · ${details.join(' · ')}` : ''}` }];
   });
 }
+//
+function resolveLogNodeTarget(log, activeTabId) {
+  if (log?.meta?.graphId && log?.meta?.nodeId) {
+    return { graphId: log.meta.graphId, nodeId: log.meta.nodeId };
+  }
+  const text = String(log?.message || '');
+  const idMatch = /\((node_[a-zA-Z0-9_]+)\)/.exec(text)
+    || /node\s+["“]?([a-zA-Z0-9_-]+)["”]?/i.exec(text)
+    || /Failed on node\s+([a-zA-Z0-9_-]+)/i.exec(text);
+  if (idMatch) {
+    return { graphId: log?.meta?.graphId || activeTabId, nodeId: idMatch[1] };
+  }
+  return null;
+}
 
 export function ControlDock({
   logs = [], botStatus = 'DISCONNECTED', discordAuthWarning = null, botMetrics = {}, botProfile, activeTabId, activeProjectId = '', authToken, onEmojisChange, emojiCacheScope = '', networkOnline = true, cachedAppEmojis = [],
@@ -87,6 +107,17 @@ export function ControlDock({
   const [isResizing, setIsResizing] = useState(false);
   const resizeRef = useRef({ y: 0, height: 0 });
   const logContainerRef = useRef(null);
+  const isNearBottomRef = useRef(true);
+  const lastLogsLengthRef = useRef(logs?.length || 0);
+  const prevTabRef = useRef(activeTab);
+  const prevOpenRef = useRef(Boolean(isOpen || consolePopupRoot));
+
+  const handleConsoleScroll = useCallback((event) => {
+    const el = event.currentTarget;
+    if (!el) return;
+    const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    isNearBottomRef.current = distanceToBottom <= 56;
+  }, []);
   const [filterLevel, setFilterLevel] = useState('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [showDebugLogs, setShowDebugLogs] = useState(() => readAppStorage('arc_console_show_debug_logs') === 'true');
@@ -191,6 +222,7 @@ export function ControlDock({
   const [mockChannelId, setMockChannelId] = useState('120000000000000002');
   const [mockCommand, setMockCommand] = useState('help');
   const [mockCustomId, setMockCustomId] = useState('mock_button_click');
+  const [mockPermissions, setMockPermissions] = useState(() => DEFAULT_MOCK_PERMISSIONS);
   const [mockModalFieldId, setMockModalFieldId] = useState('sample-input');
   const [mockModalValues, setMockModalValues] = useState({});
   const [selectedModalNodeId, setSelectedModalNodeId] = useState('');
@@ -302,27 +334,36 @@ export function ControlDock({
   const [expandedReviewIssues, setExpandedReviewIssues] = useState(() => new Set());
   const reviewCommandItems = useMemo(() => {
     if (!commandReview) return [];
-    const statusByName = new Map();
+    const commandKey = (cmd) => `${Number(cmd?.type || 1)}:${String(cmd?.name || '').toLowerCase()}`;
+    const statusByKey = new Map();
     for (const [key, status] of [['created', 'Create'], ['updated', 'Update'], ['unchanged', 'Unchanged']]) {
-      for (const item of commandReview.changes?.[key] || []) statusByName.set(String(item.name).toLowerCase(), status);
+      for (const item of commandReview.changes?.[key] || []) statusByKey.set(commandKey(item), status);
     }
     const desired = (commandReview.commands || []).map((command) => {
-      const graph = graphs.find((item) => (item.nodes || []).some((node) => node.type === 'event_slash_command' && String(node.data?.commandName || '').toLowerCase() === String(command.name).toLowerCase()));
-      return { ...command, status: statusByName.get(String(command.name).toLowerCase()) || 'Command', graphName: graph?.name || '', graphId: graph?.id || '' };
+      const graph = graphs.find((item) => (item.nodes || []).some((node) => {
+        if (!['event_slash_command', 'event_user_command', 'event_message_command'].includes(node.type)) return false;
+        const nodeType = node.type === 'event_user_command' ? 2 : node.type === 'event_message_command' ? 3 : 1;
+        return nodeType === Number(command.type || 1) && String(node.data?.commandName || '').toLowerCase() === String(command.name).toLowerCase();
+      }));
+      return { ...command, status: statusByKey.get(commandKey(command)) || 'Command', graphName: graph?.name || '', graphId: graph?.id || '' };
     });
     const removed = (commandReview.changes?.removed || []).map((command) => ({ ...command, status: 'Remove', description: 'This managed command will be removed.' }));
     return [...desired, ...removed];
   }, [commandReview, graphs]);
   const workspaceCommandItems = useMemo(() => {
-    const byName = new Map();
+    const byKey = new Map();
     for (const graph of graphs) {
       for (const node of graph.nodes || []) {
-        if (node.type !== 'event_slash_command') continue;
-        const name = String(node.data?.commandName || '').trim().toLowerCase();
-        if (!name) continue;
-        const current = byName.get(name) || {
+        if (!['event_slash_command', 'event_user_command', 'event_message_command'].includes(node.type)) continue;
+        const type = node.type === 'event_user_command' ? 2 : node.type === 'event_message_command' ? 3 : 1;
+        const rawName = String(node.data?.commandName || '').trim();
+        if (!rawName) continue;
+        const name = type === 1 ? rawName.toLowerCase() : rawName;
+        const key = `${type}:${name.toLowerCase()}`;
+        const current = byKey.get(key) || {
           name,
-          description: String(node.data?.description || ''),
+          type,
+          description: type === 1 ? String(node.data?.description || '') : (type === 2 ? 'User context command' : 'Message context command'),
           options: Array.isArray(node.data?.options) ? node.data.options : [],
           status: 'Configured',
           graphName: graph.name || 'Untitled graph',
@@ -330,10 +371,10 @@ export function ControlDock({
           graphs: []
         };
         if (!current.graphs.some((item) => item.id === graph.id)) current.graphs.push({ id: graph.id, name: graph.name || 'Untitled graph' });
-        byName.set(name, current);
+        byKey.set(key, current);
       }
     }
-    return [...byName.values()].map((command) => command.graphs.length > 1
+    return [...byKey.values()].map((command) => command.graphs.length > 1
       ? { ...command, graphName: `${command.graphs.length} graphs` }
       : command);
   }, [graphs]);
@@ -441,7 +482,29 @@ export function ControlDock({
   }, [isResizing, dockHeight]);
 
   useEffect(() => {
-    if ((isOpen || consolePopupRoot) && activeTab === 'console' && logContainerRef.current) logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+    const isConsoleActive = (isOpen || consolePopupRoot) && activeTab === 'console';
+    const justOpenedOrSwitched = isConsoleActive && (
+      prevTabRef.current !== activeTab ||
+      !prevOpenRef.current
+    );
+    prevTabRef.current = activeTab;
+    prevOpenRef.current = Boolean(isOpen || consolePopupRoot);
+
+    const prevLength = lastLogsLengthRef.current;
+    const currentLength = logs?.length || 0;
+    lastLogsLengthRef.current = currentLength;
+
+    if (!isConsoleActive || !logContainerRef.current) return;
+
+    if (justOpenedOrSwitched) {
+      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+      isNearBottomRef.current = true;
+      return;
+    }
+
+    if (currentLength > prevLength && isNearBottomRef.current) {
+      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+    }
   }, [logs, isOpen, activeTab, consolePopupRoot]);
 
   useEffect(() => {
@@ -580,7 +643,7 @@ export function ControlDock({
     setSimulating(true);
     setSimResult(null);
     const cronNodeId = graphLookup.get(activeTabId)?.nodes?.find((node) => node.type === 'event_cron')?.id;
-    const payload = createSimulationPayload(selectedEvent, { mockContent, mockCommand, mockAuthor, mockChannelId, mockCustomId, mockModalFieldId, mockModalValues, modal: selectedSimulationModal?.modal, cronNodeId });
+    const payload = createSimulationPayload(selectedEvent, { mockContent, mockCommand, mockAuthor, mockChannelId, mockCustomId, mockModalFieldId, mockModalValues, mockPermissions, modal: selectedSimulationModal?.modal, cronNodeId });
     if (selectedEvent === 'MODAL_SUBMIT') setModalSubmissionSnapshot(createModalSubmissionRows(selectedSimulationModal?.modal, mockModalValues, mockModalFieldId));
     try {
       const response = await fetch(apiUrl('/api/mock/inject'), {
@@ -608,7 +671,7 @@ export function ControlDock({
     setSimResult(null);
     setSimulating(true);
     const cronNodeId = graphLookup.get(activeTabId)?.nodes?.find((node) => node.type === 'event_cron')?.id;
-    const payload = createSimulationPayload(selectedEvent, { mockContent, mockCommand, mockAuthor, mockChannelId, mockCustomId, mockModalFieldId, mockModalValues, modal: selectedSimulationModal?.modal, cronNodeId });
+    const payload = createSimulationPayload(selectedEvent, { mockContent, mockCommand, mockAuthor, mockChannelId, mockCustomId, mockModalFieldId, mockModalValues, mockPermissions, modal: selectedSimulationModal?.modal, cronNodeId });
     if (selectedEvent === 'MODAL_SUBMIT') setModalSubmissionSnapshot(createModalSubmissionRows(selectedSimulationModal?.modal, mockModalValues, mockModalFieldId));
     try {
       const response = await fetch(apiUrl('/api/mock/debug/start'), {
@@ -713,7 +776,7 @@ export function ControlDock({
 
   const saveFixture = (event) => {
     event.preventDefault();
-    const fixture = { id: `fixture_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, name: fixtureName.trim() || (selectedEvent === 'MESSAGE_CREATE' ? mockContent : selectedEvent === 'SLASH_COMMAND' ? `/${mockCommand}` : selectedEvent.replaceAll('_', ' ').toLowerCase()), eventName: selectedEvent, mockContent, mockCommand, mockAuthor, mockChannelId, mockCustomId, createdAt: new Date().toISOString() };
+    const fixture = { id: `fixture_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, name: fixtureName.trim() || (selectedEvent === 'MESSAGE_CREATE' ? mockContent : selectedEvent === 'SLASH_COMMAND' ? `/${mockCommand}` : selectedEvent.replaceAll('_', ' ').toLowerCase()), eventName: selectedEvent, mockContent, mockCommand, mockAuthor, mockChannelId, mockCustomId, mockPermissions, createdAt: new Date().toISOString() };
     const next = [fixture, ...fixtures].slice(0, 30);
     setFixtures(next);
     writeAppStorage('arc_simulation_fixtures', JSON.stringify(next));
@@ -730,6 +793,7 @@ export function ControlDock({
     setMockContent(fixture.mockContent || '');
     setMockCommand(fixture.mockCommand || 'help');
     setMockCustomId(fixture.mockCustomId ?? defaultMockCustomId(fixture.eventName));
+    setMockPermissions(Array.isArray(fixture.mockPermissions) ? fixture.mockPermissions : (typeof fixture.mockPermissions === 'string' ? bitfieldToPermissions(fixture.mockPermissions) : DEFAULT_MOCK_PERMISSIONS));
     setMockAuthor(fixture.mockAuthor || 'Studio Tester');
     setMockChannelId(fixture.mockChannelId || '120000000000000002');
   };
@@ -902,10 +966,35 @@ export function ControlDock({
       </div>
     </div>
     {logFiles.length > 0 && fileContent === null && <div className="archive-strip"><span>Saved logs</span>{logFiles.map((file) => <button key={file.filename} onClick={() => readLogFile(file.filename)}>{file.filename}<small>{file.sizeKb} KB</small></button>)}<button className="archive-close" onClick={() => setLogFiles([])} aria-label="Close saved logs"><X size={14} /></button></div>}
-    {fileContent !== null ? <div className="archive-view"><div className="archive-view-header"><span><FileText size={14} /> {selectedFile}</span><button onClick={() => setFileContent(null)}>Close <X size={13} /></button></div><pre>{fileContent}</pre></div> : <div className="log-lines" ref={logContainerRef}>
-      {filteredLogs.length === 0 ? <div className="dock-empty"><Activity size={17} /><span>No output</span></div> : filteredLogs.map((log) => <div className={`log-line${log.meta?.graphId && log.meta?.nodeId ? ' is-traceable' : ''}`} key={log.id} onDoubleClick={() => log.meta?.graphId && log.meta?.nodeId && onTraceLog?.(log.meta.graphId, log.meta.nodeId)} onContextMenu={(event) => openConsoleContextMenu(event, log)} title={log.meta?.graphId && log.meta?.nodeId ? 'Double-click to open the graph and highlight this node' : undefined}>
-        <time>{formatTime(log.timestamp)}</time><span className={`log-level log-${String(log.level || 'INFO').toLowerCase()}`}>{log.level}</span><span className="log-message">{log.message}</span>
-      </div>)}
+    {fileContent !== null ? <div className="archive-view"><div className="archive-view-header"><span><FileText size={14} /> {selectedFile}</span><button onClick={() => setFileContent(null)}>Close <X size={13} /></button></div><pre>{fileContent}</pre></div> : <div className="log-lines" ref={logContainerRef} onScroll={handleConsoleScroll}>
+      {filteredLogs.length === 0 ? <div className="dock-empty"><Activity size={17} /><span>No output</span></div> : filteredLogs.map((log) => {
+        const target = resolveLogNodeTarget(log, activeTabId);
+        const isTraceable = Boolean(target?.graphId && target?.nodeId);
+        return (
+          <div
+            className={`log-line${isTraceable ? ' is-traceable' : ''}`}
+            key={log.id}
+            onClick={() => isTraceable && onTraceLog?.(target.graphId, target.nodeId)}
+            onDoubleClick={() => isTraceable && onTraceLog?.(target.graphId, target.nodeId)}
+            onContextMenu={(event) => openConsoleContextMenu(event, log)}
+            title={isTraceable ? 'Click to open graph and highlight this node' : undefined}
+          >
+            <time>{formatTime(log.timestamp)}</time>
+            <span className={`log-level log-${String(log.level || 'INFO').toLowerCase()}`}>{log.level}</span>
+            <span className="log-message">{log.message}</span>
+            {isTraceable && (
+              <button
+                type="button"
+                className="log-trace-jump-pill"
+                onClick={(e) => { e.stopPropagation(); onTraceLog?.(target.graphId, target.nodeId); }}
+                title="Highlight node in graph"
+              >
+                Go to node
+              </button>
+            )}
+          </div>
+        );
+      })}
     </div>}
   </div>;
 
@@ -932,6 +1021,7 @@ export function ControlDock({
             <div className="panel-section-heading">Event</div>
           <AnimatedDropdown value={selectedEvent} onChange={(eventName) => { setSelectedEvent(eventName); setMockCustomId(eventName === 'MODAL_SUBMIT' ? String(selectedSimulationModal?.modal?.customId || defaultMockCustomId(eventName)) : defaultMockCustomId(eventName)); }} options={[
               { value: 'MESSAGE_CREATE', label: 'Message created' }, { value: 'SLASH_COMMAND', label: 'Slash command' },
+              { value: 'USER_COMMAND', label: 'User context command' }, { value: 'MESSAGE_COMMAND', label: 'Message context command' },
               { value: 'BUTTON_CLICK', label: 'Button clicked' }, { value: 'SELECT_MENU', label: 'Select menu used' },
               { value: 'MODAL_SUBMIT', label: 'Modal submitted' }, { value: 'GUILD_MEMBER_ADD', label: 'Member joined' },
               { value: 'CRON_TICK', label: 'Cron schedule tick' },
@@ -940,7 +1030,7 @@ export function ControlDock({
               { value: 'MESSAGE_REACTION_REMOVE', label: 'Reaction removed' }, { value: 'CHANNEL_CREATE', label: 'Channel created' },
               { value: 'VOICE_STATE_UPDATE', label: 'Voice state changed' }
             ]} ariaLabel="Simulation event" className="simulator-event-dropdown" />
-            {selectedEvent === 'MESSAGE_CREATE' ? <label className="dock-field-label">Message<input className="studio-field" value={mockContent} onChange={(event) => setMockContent(event.target.value)} placeholder="!ping" /></label> : selectedEvent === 'SLASH_COMMAND' ? <label className="dock-field-label">Command<input className="studio-field" value={mockCommand} onChange={(event) => setMockCommand(event.target.value)} placeholder="help" /></label> : null}
+            {selectedEvent === 'MESSAGE_CREATE' ? <label className="dock-field-label">Message<input className="studio-field" value={mockContent} onChange={(event) => setMockContent(event.target.value)} placeholder="!ping" /></label> : ['SLASH_COMMAND', 'USER_COMMAND', 'MESSAGE_COMMAND'].includes(selectedEvent) ? <label className="dock-field-label">Command<input className="studio-field" value={mockCommand} onChange={(event) => setMockCommand(event.target.value)} placeholder={selectedEvent === 'SLASH_COMMAND' ? 'help' : 'Bookmark'} /></label> : null}
             {selectedEvent === 'CRON_TICK' ? <div className="simulator-sample-note">Runs the first On Schedule node in this graph once, without waiting for its cron expression.</div> : <div className="simulator-sample-note">{simulationEventHint(selectedEvent)}</div>}
             {['BUTTON_CLICK', 'SELECT_MENU'].includes(selectedEvent) && <label className="dock-field-label">Custom ID<input className="studio-field" value={mockCustomId} onChange={(event) => setMockCustomId(event.target.value)} placeholder="component_custom_id" autoCapitalize="none" autoCorrect="off" spellCheck={false} /></label>}
             {selectedEvent === 'MODAL_SUBMIT' && <div className="simulation-modal-fields">
@@ -958,6 +1048,7 @@ export function ControlDock({
             </div>}
             <label className="dock-field-label">Author<input className="studio-field" value={mockAuthor} onChange={(event) => setMockAuthor(event.target.value)} /></label>
             <label className="dock-field-label">Channel ID<input className="studio-field" value={mockChannelId} onChange={(event) => setMockChannelId(event.target.value)} /></label>
+            <label className="dock-field-label">Permissions<AnimatedDropdown multiple={true} searchable={true} searchThreshold={6} value={mockPermissions} options={PERMISSION_DROPDOWN_OPTIONS} onChange={setMockPermissions} placeholder="Choose permissions…" ariaLabel="Permissions" className="simulator-event-dropdown" /></label>
             <div className="simulator-run-actions"><button className="studio-button studio-button-primary simulate-button" onClick={runSimulation} disabled={simulating || Boolean(debugRunId) || !activeTabId}><Play size={14} fill="currentColor" />{simulating ? 'Running…' : 'Run'}</button><button className="studio-button debug-run-button" onClick={beginDebugRun} disabled={simulating || Boolean(debugRunId) || !activeTabId}><StepForward size={14} />Debug</button></div>
             <div className="simulator-fixtures">
               <AnimatedDropdown value={selectedFixtureId} onChange={loadFixture} options={[{ value: '', label: 'Saved fixtures' }, ...fixtures.map((fixture) => ({ value: fixture.id, label: fixture.name }))]} ariaLabel="Saved simulation fixtures" className="simulator-event-dropdown" />
@@ -1054,6 +1145,15 @@ export function ControlDock({
         </div>}
       </div>
       {modalRoot && consoleContextMenu && createPortal(<div className="canvas-context-menu console-context-menu" role="menu" style={{ left: consoleContextMenu.x, top: consoleContextMenu.y }} onPointerDown={(event) => event.stopPropagation()}>
+        {Boolean(resolveLogNodeTarget(consoleContextLog, activeTabId)) && (
+          <button role="menuitem" onClick={() => {
+            const target = resolveLogNodeTarget(consoleContextLog, activeTabId);
+            if (target) {
+              onTraceLog?.(target.graphId, target.nodeId);
+              setConsoleContextMenu(null);
+            }
+          }}><ExternalLink size={13} />Go to node in graph</button>
+        )}
         <button role="menuitem" onClick={() => copyConsoleText(consoleContextLog?.message)}><ClipboardCopy size={13} />Copy message</button>
         <button role="menuitem" onClick={() => copyConsoleText(`${formatTime(consoleContextLog?.timestamp)}  ${consoleContextLog?.level || 'INFO'}  ${consoleContextLog?.message || ''}`)}><ClipboardCopy size={13} />Copy full line</button>
         <button role="menuitem" onClick={() => copyConsoleText(filteredLogs.map((log) => `${formatTime(log.timestamp)}  ${log.level || 'INFO'}  ${log.message}`).join('\n'))}><FileText size={13} />Copy visible output</button>
@@ -1082,12 +1182,12 @@ export function ControlDock({
               </article>;
             })}</div> : <p className="command-review-empty">No graph errors or warnings.</p>}
           </section>
-          <div className="command-review-section"><strong>Commands · {reviewCommandItems.length}</strong>{reviewCommandItems.length > 5 ? <div className="command-review-command-summary"><span>{reviewCommandItems.length} commands in this review</span><button onClick={() => showCommandList()}><FileText size={12} />View list</button></div> : reviewCommandItems.length ? <div className="command-review-command-list">{reviewCommandItems.map((command) => <button key={`${command.status}-${command.name}`} onClick={() => showCommandList(command)}><code>/{command.name}</code><span className={`command-review-status is-${command.status.toLowerCase()}`}>{command.status}</span></button>)}</div> : <p className="command-review-empty">No slash commands in the current graphs.</p>}{(commandReview.changes?.preserved || []).length > 0 && <p className="command-review-empty">{commandReview.changes.preserved.length} unmanaged Discord command{commandReview.changes.preserved.length === 1 ? '' : 's'} will be preserved.</p>}{commandReview.noChanges && <p className="command-review-empty">Discord commands already match these graphs.</p>}</div>
+          <div className="command-review-section"><strong>Commands · {reviewCommandItems.length}</strong>{reviewCommandItems.length > 5 ? <div className="command-review-command-summary"><span>{reviewCommandItems.length} commands in this review</span><button onClick={() => showCommandList()}><FileText size={12} />View list</button></div> : reviewCommandItems.length ? <div className="command-review-command-list">{reviewCommandItems.map((command) => <button key={`${command.status}-${command.type || 1}-${command.name}`} onClick={() => showCommandList(command)}><code>{Number(command.type || 1) === 2 ? `User: ${command.name}` : Number(command.type || 1) === 3 ? `Message: ${command.name}` : `/${command.name}`}</code><span className={`command-review-status is-${command.status.toLowerCase()}`}>{command.status}</span></button>)}</div> : <p className="command-review-empty">No commands in the current graphs.</p>}{(commandReview.changes?.preserved || []).length > 0 && <p className="command-review-empty">{commandReview.changes.preserved.length} unmanaged Discord command{commandReview.changes.preserved.length === 1 ? '' : 's'} will be preserved.</p>}{commandReview.noChanges && <p className="command-review-empty">Discord commands already match these graphs.</p>}</div>
           <div className="command-review-section"><strong>Required intents</strong>{commandReview.intents?.length ? commandReview.intents.map((intent) => <div className={`command-review-requirement ${intent.portalEnabled === false ? 'is-missing' : ''}`} key={intent.key}><span>{intent.label}</span><small>{intent.portalEnabled === false ? 'Disabled in Developer Portal' : intent.portalEnabled === true ? 'Enabled in Developer Portal' : intent.privileged ? 'Status unavailable' : 'Requested on connection'}</small></div>) : <p className="command-review-empty">No gateway intents required.</p>}</div>
           <div className="command-review-section"><strong>Bot permissions</strong>{commandReview.permissions?.length ? <><div className="command-review-permissions">{commandReview.permissions.map((permission) => <code key={permission}>{permission}</code>)}</div><p className="command-review-empty">Verify these permissions in each server where the app is installed.</p></> : <p className="command-review-empty">No server permissions required by the current graph actions.</p>}</div>
         </div>}
       </Modal>, modalRoot)}
-      {modalRoot && createPortal(<Modal isOpen={commandListOpen} onClose={() => { setCommandListOpen(false); setSelectedReviewCommand(null); setCommandDirectoryItems(null); }} title={selectedReviewCommand ? `/${selectedReviewCommand.name}` : commandDirectoryItems ? 'Commands' : 'Reviewed commands'} subtitle={selectedReviewCommand ? `${selectedReviewCommand.status} · command details and usage` : `${commandListItems.length} commands`} icon={selectedReviewCommand ? Activity : FileText} maxWidth="max-w-2xl">
+      {modalRoot && createPortal(<Modal isOpen={commandListOpen} onClose={() => { setCommandListOpen(false); setSelectedReviewCommand(null); setCommandDirectoryItems(null); }} title={selectedReviewCommand ? (Number(selectedReviewCommand.type || 1) === 2 ? `User command: ${selectedReviewCommand.name}` : Number(selectedReviewCommand.type || 1) === 3 ? `Message command: ${selectedReviewCommand.name}` : `/${selectedReviewCommand.name}`) : commandDirectoryItems ? 'Commands' : 'Reviewed commands'} subtitle={selectedReviewCommand ? `${selectedReviewCommand.status} · command details and usage` : `${commandListItems.length} commands`} icon={selectedReviewCommand ? Activity : FileText} maxWidth="max-w-2xl">
         {selectedReviewCommand ? <div className="review-command-detail">
           <button className="review-command-back" onClick={() => { setSelectedReviewCommand(null); setSelectedCommandStats(null); }}><ChevronLeft size={14} />All commands</button>
           <div className="review-command-description"><span className={`command-review-status is-${selectedReviewCommand.status.toLowerCase()}`}>{selectedReviewCommand.status}</span><p>{selectedReviewCommand.description || 'No description'}</p>{selectedReviewCommand.graphName && <small>Graph · {selectedReviewCommand.graphName}</small>}{(selectedReviewCommand.graphs || (selectedReviewCommand.graphId ? [{ id: selectedReviewCommand.graphId, name: selectedReviewCommand.graphName }] : [])).length > 0 && <div className="review-command-graph-links">{(selectedReviewCommand.graphs || [{ id: selectedReviewCommand.graphId, name: selectedReviewCommand.graphName }]).map((link) => <button key={link.id} type="button" onClick={() => { const graph = graphs.find((item) => item.id === link.id); if (graph) { setCommandListOpen(false); setSelectedReviewCommand(null); setCommandDirectoryItems(null); onOpenGraph?.(graph); } }}><FileText size={12} />Open {link.name}</button>)}</div>}</div>
@@ -1100,7 +1200,7 @@ export function ControlDock({
           </section>
         </div> : <>
           <label className="review-command-search"><Search size={15} /><input autoFocus value={commandSearch} onChange={(event) => setCommandSearch(event.target.value)} placeholder="Search commands" /></label>
-          <div className="review-command-list">{filteredReviewCommands.map((command) => <button key={`${command.status}-${command.name}`} onClick={() => { setSelectedReviewCommand(command); setSelectedCommandStats(null); }}><span><code>/{command.name}</code><small>{command.description || command.graphName || 'No description'}</small></span><span className={`command-review-status is-${command.status.toLowerCase()}`}>{command.status}</span></button>)}{!filteredReviewCommands.length && <p className="command-review-empty">No matching commands.</p>}</div>
+          <div className="review-command-list">{filteredReviewCommands.map((command) => <button key={`${command.status}-${command.type || 1}-${command.name}`} onClick={() => { setSelectedReviewCommand(command); setSelectedCommandStats(null); }}><span><code>{Number(command.type || 1) === 2 ? `User: ${command.name}` : Number(command.type || 1) === 3 ? `Message: ${command.name}` : `/${command.name}`}</code><small>{Number(command.type || 1) === 2 ? 'User context command' : Number(command.type || 1) === 3 ? 'Message context command' : (command.description || command.graphName || 'No description')}</small></span><span className={`command-review-status is-${command.status.toLowerCase()}`}>{command.status}</span></button>)}{!filteredReviewCommands.length && <p className="command-review-empty">No matching commands.</p>}</div>
         </>}
       </Modal>, modalRoot)}
     </section>
@@ -1138,6 +1238,8 @@ function simulationEventHint(eventName) {
   const hints = {
     MESSAGE_CREATE: 'Uses your message, author, and channel fields; IDs and remaining Discord metadata are generated.',
     SLASH_COMMAND: 'Uses your command, author, and channel fields with generated interaction data and sample options.',
+    USER_COMMAND: 'Uses your command, author, and channel fields with generated user context interaction data.',
+    MESSAGE_COMMAND: 'Uses your command, author, and channel fields with generated message context interaction data.',
     BUTTON_CLICK: 'Uses your custom ID, author, and channel fields with generated interaction data.',
     SELECT_MENU: 'Uses your custom ID and author/channel fields; the selected option is sample data.',
     MODAL_SUBMIT: 'Submits the selected modal’s fields with the values shown below.',
@@ -1155,11 +1257,15 @@ function simulationEventHint(eventName) {
 //
 function createSimulationPayload(eventName, values) {
   const timestamp = Date.now();
+  const permissionsBitfield = permissionsToBitfield(values.mockPermissions || DEFAULT_MOCK_PERMISSIONS);
   const author = { id: '990000000000000001', username: values.mockAuthor, discriminator: '0', bot: false };
-  const base = { id: `mock_${timestamp}`, channel_id: values.mockChannelId, guild_id: '120000000000000000' };
+  const member = { user: author, nick: 'Simulated Member', roles: [], permissions: permissionsBitfield };
+  const base = { id: `mock_${timestamp}`, channel_id: values.mockChannelId, guild_id: '120000000000000000', member, permissions: permissionsBitfield, app_permissions: permissionsBitfield };
   if (eventName === 'CRON_TICK') return { ...base, cronNodeId: values.cronNodeId, scheduledAt: new Date(timestamp).toISOString(), timeZone: 'UTC', cronExpression: 'manual-debug' };
-  if (eventName === 'MESSAGE_CREATE') return { ...base, content: values.mockContent, author };
-  if (eventName === 'SLASH_COMMAND') return { ...base, type: 2, token: `mock_tok_${timestamp}`, member: { user: author }, data: { type: 1, name: values.mockCommand, options: [] } };
+  if (eventName === 'MESSAGE_CREATE') return { ...base, content: values.mockContent, author, member };
+  if (eventName === 'SLASH_COMMAND') return { ...base, type: 2, token: `mock_tok_${timestamp}`, member, data: { type: 1, name: values.mockCommand, options: [] } };
+  if (eventName === 'USER_COMMAND') return { ...base, type: 2, token: `mock_tok_${timestamp}`, member, data: { type: 2, name: values.mockCommand, target_id: '990000000000000002', resolved: { users: { '990000000000000002': { id: '990000000000000002', username: 'Target User', global_name: 'Target User', bot: false } }, members: { '990000000000000002': { user: { id: '990000000000000002', username: 'Target User' }, nick: 'Target Member', permissions: permissionsBitfield } } } } };
+  if (eventName === 'MESSAGE_COMMAND') return { ...base, type: 2, token: `mock_tok_${timestamp}`, member, data: { type: 3, name: values.mockCommand, target_id: '120000000000000001', resolved: { messages: { '120000000000000001': { id: '120000000000000001', content: values.mockContent || 'Sample target message content', author, channel_id: values.mockChannelId } } } } };
   if (eventName === 'MODAL_SUBMIT') {
     const fields = values.modal?.components?.length ? values.modal.components : [{ customId: values.mockModalFieldId || 'sample-input', type: 'text' }];
     const submittedFields = fields.map((field) => {
@@ -1170,18 +1276,26 @@ function createSimulationPayload(eventName, values) {
         ...(isScalar ? { value: field.type === 'checkbox' ? Boolean(value) : String(value ?? '') } : { values: Array.isArray(value) ? value : value === '' || value == null ? [] : [value] })
       };
     });
-    return { ...base, type: 5, token: `mock_tok_${timestamp}`, member: { user: author }, data: { custom_id: values.mockCustomId || values.modal?.customId || defaultMockCustomId(eventName), components: [{ type: 1, components: submittedFields }] } };
+    return { ...base, type: 5, token: `mock_tok_${timestamp}`, member, data: { custom_id: values.mockCustomId || values.modal?.customId || defaultMockCustomId(eventName), components: [{ type: 1, components: submittedFields }] } };
   }
   if (['BUTTON_CLICK', 'SELECT_MENU'].includes(eventName)) {
     const componentType = eventName === 'BUTTON_CLICK' ? 2 : 3;
-    return { ...base, type: 3, token: `mock_tok_${timestamp}`, member: { user: author }, data: { component_type: componentType, custom_id: values.mockCustomId ?? defaultMockCustomId(eventName), values: eventName === 'SELECT_MENU' ? ['sample-option'] : undefined, components: [] } };
+    const messageId = `message_${timestamp}`;
+    return {
+      ...base,
+      type: 3,
+      token: `mock_tok_${timestamp}`,
+      member,
+      message: { id: messageId, channel_id: base.channel_id, guild_id: base.guild_id, content: 'Simulated source message' },
+      data: { component_type: componentType, custom_id: values.mockCustomId ?? defaultMockCustomId(eventName), values: eventName === 'SELECT_MENU' ? ['sample-option'] : undefined, components: [] }
+    };
   }
-  if (eventName === 'GUILD_MEMBER_ADD' || eventName === 'GUILD_MEMBER_REMOVE') return { ...base, user: author, joined_at: new Date(timestamp).toISOString() };
-  if (eventName === 'MESSAGE_UPDATE') return { ...base, content: values.mockContent, author, edited_timestamp: new Date(timestamp).toISOString() };
+  if (eventName === 'GUILD_MEMBER_ADD' || eventName === 'GUILD_MEMBER_REMOVE') return { ...base, user: author, member, nick: 'Simulated Member', roles: [], permissions: permissionsBitfield, joined_at: new Date(timestamp).toISOString() };
+  if (eventName === 'MESSAGE_UPDATE') return { ...base, content: values.mockContent, author, member, edited_timestamp: new Date(timestamp).toISOString() };
   if (eventName === 'MESSAGE_DELETE') return base;
-  if (eventName.startsWith('MESSAGE_REACTION_')) return { ...base, message_id: `message_${timestamp}`, user_id: author.id, emoji: { id: null, name: '👍' } };
+  if (eventName.startsWith('MESSAGE_REACTION_')) return { ...base, message_id: `message_${timestamp}`, user_id: author.id, member, emoji: { id: null, name: '👍' } };
   if (eventName === 'CHANNEL_CREATE') return { ...base, name: 'sample-channel', type: 0, parent_id: null };
-  if (eventName === 'VOICE_STATE_UPDATE') return { ...base, user_id: author.id, session_id: `session_${timestamp}`, self_mute: false, self_deaf: false };
+  if (eventName === 'VOICE_STATE_UPDATE') return { ...base, user_id: author.id, member, session_id: `session_${timestamp}`, self_mute: false, self_deaf: false };
   return base;
 }
 
