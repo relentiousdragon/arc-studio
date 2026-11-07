@@ -337,7 +337,8 @@ app.use(cors(desktopOrigins.length ? {
   }
 } : undefined));
 app.use('/api/auth/passkeys', express.json({ limit: '64kb' }));
-app.use(express.json({ limit: '40mb' }));
+app.use(['/api/graphs/import', '/api/projects/import'], express.json({ limit: '100mb' }));
+app.use(express.json({ limit: '50mb' }));
 
 function broadcast(data) {
   const json = JSON.stringify(data);
@@ -532,7 +533,10 @@ app.use('/api', (error, req, res, next) => {
   const requestId = randomUUID();
   const code = typeof error?.type === 'string' && /^[a-z0-9_-]+$/i.test(error.type) ? error.type.toUpperCase() : `HTTP_${status}`;
   const title = http.STATUS_CODES[status] || 'Request failed';
-  const detail = status >= 500 ? 'The server could not complete the request.' : String(error?.message || title);
+  let detail = status >= 500 ? 'The server could not complete the request.' : String(error?.message || title);
+  if (status === 413 || error?.type === 'entity.too.large') {
+    detail = 'The uploaded file or payload exceeds the size limit. Reduce the file size or remove large attachments and try again.';
+  }
   if (status >= 500) logger.log('ERROR', `[API] requestId=${requestId} status=${status} path=${req.path} code=${code}`);
   res.status(status).type('application/problem+json').set('X-Request-Id', requestId).json({
     type: `urn:arc-studio:problem:${code.toLowerCase().replace(/[^a-z0-9.-]+/g, '-')}`,
@@ -1425,7 +1429,7 @@ wss.on('connection', (ws, request) => {
           user: { id: ws.arcUser.id, username: ws.arcUser.username },
           serializedGraph,
           nodePositionRevisions,
-          history: [...(state.history || []), { revision, graph }].slice(-(serializedGraph.length <= 1_000_000 ? 8 : 2))
+          history: [...(state.history || []), { revision, graph }].slice(-120)
         });
         scheduleLiveGraphAutosave(projectId, graphId);
         sendToCollaborationRoom(roomKey, { type: 'GRAPH_NODE_MOVED', payload: {
@@ -1482,13 +1486,25 @@ wss.on('connection', (ws, request) => {
         const baseRevision = Number(payload.baseRevision);
         if (previous && Number.isInteger(baseRevision) && baseRevision !== previous.revision) {
           const baseState = previous.history?.find((entry) => entry.revision === baseRevision);
-          if (baseState) candidateGraph = mergeConcurrentGraphValue(baseState.graph, previous.graph, candidateGraph);
-          else {
-            const syncPayload = { ...previous, resync: true };
-            delete syncPayload.serializedGraph;
-            delete syncPayload.history;
-            ws.send(JSON.stringify({ type: 'GRAPH_STATE_SYNC', payload: syncPayload }));
-            return;
+          if (baseState) {
+            candidateGraph = mergeConcurrentGraphValue(baseState.graph, previous.graph, candidateGraph);
+          } else {
+            const fallbackBase = previous.history?.[0]?.graph || previous.graph;
+            candidateGraph = mergeConcurrentGraphValue(fallbackBase, previous.graph, candidateGraph);
+            const mergedNodeIds = new Set((candidateGraph.nodes || []).map((node) => node.id));
+            for (const node of (graph.nodes || [])) {
+              if (node && node.id && !mergedNodeIds.has(node.id)) {
+                candidateGraph.nodes.push(cloneCollaborationValue(node));
+                mergedNodeIds.add(node.id);
+              }
+            }
+            const mergedConnIds = new Set((candidateGraph.connections || []).map((conn) => conn.id));
+            for (const conn of (graph.connections || [])) {
+              if (conn && conn.id && !mergedConnIds.has(conn.id)) {
+                candidateGraph.connections.push(cloneCollaborationValue(conn));
+                mergedConnIds.add(conn.id);
+              }
+            }
           }
         }
         if (previous) candidateGraph = rebaseNodePositions(candidateGraph, previous.graph, previous.nodePositionRevisions, Number.isInteger(baseRevision) ? baseRevision : previous.revision);
@@ -1610,7 +1626,7 @@ wss.on('connection', (ws, request) => {
           user: { id: ws.arcUser.id, username: ws.arcUser.username },
           serializedGraph,
           nodePositionRevisions: previous?.nodePositionRevisions || {},
-          history: [...(previous?.history || (previous ? [{ revision: previous.revision, graph: previous.graph }] : [])), { revision, graph: candidateGraph }].slice(-(serializedGraph.length <= 1_000_000 ? 8 : 2))
+          history: [...(previous?.history || (previous ? [{ revision: previous.revision, graph: previous.graph }] : [])), { revision, graph: candidateGraph }].slice(-120)
         };
         liveGraphStates.set(key, state);
         scheduleLiveGraphAutosave(projectId, graph.id);
