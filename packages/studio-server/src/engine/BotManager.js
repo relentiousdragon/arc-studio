@@ -741,18 +741,70 @@ export class BotManager {
 
   getDesiredSlashCommands(graphs = this.getGraphs()) {
     const definitions = graphs.flatMap((graph) => (graph.nodes || [])
-      .filter((node) => node.type === 'event_slash_command')
+      .filter((node) => ['event_slash_command', 'event_user_command', 'event_message_command'].includes(node.type))
       .map((node) => ({ graph, node })));
     const desired = [];
     const errors = [];
     const seen = new Set();
-    if (!definitions.length) errors.push('Add a slash command event node to a graph before deploying.');
-    if (definitions.length > 100) errors.push('Discord allows up to 100 global slash commands per application.');
+    if (!definitions.length) errors.push('Add a slash or context command event node to a graph before deploying.');
+    const slashCount = definitions.filter((d) => d.node.type === 'event_slash_command').length;
+    const userCount = definitions.filter((d) => d.node.type === 'event_user_command').length;
+    const messageCount = definitions.filter((d) => d.node.type === 'event_message_command').length;
+    if (slashCount > 100) errors.push('Discord allows up to 100 global slash commands per application.');
+    if (userCount > 5) errors.push('Discord allows up to 5 global user context commands per application.');
+    if (messageCount > 5) errors.push('Discord allows up to 5 global message context commands per application.');
+
     for (const { graph, node } of definitions) {
+      const graphName = graph.name || 'Untitled graph';
       const rawName = String(node.data?.commandName || '').trim();
+      const defaultMemberPermissions = node.data?.defaultMemberPermissions === undefined || node.data?.defaultMemberPermissions === ''
+        ? undefined : String(node.data.defaultMemberPermissions);
+      if (defaultMemberPermissions !== undefined && !/^\d{1,20}$/.test(defaultMemberPermissions)) {
+        errors.push(`${rawName || 'Command'} has an invalid default member permission bitfield.`);
+        continue;
+      }
+      const integrationTypes = Array.isArray(node.data?.integrationTypes) ? [...new Set(node.data.integrationTypes.map(Number))] : undefined;
+      const contexts = Array.isArray(node.data?.contexts) ? [...new Set(node.data.contexts.map(Number))] : undefined;
+      if (integrationTypes && (!integrationTypes.length || integrationTypes.some((value) => ![0, 1].includes(value)))) {
+        errors.push(`${rawName || 'Command'} has an invalid integration type. Choose server install, user install, or both.`);
+        continue;
+      }
+      if (contexts && (!contexts.length || contexts.some((value) => ![0, 1, 2].includes(value)))) {
+        errors.push(`${rawName || 'Command'} has an invalid interaction context.`);
+        continue;
+      }
+      if (contexts?.includes(2) && integrationTypes && !integrationTypes.includes(1)) {
+        errors.push(`${rawName || 'Command'} uses private channel context, which requires user installation.`);
+        continue;
+      }
+
+      if (node.type === 'event_user_command' || node.type === 'event_message_command') {
+        const isUser = node.type === 'event_user_command';
+        const type = isUser ? 2 : 3;
+        const kindLabel = isUser ? 'user command' : 'message command';
+        if (!rawName || Array.from(rawName).length > 32) {
+          errors.push(`Graph "${graphName}" has an invalid ${kindLabel} name. Use 1–32 characters.`);
+          continue;
+        }
+        const key = `${type}:${rawName.toLowerCase()}`;
+        if (seen.has(key)) {
+          errors.push(`More than one graph defines the ${kindLabel} "${rawName}". Command names must be unique.`);
+          continue;
+        }
+        seen.add(key);
+        desired.push({
+          name: rawName,
+          description: '',
+          type,
+          ...(defaultMemberPermissions !== undefined ? { default_member_permissions: defaultMemberPermissions } : {}),
+          ...(integrationTypes ? { integration_types: integrationTypes } : {}),
+          ...(contexts ? { contexts } : {})
+        });
+        continue;
+      }
+
       const name = rawName.toLowerCase();
       const description = String(node.data?.description || '').trim();
-      const graphName = graph.name || 'Untitled graph';
       if (!/^[-_'\p{L}\p{N}\p{sc=Deva}\p{sc=Thai}]{1,32}$/u.test(name) || name !== rawName) {
         errors.push(`Graph "${graphName}" has an invalid slash command name. Use 1–32 lowercase letters, numbers, hyphens, underscores, or apostrophes, without a leading slash.`);
         continue;
@@ -761,31 +813,12 @@ export class BotManager {
         errors.push(`/${name} needs a description between 1 and 100 characters.`);
         continue;
       }
-      if (seen.has(name)) {
+      const slashKey = `1:${name}`;
+      if (seen.has(slashKey)) {
         errors.push(`More than one graph defines /${name}. Slash command names must be unique.`);
         continue;
       }
-      seen.add(name);
-      const defaultMemberPermissions = node.data?.defaultMemberPermissions === undefined || node.data?.defaultMemberPermissions === ''
-        ? undefined : String(node.data.defaultMemberPermissions);
-      if (defaultMemberPermissions !== undefined && !/^\d{1,20}$/.test(defaultMemberPermissions)) {
-        errors.push(`/${name} has an invalid default member permission bitfield.`);
-        continue;
-      }
-      const integrationTypes = Array.isArray(node.data?.integrationTypes) ? [...new Set(node.data.integrationTypes.map(Number))] : undefined;
-      const contexts = Array.isArray(node.data?.contexts) ? [...new Set(node.data.contexts.map(Number))] : undefined;
-      if (integrationTypes && (!integrationTypes.length || integrationTypes.some((value) => ![0, 1].includes(value)))) {
-        errors.push(`/${name} has an invalid integration type. Choose server install, user install, or both.`);
-        continue;
-      }
-      if (contexts && (!contexts.length || contexts.some((value) => ![0, 1, 2].includes(value)))) {
-        errors.push(`/${name} has an invalid interaction context.`);
-        continue;
-      }
-      if (contexts?.includes(2) && integrationTypes && !integrationTypes.includes(1)) {
-        errors.push(`/${name} uses private-channel context, which requires user installation.`);
-        continue;
-      }
+      seen.add(slashKey);
       const rawOptions = Array.isArray(node.data?.options) ? node.data.options : [];
       const optionErrors = validateSlashCommandOptions(rawOptions, name);
       if (optionErrors.length) {
@@ -873,36 +906,51 @@ export class BotManager {
       if (!application?.id) throw error;
     }
     if (!application?.id) throw new Error('Discord did not return an application ID for this bot.');
+    const commandKey = (cmd) => `${Number(cmd?.type || 1)}:${String(cmd?.name || '').toLowerCase()}`;
     const current = await rest.getGlobalApplicationCommands(application.id);
-    const currentCommands = (Array.isArray(current) ? current : []).filter((command) => Number(command.type || 1) === 1);
-    const currentByName = new Map(currentCommands.map((command) => [String(command.name || '').toLowerCase(), command]));
-    const desiredByName = new Map(desired.map((command) => [command.name, command]));
+    const currentCommands = Array.isArray(current) ? current : [];
+    const currentByKey = new Map(currentCommands.map((command) => [commandKey(command), command]));
+    const desiredByKey = new Map(desired.map((command) => [commandKey(command), command]));
     const managed = new Set(this.botProfile?.managedSlashCommandNames || []);
-    const created = desired.filter((command) => !currentByName.has(command.name));
+    const isManaged = (cmd) => managed.has(commandKey(cmd)) || (Number(cmd?.type || 1) === 1 && managed.has(String(cmd?.name || '').toLowerCase()));
+    const created = desired.filter((command) => !currentByKey.has(commandKey(command)));
     const updated = desired.filter((command) => {
-      const existing = currentByName.get(command.name);
-      return existing && (existing.description !== command.description
-        || JSON.stringify(normalizeSlashCommandOptions(existing.options || [])) !== JSON.stringify(command.options || [])
-        || (existing.default_member_permissions || undefined) !== (command.default_member_permissions || undefined)
+      const existing = currentByKey.get(commandKey(command));
+      if (!existing) return false;
+      if (Number(command.type || 1) === 1) {
+        return existing.description !== command.description
+          || JSON.stringify(normalizeSlashCommandOptions(existing.options || [])) !== JSON.stringify(command.options || [])
+          || (existing.default_member_permissions || undefined) !== (command.default_member_permissions || undefined)
+          || JSON.stringify(existing.integration_types || undefined) !== JSON.stringify(command.integration_types || undefined)
+          || JSON.stringify(existing.contexts || undefined) !== JSON.stringify(command.contexts || undefined);
+      }
+      return (existing.default_member_permissions || undefined) !== (command.default_member_permissions || undefined)
         || JSON.stringify(existing.integration_types || undefined) !== JSON.stringify(command.integration_types || undefined)
-        || JSON.stringify(existing.contexts || undefined) !== JSON.stringify(command.contexts || undefined));
+        || JSON.stringify(existing.contexts || undefined) !== JSON.stringify(command.contexts || undefined);
     });
     const unchanged = desired.filter((command) => {
-      const existing = currentByName.get(command.name);
-      return existing && existing.description === command.description
-        && JSON.stringify(normalizeSlashCommandOptions(existing.options || [])) === JSON.stringify(command.options || [])
-        && (existing.default_member_permissions || undefined) === (command.default_member_permissions || undefined)
+      const existing = currentByKey.get(commandKey(command));
+      if (!existing) return false;
+      if (Number(command.type || 1) === 1) {
+        return existing.description === command.description
+          && JSON.stringify(normalizeSlashCommandOptions(existing.options || [])) === JSON.stringify(command.options || [])
+          && (existing.default_member_permissions || undefined) === (command.default_member_permissions || undefined)
+          && JSON.stringify(existing.integration_types || undefined) === JSON.stringify(command.integration_types || undefined)
+          && JSON.stringify(existing.contexts || undefined) === JSON.stringify(command.contexts || undefined);
+      }
+      return (existing.default_member_permissions || undefined) === (command.default_member_permissions || undefined)
         && JSON.stringify(existing.integration_types || undefined) === JSON.stringify(command.integration_types || undefined)
         && JSON.stringify(existing.contexts || undefined) === JSON.stringify(command.contexts || undefined);
     });
-    const removed = currentCommands.filter((command) => managed.has(String(command.name || '').toLowerCase()) && !desiredByName.has(String(command.name || '').toLowerCase()));
+    const removed = currentCommands.filter((command) => isManaged(command) && !desiredByKey.has(commandKey(command)));
+    const preserved = currentCommands.filter((command) => !isManaged(command) && !desiredByKey.has(commandKey(command)));
     const intentPlan = this.getIntentPlan(graphs);
     return {
       valid: errors.length === 0,
       errors,
       applicationId: application.id,
       commands: desired,
-      changes: { created, updated, unchanged, removed: removed.map(({ name }) => ({ name })), preserved: currentCommands.filter((command) => !managed.has(String(command.name || '').toLowerCase()) && !desiredByName.has(String(command.name || '').toLowerCase())).map(({ name }) => ({ name })) },
+      changes: { created, updated, unchanged, removed: removed.map(({ name, type }) => ({ name, type: type || 1 })), preserved: preserved.map(({ name, type }) => ({ name, type: type || 1 })) },
       planHash: this.getCommandPlanHash(desired, graphs),
       intents: intentPlan.filter((intent) => intent.required),
       permissions: this.getCommandPermissionRequirements(graphs),
@@ -946,34 +994,34 @@ export class BotManager {
         : await rest.getCurrentApplication();
       if (!application?.id) throw new Error('Discord did not return an application ID for this bot.');
       const current = await rest.getGlobalApplicationCommands(application.id);
-      const desiredByName = new Map(desired.map((command) => [command.name, command]));
+      const commandKey = (cmd) => `${Number(cmd?.type || 1)}:${String(cmd?.name || '').toLowerCase()}`;
+      const desiredByKey = new Map(desired.map((command) => [commandKey(command), command]));
       const previouslyManaged = new Set(this.botProfile?.managedSlashCommandNames || []);
+      const isManaged = (cmd) => previouslyManaged.has(commandKey(cmd)) || (Number(cmd?.type || 1) === 1 && previouslyManaged.has(String(cmd?.name || '').toLowerCase()));
       const preserved = (Array.isArray(current) ? current : []).flatMap((command) => {
-        const commandName = String(command.name || '').toLowerCase();
-        const isGraphManaged = Number(command.type || 1) === 1 && previouslyManaged.has(commandName);
-        if (isGraphManaged && !desiredByName.has(commandName)) return [];
+        const key = commandKey(command);
+        const isGraphManaged = isManaged(command);
+        if (isGraphManaged && !desiredByKey.has(key)) return [];
         const payload = {};
         for (const field of ['name', 'name_localizations', 'description', 'description_localizations', 'options', 'default_member_permissions', 'dm_permission', 'default_permission', 'integration_types', 'contexts', 'nsfw', 'type']) {
           if (command[field] !== undefined) payload[field] = command[field];
         }
-        if (Number(command.type || 1) === 1 && desiredByName.has(commandName)) return [{ ...payload, ...desiredByName.get(commandName) }];
+        if (desiredByKey.has(key)) return [{ ...payload, ...desiredByKey.get(key) }];
         return [payload];
       });
-      const existingNames = new Set((Array.isArray(current) ? current : [])
-        .filter((command) => Number(command.type || 1) === 1)
-        .map((command) => String(command.name).toLowerCase()));
-      for (const command of desired) if (!existingNames.has(command.name)) preserved.push(command);
+      const existingKeys = new Set((Array.isArray(current) ? current : []).map(commandKey));
+      for (const command of desired) if (!existingKeys.has(commandKey(command))) preserved.push(command);
 
       const deployed = await rest.bulkOverwriteGlobalApplicationCommands(application.id, preserved);
       if (this.botProfile) {
-        this.botProfile = { ...this.botProfile, application, managedSlashCommandNames: desired.map((command) => command.name) };
+        this.botProfile = { ...this.botProfile, application, managedSlashCommandNames: desired.map(commandKey) };
         this.persistBotConfig();
       }
       return {
         applicationId: application.id,
         deployed: desired.length,
-        created: desired.filter((command) => !existingNames.has(command.name)).length,
-        commands: (Array.isArray(deployed) ? deployed : []).filter((command) => Number(command.type || 1) === 1).length
+        created: desired.filter((command) => !existingKeys.has(commandKey(command))).length,
+        commands: (Array.isArray(deployed) ? deployed : []).length
       };
     } finally {
       this.commandDeploymentInFlight = false;
@@ -1895,7 +1943,7 @@ export class BotManager {
               this.log('ERROR', `Graph “${failure.graphName}” failed at node “${failure.nodeLabel}” (${failure.nodeId}): ${failure.error}`, { graphId: failure.graphId, nodeId: failure.nodeId, nodeLabel: failure.nodeLabel });
               this.broadcastWS({ type: 'GRAPH_NODE_ERROR', payload: failure });
             },
-            log: (message, level = 'EXECUTION') => this.log(level, message)
+            log: (message, level = 'EXECUTION', meta = null) => this.log(level, message, meta)
           });
           if (!graphController.signal.aborted && result.executedNodeIds.length > 0) {
             this.broadcastWS({ type: 'GRAPH_EXECUTION_PULSE', payload: { tabId: graph.id, nodeIds: result.executedNodeIds } });
@@ -2224,7 +2272,7 @@ export class BotManager {
         });
         return { pausedDurationMs: performance.now() - pauseStartedAt };
       } : undefined,
-      log: (message, level = 'EXECUTION') => this.log(level === 'EXECUTION' ? 'MOCK' : level, message)
+      log: (message, level = 'EXECUTION', meta = null) => this.log(level === 'EXECUTION' ? 'MOCK' : level, message, meta)
     });
 
     const elapsed = debugSession && Number.isFinite(result.elapsedMs) ? result.elapsedMs : Date.now() - startTime;
