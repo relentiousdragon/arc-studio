@@ -363,7 +363,7 @@ export class GraphRunner {
       }
       return false;
     };
-    const log = (msg, level = 'EXECUTION') => {
+    const log = (msg, level = 'EXECUTION', meta = null) => {
       msg = redactSecretText(msg);
       const loop = repeatLoopStack.at(-1);
       if (loop && loop.iteration > 1) {
@@ -375,7 +375,7 @@ export class GraphRunner {
       }
       traces.push(msg);
       if (traces.length > 2000) traces.shift();
-      if (context.log) context.log(msg, level);
+      if (context.log) context.log(msg, level, meta);
     };
     const warnedTemplateExpressions = new Set();
     const warnUndefinedTemplate = (node, expression, references = []) => {
@@ -383,7 +383,7 @@ export class GraphRunner {
       if (warnedTemplateExpressions.has(key)) return;
       warnedTemplateExpressions.add(key);
       const names = references.length ? references.join(', ') : expression;
-      log(`[Template] Undefined or null value for ${names} in ${node?.label || node?.type || 'graph'} (${node?.id || graph.id}).`, 'WARN');
+      log(`[Template] Undefined or null value for ${names} in ${node?.label || node?.type || 'graph'} (${node?.id || graph.id}).`, 'WARN', { graphId: graph.id, nodeId: node?.id });
     };
     const resolveFunctionVariable = (variableId, scope, functionGraph) => {
       if (scope === 'project') return getVariableValue(variableId, 'project');
@@ -809,6 +809,7 @@ export class GraphRunner {
         const newLabel = resolveDataInput(sourceNode, 'label', sourceNode.data?.label, seen);
         const newStyle = resolveDataInput(sourceNode, 'style', sourceNode.data?.style, seen);
         const newEmoji = resolveDataInput(sourceNode, 'emoji', sourceNode.data?.emoji, seen);
+        const newPlaceholder = resolveDataInput(sourceNode, 'placeholder', sourceNode.data?.placeholder, seen);
 
         for (const row of rows) {
           const comps = row.components || [];
@@ -823,6 +824,9 @@ export class GraphRunner {
               }
               if (newLabel !== undefined && newLabel !== '') {
                 comp.label = String(newLabel).slice(0, 80);
+              }
+              if (newPlaceholder !== undefined && newPlaceholder !== '') {
+                comp.placeholder = String(newPlaceholder).slice(0, 150);
               }
               if (newEmoji !== undefined && newEmoji !== '') {
                 comp.emoji = parseEmoji(newEmoji);
@@ -861,9 +865,9 @@ export class GraphRunner {
         const warning = fieldLimitWarning({ nodeType: node.type, pin, value, node });
         if (warning && !warnedFieldValues.has(`${node.id}:${pinId}`)) {
           warnedFieldValues.add(`${node.id}:${pinId}`);
-          log(`[Warning] ${node.label || definition?.label || node.type} ${pin?.label || pinId}: ${warning}`);
+          log(`[Warning] ${node.label || definition?.label || node.type} (${node.id}) ${pin?.label || pinId}: ${warning}`, 'WARN', { graphId: graph.id, nodeId: node.id, nodeLabel: node.label || definition?.label || node.type });
         }
-      } catch { /* a field warning must never break a graph run. */ }
+      } catch { /* ... */ }
       return value;
     };
 
@@ -873,7 +877,17 @@ export class GraphRunner {
       if (conn) {
         const upstreamNode = nodes.find((n) => n.id === conn.sourceNodeId);
         value = resolveOutput(upstreamNode, conn.sourcePinId, seen);
-        if (value !== undefined) return warnFieldValue(node, pinId, value);
+        if (value !== undefined) {
+          const nodeDef = NodeDefinitions[node.type];
+          const targetPin = nodeDef?.inputs?.find((item) => item.id === pinId);
+          if (targetPin?.type === 'string' && typeof value !== 'string') {
+            value = value == null ? '' : typeof value === 'object' ? JSON.stringify(value) : String(value);
+          } else if (targetPin?.type === 'number' && typeof value !== 'number') {
+            const num = Number(value);
+            value = Number.isFinite(num) ? num : 0;
+          }
+          return warnFieldValue(node, pinId, value);
+        }
       }
       value = node.data?.[pinId] ?? defaultValue;
       if (typeof value !== 'string' || /^arg_\d+$/.test(pinId)) return warnFieldValue(node, pinId, value);
@@ -1033,7 +1047,7 @@ export class GraphRunner {
           && String(node.data.filter_connection_id).trim() !== String(eventPayload?.connectionId || '')) return false;
         if (node.type === 'event_message_create' && typeof node.data?.prefix === 'string' && node.data.prefix
           && !String(eventPayload?.content || '').trimStart().startsWith(node.data.prefix)) return false;
-        if (node.type === 'event_slash_command' && String(node.data?.commandName || '').trim()
+        if (['event_slash_command', 'event_user_command', 'event_message_command'].includes(node.type) && String(node.data?.commandName || '').trim()
           && String(node.data.commandName).trim().toLowerCase() !== String(eventPayload?.data?.name || '').trim().toLowerCase()) return false;
         if (['event_button_click', 'event_select_menu', 'event_modal_submit'].includes(node.type) && String(node.data?.custom_id || '').trim()
           && String(node.data.custom_id).trim() !== String(eventPayload?.data?.custom_id || '').trim()) return false;
@@ -1048,11 +1062,11 @@ export class GraphRunner {
       log(`[Graph] No active event node found for event "${eventName}". Skipping.`);
       return { executedNodeIds, traces, nodeTimings, wirePath, error: null };
     }
-    if (eventNodeType === 'event_slash_command') {
+    if (['event_slash_command', 'event_user_command', 'event_message_command'].includes(eventNodeType)) {
       const expectedCommand = String(startNode.data?.commandName || '').trim().toLowerCase();
       const receivedCommand = String(eventPayload.data?.name || '').trim().toLowerCase();
       if (expectedCommand && expectedCommand !== receivedCommand) {
-        log(`[Graph] Command /${receivedCommand} does not match /${expectedCommand}. Skipping.`);
+        log(`[Graph] Command ${receivedCommand} does not match ${expectedCommand}. Skipping.`);
         return { executedNodeIds, traces, nodeTimings, wirePath, error: null };
       }
     }
@@ -1105,7 +1119,7 @@ export class GraphRunner {
       dataCache.set(`${startNode.id}:is_bot`, Boolean(eventPayload.author?.bot));
       dataCache.set(`${startNode.id}:has_mentions`, Array.isArray(eventPayload.mentions) && eventPayload.mentions.length > 0);
       dataCache.set(`${startNode.id}:is_reply`, Boolean(eventPayload.message_reference?.message_id));
-      // Keep old saved graphs with the former event-node prefix setting working.
+//
       const legacyPrefix = String(startNode.data?.prefix || '');
       if (legacyPrefix) {
         const parsed = evaluateDataNode('data_parse_prefix_command', { content: eventPayload.content || '', prefix: legacyPrefix }, {});
@@ -1155,6 +1169,43 @@ export class GraphRunner {
           dataCache.set(`${startNode.id}:${pinId}`, value);
         }
       }
+    } else if (eventNodeType === 'event_user_command') {
+      const cmdName = eventPayload.data?.name || '';
+      const userId = eventPayload.member?.user?.id || eventPayload.user?.id || '';
+      const targetUserId = eventPayload.data?.target_id || '';
+      const resolvedUsers = eventPayload.data?.resolved?.users || {};
+      const resolvedMembers = eventPayload.data?.resolved?.members || {};
+      const targetUser = resolvedUsers[targetUserId] || null;
+      const targetMember = resolvedMembers[targetUserId] || null;
+      dataCache.set(`${startNode.id}:command_name`, cmdName);
+      dataCache.set(`${startNode.id}:target_user_id`, targetUserId);
+      dataCache.set(`${startNode.id}:target_user`, targetUser);
+      dataCache.set(`${startNode.id}:target_member`, targetMember);
+      dataCache.set(`${startNode.id}:user_id`, userId);
+      dataCache.set(`${startNode.id}:username`, eventPayload.member?.user?.global_name || eventPayload.member?.user?.username || eventPayload.user?.global_name || eventPayload.user?.username || '');
+      dataCache.set(`${startNode.id}:channel_id`, eventPayload.channel_id || '');
+      dataCache.set(`${startNode.id}:guild_id`, eventPayload.guild_id || '');
+      dataCache.set(`${startNode.id}:application_id`, eventPayload.application_id || '');
+      dataCache.set(`${startNode.id}:interaction_id`, eventPayload.id || '');
+      dataCache.set(`${startNode.id}:interaction_token`, eventPayload.token || '');
+    } else if (eventNodeType === 'event_message_command') {
+      const cmdName = eventPayload.data?.name || '';
+      const userId = eventPayload.member?.user?.id || eventPayload.user?.id || '';
+      const targetMessageId = eventPayload.data?.target_id || '';
+      const resolvedMessages = eventPayload.data?.resolved?.messages || {};
+      const targetMessage = resolvedMessages[targetMessageId] || null;
+      dataCache.set(`${startNode.id}:command_name`, cmdName);
+      dataCache.set(`${startNode.id}:target_message_id`, targetMessageId);
+      dataCache.set(`${startNode.id}:target_message`, targetMessage);
+      dataCache.set(`${startNode.id}:target_message_content`, targetMessage?.content || '');
+      dataCache.set(`${startNode.id}:target_author_id`, targetMessage?.author?.id || '');
+      dataCache.set(`${startNode.id}:user_id`, userId);
+      dataCache.set(`${startNode.id}:username`, eventPayload.member?.user?.global_name || eventPayload.member?.user?.username || eventPayload.user?.global_name || eventPayload.user?.username || '');
+      dataCache.set(`${startNode.id}:channel_id`, eventPayload.channel_id || '');
+      dataCache.set(`${startNode.id}:guild_id`, eventPayload.guild_id || '');
+      dataCache.set(`${startNode.id}:application_id`, eventPayload.application_id || '');
+      dataCache.set(`${startNode.id}:interaction_id`, eventPayload.id || '');
+      dataCache.set(`${startNode.id}:interaction_token`, eventPayload.token || '');
     } else if (eventNodeType === 'event_slash_autocomplete') {
       const commandOptions = {};
       let focused = null;
@@ -1171,20 +1222,39 @@ export class GraphRunner {
       dataCache.set(`${startNode.id}:query`, String(focused?.value ?? '').slice(0, 100));
       dataCache.set(`${startNode.id}:options`, commandOptions);
       dataCache.set(`${startNode.id}:user_id`, eventPayload.member?.user?.id || eventPayload.user?.id || '');
+      dataCache.set(`${startNode.id}:channel_id`, eventPayload.channel_id || '');
+      dataCache.set(`${startNode.id}:guild_id`, eventPayload.guild_id || '');
       dataCache.set(`${startNode.id}:interaction_id`, eventPayload.id || '');
       dataCache.set(`${startNode.id}:interaction_token`, eventPayload.token || '');
     } else if (eventNodeType === 'event_button_click') {
       dataCache.set(`${startNode.id}:custom_id`, eventPayload.data?.custom_id || '');
-      dataCache.set(`${startNode.id}:user_id`, eventPayload.member?.user?.id || '');
-      dataCache.set(`${startNode.id}:guild_id`, eventPayload.guild_id || '');
-      dataCache.set(`${startNode.id}:channel_id`, eventPayload.channel_id || '');
+      dataCache.set(`${startNode.id}:user_id`, eventPayload.member?.user?.id || eventPayload.user?.id || eventPayload.author?.id || '');
+      dataCache.set(`${startNode.id}:guild_id`, eventPayload.guild_id || eventPayload.message?.guild_id || eventPayload.channel?.guild_id || '');
+      dataCache.set(`${startNode.id}:channel_id`, eventPayload.channel_id || eventPayload.message?.channel_id || '');
+      dataCache.set(`${startNode.id}:message`, eventPayload.message || null);
+      dataCache.set(`${startNode.id}:message_id`, eventPayload.message?.id || '');
+      dataCache.set(`${startNode.id}:application_id`, eventPayload.application_id || '');
+      dataCache.set(`${startNode.id}:interaction_id`, eventPayload.id || '');
+      dataCache.set(`${startNode.id}:interaction_token`, eventPayload.token || '');
+    } else if (eventNodeType === 'event_select_menu') {
+      dataCache.set(`${startNode.id}:custom_id`, eventPayload.data?.custom_id || '');
+      dataCache.set(`${startNode.id}:selected_values`, Array.isArray(eventPayload.data?.values) ? eventPayload.data.values.join(',') : (eventPayload.data?.values || ''));
+      dataCache.set(`${startNode.id}:user_id`, eventPayload.member?.user?.id || eventPayload.user?.id || eventPayload.author?.id || '');
+      dataCache.set(`${startNode.id}:guild_id`, eventPayload.guild_id || eventPayload.message?.guild_id || eventPayload.channel?.guild_id || '');
+      dataCache.set(`${startNode.id}:channel_id`, eventPayload.channel_id || eventPayload.message?.channel_id || '');
+      dataCache.set(`${startNode.id}:message`, eventPayload.message || null);
+      dataCache.set(`${startNode.id}:message_id`, eventPayload.message?.id || '');
       dataCache.set(`${startNode.id}:application_id`, eventPayload.application_id || '');
       dataCache.set(`${startNode.id}:interaction_id`, eventPayload.id || '');
       dataCache.set(`${startNode.id}:interaction_token`, eventPayload.token || '');
     } else if (eventNodeType === 'event_modal_submit') {
       dataCache.set(`${startNode.id}:custom_id`, eventPayload.data?.custom_id || '');
       dataCache.set(`${startNode.id}:submitted_values`, eventPayload.data?.components || []);
-      dataCache.set(`${startNode.id}:user_id`, eventPayload.member?.user?.id || eventPayload.user?.id || '');
+      dataCache.set(`${startNode.id}:user_id`, eventPayload.member?.user?.id || eventPayload.user?.id || eventPayload.author?.id || '');
+      dataCache.set(`${startNode.id}:guild_id`, eventPayload.guild_id || eventPayload.message?.guild_id || eventPayload.channel?.guild_id || '');
+      dataCache.set(`${startNode.id}:channel_id`, eventPayload.channel_id || eventPayload.message?.channel_id || '');
+      dataCache.set(`${startNode.id}:message`, eventPayload.message || null);
+      dataCache.set(`${startNode.id}:message_id`, eventPayload.message?.id || '');
       dataCache.set(`${startNode.id}:application_id`, eventPayload.application_id || '');
       dataCache.set(`${startNode.id}:interaction_id`, eventPayload.id || '');
       dataCache.set(`${startNode.id}:interaction_token`, eventPayload.token || '');
@@ -1202,7 +1272,9 @@ export class GraphRunner {
       if (pin.type === 'string' && value && typeof value === 'object') {
         try { value = JSON.stringify(value); } catch { value = ''; }
       }
-      dataCache.set(`${startNode.id}:${pin.id}`, value ?? (pin.type === 'number' ? 0 : pin.type === 'boolean' ? false : ''));
+      if (value !== undefined || !dataCache.has(`${startNode.id}:${pin.id}`)) {
+        dataCache.set(`${startNode.id}:${pin.id}`, value ?? (pin.type === 'number' ? 0 : pin.type === 'boolean' ? false : ''));
+      }
     }
     if (eventDefinition?.outputs?.some((pin) => pin.id === 'thread_id')) {
       dataCache.set(`${startNode.id}:thread_id`, extractThreadId(eventPayload));
@@ -1462,6 +1534,7 @@ export class GraphRunner {
             isInputConnected: (pinId) => Boolean(findInputConnection(targetNode.id, pinId)),
             rest: context.rest,
             client: context.client,
+            eventPayload,
             setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value),
             log
           });
@@ -1493,222 +1566,26 @@ export class GraphRunner {
               interactionState.acknowledged = true;
               await context.rest.createInteractionResponse(interactionId || 'mock', interactionToken, { type: 4, data: { content: deploymentError, flags: 64 } });
             }
-            const branch = ready ? 'ready_exec' : 'timeout_exec';
-            log(ready ? '[Wait Until Condition] Condition became true.' : '[Wait Until Condition] Timed out.');
-            currentExecWires.push(...findExecOutputs(targetNode.id, branch));
-          } else if (targetNode.type === 'wait_until_time') {
-            const { targetTime, waitMs } = parseWaitUntilTime(resolveDataInput(targetNode, 'time', targetNode.data?.time || ''));
-            if (waitMs > 0) {
-              log(`[Wait Until Time] Waiting until ${new Date(targetTime).toISOString()}.`);
-              await waitFor(waitMs, context.signal);
-            } else {
-              log('[Wait Until Time] The specified time has already passed, continuing now.');
+          } else {
+            if (interactionToken && !interactionState.acknowledged) {
+              interactionState.acknowledged = true;
+              interactionState.deferred = true;
+              interactionState.pending = context.rest.deferInteractionReply?.(interactionId || 'mock', interactionToken, { ephemeral: true })
+                || context.rest.createInteractionResponse(interactionId || 'mock', interactionToken, { type: 5, data: { flags: 64 } });
+              try { await interactionState.pending; }
+              catch (error) { interactionState.acknowledged = false; interactionState.deferred = false; throw error; }
+              finally { interactionState.pending = null; }
             }
-            currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-          } else if (targetNode.type === 'function_return') {
-            functionReturnValue = resolveFunctionReturnResult(targetNode, resolveDataInput);
-            for (const returnValue of getFunctionReturnValues(targetNode)) {
-              const value = returnValue.legacy ? functionReturnValue : functionReturnValue?.[returnValue.returnId];
-              dataCache.set(`${targetNode.id}:${functionReturnInputPinId(returnValue)}`, value);
-            }
-            log(`[Function Return] Returned ${getFunctionReturnValues(targetNode).length} value${getFunctionReturnValues(targetNode).length === 1 ? '' : 's'}.`);
-          } else if (targetNode.type === 'function_call') {
-            const targetGraph = context.resolveFunctionGraph?.(targetNode.data?.graphId);
-            if (!targetGraph) throw new Error('Call Function node requires a valid function graph selected.');
-            const callStack = Array.isArray(context.graphCallStack) ? context.graphCallStack : [graph.id];
-            if (callStack.includes(targetGraph.id)) throw new Error('Function call cycle detected. Graphs cannot call themselves or call each other in a loop.');
-            if (callStack.length >= 24) throw new Error('Function call nesting exceeded 24 levels.');
-            const parameters = getFunctionGraphArguments(targetGraph);
-            const missingParameter = parameters.find((parameter) => parameter.optional === false
-              && !connections.some((wire) => wire.targetNodeId === targetNode.id && wire.targetPinId === functionArgumentPinId(parameter)));
-            if (missingParameter) throw new Error(`${targetGraph.name || 'Function'} requires an input for “${missingParameter.name || 'Input'}”.`);
-            const argumentValues = new Map(parameters.map((parameter) => {
-              const value = resolveDataInput(targetNode, functionArgumentPinId(parameter), parameter.defaultValue ?? defaultValueForFunctionType(parameter.valueType));
-              return [parameter.paramId, value];
-            }));
-            log(`[Call Function] Invoking ${targetGraph.name || targetGraph.id}.`);
-            const nestedResult = await GraphRunner.execute(targetGraph, 'FUNCTION_CALL', {
-              ...eventPayload,
-              argumentValues
-            }, {
-              ...context,
-              graphCallStack: [...callStack, targetGraph.id],
-              variablesState: context.getGraphVariableState?.(targetGraph) || (targetGraph.id === graph.id ? persistentVariableValues : new Map()),
-              interactionState
-            });
-            if (nestedResult.error) throw Object.assign(new Error(nestedResult.error), context.signal?.aborted ? { name: 'AbortError' } : {});
-            if (Array.isArray(nestedResult.executedNodeIds)) executedNodeIds.push(...nestedResult.executedNodeIds);
-            for (const returnValue of getFunctionGraphReturnValues(targetGraph)) {
-              const value = returnValue.legacy ? nestedResult.result : nestedResult.result?.[returnValue.returnId];
-              dataCache.set(`${targetNode.id}:${functionReturnOutputPinId(returnValue)}`, value);
-            }
-            currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-          } else if (targetNode.type === 'execute_graph') {
-            const targetGraph = context.resolveFunctionGraph?.(targetNode.data?.graphId);
-            if (!targetGraph || targetGraph.graphType === 'function') throw new Error('Run Event Graph needs a saved event graph selected.');
-            const callStack = Array.isArray(context.graphCallStack) ? context.graphCallStack : [graph.id];
-            if (callStack.includes(targetGraph.id)) throw new Error('Graph call cycle detected. Event graphs cannot run themselves or call each other in a loop.');
-            if (callStack.length >= 16) throw new Error('Event graph call nesting exceeded 16 levels.');
-            log(`[Run Event Graph] Running ${targetGraph.name || targetGraph.id} for ${eventName}.`);
-            const nestedResult = await GraphRunner.execute(targetGraph, eventName, eventPayload, {
-              ...context,
-              graphCallStack: [...callStack, targetGraph.id],
-              variablesState: context.getGraphVariableState?.(targetGraph) || context.variablesState
-            });
-            if (nestedResult.error) throw Object.assign(new Error(nestedResult.error), context.signal?.aborted ? { name: 'AbortError' } : {});
-            if (!nestedResult.executedNodeIds.length) throw new Error(`“${targetGraph.name || 'Target graph'}” has no trigger matching ${eventName}.`);
-            currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-          } else if (targetNode.type === 'parallel') {
-            const branches = ['branch_a_exec', 'branch_b_exec'].map((pinId) => findExecOutputs(targetNode.id, pinId));
-            const joinId = await executeParallelBranches(
-              branches,
-              (branch) => runExecWires(branch, true, parallelDepth + 1),
-              log,
-              (message) => Object.assign(new Error(message), context.signal?.aborted ? { name: 'AbortError' } : {})
-            );
-            currentExecWires.push({ sourceNodeId: targetNode.id, sourcePinId: 'exec', targetNodeId: joinId, __releasedJoin: true });
-          } else if (targetNode.type === 'parallel_join') {
-            currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-          } else if (NodeDefinitions[targetNode.type]?.pluginAdapter) {
-            const definition = NodeDefinitions[targetNode.type];
-            if (context.mock && definition.hostAdapter) throw new Error(`${definition.category} nodes are disabled in Offline Simulator to prevent live database changes.`);
-            const inputs = Object.fromEntries(definition.inputs.filter((pin) => pin.type !== 'exec').map((pin) => [
-              pin.id,
-              resolveDataInput(targetNode, pin.id, pin.defaultValue)
-            ]));
-            const outputs = await PluginStore.executeAdapter(targetNode.type, inputs, { projectDir: context.projectDir });
-            for (const [pinId, value] of Object.entries(outputs)) dataCache.set(`${targetNode.id}:${pinId}`, value);
-            log(`[Plugin Adapter] ${definition.label} completed in its isolated WebAssembly worker.`);
-            currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-          } else if (DISCORD_GUILD_NODE_TYPES.has(targetNode.type)) {
-            const { executeDiscordGuildNode } = await import('./nodes/runtime/discord_guild.js');
-            const result = await executeDiscordGuildNode(targetNode, {
-              resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
-              isInputConnected: (pinId) => Boolean(findInputConnection(targetNode.id, pinId)),
-              rest: context.rest,
-              client: context.client,
-              setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value),
-              log
-            });
-            if (result !== false) currentExecWires.push(...findExecOutputs(targetNode.id, result === 'failure' ? 'failure_exec' : 'exec'));
-          } else if (['action_send_message', 'action_edit_message', 'action_edit_components'].includes(targetNode.type)) {
-            const { executeDiscordMessageNode } = await import('./nodes/runtime/discord_messages.js');
-            await executeDiscordMessageNode(targetNode, {
-              resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
-              resolveComponents: () => resolveMessageComponents(targetNode),
-              resolveFiles: (files) => resolveMessageFiles(targetNode, files),
-              buildEmbed: () => buildEmbedFromNode(targetNode),
-              isInputConnected: (pinId) => Boolean(findInputConnection(targetNode.id, pinId)),
-              rest: context.rest,
-              simulation: Boolean(context.simulation || context.mock),
-              setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value),
-              log
-            });
-            currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-          } else if (targetNode.type === 'action_deploy_slash_commands') {
-            if (typeof context.deploySlashCommands !== 'function') throw new Error('Slash command deployment is available while the bot is connected, not in simulation or exported runtime.');
-            const interactionToken = String(eventPayload?.token || '');
-            const interactionId = String(eventPayload?.id || '');
-            const canDeploy = context.canDeploySlashCommands?.() !== false;
-            let deployment = null;
-            let deploymentError = '';
-            if (!canDeploy) {
-              deploymentError = 'Only server managers with Manage Server or Administrator can deploy slash commands.';
-              if (interactionToken && !interactionState.acknowledged) {
-                interactionState.acknowledged = true;
-                await context.rest.createInteractionResponse(interactionId || 'mock', interactionToken, { type: 4, data: { content: deploymentError, flags: 64 } });
-              }
-            } else {
-              if (interactionToken && !interactionState.acknowledged) {
-                interactionState.acknowledged = true;
-                interactionState.deferred = true;
-                interactionState.pending = context.rest.deferInteractionReply?.(interactionId || 'mock', interactionToken, { ephemeral: true })
-                  || context.rest.createInteractionResponse(interactionId || 'mock', interactionToken, { type: 5, data: { flags: 64 } });
-                try { await interactionState.pending; }
-                catch (error) { interactionState.acknowledged = false; interactionState.deferred = false; throw error; }
-                finally { interactionState.pending = null; }
-              }
-              try {
-                deployment = await context.deploySlashCommands();
-                const count = Number(deployment?.deployed ?? deployment?.commands ?? 0);
-                if (interactionToken && context.rest.editOriginalInteractionResponse) await context.rest.editOriginalInteractionResponse(interactionState.applicationId || eventPayload?.application_id, interactionToken, { content: `Deployed ${count} slash command${count === 1 ? '' : 's'}.` });
-              } catch (error) {
-                deploymentError = error?.message || String(error);
-                if (interactionToken && interactionState.deferred && context.rest.editOriginalInteractionResponse) {
-                  try { await context.rest.editOriginalInteractionResponse(interactionState.applicationId || eventPayload?.application_id, interactionToken, { content: `Slash command deployment failed: ${deploymentError.slice(0, 1800)}` }); } catch { }
-                }
+            try {
+              deployment = await context.deploySlashCommands();
+              const count = Number(deployment?.deployed ?? deployment?.commands ?? 0);
+              if (interactionToken && context.rest.editOriginalInteractionResponse) await context.rest.editOriginalInteractionResponse(interactionState.applicationId || eventPayload?.application_id, interactionToken, { content: `Deployed ${count} slash command${count === 1 ? '' : 's'}.` });
+            } catch (error) {
+              deploymentError = error?.message || String(error);
+              if (interactionToken && interactionState.deferred && context.rest.editOriginalInteractionResponse) {
+                try { await context.rest.editOriginalInteractionResponse(interactionState.applicationId || eventPayload?.application_id, interactionToken, { content: `Slash command deployment failed: ${deploymentError.slice(0, 1800)}` }); } catch { }
               }
             }
-            const deployedCount = Number(deployment?.deployed ?? deployment?.commands ?? 0);
-            dataCache.set(`${targetNode.id}:deployed_count`, deployedCount);
-            dataCache.set(`${targetNode.id}:success`, !deploymentError);
-            dataCache.set(`${targetNode.id}:error`, deploymentError);
-            if (deploymentError) log(`[Deploy Slash Commands] ${deploymentError}`);
-            else log(`[Deploy Slash Commands] Deployed ${deployedCount} command(s).`);
-            currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-          } else if (DISCORD_INTERACTION_NODE_TYPES.has(targetNode.type)) {
-            const { executeDiscordInteractionNode } = await import('./nodes/runtime/discord_interactions.js');
-            await executeDiscordInteractionNode(targetNode, {
-              resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
-              resolveComponents: () => resolveMessageComponents(targetNode),
-              resolveFiles: (files) => resolveMessageFiles(targetNode, files),
-              buildEmbed: () => buildEmbedFromNode(targetNode),
-              isInputConnected: (pinId) => Boolean(findInputConnection(targetNode.id, pinId)),
-              rest: context.rest,
-              simulation: Boolean(context.simulation || context.mock),
-              log,
-              state: interactionState,
-              eventPayload,
-              nodes,
-              setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value)
-            });
-            currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-          } else if (['action_console_log', 'action_console_warn', 'action_console_error'].includes(targetNode.type)) {
-            const { executeConsoleLogNode } = await import('./nodes/runtime/console_log.js');
-            executeConsoleLogNode(targetNode, {
-              resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
-              log
-            });
-            currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-          } else if (targetNode.type === 'action_set_custom_status') {
-            log('Set Custom Status moved to Set Presence. Configure Custom Status there, then delete this node.', 'WARN');
-            dataCache.set(`${targetNode.id}:success`, false);
-            currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-          } else if (targetNode.type === 'action_set_presence') {
-            const { executePresenceNode } = await import('./nodes/runtime/discord_presence.js');
-            executePresenceNode(targetNode, {
-              resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
-              context,
-              setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value),
-              log
-            });
-            currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-          } else if (NETWORK_NODE_TYPES.has(targetNode.type)) {
-            const { executeNetworkNode } = await import('./nodes/runtime/network.js');
-            await executeNetworkNode(targetNode, {
-              resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
-              setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value),
-              context,
-              log
-            });
-            currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-          } else if (WEBSOCKET_NODE_TYPES.has(targetNode.type)) {
-            const { executeWebSocketNode } = await import('./nodes/runtime/websocket.js');
-            const result = await executeWebSocketNode(targetNode, {
-              resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
-              setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value),
-              context,
-              log
-            });
-            currentExecWires.push(...findExecOutputs(targetNode.id, result === 'failure' ? 'failure_exec' : 'exec'));
-          } else if (CRYPTO_NODE_TYPES.has(targetNode.type)) {
-            const { executeCryptoNode } = await import('./nodes/runtime/crypto.js');
-            executeCryptoNode(targetNode, {
-              resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
-              setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value),
-              log
-            });
-            currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
           }
           const deployedCount = Number(deployment?.deployed ?? deployment?.commands ?? 0);
           dataCache.set(`${targetNode.id}:deployed_count`, deployedCount);
@@ -1734,6 +1611,112 @@ export class GraphRunner {
             setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value)
           });
           currentExecWires.push(...findExecContinuation(targetNode.id, wire.targetPinId));
+        } else if (targetNode.type === 'action_await_interaction') {
+          const customIdFilter = String(resolveDataInput(targetNode, 'custom_id', targetNode.data?.custom_id || '')).trim();
+          const userIdFilter = String(resolveDataInput(targetNode, 'user_id', targetNode.data?.user_id || '')).trim();
+          const channelIdFilter = String(resolveDataInput(targetNode, 'channel_id', targetNode.data?.channel_id || '')).trim();
+          const messageIdFilter = String(resolveDataInput(targetNode, 'message_id', targetNode.data?.message_id || '')).trim();
+          const timeoutSeconds = Math.max(1, Math.min(900, Number(resolveDataInput(targetNode, 'timeout_seconds', targetNode.data?.timeout_seconds ?? 60))));
+
+          log(`[Await Interaction] Waiting up to ${timeoutSeconds}s for interaction${customIdFilter ? ` matching custom_id "${customIdFilter}"` : ''}...`);
+
+          let outcome = 'timeout';
+          let matchedInteraction = null;
+
+          const filterInteraction = (interaction) => {
+            const incomingCustomId = String(interaction?.data?.custom_id || '').trim();
+            const incomingUserId = String(interaction?.member?.user?.id || interaction?.user?.id || '').trim();
+            const incomingChannelId = String(interaction?.channel_id || '').trim();
+            const incomingMessageId = String(interaction?.message?.id || '').trim();
+
+            if (customIdFilter && incomingCustomId !== customIdFilter) return false;
+            if (channelIdFilter && incomingChannelId !== channelIdFilter) return false;
+
+            if (userIdFilter && incomingUserId !== userIdFilter) return 'filter_failed';
+            if (messageIdFilter && incomingMessageId !== messageIdFilter) return 'filter_failed';
+            return true;
+          };
+
+          if (context.mock || !context.client?.awaitInteraction) {
+            if (context.mockInteraction) {
+              const res = filterInteraction(context.mockInteraction);
+              if (res === true) {
+                outcome = 'match';
+                matchedInteraction = context.mockInteraction;
+              } else if (res === 'filter_failed') {
+                outcome = 'filter_failed';
+                matchedInteraction = context.mockInteraction;
+              }
+            } else {
+              outcome = 'match';
+              matchedInteraction = {
+                id: `mock_await_${Date.now()}`,
+                token: `mock_await_tok_${Date.now()}`,
+                channel_id: channelIdFilter || '120000000000000002',
+                guild_id: '120000000000000000',
+                message: { id: messageIdFilter || `mock_msg_${Date.now()}` },
+                member: { user: { id: userIdFilter || '990000000000000001', username: 'SimulatedUser' } },
+                data: {
+                  component_type: 2,
+                  custom_id: customIdFilter || 'sample_btn',
+                  values: ['sample_value']
+                }
+              };
+            }
+          } else {
+            let failedInteraction = null;
+            const collected = await context.client.awaitInteraction((interaction) => {
+              const res = filterInteraction(interaction);
+              if (res === true) return true;
+              if (res === 'filter_failed') {
+                failedInteraction = interaction;
+              }
+              return false;
+            }, {
+              timeout: timeoutSeconds * 1000,
+              onFilterFailed: (interaction) => {
+                if (!failedInteraction) failedInteraction = interaction;
+              }
+            });
+
+            if (collected) {
+              outcome = 'match';
+              matchedInteraction = collected;
+            } else if (failedInteraction) {
+              outcome = 'filter_failed';
+              matchedInteraction = failedInteraction;
+            } else {
+              outcome = 'timeout';
+            }
+          }
+
+          if (matchedInteraction) {
+            const userId = matchedInteraction.member?.user?.id || matchedInteraction.user?.id || '';
+            const values = Array.isArray(matchedInteraction.data?.values) ? matchedInteraction.data.values.join(',') : (matchedInteraction.data?.values || '');
+            dataCache.set(`${targetNode.id}:interaction_id`, matchedInteraction.id || '');
+            dataCache.set(`${targetNode.id}:interaction_token`, matchedInteraction.token || '');
+            dataCache.set(`${targetNode.id}:custom_id`, matchedInteraction.data?.custom_id || '');
+            dataCache.set(`${targetNode.id}:user_id`, userId);
+            dataCache.set(`${targetNode.id}:channel_id`, matchedInteraction.channel_id || '');
+            dataCache.set(`${targetNode.id}:guild_id`, matchedInteraction.guild_id || '');
+            dataCache.set(`${targetNode.id}:message_id`, matchedInteraction.message?.id || '');
+            dataCache.set(`${targetNode.id}:selected_values`, values);
+            dataCache.set(`${targetNode.id}:interaction`, matchedInteraction);
+          }
+
+          if (outcome === 'match') {
+            log(`[Await Interaction] Interaction received: ${matchedInteraction?.data?.custom_id || 'matched'}`);
+            currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+          } else if (outcome === 'filter_failed') {
+            log('[Await Interaction] Interaction arrived but failed user/message filter.');
+            const failedWires = findExecOutputs(targetNode.id, 'filter_failed_exec');
+            if (failedWires.length > 0) {
+              currentExecWires.push(...failedWires);
+            }
+          } else {
+            log(`[Await Interaction] Timed out after ${timeoutSeconds}s without matching interaction.`);
+            currentExecWires.push(...findExecOutputs(targetNode.id, 'timeout_exec'));
+          }
         } else if (['action_console_log', 'action_console_warn', 'action_console_error'].includes(targetNode.type)) {
           const { executeConsoleLogNode } = await import('./nodes/runtime/console_log.js');
           executeConsoleLogNode(targetNode, {
@@ -1789,7 +1772,7 @@ export class GraphRunner {
         const timing = recordNodeTiming(targetNode, nodeStartedAt, wire, 'error');
         await context.onSimulationStep?.({ ...timing, type: targetNode.type, label: targetNode.label || NodeDefinitions[targetNode.type]?.label || targetNode.type, error: safeError });
         if (nodeErr?.name === 'AbortError') return { error: safeError };
-        log(`[Node Error] Failed on node ${targetNode.id}: ${safeError}`);
+        log(`[Node Error] Failed on node ${targetNode.id}: ${safeError}`, 'ERROR', { graphId: graph.id, nodeId: targetNode.id, nodeLabel: targetNode.label || NodeDefinitions[targetNode.type]?.label || targetNode.type });
         try {
           context.onNodeError?.({ graphId: graph.id, graphName: graph.name || graph.id, nodeId: targetNode.id, nodeLabel: targetNode.label || NodeDefinitions[targetNode.type]?.label || targetNode.type, error: safeError });
         } catch {}
