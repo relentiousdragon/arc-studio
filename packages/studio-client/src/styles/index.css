@@ -7191,26 +7191,10 @@ body.is-resizing-sidebar .slash-command-studio {
   animation: fadeInFast .12s ease forwards;
 }
 
-.canvas-graph-loading-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 6px 14px;
-  border-radius: 20px;
-  background: var(--chrome);
-  border: 1px solid var(--line);
+.canvas-graph-loading-text {
   color: var(--muted);
   font-family: "DM Mono", monospace;
   font-size: calc((10px) * var(--arc-font-scale, 1));
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
-}
-
-.canvas-graph-loading-badge .context-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--accent);
-  animation: statusPulse 1.2s ease infinite;
 }
 
 .canvas-lock-state {
