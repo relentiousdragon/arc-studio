@@ -5,6 +5,7 @@ import { EventEmitter } from 'node:events';
 import { RESTClient } from '../rest/RESTClient.js';
 import { GatewayShard } from '../gateway/GatewayShard.js';
 import { GatewayIntents, GatewayOpcodes, InteractionCallbackTypes } from '../constants.js';
+import { InteractionCollector, MessageCollector } from './Collectors.js';
 //
 export class Client extends EventEmitter {
   /**
@@ -185,6 +186,40 @@ export class Client extends EventEmitter {
     return this.rest.createInteractionResponse(interactionId, interactionToken, {
       type: InteractionCallbackTypes.CHANNEL_MESSAGE_WITH_SOURCE,
       data: typeof responseData === 'string' ? { content: responseData } : responseData
+    });
+  }
+
+  createInteractionCollector(filter, options = {}) {
+    return new InteractionCollector(this, filter, options);
+  }
+
+  awaitInteraction(filter, options = {}) {
+    const timeout = Number(options.timeout) || 60000;
+    return new Promise((resolve) => {
+      const collector = this.createInteractionCollector(filter, { ...options, timeout, max: 1 });
+      if (typeof options.onFilterFailed === 'function') {
+        collector.on('filterFailed', options.onFilterFailed);
+      }
+      collector.once('end', (collected) => {
+        resolve(collected[0] || null);
+      });
+    });
+  }
+
+  createMessageCollector(filter, options = {}) {
+    return new MessageCollector(this, filter, options);
+  }
+
+  awaitMessage(filter, options = {}) {
+    const timeout = Number(options.timeout) || 60000;
+    return new Promise((resolve) => {
+      const collector = this.createMessageCollector(filter, { ...options, timeout, max: 1 });
+      if (typeof options.onFilterFailed === 'function') {
+        collector.on('filterFailed', options.onFilterFailed);
+      }
+      collector.once('end', (collected) => {
+        resolve(collected[0] || null);
+      });
     });
   }
 }
