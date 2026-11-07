@@ -22104,9 +22104,9 @@ body.is-resizing-dock .popup-modal-studio {
   z-index: 20;
   top: 0;
   bottom: var(--arc-dock-height, 45px);
-  left: 50px;
+  left: 0;
   display: flex;
-  width: min(var(--arc-sidebar-width, 360px), calc(100vw - 60px));
+  width: min(var(--arc-sidebar-width, 360px), calc(100vw / var(--arc-ui-scale, 1) - 60px));
   min-width: 240px;
   max-width: 480px;
   flex-direction: column;
