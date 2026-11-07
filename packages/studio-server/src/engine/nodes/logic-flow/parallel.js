@@ -1,5 +1,5 @@
 export default {
-  "description": "Runs two execution branches concurrently. Both branches must connect to the same Join node before execution continues.",
+  "description": "Runs multiple execution branches concurrently. All branches must connect to the same Join node before execution continues.",
   "type": "parallel",
   "category": "Logic & Flow",
   "label": "Parallel",
