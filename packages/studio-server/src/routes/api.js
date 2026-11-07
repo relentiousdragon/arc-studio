@@ -1641,8 +1641,10 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     if (!source || !Array.isArray(source.nodes) || !Array.isArray(source.connections)) {
       return res.status(400).json({ error: 'Choose a valid ARC Studio graph JSON file.' });
     }
-    if (source.nodes.length > 2000 || source.connections.length > 10000) {
-      return res.status(413).json({ error: 'This graph is too large to import.' });
+    if (source.nodes.length > 5000 || source.connections.length > 25000) {
+      return res.status(413).json({
+        error: `This graph is too large to import. It contains ${source.nodes.length} nodes and ${source.connections.length} connections which exceeds the workspace limit of 5000 nodes and 25000 connections.`
+      });
     }
     if (!serverConfig.desktopMode && hasImportableTextContent(source) && req.body?.confirmCollaborativeText !== true) {
       return res.status(409).json({
