@@ -1,6 +1,8 @@
 // Events
 import node_event_message_create from './events/event_message_create.js';
 import node_event_slash_command from './events/event_slash_command.js';
+import node_event_user_command from './events/event_user_command.js';
+import node_event_message_command from './events/event_message_command.js';
 import node_event_slash_autocomplete from './events/event_slash_autocomplete.js';
 import node_event_button_click from './events/event_button_click.js';
 import node_event_member_join from './events/event_member_join.js';
@@ -113,6 +115,7 @@ import node_action_console_error from './logic-flow/action_console_error.js';
 import node_action_send_message from './discord-actions/action_send_message.js';
 import node_action_edit_message from './discord-actions/action_edit_message.js';
 import node_action_reply_interaction from './discord-actions/action_reply_interaction.js';
+import node_action_await_interaction from './discord-actions/action_await_interaction.js';
 import node_action_respond_autocomplete from './discord-actions/action_respond_autocomplete.js';
 import node_action_show_modal from './discord-actions/action_show_modal.js';
 import node_action_deploy_slash_commands from './discord-actions/action_deploy_slash_commands.js';
@@ -205,6 +208,8 @@ import node_action_websocket_close from './web-network/action_websocket_close.js
 export const nodeDefinitions = [
   node_event_message_create,
   node_event_slash_command,
+  node_event_user_command,
+  node_event_message_command,
   node_event_slash_autocomplete,
   node_event_button_click,
   node_event_member_join,
@@ -309,6 +314,7 @@ export const nodeDefinitions = [
   node_action_send_message,
   node_action_edit_message,
   node_action_reply_interaction,
+  node_action_await_interaction,
   node_action_respond_autocomplete,
   node_action_show_modal,
   node_action_deploy_slash_commands,
