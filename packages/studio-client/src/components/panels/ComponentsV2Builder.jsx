@@ -60,13 +60,14 @@ export function createComponentsV2Block(type) {
   return defaults[type]?.() || null;
 }
 
-function TextField({ value, onChange, graphVariables, templateValuePaths, templateSuggestions, ...props }) {
+function TextField({ value, onChange, graphVariables, templateValuePaths, templateSuggestions, templateFunctions, ...props }) {
   return <DiscordTextField
     value={value ?? ''}
     onChange={(event) => onChange(event.target.value)}
     graphVariables={graphVariables}
     templateValuePaths={templateValuePaths}
     templateSuggestions={templateSuggestions}
+    templateFunctions={templateFunctions}
     templateAutocomplete
     discordAutocomplete
     {...props}
@@ -101,7 +102,7 @@ function HexColorField({ label, value = '', onChange, fallback = '#5865F2' }) {
   </label>;
 }
 
-export function ComponentsV2Builder({ value = [], focusedBlockId = null, focusedItemId = null, focusedSectionItem = null, focusedComponentId = null, onSelectComponent, focusOnly = false, onChange, onSelectBlock, graphVariables = [], templateValuePaths = [], templateSuggestions = [], appEmojis = [], attachments = [], componentBudget = 40, textBudget = 4000, maxRootBlocks = 40, insideContainer = false }) {
+export function ComponentsV2Builder({ value = [], focusedBlockId = null, focusedItemId = null, focusedSectionItem = null, focusedComponentId = null, onSelectComponent, focusOnly = false, onChange, onSelectBlock, graphVariables = [], templateValuePaths = [], templateSuggestions = [], templateFunctions = [], appEmojis = [], attachments = [], componentBudget = 40, textBudget = 4000, maxRootBlocks = 40, insideContainer = false }) {
   const [expandedBlockId, setExpandedBlockId] = React.useState(null);
   const layout = Array.isArray(value) ? value : [];
   const componentCount = countComponents(layout);
@@ -157,10 +158,17 @@ export function ComponentsV2Builder({ value = [], focusedBlockId = null, focused
   }, []);
   React.useEffect(() => { if (focusedItemId || focusedBlockId) setExpandedBlockId(focusedItemId || focusedBlockId); }, [focusedBlockId, focusedItemId]);
   const field = (label, val, update, props = {}) => {
-    const { attachmentKind, validationTarget, ...inputProps } = props;
-    return <label className="v2-field" data-editor-validation-target={validationTarget || undefined}><span>{label}</span>{attachmentKind
-      ? <AttachmentUrlInput value={val} onChange={update} attachments={attachments} imageOnly={attachmentKind === 'image'} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} appEmojis={appEmojis} {...inputProps} />
-      : <TextField value={val} onChange={update} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} appEmojis={appEmojis} {...inputProps} />}</label>;
+    const { attachmentKind, validationTarget, maxLength, ...inputProps } = props;
+    const count = String(val || '').length;
+    return <label className="v2-field" data-editor-validation-target={validationTarget || undefined}>
+      <div className="v2-field-label-row">
+        <span>{label}</span>
+        {maxLength ? <span className={`v2-field-char-count ${count > maxLength ? 'is-over-limit' : ''}`}>{count} / {maxLength}</span> : null}
+      </div>
+      {attachmentKind
+        ? <AttachmentUrlInput value={val} onChange={update} attachments={attachments} imageOnly={attachmentKind === 'image'} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} templateFunctions={templateFunctions} appEmojis={appEmojis} maxLength={maxLength} {...inputProps} />
+        : <TextField value={val} onChange={update} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} templateFunctions={templateFunctions} appEmojis={appEmojis} maxLength={maxLength} {...inputProps} />}
+    </label>;
   };
   const sectionFields = (block, patchBlock) => {
     const selection = focusedSectionItem?.blockId === block.id ? focusedSectionItem : null;
