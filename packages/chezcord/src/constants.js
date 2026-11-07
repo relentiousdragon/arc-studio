@@ -213,3 +213,102 @@ export const CDN = Object.freeze({
   customEmoji: (emojiId, animated = false, size = 128) =>
     `${CDN_BASE}/emojis/${emojiId}.${animated ? 'gif' : 'png'}?size=${size}`
 });
+
+export const MODIFY_COMPONENT_STYLE_OPTIONS = Object.freeze([
+  Object.freeze({ value: '', label: 'Keep existing style' }),
+  Object.freeze({ value: 'primary', label: 'Primary (Blurple)' }),
+  Object.freeze({ value: 'secondary', label: 'Secondary (Gray)' }),
+  Object.freeze({ value: 'success', label: 'Success (Green)' }),
+  Object.freeze({ value: 'danger', label: 'Danger (Red)' }),
+  Object.freeze({ value: 'link', label: 'Link' })
+]);
+
+export const DISCORD_OBJECT_PROPERTIES = Object.freeze({
+  message: Object.freeze([
+    Object.freeze({ key: 'id', label: 'Message ID', desc: 'Snowflake ID of the message' }),
+    Object.freeze({ key: 'content', label: 'Content', desc: 'Text content of the message' }),
+    Object.freeze({ key: 'channel_id', label: 'Channel ID', desc: 'ID of channel where message was sent' }),
+    Object.freeze({ key: 'guild_id', label: 'Server ID', desc: 'ID of server where message was sent' }),
+    Object.freeze({ key: 'author', label: 'Author', desc: 'User object of message author' }),
+    Object.freeze({ key: 'author.id', label: 'Author ID', desc: 'Author snowflake ID' }),
+    Object.freeze({ key: 'author.username', label: 'Author Username', desc: 'Author username' }),
+    Object.freeze({ key: 'author.global_name', label: 'Author Display Name', desc: 'Author global display name' }),
+    Object.freeze({ key: 'author.avatar', label: 'Author Avatar', desc: 'Avatar hash string' }),
+    Object.freeze({ key: 'author.bot', label: 'Author is Bot', desc: 'Whether author is a bot user' }),
+    Object.freeze({ key: 'member', label: 'Member', desc: 'Guild member data for author' }),
+    Object.freeze({ key: 'member.nick', label: 'Member Nickname', desc: 'Server nickname of author' }),
+    Object.freeze({ key: 'member.roles', label: 'Member Roles', desc: 'Array of role IDs assigned to author' }),
+    Object.freeze({ key: 'timestamp', label: 'Timestamp', desc: 'ISO 8601 creation timestamp' }),
+    Object.freeze({ key: 'edited_timestamp', label: 'Edited Timestamp', desc: 'When message was edited' }),
+    Object.freeze({ key: 'pinned', label: 'Is Pinned', desc: 'Whether message is pinned' }),
+    Object.freeze({ key: 'tts', label: 'Is TTS', desc: 'Whether message was text to speech' }),
+    Object.freeze({ key: 'attachments', label: 'Attachments', desc: 'Array of attached files' }),
+    Object.freeze({ key: 'embeds', label: 'Embeds', desc: 'Array of message embeds' }),
+    Object.freeze({ key: 'reactions', label: 'Reactions', desc: 'Array of reaction objects' }),
+    Object.freeze({ key: 'type', label: 'Type', desc: 'Message type number' })
+  ]),
+  user: Object.freeze([
+    Object.freeze({ key: 'id', label: 'User ID', desc: 'User snowflake ID' }),
+    Object.freeze({ key: 'username', label: 'Username', desc: 'Discord username' }),
+    Object.freeze({ key: 'global_name', label: 'Display Name', desc: 'Global display name' }),
+    Object.freeze({ key: 'avatar', label: 'Avatar', desc: 'Avatar hash string' }),
+    Object.freeze({ key: 'bot', label: 'Is Bot', desc: 'Whether user is a bot' }),
+    Object.freeze({ key: 'discriminator', label: 'Discriminator', desc: 'Legacy discriminator tag' }),
+    Object.freeze({ key: 'banner', label: 'Banner', desc: 'Banner image hash' }),
+    Object.freeze({ key: 'accent_color', label: 'Accent Color', desc: 'Banner accent color code' })
+  ]),
+  member: Object.freeze([
+    Object.freeze({ key: 'nick', label: 'Nickname', desc: 'Guild member nickname' }),
+    Object.freeze({ key: 'roles', label: 'Roles', desc: 'Array of role IDs' }),
+    Object.freeze({ key: 'joined_at', label: 'Joined Timestamp', desc: 'ISO 8601 join date' }),
+    Object.freeze({ key: 'premium_since', label: 'Boost Timestamp', desc: 'When member started boosting server' }),
+    Object.freeze({ key: 'deaf', label: 'Is Deafened', desc: 'Whether member is deafened in voice' }),
+    Object.freeze({ key: 'mute', label: 'Is Muted', desc: 'Whether member is muted in voice' }),
+    Object.freeze({ key: 'user', label: 'User', desc: 'User object of member' }),
+    Object.freeze({ key: 'user.id', label: 'User ID', desc: 'Snowflake ID of member user' }),
+    Object.freeze({ key: 'user.username', label: 'Username', desc: 'Username of member' })
+  ]),
+  channel: Object.freeze([
+    Object.freeze({ key: 'id', label: 'Channel ID', desc: 'Channel snowflake ID' }),
+    Object.freeze({ key: 'name', label: 'Channel Name', desc: 'Name of channel' }),
+    Object.freeze({ key: 'type', label: 'Channel Type', desc: 'Channel type number' }),
+    Object.freeze({ key: 'topic', label: 'Topic', desc: 'Channel topic description' }),
+    Object.freeze({ key: 'guild_id', label: 'Server ID', desc: 'Server ID channel belongs to' }),
+    Object.freeze({ key: 'position', label: 'Position', desc: 'Sorting position in channel list' }),
+    Object.freeze({ key: 'parent_id', label: 'Parent ID', desc: 'Category ID of channel' }),
+    Object.freeze({ key: 'nsfw', label: 'Is NSFW', desc: 'Whether channel is age restricted' })
+  ]),
+  guild: Object.freeze([
+    Object.freeze({ key: 'id', label: 'Server ID', desc: 'Server snowflake ID' }),
+    Object.freeze({ key: 'name', label: 'Server Name', desc: 'Server name' }),
+    Object.freeze({ key: 'icon', label: 'Icon', desc: 'Server icon hash' }),
+    Object.freeze({ key: 'owner_id', label: 'Owner ID', desc: 'Server owner user ID' }),
+    Object.freeze({ key: 'member_count', label: 'Member Count', desc: 'Number of members in server' }),
+    Object.freeze({ key: 'description', label: 'Description', desc: 'Server description' })
+  ]),
+  role: Object.freeze([
+    Object.freeze({ key: 'id', label: 'Role ID', desc: 'Role snowflake ID' }),
+    Object.freeze({ key: 'name', label: 'Role Name', desc: 'Role name' }),
+    Object.freeze({ key: 'color', label: 'Color', desc: 'Integer color code' }),
+    Object.freeze({ key: 'hoist', label: 'Is Hoisted', desc: 'Whether displayed separately in member list' }),
+    Object.freeze({ key: 'position', label: 'Position', desc: 'Position in hierarchy' }),
+    Object.freeze({ key: 'permissions', label: 'Permissions', desc: 'Bitwise permission string' }),
+    Object.freeze({ key: 'mentionable', label: 'Is Mentionable', desc: 'Whether role is mentionable by everyone' })
+  ]),
+  interaction: Object.freeze([
+    Object.freeze({ key: 'id', label: 'Interaction ID', desc: 'Unique interaction snowflake ID' }),
+    Object.freeze({ key: 'token', label: 'Token', desc: 'Interaction response token' }),
+    Object.freeze({ key: 'command_name', label: 'Command Name', desc: 'Invoked slash command name' }),
+    Object.freeze({ key: 'custom_id', label: 'Custom ID', desc: 'Component custom ID' }),
+    Object.freeze({ key: 'values', label: 'Selected Values', desc: 'Array of selected options' }),
+    Object.freeze({ key: 'channel_id', label: 'Channel ID', desc: 'Channel ID where interaction occurred' }),
+    Object.freeze({ key: 'guild_id', label: 'Server ID', desc: 'Server ID where interaction occurred' }),
+    Object.freeze({ key: 'user', label: 'User', desc: 'Invoking user object' }),
+    Object.freeze({ key: 'member', label: 'Member', desc: 'Invoking member object' })
+  ]),
+  emoji: Object.freeze([
+    Object.freeze({ key: 'id', label: 'Emoji ID', desc: 'Custom emoji snowflake ID' }),
+    Object.freeze({ key: 'name', label: 'Emoji Name', desc: 'Emoji name' }),
+    Object.freeze({ key: 'animated', label: 'Is Animated', desc: 'Whether emoji is animated GIF' })
+  ])
+});
