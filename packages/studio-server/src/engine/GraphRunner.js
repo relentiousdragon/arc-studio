@@ -88,6 +88,18 @@ function getNodeBaseInputs(node, connections = []) {
   return schemaPins?.inputs || NodeDefinitions[node?.type]?.inputs || [];
 }
 
+function extractThreadId(payload) {
+  if (!payload) return '';
+  if (payload.thread_id) return String(payload.thread_id);
+  if (payload.thread?.id) return String(payload.thread.id);
+  if (payload.message?.thread?.id) return String(payload.message.thread.id);
+  const channelType = Number(payload.channel?.type);
+  if ([10, 11, 12].includes(channelType)) {
+    return String(payload.channel?.id || payload.channel_id || '');
+  }
+  return '';
+}
+
 function getNodeOutputs(node, connections = []) {
   const schemaPins = resolveDynamicNodePins(NodeDefinitions[node?.type], node, connections);
   const outputs = schemaPins?.outputs || NodeDefinitions[node?.type]?.outputs || [];
@@ -1021,6 +1033,10 @@ export class GraphRunner {
           && String(node.data.filter_connection_id).trim() !== String(eventPayload?.connectionId || '')) return false;
         if (node.type === 'event_message_create' && typeof node.data?.prefix === 'string' && node.data.prefix
           && !String(eventPayload?.content || '').trimStart().startsWith(node.data.prefix)) return false;
+        if (node.type === 'event_slash_command' && String(node.data?.commandName || '').trim()
+          && String(node.data.commandName).trim().toLowerCase() !== String(eventPayload?.data?.name || '').trim().toLowerCase()) return false;
+        if (['event_button_click', 'event_select_menu', 'event_modal_submit'].includes(node.type) && String(node.data?.custom_id || '').trim()
+          && String(node.data.custom_id).trim() !== String(eventPayload?.data?.custom_id || '').trim()) return false;
         if (node.type === 'event_cron' && eventPayload?.cronNodeId && node.id !== eventPayload.cronNodeId) return false;
         if (definition.gatewayInteractionType && Number(eventPayload.type) !== definition.gatewayInteractionType) return false;
         if (definition.gatewayCommandType && Number(eventPayload.data?.type || 1) !== definition.gatewayCommandType) return false;
@@ -1037,6 +1053,14 @@ export class GraphRunner {
       const receivedCommand = String(eventPayload.data?.name || '').trim().toLowerCase();
       if (expectedCommand && expectedCommand !== receivedCommand) {
         log(`[Graph] Command /${receivedCommand} does not match /${expectedCommand}. Skipping.`);
+        return { executedNodeIds, traces, nodeTimings, wirePath, error: null };
+      }
+    }
+    if (['event_button_click', 'event_select_menu', 'event_modal_submit'].includes(eventNodeType)) {
+      const expectedCustomId = String(startNode.data?.custom_id || '').trim();
+      const receivedCustomId = String(eventPayload?.data?.custom_id || '').trim();
+      if (expectedCustomId && expectedCustomId !== receivedCustomId) {
+        log(`[Graph] Custom ID "${receivedCustomId}" does not match "${expectedCustomId}". Skipping.`);
         return { executedNodeIds, traces, nodeTimings, wirePath, error: null };
       }
     }
@@ -1179,6 +1203,9 @@ export class GraphRunner {
         try { value = JSON.stringify(value); } catch { value = ''; }
       }
       dataCache.set(`${startNode.id}:${pin.id}`, value ?? (pin.type === 'number' ? 0 : pin.type === 'boolean' ? false : ''));
+    }
+    if (eventDefinition?.outputs?.some((pin) => pin.id === 'thread_id')) {
+      dataCache.set(`${startNode.id}:thread_id`, extractThreadId(eventPayload));
     }
     const triggerTiming = recordNodeTiming(startNode, runStartedAt, null, 'triggered');
     await context.onSimulationStep?.({ ...triggerTiming, type: startNode.type, label: startNode.label || NodeDefinitions[startNode.type]?.label || startNode.type });
