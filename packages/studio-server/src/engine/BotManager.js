@@ -2227,7 +2227,7 @@ export class BotManager {
     if (!debugSession) this.broadcastWS({ type: 'MOCK_SIMULATION_STARTED', payload: { runId: simulationId, tabId: graph.id, debug: false } });
 
     const interceptedOutputs = [];
-    const mockREST = this.mockGateway.createMockREST(interceptedOutputs);
+    const mockREST = this.mockGateway.createMockREST(interceptedOutputs, customPayload);
     const functionGraphLookup = new Map(this.graphs);
     if (Array.isArray(graphOverrides)) for (const candidate of graphOverrides) if (candidate && typeof candidate.id === 'string') functionGraphLookup.set(candidate.id, candidate);
 
