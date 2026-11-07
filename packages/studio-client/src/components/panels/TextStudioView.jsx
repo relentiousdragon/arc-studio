@@ -143,7 +143,7 @@ function buildHighlightedLines(text, isJson) {
   });
 }
 
-export function TextStudioView({ label, value = '', readOnly = false, sharedDraft, remoteCursors = [], collaborators = [], appEmojis = [], graphVariables = [], templateValuePaths = [], templateSuggestions = [], connectedTemplateArguments = [], templatePreviewValues = {}, maxLength, onApply, onClose, onDraftChange, onCursorChange }) {
+export function TextStudioView({ label, value = '', readOnly = false, sharedDraft, remoteCursors = [], collaborators = [], appEmojis = [], graphVariables = [], templateValuePaths = [], templateSuggestions = [], templateFunctions = [], connectedTemplateArguments = [], templatePreviewValues = {}, maxLength, onApply, onClose, onDraftChange, onCursorChange }) {
   const [draft, setDraft] = useState(String(value ?? ''));
   const [activePane, setActivePane] = useState('editor');
   const [scrollMetrics, setScrollMetrics] = useState({ top: 0, height: 0, view: 0 });
@@ -349,16 +349,15 @@ export function TextStudioView({ label, value = '', readOnly = false, sharedDraf
   const changeDraft = (event) => {
     if (readOnly) return;
     const next = event.target.value;
-    const bounded = maxLength ? Array.from(next).slice(0, maxLength).join('') : next;
-    if (bounded !== draft) {
+    if (next !== draft) {
       const previous = beforeInputRef.current || { text: draft, start: event.target.selectionStart, end: event.target.selectionEnd };
       undoStackRef.current.push(previous);
       if (undoStackRef.current.length > 200) undoStackRef.current.shift();
       redoStackRef.current = [];
     }
     beforeInputRef.current = null;
-    setDraft(bounded);
-    onDraftChange?.(bounded, event.target.selectionStart);
+    setDraft(next);
+    onDraftChange?.(next, event.target.selectionStart);
   };
   const captureSnapshot = () => ({
     text: draft,
@@ -487,7 +486,7 @@ export function TextStudioView({ label, value = '', readOnly = false, sharedDraf
           const column = before.at(-1).length;
           return <span key={peer.username} className="discord-text-remote-caret" style={{ left: 18 + column * 7.83, top: 15 + line * 22, '--collaborator-color': peer.color }}><i /><b>{peer.username}</b></span>;
         })}</div>
-        <DiscordTextField as="textarea" ref={editorRef} className="discord-text-studio-editor" readOnly={readOnly} value={draft} onBeforeInput={handleBeforeInput} onChange={changeDraft} onKeyDown={handleEditorKeyDown} onKeyUp={(event) => onCursorChange?.(event.currentTarget.selectionStart)} onClick={(event) => onCursorChange?.(event.currentTarget.selectionStart)} onScroll={syncScroll} onPointerDown={(event) => event.stopPropagation()} spellCheck={false} autoFocus wrap="off" aria-label={`${label} text`} discordAutocomplete templateAutocomplete appEmojis={appEmojis} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} />
+        <DiscordTextField as="textarea" ref={editorRef} className="discord-text-studio-editor" readOnly={readOnly} value={draft} onBeforeInput={handleBeforeInput} onChange={changeDraft} onKeyDown={handleEditorKeyDown} onKeyUp={(event) => onCursorChange?.(event.currentTarget.selectionStart)} onClick={(event) => onCursorChange?.(event.currentTarget.selectionStart)} onScroll={syncScroll} onPointerDown={(event) => event.stopPropagation()} spellCheck={false} autoFocus wrap="off" aria-label={`${label} text`} discordAutocomplete templateAutocomplete appEmojis={appEmojis} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} templateFunctions={templateFunctions} />
       </div>
       <EditorMinimap text={draft} isJson={isJson} jsonIssueLines={jsonIssueLines} searchMatches={searchMatches} searchOpen={searchOpen} scrollTop={scrollMetrics.top} scrollHeight={scrollMetrics.height} viewHeight={scrollMetrics.view} editorLineHeight={22} onScrollTo={scrollEditorTo} />
     </div>
@@ -503,7 +502,7 @@ export function TextStudioView({ label, value = '', readOnly = false, sharedDraf
         <EditorMinimap text={previewText} isJson={isJson} jsonIssueLines={jsonIssueLines} searchMatches={[]} searchOpen={false} scrollTop={previewScrollMetrics.top} scrollHeight={previewScrollMetrics.height} viewHeight={previewScrollMetrics.view} editorLineHeight={22} onScrollTo={scrollPreviewTo} />
       </div>
     </div>}
-    <footer className="discord-text-studio-footer"><TemplateSyntaxHelp connectedArguments={connectedTemplateArguments} /><span>{characterCount.toLocaleString()}{maxLength ? ` / ${maxLength.toLocaleString()} characters` : ' characters'}</span><span>{jsonError ? <em className="text-editor-json-error" role="status">{jsonError}</em> : isJson ? 'Valid JSON' : `${lines.length.toLocaleString()} lines${blocks.length ? ` · ${blocks.length} code ${blocks.length === 1 ? 'block' : 'blocks'}` : ''}`}</span>{isJson && !readOnly && <button type="button" className="text-editor-format-json" disabled={Boolean(jsonError)} onClick={formatJson}>Format JSON</button>}</footer>
+    <footer className="discord-text-studio-footer"><TemplateSyntaxHelp connectedArguments={connectedTemplateArguments} /><span className={maxLength && characterCount > maxLength ? 'is-over-limit' : ''}>{characterCount.toLocaleString()}{maxLength ? ` / ${maxLength.toLocaleString()} characters` : ' characters'}</span><span>{jsonError ? <em className="text-editor-json-error" role="status">{jsonError}</em> : isJson ? 'Valid JSON' : `${lines.length.toLocaleString()} lines${blocks.length ? ` · ${blocks.length} code ${blocks.length === 1 ? 'block' : 'blocks'}` : ''}`}</span>{isJson && !readOnly && <button type="button" className="text-editor-format-json" disabled={Boolean(jsonError)} onClick={formatJson}>Format JSON</button>}</footer>
     <Modal isOpen={discardPromptOpen} onClose={() => { setDiscardPromptOpen(false); notifyStudioSwitchCancelled(); }} title="Discard text changes?" subtitle="These edits have not been applied." footer={<><Button variant="secondary" onClick={() => { setDiscardPromptOpen(false); notifyStudioSwitchCancelled(); }}>Keep editing</Button><Button variant="danger" onClick={onClose}>Discard changes</Button></>}><p className="close-graph-copy">Your graph or variable stays unchanged until you choose Apply.</p></Modal>
   </section>;
 }
