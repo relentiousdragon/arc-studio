@@ -40,6 +40,18 @@ export default {
       "type": "string"
     },
     {
+      "id": "channel_id",
+      "label": "Channel ID",
+      "type": "string",
+      "eventPath": "channel_id"
+    },
+    {
+      "id": "guild_id",
+      "label": "Server ID",
+      "type": "string",
+      "eventPath": "guild_id"
+    },
+    {
       "id": "interaction_id",
       "label": "Interaction ID",
       "type": "string"
