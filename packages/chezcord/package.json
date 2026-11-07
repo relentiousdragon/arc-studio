@@ -1,11 +1,15 @@
 {
   "name": "chezcord",
-  "version": "0.3.3",
+  "version": "0.4.1",
   "description": "Discord API v10 and Gateway v10 library for Node.js",
   "type": "module",
   "main": "./src/index.js",
+  "browser": "./src/browser.js",
   "exports": {
-    ".": "./src/index.js",
+    ".": {
+      "browser": "./src/browser.js",
+      "default": "./src/index.js"
+    },
     "./constants": "./src/constants.js",
     "./builders": "./src/builders/index.js"
   },
