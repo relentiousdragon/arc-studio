@@ -4,6 +4,12 @@ export default {
   "category": "Values & Data",
   "label": "Get Object Property",
   "color": "#06b6d4",
+  "defaultData": {
+    "key": ""
+  },
+  "editorControls": [
+    { "key": "key", "label": "Property", "type": "text", "placeholder": "property_name" }
+  ],
   "inputs": [
     {
       "id": "object",
