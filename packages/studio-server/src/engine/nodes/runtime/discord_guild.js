@@ -1,5 +1,5 @@
 import { evaluateDataNode } from './data.js';
-import { ChannelFlags } from 'chezcord';
+import { ChannelFlags, CDN } from 'chezcord';
 
 const GUILD_NODE_TYPES = new Set([
   'action_fetch_user', 'action_fetch_guild', 'action_fetch_member',
@@ -47,7 +47,11 @@ export async function executeDiscordGuildNode(node, {
           if (!user || typeof user !== 'object' || Array.isArray(user)) throw new Error('Discord did not return a valid user object.');
           for (const [pinId, value] of Object.entries({
             user, user_id_out: user.id || userId, username: user.username || '', global_name: user.global_name || '',
-            discriminator: user.discriminator || '', avatar: user.avatar || '', bot: Boolean(user.bot), public_flags: Number(user.public_flags) || 0
+            discriminator: user.discriminator || '', avatar: user.avatar || '',
+            avatar_url: CDN.avatar(user.id || userId, user.avatar),
+            banner: user.banner || '',
+            banner_url: user.banner ? CDN.banner(user.id || userId, user.banner) : '',
+            bot: Boolean(user.bot), public_flags: Number(user.public_flags) || 0
           })) setOutput(pinId, value);
           log(`[Get User Info] Fetched user ${user.id || userId}.`);
           setOutput('success', true);
@@ -76,9 +80,13 @@ export async function executeDiscordGuildNode(node, {
           const member = await rest.getGuildMember(guildId, userId);
           if (!member || typeof member !== 'object' || Array.isArray(member)) throw new Error('Discord did not return a valid member object.');
           const user = member.user && typeof member.user === 'object' ? member.user : {};
+          const userAvatar = member.avatar || user.avatar || '';
           for (const [pinId, value] of Object.entries({
-            member, user, user_id_out: user.id || userId, username: user.username || '', nickname: member.nick || '',
-            roles: Array.isArray(member.roles) ? member.roles : [], joined_at: member.joined_at || '',
+            member, user, user_id_out: user.id || userId, username: user.username || '', nickname: member.nick || user.global_name || '',
+            roles: Array.isArray(member.roles) ? member.roles : [],
+            avatar: userAvatar,
+            avatar_url: CDN.avatar(user.id || userId, userAvatar),
+            joined_at: member.joined_at || '',
             premium_since: member.premium_since || '', deaf: Boolean(member.deaf), mute: Boolean(member.mute), pending: Boolean(member.pending)
           })) setOutput(pinId, value);
           log(`[Get Server Member] Fetched member ${user.id || userId} in server ${guildId}.`);
@@ -137,12 +145,27 @@ export async function executeDiscordGuildNode(node, {
           const channel = await rest.getChannel(channelId);
           if (!channel || typeof channel !== 'object' || Array.isArray(channel)) throw new Error('Discord did not return a valid channel object.');
           const permissionOverwrites = Array.isArray(channel.permission_overwrites) ? channel.permission_overwrites : [];
+          const threadMeta = channel.thread_metadata || {};
           for (const [pinId, value] of Object.entries({
-            channel, channel_id_out: channel.id || channelId, name: channel.name || '', type: Number(channel.type) || 0,
-            guild_id: channel.guild_id || '', parent_id: channel.parent_id || '', position: Number(channel.position) || 0,
+            channel, channel_id_out: channel.id || channelId, channel_id: channel.id || channelId, name: channel.name || '', type: Number(channel.type) || 0,
+            guild_id: channel.guild_id || '', parent_id: channel.parent_id || '', category_id: channel.parent_id || '', position: Number(channel.position) || 0,
             permission_overwrites: permissionOverwrites, overwrite_count: permissionOverwrites.length,
             topic: channel.topic || '', nsfw: Boolean(channel.nsfw), last_message_id: channel.last_message_id || '',
             flags: Number(channel.flags) || 0,
+            rate_limit_per_user: Number(channel.rate_limit_per_user) || 0,
+            bitrate: Number(channel.bitrate) || 64000,
+            user_limit: Number(channel.user_limit) || 0,
+            rtc_region: channel.rtc_region || '',
+            video_quality_mode: Number(channel.video_quality_mode) || 1,
+            default_auto_archive_duration: Number(channel.default_auto_archive_duration) || 1440,
+            default_thread_rate_limit_per_user: Number(channel.default_thread_rate_limit_per_user) || 0,
+            available_tags: Array.isArray(channel.available_tags) ? channel.available_tags : [],
+            archived: Boolean(threadMeta.archived),
+            locked: Boolean(threadMeta.locked),
+            invitable: threadMeta.invitable !== false,
+            auto_archive_duration: Number(threadMeta.auto_archive_duration) || 1440,
+            message_count: Number(channel.message_count) || 0,
+            member_count: Number(channel.member_count) || 0,
             obfuscated: ((Number(channel.flags) || 0) & ChannelFlags.CHANNEL_OBFUSCATED) !== 0
           })) setOutput(pinId, value);
           log(`[Get Channel Info] Fetched channel ${channel.id || channelId}.`);
@@ -287,6 +310,7 @@ export async function executeDiscordGuildNode(node, {
           setCreateField('user_limit', (value) => Math.max(0, Math.min(10000, Math.trunc(Number(value) || 0))), [2, 13]);
           setCreateField('position', (value) => Math.max(0, Math.trunc(Number(value) || 0)));
           setCreateField('default_auto_archive_duration', (value) => [60, 1440, 4320, 10080].includes(Number(value)) ? Number(value) : 1440, [0, 5, 15, 16]);
+          setCreateField('default_thread_rate_limit_per_user', (value) => Math.max(0, Math.min(21600, Math.trunc(Number(value) || 0))), [15, 16]);
           setCreateField('available_tags', (value) => {
             let tags = value;
             if (typeof tags === 'string') {
@@ -296,6 +320,8 @@ export async function executeDiscordGuildNode(node, {
             return tags;
           }, [15, 16]);
           setCreateField('nsfw', (value) => Boolean(value), [0, 2, 5, 13, 15, 16]);
+          setCreateField('rtc_region', (value) => value === '' ? null : String(value).slice(0, 100), [2, 13]);
+          setCreateField('video_quality_mode', (value) => Number(value) === 2 ? 2 : 1, [2, 13]);
           setCreateField('flags', (value) => {
             const flagBits = Math.trunc(Number(value) || 0);
             if (!Number.isFinite(Number(value)) || flagBits < 0) throw new Error('Channel flags must be a non negative bitfield number.');
@@ -303,7 +329,9 @@ export async function executeDiscordGuildNode(node, {
           }, [0, 2, 5, 15, 16]);
           if (!guildId || !name) throw new Error('Create Channel needs a server ID and channel name.');
           const result = await rest.createGuildChannel(guildId, body, resolveInput('reason', node.data?.reason || ''));
+          setOutput('channel', result || {});
           setOutput('channel_id', result?.id || '');
+          setOutput('channel_id_out', result?.id || '');
           log(`[Create Channel] Created #${name}${result?.id ? ` (${result.id})` : ''}`);
           setOutput('success', true);
           return true;
@@ -315,7 +343,7 @@ export async function executeDiscordGuildNode(node, {
           const body = {};
           const name = String(resolveInput('name', node.data?.name || '')).trim();
           const topic = String(resolveInput('topic', node.data?.topic || ''));
-          const parentId = String(resolveInput('parent_id', node.data?.parent_id || '')).trim();
+          const parentId = String(resolveInput('parent_id', (node.data?.parent_id ?? node.data?.category_id) || '')).trim();
           if (name) body.name = name.slice(0, 100);
           if (threadId) {
             const setThreadField = (key, transform = (value) => value, { skipEmpty = false } = {}) => {
@@ -355,11 +383,21 @@ export async function executeDiscordGuildNode(node, {
             setOptionalChannelField('rtc_region', (value) => value === '' ? null : String(value).slice(0, 100));
             setOptionalChannelField('video_quality_mode', (value) => Number(value) === 2 ? 2 : 1, { skipEmpty: true });
             setOptionalChannelField('default_auto_archive_duration', (value) => [60, 1440, 4320, 10080].includes(Number(value)) ? Number(value) : 1440, { skipEmpty: true });
+            setOptionalChannelField('position', (value) => Math.max(0, Math.trunc(Number(value) || 0)), { skipEmpty: true });
+            setOptionalChannelField('flags', (value) => Math.trunc(Number(value) || 0), { skipEmpty: true });
+            setOptionalChannelField('default_thread_rate_limit_per_user', (value) => Math.max(0, Math.min(21600, Math.trunc(Number(value) || 0))), { skipEmpty: true });
+            setOptionalChannelField('available_tags', (value) => {
+              let tags = value;
+              if (typeof tags === 'string') { try { tags = JSON.parse(tags); } catch {} }
+              return Array.isArray(tags) ? tags : [];
+            }, { skipEmpty: true });
           }
           if (!channelId) throw new Error('Edit Channel needs a channel ID.');
           if (!Object.keys(body).length) throw new Error('Connect or enter at least one channel field to change.');
           const result = await rest.modifyChannel(channelId, body, resolveInput('reason', node.data?.reason || ''));
+          setOutput('channel', result || {});
           setOutput('channel_id_out', result?.id || channelId);
+          setOutput('channel_id', result?.id || channelId);
           log(`[Edit Channel] Updated channel ${channelId}`);
           setOutput('success', true);
           return true;
