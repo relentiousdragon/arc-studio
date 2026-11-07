@@ -21,6 +21,7 @@ export default {
   outputs: [
     { id: 'exec', label: 'Exec', type: 'exec' },
     { id: 'message', label: 'Source Message Object', type: 'object', eventPath: 'message' },
+    { id: 'message_id', label: 'Message ID', type: 'string', eventPath: 'message.id' },
     { id: 'custom_id', label: 'Custom ID', type: 'string', eventPath: 'data.custom_id' },
     { id: 'selected_values', label: 'Selected Values', type: 'string', eventPath: 'data.values' },
     { id: 'user_id', label: 'User ID', type: 'string', eventPath: 'member.user.id' },
