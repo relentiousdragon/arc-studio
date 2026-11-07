@@ -46,7 +46,11 @@ export async function executeDiscordMessageNode(node, {
       } else {
         if (content) payload.content = content;
         if (embed) payload.embeds = [embed];
-        if (Array.isArray(components) && components.length) payload.components = components;
+        if (isInputConnected('components')) {
+          payload.components = Array.isArray(components) ? components : [];
+        } else if (Array.isArray(components) && components.length) {
+          payload.components = components;
+        }
       }
       if (files?.length) payload.files = files;
       if (replyToMessageId) {
@@ -89,7 +93,11 @@ export async function executeDiscordMessageNode(node, {
     } else {
       if (content !== undefined && content !== null && String(content).length > 0) payload.content = String(content).slice(0, 2000);
       if (embed) payload.embeds = [embed];
-      if (Array.isArray(components) && components.length) payload.components = components;
+      if (isInputConnected('components')) {
+        payload.components = Array.isArray(components) ? components : [];
+      } else if (Array.isArray(components) && components.length) {
+        payload.components = components;
+      }
     }
     if (files?.length) payload.files = files;
 
