@@ -62,6 +62,15 @@ function note(context, {
 }
 
 function playSound(context, kind) {
+  if (kind === 'cut') {
+    const now = performance.now();
+    if (now - lastClickAt < 25) return;
+    lastClickAt = now;
+    note(context, { frequency: 880, endFrequency: 360, duration: 0.038, volume: 0.02, wave: 'triangle', filterFrequency: 3400 });
+    note(context, { frequency: 1600, endFrequency: 680, duration: 0.016, volume: 0.003, wave: 'sine', filterFrequency: 5600 });
+    return;
+  }
+
   if (kind === 'click') {
     const now = performance.now();
     if (now - lastClickAt < 42) return;
