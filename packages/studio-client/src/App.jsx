@@ -7865,7 +7865,7 @@ export function App() {
                 <div className="canvas-empty-hint">
                   <span className="empty-hint-glyph"><Plus size={17} /></span>
                   <span>No graph open</span>
-                  <button onClick={() => handleAddTab()}>New graph <span className="context-shortcut" aria-label="Shift plus A"><kbd>Shift</kbd><kbd>A</kbd></span></button>
+                  <button onClick={() => handleAddTab()}>New graph <span className="context-shortcut" aria-label={shortcutPlatform === 'mac' ? 'Command plus T' : 'Ctrl plus T'}><kbd>{shortcutPlatform === 'mac' ? '⌘' : 'Ctrl'}</kbd><kbd>T</kbd></span></button>
                 </div>
               </div>
             )}
