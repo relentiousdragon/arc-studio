@@ -1,5 +1,5 @@
 export default {
-  "description": "Reads a property by key. Check Exists to distinguish a missing property from an empty value.",
+  "description": "Reads a property or nested path by key (such as id or author.username). Check Exists to distinguish a missing property from an empty value.",
   "type": "data_object_get",
   "category": "Values & Data",
   "label": "Get Object Property",
