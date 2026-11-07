@@ -1260,6 +1260,16 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       )}
     </div>;
   }
+  if (node.type === 'action_await_interaction') {
+    return <div className="node-config node-config-stack">
+      {!isConnected('custom_id') && <FallbackField label="Custom ID filter (Optional)"><input value={node.data?.custom_id ?? ''} onChange={(event) => update('custom_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave blank for any interaction" aria-label="Custom ID filter" /></FallbackField>}
+      {!isConnected('timeout_seconds') && <FallbackField label="Timeout (seconds)"><NodeNumberInput min={1} max={900} value={node.data?.timeout_seconds ?? 60} onChange={(event) => update('timeout_seconds', numericNodeInputValue(event.target.value, { min: 1, max: 900, integer: true, fallback: 60 }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Timeout in seconds" /></FallbackField>}
+      {!isConnected('user_id') && <FallbackField label="User ID filter (Optional)"><input value={node.data?.user_id ?? ''} onChange={(event) => update('user_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Filter by user ID" aria-label="User ID filter" /></FallbackField>}
+      {!isConnected('channel_id') && <FallbackField label="Channel ID filter (Optional)"><input value={node.data?.channel_id ?? ''} onChange={(event) => update('channel_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Filter by channel ID" aria-label="Channel ID filter" /></FallbackField>}
+      {!isConnected('message_id') && <FallbackField label="Message ID filter (Optional)"><input value={node.data?.message_id ?? ''} onChange={(event) => update('message_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Filter by message ID" aria-label="Message ID filter" /></FallbackField>}
+      <span className="node-config-hint">Waits for a matching button click or select menu. Continues on Success, Filter Failed, or Timeout.</span>
+    </div>;
+  }
   if (['action_console_log', 'action_console_warn', 'action_console_error'].includes(node.type)) {
     return <div className="node-config node-config-stack">
       {templateInput('message', 'Message', { multiline: true, placeholder: 'Message to log' })}
