@@ -29,7 +29,7 @@ export function CommandPalette({ isOpen, graphs = [], definitions = [], plugins 
         id: `node:${graph.id}:${node.id}`, kind: 'instance', group: 'Nodes in graphs', label: node.label || definition?.label || node.type,
         detail: `${graph.name || 'Untitled graph'} · ${definition?.label || node.type}`,
         disabled: !definition || Boolean(definition.loadFailed),
-        searchFields: [node.label, node.type.replaceAll('_', ' '), definition?.label, definition?.description, graph.name, ...(definition?.inputs || []).map((pin) => pin.label), ...(definition?.outputs || []).map((pin) => pin.label)],
+        searchFields: [node.label, node.data?.commandName, node.data?.description, node.type.replaceAll('_', ' '), definition?.label, definition?.description, graph.name, ...(definition?.inputs || []).map((pin) => pin.label), ...(definition?.outputs || []).map((pin) => pin.label)],
         graphId: graph.id, nodeId: node.id, icon: definition || null, onSelect: () => onGoToNode?.(graph.id, node.id)
       };
     }));
