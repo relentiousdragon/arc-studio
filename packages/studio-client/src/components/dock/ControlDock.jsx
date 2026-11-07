@@ -110,6 +110,8 @@ export function ControlDock({
   const isNearBottomRef = useRef(true);
   const lastLogsLengthRef = useRef(logs?.length || 0);
   const prevTabRef = useRef(activeTab);
+  const [consolePopupRoot, setConsolePopupRoot] = useState(null);
+  const consolePopupWindowRef = useRef(null);
   const prevOpenRef = useRef(Boolean(isOpen || consolePopupRoot));
 
   const handleConsoleScroll = useCallback((event) => {
@@ -126,8 +128,6 @@ export function ControlDock({
   const [fileContent, setFileContent] = useState(null);
   const [consoleContextMenu, setConsoleContextMenu] = useState(null);
   const [consoleContextLog, setConsoleContextLog] = useState(null);
-  const [consolePopupRoot, setConsolePopupRoot] = useState(null);
-  const consolePopupWindowRef = useRef(null);
   const lastProjectIdRef = useRef(activeProjectId);
 
   const closeConsolePopup = () => {
