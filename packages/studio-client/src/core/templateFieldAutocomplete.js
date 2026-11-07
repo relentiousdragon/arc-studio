@@ -27,20 +27,124 @@ function setNativeValue(element, value) {
   else element.value = value;
 }
 
+export const BUILTIN_TEMPLATE_FUNCTIONS = Object.freeze([
+  { name: 'dateNow', label: 'dateNow()', insert: 'dateNow()' },
+  { name: 'dateUnix', label: 'dateUnix()', insert: 'dateUnix()' },
+  { name: 'dateIso', label: 'dateIso()', insert: 'dateIso()' },
+  { name: 'dateFormat', label: 'dateFormat()', insert: 'dateFormat()' },
+  { name: 'datePart', label: 'datePart()', insert: 'datePart()' },
+  { name: 'round', label: 'round()', insert: 'round()' },
+  { name: 'floor', label: 'floor()', insert: 'floor()' },
+  { name: 'ceil', label: 'ceil()', insert: 'ceil()' },
+  { name: 'abs', label: 'abs()', insert: 'abs()' },
+  { name: 'sqrt', label: 'sqrt()', insert: 'sqrt()' },
+  { name: 'min', label: 'min()', insert: 'min()' },
+  { name: 'max', label: 'max()', insert: 'max()' },
+  { name: 'clamp', label: 'clamp()', insert: 'clamp()' },
+  { name: 'lerp', label: 'lerp()', insert: 'lerp()' },
+  { name: 'sum', label: 'sum()', insert: 'sum()' },
+  { name: 'average', label: 'average()', insert: 'average()' },
+  { name: 'toNumber', label: 'toNumber()', insert: 'toNumber()' },
+  { name: 'toString', label: 'toString()', insert: 'toString()' },
+  { name: 'sin', label: 'sin()', insert: 'sin()' },
+  { name: 'cos', label: 'cos()', insert: 'cos()' },
+  { name: 'tan', label: 'tan()', insert: 'tan()' },
+  { name: 'asin', label: 'asin()', insert: 'asin()' },
+  { name: 'acos', label: 'acos()', insert: 'acos()' },
+  { name: 'atan', label: 'atan()', insert: 'atan()' },
+  { name: 'log', label: 'log()', insert: 'log()' },
+  { name: 'log10', label: 'log10()', insert: 'log10()' },
+  { name: 'exp', label: 'exp()', insert: 'exp()' },
+  { name: 'sign', label: 'sign()', insert: 'sign()' }
+]);
+
+export function getTemplateStringContext(expression) {
+  let inQuote = null;
+  let escaped = false;
+  let quoteStartIndex = -1;
+  for (let i = 0; i < expression.length; i += 1) {
+    const c = expression[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (c === '\\' && inQuote) {
+      escaped = true;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      if (inQuote === c) {
+        inQuote = null;
+        quoteStartIndex = -1;
+      } else if (!inQuote) {
+        inQuote = c;
+        quoteStartIndex = i;
+      }
+    }
+  }
+  return inQuote ? { quote: inQuote, startIndex: quoteStartIndex } : null;
+}
+
+export const TEMPLATE_SUGGESTION_FILTERS = Object.freeze([
+  { label: 'toNumber', insert: 'toNumber}}', search: 'tonumber', type: 'filter', description: 'Convert to number' },
+  { label: 'toString', insert: 'toString}}', search: 'tostring', type: 'filter', description: 'Convert to text' },
+  { label: 'round(2)', insert: 'round(2)}}', search: 'round', type: 'filter', description: 'Round number' },
+  { label: 'floor', insert: 'floor}}', search: 'floor', type: 'filter', description: 'Round down' },
+  { label: 'ceil', insert: 'ceil}}', search: 'ceil', type: 'filter', description: 'Round up' },
+  { label: 'lower', insert: 'lower}}', search: 'lower', type: 'filter', description: 'Lowercase text' },
+  { label: 'upper', insert: 'upper}}', search: 'upper', type: 'filter', description: 'Uppercase text' },
+  { label: 'title', insert: 'title}}', search: 'title', type: 'filter', description: 'Titlecase text' },
+  { label: 'capitalize', insert: 'capitalize}}', search: 'capitalize', type: 'filter', description: 'Capitalize text' },
+  { label: 'trim', insert: 'trim}}', search: 'trim', type: 'filter', description: 'Trim whitespace' },
+  { label: 'trimStart', insert: 'trimStart}}', search: 'trimstart', type: 'filter', description: 'Trim leading whitespace' },
+  { label: 'trimEnd', insert: 'trimEnd}}', search: 'trimend', type: 'filter', description: 'Trim trailing whitespace' },
+  { label: 'replace("_", " ")', insert: 'replace("_", " ")}}', search: 'replace', type: 'filter', description: 'Replace all' },
+  { label: 'replaceFirst("old", "new")', insert: 'replaceFirst("old", "new")}}', search: 'replacefirst', type: 'filter', description: 'Replace first' },
+  { label: 'join(", ")', insert: 'join(", ")}}', search: 'join', type: 'filter', description: 'Join array elements' },
+  { label: 'slice(0, 3)', insert: 'slice(0, 3)}}', search: 'slice', type: 'filter', description: 'Slice portion' },
+  { label: 'length', insert: 'length}}', search: 'length', type: 'filter', description: 'Length of text or array' },
+  { label: 'json', insert: 'json}}', search: 'json', type: 'filter', description: 'JSON stringify' },
+  { label: 'default("fallback")', insert: 'default("fallback")}}', search: 'default', type: 'filter', description: 'Fallback if empty' },
+]);
+
 export function templateTokenAt(value, caret = String(value ?? '').length) {
   const text = String(value ?? '');
   const position = Math.max(0, Math.min(Number(caret) || 0, text.length));
   const before = text.slice(0, position);
   const match = /\{\{([^{}]*)$/.exec(before);
   if (!match || before[match.index - 1] === '\\') return null;
-  return { anchor: match.index, start: match.index + 2, end: position, query: match[1] };
+  const expression = match[1];
+  if (getTemplateStringContext(expression)) return null;
+
+  const pipe = expression.lastIndexOf('|');
+  const isFilter = pipe >= 0;
+  if (isFilter) {
+    const fragment = expression.slice(pipe + 1);
+    const leading = fragment.match(/^\s*/)?.[0].length || 0;
+    const tokenMatch = /([A-Za-z_$][A-Za-z0-9_$.]*)$/.exec(fragment);
+    const query = tokenMatch ? tokenMatch[1] : fragment.slice(leading);
+    const start = tokenMatch ? position - tokenMatch[1].length : match.index + 2 + pipe + 1 + leading;
+    return { anchor: match.index, start, end: position, query, isFilter: true, expression };
+  }
+  const tokenMatch = /([A-Za-z_$][A-Za-z0-9_$.]*)$/.exec(expression);
+  const query = tokenMatch ? tokenMatch[1] : '';
+  const start = tokenMatch ? position - tokenMatch[1].length : position;
+  const prefixBeforeToken = expression.slice(0, expression.length - query.length);
+  const isLone = prefixBeforeToken.trim() === '';
+  return { anchor: match.index, start, end: position, query, isFilter: false, isLone, expression };
 }
 
 export function replaceTemplateToken(value, token, insert) {
   const text = String(value ?? '');
   const start = Math.max(0, Math.min(Number(token?.start) || 0, text.length));
-  const end = Math.max(start, Math.min(Number(token?.end) || start, text.length));
-  const replacement = String(insert ?? '');
+  let end = Math.max(start, Math.min(Number(token?.end) || start, text.length));
+  let replacement = String(insert ?? '');
+  const hasClosing = text.slice(end).trimStart().startsWith('}}');
+  if (token?.isLone && !hasClosing && !replacement.endsWith('}}')) {
+    replacement = `${replacement}}}`;
+  } else if (replacement.endsWith('}}') && text.slice(end).startsWith('}}')) {
+    end += 2;
+  }
   return { value: `${text.slice(0, start)}${replacement}${text.slice(end)}`, caret: start + replacement.length };
 }
 
@@ -82,6 +186,12 @@ export function templatePathSuggestions(query, paths = [], limit = MAX_SUGGESTIO
 export function templateFieldSuggestions(query, context = {}) {
   const text = String(query ?? '').trim();
   const lower = text.toLowerCase();
+  const isFilter = Boolean(context.isFilter);
+  if (isFilter) {
+    return TEMPLATE_SUGGESTION_FILTERS
+      .filter((item) => !lower || item.search.includes(lower) || item.label.toLowerCase().includes(lower))
+      .slice(0, MAX_SUGGESTIONS);
+  }
   const seen = new Set();
   const list = [];
   const push = (label, insert) => {
@@ -196,7 +306,7 @@ export function attachTemplateAutocomplete(container, getContext) {
     menu.textContent = '';
     const heading = document.createElement('div');
     heading.className = 'discord-emoji-suggestion-heading';
-    heading.textContent = `VARIABLE${query ? ` · ${query}` : ''}`;
+    heading.textContent = `${token?.isFilter ? 'FILTER' : 'VARIABLE'}${query ? ` · ${query}` : ''}`;
     menu.appendChild(heading);
     suggestions.forEach((item, index) => {
       const button = document.createElement('button');
@@ -206,7 +316,7 @@ export function attachTemplateAutocomplete(container, getContext) {
       button.className = `discord-emoji-suggestion ${index === activeIndex ? 'is-selected' : ''}`;
       const glyph = document.createElement('span');
       glyph.className = 'discord-emoji-suggestion-glyph';
-      glyph.textContent = '{{';
+      glyph.textContent = item.type === 'filter' || token?.isFilter ? '|' : '{{';
       const label = document.createElement('span');
       label.className = 'discord-emoji-suggestion-label';
       label.textContent = item.label;
@@ -247,10 +357,10 @@ export function attachTemplateAutocomplete(container, getContext) {
     if (start !== end) return close();
     const templateToken = templateTokenAt(element.value ?? '', start);
     if (!templateToken) return close();
-    const suggestions = templateFieldSuggestions(templateToken.query, getContext?.() || {});
+    token = templateToken;
+    const suggestions = templateFieldSuggestions(templateToken.query, { ...(getContext?.() || {}), isFilter: templateToken.isFilter });
     if (!suggestions.length) return close();
     activeIndex = 0;
-    token = templateToken;
     render(element, templateToken.query.trim(), suggestions);
   };
 
