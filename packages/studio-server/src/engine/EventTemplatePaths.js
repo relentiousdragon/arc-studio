@@ -4,23 +4,15 @@ const GUILD_EVENTS = new Set(['event_guild_create', 'event_guild_update', 'event
 const CHANNEL_EVENTS = new Set(['event_channel_create', 'event_channel_update', 'event_channel_delete', 'event_channel_pins_update']);
 const ROLE_EVENTS = new Set(['event_role_create', 'event_role_update', 'event_role_delete']);
 const SCHEDULED_EVENTS = new Set(['event_scheduled_event_create', 'event_scheduled_event_update', 'event_scheduled_event_delete']);
-const INTERACTION_EVENTS = new Set(['event_slash_command', 'event_slash_autocomplete', 'event_button_click', 'event_select_menu', 'event_modal_submit']);
-
-const UNIVERSAL_PATHS = Object.freeze([
-  { path: 'guild.id', label: 'Server ID' },
-  { path: 'guild.name', label: 'Server name' },
-  { path: 'channel.id', label: 'Channel ID' },
-  { path: 'channel.name', label: 'Channel name' },
-  { path: 'user.id', label: 'User ID' },
-  { path: 'user.username', label: 'Username' },
-  { path: 'user.display_name', label: 'Display name' },
-  { path: 'user.mention', label: 'User mention' }
-]);
+const INTERACTION_EVENTS = new Set(['event_slash_command', 'event_user_command', 'event_message_command', 'event_slash_autocomplete', 'event_button_click', 'event_select_menu', 'event_modal_submit']);
 
 const USER_PATHS = Object.freeze([
   { path: 'user.id', label: 'User ID' },
   { path: 'user.username', label: 'Username' },
   { path: 'user.display_name', label: 'Display name' },
+  { path: 'user.global_name', label: 'Global display name' },
+  { path: 'user.avatar', label: 'Avatar hash' },
+  { path: 'user.bot', label: 'Is a bot' },
   { path: 'user.mention', label: 'User mention' }
 ]);
 
@@ -28,26 +20,67 @@ const AUTHOR_PATHS = Object.freeze([
   { path: 'author.id', label: 'Author ID' },
   { path: 'author.username', label: 'Author username' },
   { path: 'author.display_name', label: 'Author display name' },
-  { path: 'author.mention', label: 'Author mention' },
-  { path: 'author.bot', label: 'Author is a bot' }
+  { path: 'author.global_name', label: 'Author global name' },
+  { path: 'author.avatar', label: 'Author avatar hash' },
+  { path: 'author.bot', label: 'Author is a bot' },
+  { path: 'author.mention', label: 'Author mention' }
+]);
+
+const MEMBER_PATHS = Object.freeze([
+  { path: 'member.nick', label: 'Member nickname' },
+  { path: 'member.roles', label: 'Member roles array' },
+  { path: 'member.joined_at', label: 'Member joined timestamp' },
+  { path: 'member.deaf', label: 'Member is deafened' },
+  { path: 'member.mute', label: 'Member is muted' }
+]);
+
+const MESSAGE_PATHS = Object.freeze([
+  { path: 'message.id', label: 'Message ID' },
+  { path: 'message.content', label: 'Message content' },
+  { path: 'message.channel_id', label: 'Message channel ID' },
+  { path: 'message.guild_id', label: 'Message server ID' },
+  { path: 'message.timestamp', label: 'Message timestamp' },
+  { path: 'message.pinned', label: 'Message is pinned' },
+  { path: 'message.author.id', label: 'Message author ID' },
+  { path: 'message.author.username', label: 'Message author username' }
+]);
+
+const CHANNEL_PATHS = Object.freeze([
+  { path: 'channel.id', label: 'Channel ID' },
+  { path: 'channel.name', label: 'Channel name' },
+  { path: 'channel.type', label: 'Channel type' },
+  { path: 'channel.topic', label: 'Channel topic' },
+  { path: 'channel.parent_id', label: 'Parent category ID' },
+  { path: 'channel.position', label: 'Channel position' }
+]);
+
+const GUILD_PATHS = Object.freeze([
+  { path: 'guild.id', label: 'Server ID' },
+  { path: 'guild.name', label: 'Server name' },
+  { path: 'guild.icon', label: 'Server icon hash' },
+  { path: 'guild.owner_id', label: 'Server owner ID' },
+  { path: 'guild.member_count', label: 'Server member count' },
+  { path: 'guild.description', label: 'Server description' }
+]);
+
+const UNIVERSAL_PATHS = Object.freeze([
+  ...GUILD_PATHS,
+  ...CHANNEL_PATHS,
+  ...USER_PATHS
 ]);
 
 const EVENT_PATHS = Object.freeze({
   event_message_create: [
+    ...MESSAGE_PATHS,
     ...AUTHOR_PATHS,
-    { path: 'content', label: 'Message content' },
-    { path: 'message.id', label: 'Message ID' },
-    { path: 'message.content', label: 'Message content' },
-    { path: 'member.nick', label: 'Member nickname' },
-    { path: 'channel.id', label: 'Channel ID' },
-    { path: 'guild.name', label: 'Server name' }
+    ...MEMBER_PATHS,
+    { path: 'content', label: 'Message content' }
   ],
   event_message_update: [
+    ...MESSAGE_PATHS,
     ...AUTHOR_PATHS,
-    { path: 'content', label: 'Message content' },
-    { path: 'message.id', label: 'Message ID' },
-    { path: 'message.content', label: 'Message content' },
-    { path: 'member.nick', label: 'Member nickname' }
+    ...MEMBER_PATHS,
+    { path: 'content', label: 'Message content' }
   ],
   event_message_delete: [
     { path: 'message.id', label: 'Message ID' },
@@ -89,6 +122,31 @@ const EVENT_PATHS = Object.freeze({
     { path: 'channel.id', label: 'Channel ID' },
     { path: 'guild.name', label: 'Server name' }
   ],
+  event_user_command: [
+    ...USER_PATHS,
+    { path: 'member.nick', label: 'Member nickname' },
+    { path: 'target.id', label: 'Target user ID' },
+    { path: 'target.username', label: 'Target username' },
+    { path: 'target.nick', label: 'Target nickname' },
+    { path: 'interaction.id', label: 'Interaction ID' },
+    { path: 'interaction.token', label: 'Interaction token' },
+    { path: 'interaction.command_name', label: 'Command name' },
+    { path: 'channel.id', label: 'Channel ID' },
+    { path: 'guild.name', label: 'Server name' }
+  ],
+  event_message_command: [
+    ...USER_PATHS,
+    { path: 'member.nick', label: 'Member nickname' },
+    { path: 'target.id', label: 'Target message ID' },
+    { path: 'target.content', label: 'Target message content' },
+    { path: 'target.author.id', label: 'Target message author ID' },
+    { path: 'target.author.username', label: 'Target message author username' },
+    { path: 'interaction.id', label: 'Interaction ID' },
+    { path: 'interaction.token', label: 'Interaction token' },
+    { path: 'interaction.command_name', label: 'Command name' },
+    { path: 'channel.id', label: 'Channel ID' },
+    { path: 'guild.name', label: 'Server name' }
+  ],
   event_slash_autocomplete: [
     ...USER_PATHS,
     { path: 'interaction.id', label: 'Interaction ID' },
@@ -98,34 +156,31 @@ const EVENT_PATHS = Object.freeze({
     { path: 'channel.id', label: 'Channel ID' }
   ],
   event_button_click: [
+    ...MESSAGE_PATHS,
     ...USER_PATHS,
-    { path: 'member.nick', label: 'Member nickname' },
+    ...MEMBER_PATHS,
     { path: 'interaction.id', label: 'Interaction ID' },
     { path: 'interaction.token', label: 'Interaction token' },
-    { path: 'interaction.custom_id', label: 'Button custom ID' },
-    { path: 'message.id', label: 'Message ID' },
-    { path: 'channel.id', label: 'Channel ID' },
-    { path: 'guild.name', label: 'Server name' }
+    { path: 'interaction.custom_id', label: 'Button custom ID' }
   ],
   event_select_menu: [
+    ...MESSAGE_PATHS,
     ...USER_PATHS,
-    { path: 'member.nick', label: 'Member nickname' },
+    ...MEMBER_PATHS,
     { path: 'interaction.id', label: 'Interaction ID' },
     { path: 'interaction.token', label: 'Interaction token' },
     { path: 'interaction.custom_id', label: 'Select custom ID' },
     { path: 'interaction.values', label: 'Selected values' },
-    { path: 'interaction.first_value', label: 'First selected value' },
-    { path: 'message.id', label: 'Message ID' },
-    { path: 'channel.id', label: 'Channel ID' }
+    { path: 'interaction.first_value', label: 'First selected value' }
   ],
   event_modal_submit: [
+    ...MESSAGE_PATHS,
     ...USER_PATHS,
-    { path: 'member.nick', label: 'Member nickname' },
+    ...MEMBER_PATHS,
     { path: 'interaction.id', label: 'Interaction ID' },
     { path: 'interaction.token', label: 'Interaction token' },
     { path: 'interaction.custom_id', label: 'Modal custom ID' },
-    { path: 'interaction.fields', label: 'Submitted fields object' },
-    { path: 'channel.id', label: 'Channel ID' }
+    { path: 'interaction.fields', label: 'Submitted fields object' }
   ],
   event_member_join: [
     ...USER_PATHS,
