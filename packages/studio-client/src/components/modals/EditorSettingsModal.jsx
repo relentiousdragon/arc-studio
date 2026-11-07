@@ -231,7 +231,7 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
 
     {activeTab === 'canvas' && <div className="settings-section settings-tab-content">
       <div className="settings-section-heading"><span>Canvas behavior</span></div>
-      <SelectInput label="Canvas quality" value={['auto', 'fast', 'optimal', 'quality'].includes(settings.canvasQuality) ? settings.canvasQuality : 'auto'} options={[{ value: 'auto', label: 'Auto' }, { value: 'fast', label: 'Fast' }, { value: 'optimal', label: 'Optimal' }, { value: 'quality', label: 'Quality' }]} onChange={(value) => update('canvasQuality', value)} />
+      <SelectInput label="Canvas quality" value={['auto', 'fast', 'optimal', 'quality'].includes(settings.canvasQuality) ? settings.canvasQuality : 'fast'} options={[{ value: 'auto', label: 'Auto' }, { value: 'fast', label: 'Fast' }, { value: 'optimal', label: 'Optimal' }, { value: 'quality', label: 'Quality' }]} onChange={(value) => update('canvasQuality', value)} />
       <Toggle label="Snap to grid" description="Align nodes while dragging" checked={settings.snapToGrid ?? true} onChange={(value) => update('snapToGrid', value)} />
       <Toggle label="Zoom with mouse wheel" description="Zoom the canvas without holding Ctrl or ⌘" checked={settings.zoomCanvasWithScroll ?? false} onChange={(value) => update('zoomCanvasWithScroll', value)} />
       <Toggle label="Right-click to pan canvas" description="Drag with right-click to move the canvas and use left-click for its context menu" checked={settings.canvasRightClickPan ?? false} onChange={(value) => update('canvasRightClickPan', value)} />
