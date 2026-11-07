@@ -1,4 +1,5 @@
 export { Client } from './client/Client.js';
+export { InteractionCollector, MessageCollector } from './client/Collectors.js';
 export { RESTClient, DiscordAPIError, InteractionAlreadyAcknowledgedError } from './rest/RESTClient.js';
 export { RateLimiter } from './rest/RateLimiter.js';
 export { InteractionSecurity } from './rest/InteractionSecurity.js';
