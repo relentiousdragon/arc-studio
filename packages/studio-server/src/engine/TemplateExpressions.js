@@ -284,26 +284,171 @@ export function getTemplateReferences(source) {
   return [...refs];
 }
 
-export function renderTextTemplate(template, resolveSlot, appEmojis = [], onUndefined = null, options = {}) {
-  return String(template ?? '').replace(/(\\)?(\{\{\s*([^{}]+?)\s*\}\})/g, (_match, escaped, token, source) => {
-    if (escaped) return token;
-    const parts = splitTemplatePipeline(source); const base = parts.shift() || '';
-    const emojiName = /^e_([A-Za-z0-9_-]+)$/.exec(base.trim())?.[1];
-    if (emojiName) { const emoji = appEmojis instanceof Map ? appEmojis.get(emojiName.toLowerCase()) : appEmojis.find?.((item) => item?.name?.toLowerCase() === emojiName.toLowerCase()); if (emoji?.id && emoji.name) return `<${emoji.animated ? 'a' : ''}:${emoji.name}:${emoji.id}>`; }
-    const evaluated = evaluateTemplateExpression(base, resolveSlot, options);
-    let guarded = false;
-    try {
-      const ast = parse(base);
-      if (ast.kind === 'conditional') {
-        const condition = evaluate(ast.test, resolveSlot, options);
-        const fallback = evaluate(condition.value ? ast.yes : ast.no, resolveSlot, options);
-        guarded = (!condition.found || condition.value == null) && fallback.found && fallback.value != null;
-      }
-    } catch {}
-    if (!guarded && (evaluated.value == null || !evaluated.found) && !parts.some((part) => /^default\s*\(/i.test(part))) {
-      onUndefined?.(source, getTemplateReferences(base));
+export function findTemplateBlocks(text) {
+  const source = String(text ?? '');
+  const blocks = [];
+  let i = 0;
+  while (i < source.length) {
+    if (source[i] === '\\' && source[i + 1] === '{' && source[i + 2] === '{') {
+      i += 3;
+      continue;
     }
-    if (!evaluated.found && !parts.some((part) => /^default\s*\(/i.test(part))) return token;
-    return applyTemplateTransforms(evaluated.value, parts);
-  });
+    if (source[i] === '{' && source[i + 1] === '{') {
+      const start = i;
+      i += 2;
+      let quote = '';
+      let escaped = false;
+      let closed = false;
+      let depth = 1;
+      while (i < source.length) {
+        const c = source[i];
+        if (escaped) {
+          escaped = false;
+          i += 1;
+          continue;
+        }
+        if (c === '\\' && quote) {
+          escaped = true;
+          i += 1;
+          continue;
+        }
+        if ((c === '"' || c === "'") && (!quote || quote === c)) {
+          quote = quote ? '' : c;
+          i += 1;
+          continue;
+        }
+        if (!quote) {
+          if (c === '{' && source[i + 1] === '{') {
+            depth += 1;
+            i += 2;
+            continue;
+          }
+          if (c === '}' && source[i + 1] === '}') {
+            depth -= 1;
+            if (depth === 0) {
+              const end = i + 2;
+              blocks.push({
+                start,
+                end,
+                raw: source.slice(start, end),
+                content: source.slice(start + 2, i)
+              });
+              i = end;
+              closed = true;
+              break;
+            }
+            i += 2;
+            continue;
+          }
+        }
+        i += 1;
+      }
+      if (!closed) {
+        blocks.push({
+          start,
+          end: source.length,
+          raw: source.slice(start),
+          content: source.slice(start + 2),
+          unclosed: true
+        });
+        break;
+      }
+      continue;
+    }
+    i += 1;
+  }
+  return blocks;
+}
+
+export function validateTemplateSyntax(text) {
+  if (typeof text !== 'string' || !text.includes('{{')) return null;
+  const blocks = findTemplateBlocks(text);
+  for (const block of blocks) {
+    if (block.unclosed) {
+      return 'Unclosed template expression: missing closing "}}"';
+    }
+    const source = block.content.trim();
+    if (!source) {
+      return 'Empty template expression "{{}}"';
+    }
+    const parts = splitTemplatePipeline(source);
+    if (parts.some((p, idx) => !p && idx > 0)) {
+      return 'Incomplete template pipeline filter after "|"';
+    }
+    const base = parts[0] || '';
+    if (!base) {
+      return 'Missing expression in template';
+    }
+    try {
+      parse(base);
+    } catch (err) {
+      return `Template syntax error: ${err.message}`;
+    }
+    for (let i = 1; i < parts.length; i += 1) {
+      const filterPart = parts[i].trim();
+      if (!/^[A-Za-z][A-Za-z0-9]*(?:\(.*\))?$/.test(filterPart)) {
+        return `Invalid template filter syntax: "${filterPart}"`;
+      }
+    }
+  }
+  return null;
+}
+
+export function renderTextTemplate(template, resolveSlot, appEmojis = [], onUndefined = null, options = {}) {
+  let result = String(template ?? '');
+  const MAX_PASSES = 10;
+  for (let pass = 0; pass < MAX_PASSES; pass += 1) {
+    const blocks = findTemplateBlocks(result);
+    if (!blocks.length) break;
+    let changed = false;
+    let nextResult = '';
+    let lastIndex = 0;
+    for (const block of blocks) {
+      if (block.unclosed) continue;
+      nextResult += result.slice(lastIndex, block.start);
+      lastIndex = block.end;
+
+      const source = block.content.trim();
+      const parts = splitTemplatePipeline(source);
+      const base = parts.shift() || '';
+
+      const emojiName = /^e_([A-Za-z0-9_-]+)$/.exec(base.trim())?.[1];
+      if (emojiName) {
+        const emoji = appEmojis instanceof Map ? appEmojis.get(emojiName.toLowerCase()) : appEmojis.find?.((item) => item?.name?.toLowerCase() === emojiName.toLowerCase());
+        if (emoji?.id && emoji.name) {
+          nextResult += `<${emoji.animated ? 'a' : ''}:${emoji.name}:${emoji.id}>`;
+          changed = true;
+          continue;
+        }
+      }
+
+      const evaluated = evaluateTemplateExpression(base, resolveSlot, options);
+      let guarded = false;
+      try {
+        const ast = parse(base);
+        if (ast.kind === 'conditional') {
+          const condition = evaluate(ast.test, resolveSlot, options);
+          const fallback = evaluate(condition.value ? ast.yes : ast.no, resolveSlot, options);
+          guarded = (!condition.found || condition.value == null) && fallback.found && fallback.value != null;
+        }
+      } catch {}
+
+      if (!guarded && (evaluated.value == null || !evaluated.found) && !parts.some((part) => /^default\s*\(/i.test(part))) {
+        onUndefined?.(source, getTemplateReferences(base));
+      }
+      if (!evaluated.found && !parts.some((part) => /^default\s*\(/i.test(part))) {
+        nextResult += block.raw;
+        continue;
+      }
+
+      const transformed = applyTemplateTransforms(evaluated.value, parts);
+      nextResult += transformed;
+      changed = true;
+    }
+    nextResult += result.slice(lastIndex);
+
+    if (!changed || nextResult === result) break;
+    result = nextResult;
+  }
+  return result.replace(/\\\{\{/g, '{{');
 }
