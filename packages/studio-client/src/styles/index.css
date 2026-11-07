@@ -7057,6 +7057,15 @@ body.is-resizing-sidebar .slash-command-studio {
   background: var(--line);
 }
 
+.canvas-empty-workspace {
+  position: absolute;
+  inset: 0;
+  background-color: var(--canvas);
+  background-image: radial-gradient(circle, var(--grid-dot) var(--grid-dot-size, 1.35px), transparent calc(var(--grid-dot-size, 1.35px) + .2px));
+  background-size: 22px 22px;
+  background-position: 11px 11px;
+}
+
 .canvas-empty-hint {
   position: absolute;
   top: 50%;
