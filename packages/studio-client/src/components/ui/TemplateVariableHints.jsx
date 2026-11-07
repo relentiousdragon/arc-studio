@@ -1,38 +1,50 @@
 import React, { useMemo } from 'react';
-import { applyTemplateTransforms, evaluateTemplateExpression, getTemplateReferences, splitTemplatePipeline } from '../../../../studio-server/src/engine/TemplateExpressions.js';
+import { AlertTriangle } from 'lucide-react';
+import { applyTemplateTransforms, evaluateTemplateExpression, findTemplateBlocks, getTemplateReferences, splitTemplatePipeline, validateTemplateSyntax } from '../../../../studio-server/src/engine/TemplateExpressions.js';
 //
 export function TemplateVariableHints({ value, graphVariables = [], inputSlots = [], connectedInputIds = new Set(), templatePreviewValues = {} }) {
-  const tokens = useMemo(() => Array.from(new Map(Array.from(
-    String(value || '').matchAll(/(?<!\\)\{\{\s*([^{}]+?)\s*\}\}/g), (match) => {
-      const expression = match[1];
+  const syntaxError = useMemo(() => validateTemplateSyntax(value), [value]);
+  const blocks = useMemo(() => findTemplateBlocks(value), [value]);
+  const tokens = useMemo(() => {
+    const map = new Map();
+    for (const block of blocks) {
+      if (block.unclosed) continue;
+      const expression = block.content.trim();
       const name = getTemplateReferences(expression)[0];
-      return name ? [match[0], { name, token: match[0], expression, pipeline: expression.includes('|') ? ` | ${expression.split('|').slice(1).join('|').trim()}` : '' }] : null;
+      if (name && !name.toLowerCase().startsWith('e_') && !/^arg\d+$/i.test(name) && !map.has(block.raw)) {
+        map.set(block.raw, { name, token: block.raw, expression, pipeline: expression.includes('|') ? ` | ${expression.split('|').slice(1).join('|').trim()}` : '' });
+      }
     }
-  ).filter(Boolean)).values()).filter(({ name }) => !name.toLowerCase().startsWith('e_') && !/^arg\d+$/i.test(name)), [value]);
-  if (!tokens.length && !/(?<!\\)\{\{\s*[^{}]+?\s*\}\}/.test(String(value || ''))) return null;
-  return <div className="template-token-hints" aria-label="Template values">
-    {tokens.map(({ name, token, pipeline, expression }) => {
-      const variable = graphVariables.find((item) => item.name?.toLowerCase() === name.toLowerCase());
-      const inputPin = inputSlots.find((pin) => pin.id === `slot_${name}`);
-      const label = <><span>{'{{'}{name}</span>{pipeline && <small>{pipeline}</small>}<span>{'}}'}</span></>;
-      if (inputPin && connectedInputIds.has(inputPin.id)) {
-        return <span className="template-token-chip" key={token} data-tooltip={`${name} input socket · value supplied by its connected wire`}>{label}</span>;
-      }
-      if (!variable && /\|\s*default\s*\(/i.test(expression)) {
-        const fallback = previewTemplateValue(undefined, pipeline, token, expression, graphVariables);
-        return <span className="template-token-chip" key={token} data-tooltip={`Fallback preview · ${fallback}`}>{label}</span>;
-      }
-      if (!variable && inputPin) {
-        return <span className="template-token-chip" key={token} data-tooltip={`${name} input socket · connect a wire to supply this placeholder`}>{label}</span>;
-      }
-      if (!variable) return <span className="template-token-chip is-unresolved" key={token} data-tooltip="No matching graph variable or input socket exists. This placeholder will stay as written.">{label}</span>;
-      const type = variable.valueType || variable.type || 'text';
-      const initial = variable.initialValue;
-      const valuePreview = previewTemplateValue(initial, pipeline, token, expression, graphVariables, templatePreviewValues);
-      const expected = initial === undefined ? 'No default value' : `Initial value: ${valuePreview}`;
-      return <span className="template-token-chip" key={token} data-tooltip={`${variable.name} · ${type} · ${expected}${pipeline ? ` · transforms: ${pipeline.replace(/\|/g, '').trim()}` : ''}`}>{label}</span>;
-    })}
-  </div>;
+    return Array.from(map.values());
+  }, [blocks]);
+
+  if (!syntaxError && !tokens.length && !blocks.length) return null;
+  return <>
+    {syntaxError && <div className="node-config-warning template-syntax-warning" role="alert"><AlertTriangle size={12} /><span>{syntaxError}</span></div>}
+    {tokens.length > 0 && <div className="template-token-hints" aria-label="Template values">
+      {tokens.map(({ name, token, pipeline, expression }) => {
+        const variable = graphVariables.find((item) => item.name?.toLowerCase() === name.toLowerCase());
+        const inputPin = inputSlots.find((pin) => pin.id === `slot_${name}`);
+        const label = <><span>{'{{'}{name}</span>{pipeline && <small>{pipeline}</small>}<span>{'}}'}</span></>;
+        if (inputPin && connectedInputIds.has(inputPin.id)) {
+          return <span className="template-token-chip" key={token} data-tooltip={`${name} input socket · value supplied by its connected wire`}>{label}</span>;
+        }
+        if (!variable && /\|\s*default\s*\(/i.test(expression)) {
+          const fallback = previewTemplateValue(undefined, pipeline, token, expression, graphVariables);
+          return <span className="template-token-chip" key={token} data-tooltip={`Fallback preview · ${fallback}`}>{label}</span>;
+        }
+        if (!variable && inputPin) {
+          return <span className="template-token-chip" key={token} data-tooltip={`${name} input socket · connect a wire to supply this placeholder`}>{label}</span>;
+        }
+        if (!variable) return <span className="template-token-chip is-unresolved" key={token} data-tooltip="No matching graph variable or input socket exists. This placeholder will stay as written.">{label}</span>;
+        const type = variable.valueType || variable.type || 'text';
+        const initial = variable.initialValue;
+        const valuePreview = previewTemplateValue(initial, pipeline, token, expression, graphVariables, templatePreviewValues);
+        const expected = initial === undefined ? 'No default value' : `Initial value: ${valuePreview}`;
+        return <span className="template-token-chip" key={token} data-tooltip={`${variable.name} · ${type} · ${expected}${pipeline ? ` · transforms: ${pipeline.replace(/\|/g, '').trim()}` : ''}`}>{label}</span>;
+      })}
+    </div>}
+  </>;
 }
 
 function previewTemplateValue(value, pipeline, _token, expression, variables, templatePreviewValues) {
