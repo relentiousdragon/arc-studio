@@ -782,7 +782,6 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
 
   router.get('/client-access', (req, res) => {
     if (serverConfig.desktopMode) return res.sendStatus(404);
-    if (req.user?.isPrimaryAdmin !== true) return res.status(403).json({ error: 'Only the primary workspace owner can view client access settings.' });
     res.json(readClientAccessSettings());
   });
 
@@ -1722,7 +1721,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       }));
       projectVariables = projectVariables.filter((variable) => variable?.secret !== true);
       const projectOwner = userStore.users.find((user) => user.id === project.ownerId);
-      const adapters = PluginStore.exportAdapters(exportGraphs);
+      const adapters = PluginStore.exportAdapters(exportGraphs.filter((graph) => graph.enabled !== false));
       const exportSettings = {
         includeCryptoSecret,
         includeBotToken,
