@@ -245,6 +245,18 @@ export class MockGateway extends EventEmitter {
         outputSink.push(record);
         return { id: `mock_emoji_${Date.now()}`, name: data.name };
       },
+      createApplicationEmoji: async (applicationId, data) => {
+        outputSink.push({ type: 'CREATE_APPLICATION_EMOJI', applicationId, name: data.name, timestamp: new Date().toISOString() });
+        return { id: `mock_app_emoji_${Date.now()}`, name: data.name };
+      },
+      bulkDeleteMessages: async (channelId, messageIds, reason) => {
+        outputSink.push({ type: 'BULK_DELETE_MESSAGES', channelId, messageIds: [...messageIds], reason, timestamp: new Date().toISOString() });
+        return { deleted: messageIds.length };
+      },
+      createGuildSticker: async (guildId, data) => {
+        outputSink.push({ type: 'CREATE_STICKER', guildId, name: data.name, timestamp: new Date().toISOString() });
+        return { id: `mock_sticker_${Date.now()}`, name: data.name };
+      },
       createGuildChannel: async (guildId, data, reason) => {
         const id = `mock_channel_${Date.now()}`;
         outputSink.push({ type: 'CREATE_CHANNEL', guildId, channel: data, reason, timestamp: new Date().toISOString() });
