@@ -41,7 +41,7 @@ export async function executeDiscordMessageNode(node, {
     const content = String(resolveInput('content', node.data?.content || '')).slice(0, 2000);
     const embed = resolveInput('embed', null) || (Array.isArray(node.data?.blocks) ? buildEmbed() : null);
     const components = resolveComponents();
-    const files = resolveFiles(resolveInput('files', node.data?.files || []));
+    const files = await resolveFiles(resolveInput('files', node.data?.files || []), [embed, components]);
     const fileData = String(resolveInput('file_data', node.data?.file_data || ''));
     const fileName = String(resolveInput('file_name', node.data?.file_name || 'image.png'));
     const replyToMessageId = validateDiscordSemanticValue(resolveInput('reply_to_message_id', node.data?.reply_to_message_id || ''), 'message_id', 'Reply message ID', { simulation, allowEmpty: true });
@@ -90,7 +90,7 @@ export async function executeDiscordMessageNode(node, {
   const content = resolveInput('content', node.data?.content);
   const embed = resolveInput('embed', null) || (Array.isArray(node.data?.blocks) ? buildEmbed() : null);
   const components = resolveComponents();
-  const files = resolveFiles(resolveInput('files', node.data?.files || []));
+    const files = await resolveFiles(resolveInput('files', node.data?.files || []), [embed, components]);
   const componentsV2 = components?.format === 'arc-components-v2' || node.data?.componentsV2Enabled === true;
 
   if (componentsV2) validateComponentsV2Mode(components, isInputConnected);
