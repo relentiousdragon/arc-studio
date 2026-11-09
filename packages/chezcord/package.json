@@ -1,6 +1,6 @@
 {
   "name": "chezcord",
-  "version": "0.4.2",
+  "version": "0.4.5",
   "description": "Discord API v10 and Gateway v10 library for Node.js",
   "type": "module",
   "main": "./src/index.js",
