@@ -3,6 +3,20 @@ import test from 'node:test';
 import { GraphRunner } from '../src/engine/GraphRunner.js';
 import { buildDiscordComponents, buildDiscordModal } from '../src/engine/nodes/runtime/builders.js';
 //
+test('disabled graphs return without running nodes', async () => {
+  let ran = false;
+  const result = await GraphRunner.execute({
+    id: 'disabled-graph',
+    enabled: false,
+    nodes: [{ id: 'log', type: 'action_console_log', data: { message: 'should not run' } }],
+    connections: []
+  }, 'MESSAGE_CREATE', {}, { log: () => { ran = true; } });
+
+  assert.equal(result.disabled, true);
+  assert.deepEqual(result.executedNodeIds, []);
+  assert.equal(ran, false);
+});
+
 test('component builder limits rows and components and renders button and select values', () => {
   const rows = [
     {
