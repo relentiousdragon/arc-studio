@@ -60,7 +60,59 @@ export function isAudioMedia(file) {
 }
 
 const TEXT_TYPES = new Set(['application/json', 'application/ld+json', 'application/xml', 'application/yaml', 'application/x-yaml', 'application/toml', 'application/javascript', 'application/x-javascript', 'application/sql', 'application/rtf', 'application/x-sh', 'application/x-httpd-php', 'image/svg+xml']);
-const TEXT_EXTENSIONS = /\.(?:txt|text|md|markdown|json|jsonl|xml|yaml|yml|toml|csv|tsv|log|ini|conf|cfg|js|jsx|mjs|cjs|ts|tsx|css|html|htm|sh|bash|py|rb|rs|go|java|c|h|cpp|hpp|sql|svg|rtf)$/i;
+const TEXT_EXTENSIONS = /\.(?:txt|text|md|markdown|json|jsonl|xml|yaml|yml|toml|csv|tsv|log|ini|conf|cfg|js|jsx|mjs|cjs|ts|tsx|css|html|htm|sh|bash|py|rb|rs|go|java|c|h|cpp|hpp|php|sql|svg|rtf)$/i;
+
+function mediaExtension(file) {
+  return /\.([a-z0-9]+)$/i.exec(String(file?.filename || file?.name || ''))?.[1]?.toLowerCase() || '';
+}
+
+export function getTextLanguage(file) {
+  const extension = mediaExtension(file);
+  const byExtension = {
+    js: 'javascript', jsx: 'javascript', mjs: 'javascript', cjs: 'javascript',
+    ts: 'typescript', tsx: 'typescript',
+    py: 'python', rb: 'ruby', rs: 'rust', go: 'go', java: 'java',
+    c: 'c', h: 'c', cpp: 'cpp', hpp: 'cpp', php: 'php',
+    css: 'css', html: 'html', htm: 'html', xml: 'xml', svg: 'xml',
+    json: 'json', jsonl: 'jsonl', yaml: 'yaml', yml: 'yaml', toml: 'toml',
+    sql: 'sql', sh: 'shell', bash: 'shell', md: 'markdown', markdown: 'markdown',
+    csv: 'csv', tsv: 'csv', ini: 'ini', conf: 'ini', cfg: 'ini'
+  };
+  if (byExtension[extension]) return byExtension[extension];
+  const type = mediaType(file).split(';', 1)[0];
+  if (/^(?:application|text)\/(?:x-)?javascript$/.test(type)) return 'javascript';
+  if (/^(?:application|text)\/typescript$/.test(type)) return 'typescript';
+  if (/^(?:application|text)\/(?:x-)?php$/.test(type) || type === 'application/x-httpd-php') return 'php';
+  if (/^(?:application|text)\/(?:x-)?python$/.test(type)) return 'python';
+  if (type === 'text/css') return 'css';
+  if (type === 'text/html') return 'html';
+  if (/(?:\+xml|\/xml)$/.test(type) || type === 'image/svg+xml') return 'xml';
+  if (/(?:\+json|\/json)$/.test(type)) return 'json';
+  if (/ya?ml/.test(type)) return 'yaml';
+  if (/toml/.test(type)) return 'toml';
+  if (/\/sql$/.test(type)) return 'sql';
+  if (/x-(?:shellscript|sh)$/.test(type)) return 'shell';
+  if (/markdown/.test(type)) return 'markdown';
+  if (/csv|tab-separated/.test(type)) return 'csv';
+  return '';
+}
+
+export function getMediaFileIconType(file) {
+  const name = String(file?.filename || file?.name || '').toLowerCase();
+  const type = mediaType(file);
+  const extension = mediaExtension(file);
+  if (/\.(?:arcproject|arcgraph|arcproject\.json|arcgraph\.json|arc\.json)$/.test(name)) return 'arc';
+  if (/zip|compressed|archive/.test(type) || /^(?:zip|7z|rar|tar|gz)$/.test(extension)) return 'archive';
+  const language = getTextLanguage(file);
+  if (language === 'json' || language === 'jsonl') return 'json';
+  if (language === 'html' || language === 'xml') return 'markup';
+  if (language === 'javascript' || language === 'typescript' || language === 'css' || ['python', 'ruby', 'rust', 'go', 'java', 'c', 'cpp', 'php', 'sql'].includes(language)) return 'code';
+  if (language === 'shell') return 'terminal';
+  if (language === 'csv') return 'spreadsheet';
+  if (language === 'yaml' || language === 'toml' || language === 'ini') return 'config';
+  if (language === 'markdown' || type.startsWith('text/') || ['txt', 'text', 'log', 'rtf'].includes(extension)) return 'text';
+  return 'file';
+}
 
 export function isTextMedia(file) {
   const type = mediaType(file).split(';', 1)[0];
