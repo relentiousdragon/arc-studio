@@ -119,10 +119,13 @@ export function UserManagementModal({ isOpen, onClose, authToken, currentUsernam
       try {
         const response = await fetch(apiUrl('/api/activity?limit=50'), { headers: { 'x-arc-token': authToken } });
         const data = await response.json();
-        if (active && response.ok) setActivity(data.activity || []);
+        if (active && response.ok) {
+          const nextActivity = data.activity || [];
+          setActivity((current) => JSON.stringify(current) === JSON.stringify(nextActivity) ? current : nextActivity);
+        }
       } catch {}
     };
-    const timer = window.setInterval(refreshActivity, 5000);
+    const timer = window.setInterval(refreshActivity, 15000);
     return () => { active = false; window.clearInterval(timer); };
   }, [isOpen, authToken, users.length]);
 
