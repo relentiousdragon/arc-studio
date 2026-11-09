@@ -63,13 +63,14 @@ try {
     const appPath = path.join(bundleRoot, 'macos', appName);
     if (!fs.existsSync(appPath)) throw new Error(`Tauri built successfully but the app bundle was not found: ${appPath}`);
     const infoPlist = path.join(appPath, 'Contents', 'Info.plist');
-    // Info.plist icon keys take the resource name, not its filename. macOS
-    // resolves the corresponding .icns in Contents/Resources at registration.
-    const documentIconName = 'arcproject';
-    const documentIconFilename = `${documentIconName}.icns`;
     const documentIconSource = nightlyIconDirectory ? path.join(nightlyIconDirectory, 'icon.icns') : path.join('src-tauri', 'icons', 'icon.icns');
-    const documentIconDestination = path.join(appPath, 'Contents', 'Resources', documentIconFilename);
-    fs.copyFileSync(documentIconSource, documentIconDestination);
+    const documentTypes = [
+      { name: 'arcproject', index: 0 },
+      { name: 'arcgraph', index: 1 }
+    ];
+    for (const documentType of documentTypes) {
+      fs.copyFileSync(documentIconSource, path.join(appPath, 'Contents', 'Resources', `${documentType.name}.icns`));
+    }
     const setPlistString = (key, value) => {
       const setCommand = `Set ${key} ${value}`;
       try { execFileSync('/usr/libexec/PlistBuddy', ['-c', setCommand, infoPlist], { stdio: 'ignore' }); }
@@ -77,12 +78,14 @@ try {
         execFileSync('/usr/libexec/PlistBuddy', ['-c', `Add ${key} string ${value}`, infoPlist]);
       }
     };
-    setPlistString(':CFBundleDocumentTypes:0:CFBundleTypeIconFile', documentIconName);
-    setPlistString(':UTExportedTypeDeclarations:0:UTTypeIconFile', documentIconName);
-    const documentIcon = execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleDocumentTypes:0:CFBundleTypeIconFile', infoPlist], { encoding: 'utf8' }).trim();
-    const typeIcon = execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Print :UTExportedTypeDeclarations:0:UTTypeIconFile', infoPlist], { encoding: 'utf8' }).trim();
-    if (documentIcon !== documentIconName || typeIcon !== documentIconName || !fs.existsSync(documentIconDestination)) {
-      throw new Error('The ARC Studio project file icon could not be added to the macOS app bundle.');
+    for (const documentType of documentTypes) {
+      setPlistString(`:CFBundleDocumentTypes:${documentType.index}:CFBundleTypeIconFile`, documentType.name);
+      setPlistString(`:UTExportedTypeDeclarations:${documentType.index}:UTTypeIconFile`, documentType.name);
+      const documentIcon = execFileSync('/usr/libexec/PlistBuddy', ['-c', `Print :CFBundleDocumentTypes:${documentType.index}:CFBundleTypeIconFile`, infoPlist], { encoding: 'utf8' }).trim();
+      const typeIcon = execFileSync('/usr/libexec/PlistBuddy', ['-c', `Print :UTExportedTypeDeclarations:${documentType.index}:UTTypeIconFile`, infoPlist], { encoding: 'utf8' }).trim();
+      if (documentIcon !== documentType.name || typeIcon !== documentType.name || !fs.existsSync(path.join(appPath, 'Contents', 'Resources', `${documentType.name}.icns`))) {
+        throw new Error(`The ARC Studio ${documentType.name} file icon could not be added to the macOS app bundle.`);
+      }
     }
     if (signingConfigured) {
       const updateArchive = path.join(path.dirname(appPath), `${appName}.tar.gz`);
