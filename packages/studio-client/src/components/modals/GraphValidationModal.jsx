@@ -16,10 +16,12 @@ export function GraphValidationModal({ isOpen, onClose, graphName, result, onTra
     : warnings.length
       ? `${warnings.length} warning${warnings.length === 1 ? '' : 's'}`
       : 'No issues';
-  const items = result.issueItems || [
+  const reportedItems = Array.isArray(result.issueItems) ? result.issueItems : [];
+  const items = [
+    ...reportedItems,
     ...errors.map((message) => ({ message, kind: 'error', nodeId: result.errorNodeIds?.[message] })),
     ...warnings.map((message) => ({ message, kind: 'warning', nodeId: result.warningNodeIds?.[message] }))
-  ];
+  ].filter((item, index, all) => all.findIndex((candidate) => candidate.kind === item.kind && candidate.message === item.message) === index);
   return <Modal
     isOpen={isOpen}
     onClose={onClose}
