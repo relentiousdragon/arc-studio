@@ -179,35 +179,26 @@ function renderGraphChatContent(content) {
   });
 }
 
+function chatDisplayName(value) {
+  const name = String(value || 'Collaborator').trim() || 'Collaborator';
+  return name.length > 24 ? `${name.slice(0, 23)}…` : name;
+}
+
 function GraphChatBubble({ bubble, isOwn, zoom, displayScale, onMove }) {
   const [position, setPosition] = useState({ x: bubble.x, y: bubble.y });
-  const [fadeTiming] = useState(() => {
-    const now = Date.now();
-    const remaining = Math.max(1, bubble.expiresAt - now);
-    const untilFade = Math.max(0, bubble.createdAt + bubble.stayMs - now);
-    return {
-      startOpacity: untilFade > 0 ? 1 : Math.max(0, Math.min(1, remaining / Math.max(1, bubble.fadeMs))),
-      duration: `${remaining}ms`,
-      delay: `${Math.min(untilFade, remaining)}ms`
-    };
-  });
+  const remainingMs = Math.max(1, bubble.expiresAt - Date.now());
+  const untilFadeMs = Math.max(0, Math.min(remainingMs, (bubble.createdAt || Date.now()) + (bubble.stayMs || 0) - Date.now()));
   const dragRef = useRef(null);
   const lastMoveSentRef = useRef(0);
   const pendingMoveRef = useRef(null);
-  useEffect(() => {
-    if (!dragRef.current) setPosition({ x: bubble.x, y: bubble.y });
-  }, [bubble.x, bubble.y]);
-  const sendPosition = (point) => {
-    onMove?.(bubble.id, point);
-    lastMoveSentRef.current = Date.now();
-    pendingMoveRef.current = null;
-  };
+  useEffect(() => { if (!dragRef.current) setPosition({ x: bubble.x, y: bubble.y }); }, [bubble.x, bubble.y]);
+  const sendPosition = (point) => { onMove?.(bubble.id, point); lastMoveSentRef.current = Date.now(); pendingMoveRef.current = null; };
   return <div
-    className={`canvas-chat-bubble ${isOwn ? 'is-own' : 'is-remote'}`}
-    style={{ left: position.x, top: position.y, '--collaborator-color': bubble.color, '--chat-start-opacity': fadeTiming.startOpacity, '--chat-fade-duration': fadeTiming.duration, '--chat-fade-delay': fadeTiming.delay }}
+    className={`canvas-chat-bubble ${isOwn ? 'is-own' : 'is-remote'}${bubble.failed ? ' is-failed' : ''}`}
+    style={{ left: position.x, top: position.y, '--collaborator-color': bubble.color, '--chat-start-opacity': bubble.failed ? '.48' : '1', '--chat-fade-duration': `${bubble.failed ? 5000 : Math.max(1, bubble.fadeMs || 1000)}ms`, '--chat-fade-delay': `${bubble.failed ? 1000 : untilFadeMs}ms` }}
     onPointerDown={(event) => {
       event.stopPropagation();
-      if (!isOwn || event.button !== 0) return;
+      if (!isOwn || bubble.failed || event.button !== 0) return;
       event.preventDefault();
       event.currentTarget.setPointerCapture?.(event.pointerId);
       dragRef.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, x: position.x, y: position.y };
@@ -217,8 +208,7 @@ function GraphChatBubble({ bubble, isOwn, zoom, displayScale, onMove }) {
       if (!drag || drag.pointerId !== event.pointerId) return;
       event.stopPropagation();
       const next = { x: drag.x + (event.clientX - drag.startX) / (displayScale * zoom), y: drag.y + (event.clientY - drag.startY) / (displayScale * zoom) };
-      setPosition(next);
-      pendingMoveRef.current = next;
+      setPosition(next); pendingMoveRef.current = next;
       if (Date.now() - lastMoveSentRef.current >= 50) sendPosition(next);
     }}
     onPointerUp={(event) => {
@@ -232,7 +222,7 @@ function GraphChatBubble({ bubble, isOwn, zoom, displayScale, onMove }) {
     onContextMenu={(event) => event.stopPropagation()}
     aria-label={`${bubble.username} says ${bubble.content}`}
   >
-    <span className="canvas-chat-bubble-author"><i />{bubble.username}</span>
+    <span className="canvas-chat-bubble-author"><i />{chatDisplayName(bubble.username)}{bubble.failed && <small>Not sent</small>}</span>
     <span className="canvas-chat-bubble-message">{renderGraphChatContent(bubble.content)}</span>
   </div>;
 }
@@ -340,9 +330,9 @@ export function NodeCanvas({
   isActive = true,
   nodes: suppliedNodes = [], connections: suppliedConnections = [], graphId = '', projectId = '', focusRequest = null, followRequest = null, onFollowComplete, activePulseNodeIds = [], debugStep = null, simulationOverlay = null, onClearSimulationOverlay, onDebugAction, settings = {}, isLocked = false, canvasLocked = isLocked, canWriteGraphs = true, desktopMode = false, shortcutPlatform = 'windows', authToken = '', graphName = 'Untitled graph',
   tagGroups = [], notes = [], arrows = [], transientArrows = [], currentUser = null, projectOwnerId = '', noteEditLocks = {}, collaborationOnline = false, collaborationReady = false, collaborationMotionSupported = false, collaborationClientId = '', onRequestNoteEditLock, onReleaseNoteEditLock, onNotesChange, onArrowsChange, onCanvasArrowAction, onTagGroupsChange, onRequestCreateTagGroup, onRequestEditTagGroup, onRenameNode,
-  graphVariables = [], eventTemplatePaths = [], functionGraphs = [], callableGraphs = functionGraphs, appEmojis = [], nodeDefinitions = BuiltInNodeDefinitions, nodeDefinitionsReady = false, onNodesChange, onConnectionsChange, onOpenPalette, onViewportCenterChange, onSelectedNodeChange, onSelectedNodeCountChange, onOpenLibrary, onOpenVariables,
+  graphVariables = [], eventTemplatePaths = [], functionGraphs = [], callableGraphs = functionGraphs, appEmojis = [], mediaAssets = [], onUploadMedia, onLoadMediaContent, nodeDefinitions = BuiltInNodeDefinitions, nodeDefinitionsReady = false, onNodesChange, onConnectionsChange, onOpenPalette, onViewportCenterChange, onSelectedNodeChange, onSelectedNodeCountChange, onOpenLibrary, onOpenVariables,
   onHistoryGroupStart, onHistoryGroupEnd, onNodeDrop, onSaveNodePrefab, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph, remoteActions = [], onCollaborationAction, onNodeMoveCommit,
-  graphChatEnabled = false, graphChatBubbles = [], onSendGraphChat, onMoveGraphChatBubble
+  graphChatEnabled = false, graphChatBubbles = [], graphChatHistory = [], onSendGraphChat, onMoveGraphChatBubble
 }) {
   const previousNodesRef = useRef([]);
   const nodes = useMemo(() => {
@@ -548,10 +538,47 @@ export function NodeCanvas({
   const [graphChatComposerOpen, setGraphChatComposerOpen] = useState(false);
   const [graphChatDraft, setGraphChatDraft] = useState('');
   const [graphChatAnchor, setGraphChatAnchor] = useState(null);
-  const graphChatComposerRef = useRef(null);
+  const [liveGraphChatMessages, setLiveGraphChatMessages] = useState([]);
+  const [graphChatClock, setGraphChatClock] = useState(Date.now());
+  const [graphChatHovered, setGraphChatHovered] = useState(false);
+  const graphChatHoveredRef = useRef(false);
+  const graphChatOverlayRef = useRef(null);
   const graphChatInputRef = useRef(null);
+  const graphChatFeedRef = useRef(null);
+  const graphChatWasOpenRef = useRef(false);
+  const graphChatHistoryAtBottomRef = useRef(true);
   const graphChatTypingRef = useRef(false);
   const graphChatTypingTimerRef = useRef(null);
+  useEffect(() => {
+    const incoming = graphChatBubbles.filter((bubble) => bubble?.id && bubble.projectId === projectId && typeof bubble.content === 'string');
+    if (!incoming.length) return;
+    setLiveGraphChatMessages((current) => {
+      const byKey = new Map(current.map((bubble) => [bubble.clientActionId || bubble.id, bubble]));
+      const now = Date.now();
+      for (const bubble of incoming) {
+        const key = bubble.clientActionId || bubble.id;
+        const previous = byKey.get(key);
+        byKey.set(key, previous
+          ? { ...previous, ...bubble, dimAt: previous.dimAt, fadeAt: previous.fadeAt, removeAt: previous.removeAt }
+          : { ...bubble, dimAt: now + 5000, fadeAt: now + 10000, removeAt: now + 11000 });
+      }
+      return [...byKey.values()].slice(-80);
+    });
+  }, [graphChatBubbles, projectId]);
+  useEffect(() => {
+    if (!liveGraphChatMessages.length) return undefined;
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      setGraphChatClock(now);
+      if (settings.keepChatMessagesVisible === false && !graphChatHoveredRef.current) {
+        setLiveGraphChatMessages((current) => {
+          const next = current.filter((bubble) => bubble.removeAt > now);
+          return next.length === current.length ? current : next;
+        });
+      }
+    }, 200);
+    return () => window.clearInterval(timer);
+  }, [liveGraphChatMessages.length, settings.keepChatMessagesVisible]);
   const [noteLockClock, setNoteLockClock] = useState(Date.now());
   const focusedNoteRef = useRef(null);
   const noteEditHistoryRef = useRef(null);
@@ -640,7 +667,7 @@ export function NodeCanvas({
     if (!graphChatComposerOpen) return undefined;
     const frame = window.requestAnimationFrame(() => graphChatInputRef.current?.focus());
     const closeOnOutsidePointer = (event) => {
-      if (graphChatComposerRef.current?.contains(event.target)
+      if (graphChatOverlayRef.current?.contains(event.target)
         || event.target instanceof Element && event.target.closest('.discord-emoji-picker, .discord-emoji-suggestions')) return;
       clearGraphChatTyping();
       setGraphChatComposerOpen(false);
@@ -661,6 +688,20 @@ export function NodeCanvas({
       window.clearTimeout(graphChatTypingTimerRef.current);
     };
   }, [graphChatComposerOpen]);
+
+  useEffect(() => {
+    const feed = graphChatFeedRef.current;
+    if (!graphChatComposerOpen || !feed) {
+      graphChatWasOpenRef.current = graphChatComposerOpen;
+      return;
+    }
+    const justOpened = !graphChatWasOpenRef.current;
+    if (justOpened || graphChatHistoryAtBottomRef.current) {
+      feed.scrollTop = feed.scrollHeight;
+      graphChatHistoryAtBottomRef.current = true;
+    }
+    graphChatWasOpenRef.current = true;
+  }, [graphChatComposerOpen, graphChatHistory.length, graphChatHistory[graphChatHistory.length - 1]?.id]);
 
   useEffect(() => {
     if (!Object.keys(noteEditLocks).length) return undefined;
@@ -1191,6 +1232,15 @@ export function NodeCanvas({
         return;
       }
       const target = event.target instanceof Element ? event.target : null;
+      const chatHistory = target?.closest('.canvas-chat-feed.is-history');
+      if (chatHistory) {
+        const canScroll = event.deltaY < 0
+          ? chatHistory.scrollTop > 0
+          : event.deltaY > 0 && chatHistory.scrollTop + chatHistory.clientHeight < chatHistory.scrollHeight - 1;
+        if (canScroll && !event.ctrlKey && !event.metaKey && !event.shiftKey) return;
+        event.preventDefault();
+        return;
+      }
       if (target?.closest('.node-config, .canvas-note-card, .canvas-chat-composer, .canvas-tools, .canvas-tag-group-members, textarea, [data-canvas-scroll]')) {
         let scrollArea = target;
         while (scrollArea && scrollArea !== container) {
@@ -2023,7 +2073,7 @@ export function NodeCanvas({
 
   const isCanvasBackgroundTarget = (target) => target instanceof Element
     && Boolean(containerRef.current?.contains(target))
-    && !target.closest('[data-node-card-id], [data-note-id], [data-wire-id], button, input, textarea, select, .canvas-tools, .canvas-breadcrumbs');
+    && !target.closest('[data-node-card-id], [data-note-id], [data-wire-id], button, input, textarea, select, .canvas-tools, .canvas-breadcrumbs, .canvas-chat-bubble');
 
   const selectTagGroupNodes = (groupId) => {
     const group = tagGroups.find((item) => item.id === groupId);
@@ -2170,6 +2220,7 @@ export function NodeCanvas({
   };
 
   const startPan = (event) => {
+    if (event.target instanceof Element && event.target.closest('.canvas-chat-bubble')) return;
     if (contextMenu || document.querySelector('.arc-dropdown.is-open, .canvas-context-menu')) return;
     const isCanvasTarget = isCanvasBackgroundTarget(event.target);
     const textPopupOpen = textInputPopupOpen();
@@ -2542,6 +2593,7 @@ export function NodeCanvas({
     });
   };
   const queuePointerMove = (event) => {
+    if (event.target instanceof Element && event.target.closest('.canvas-chat-bubble')) return;
     if (event.pointerType === 'touch' && touchPinchRef.current && event.cancelable) event.preventDefault();
     pendingPointerMoveRef.current = {
       clientX: event.clientX,
@@ -2810,6 +2862,7 @@ export function NodeCanvas({
   };
 
   const finishCanvasPointer = (event) => {
+    if (event.target instanceof Element && event.target.closest('.canvas-chat-bubble')) return;
     if (pointerMoveFrameRef.current) window.cancelAnimationFrame(pointerMoveFrameRef.current);
     pointerMoveFrameRef.current = 0;
     pendingPointerMoveRef.current = null;
@@ -3465,6 +3518,7 @@ export function NodeCanvas({
     const container = containerRef.current;
     if (!container) return;
     const bounds = canvasGeometryRef.current.bounds;
+    if (!bounds) return;
     const displayScale = getCanvasDisplayScale(container);
     const centerX = (bounds.width / displayScale / 2 - pan.x) / zoom;
     const centerY = (bounds.height / displayScale / 2 - pan.y) / zoom;
@@ -4144,7 +4198,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
       return;
     }
     const target = event.target instanceof Element ? event.target : null;
-    if (target?.closest('[data-node-card-id], [data-note-id], [data-tag-group-id], [data-arrow-control-id], .canvas-note-timeline, .canvas-chat-bubble, .canvas-tools, .canvas-breadcrumbs')) {
+    if (target?.closest('[data-node-card-id], [data-note-id], [data-tag-group-id], [data-arrow-control-id], .canvas-note-timeline, .canvas-tools, .canvas-breadcrumbs, .canvas-chat-bubble')) {
       setHoveredWireId((current) => current === null ? current : null);
       return;
     }
@@ -4153,7 +4207,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
   };
   const handleIndexedWireClick = (event) => {
     if (Date.now() < suppressWireClickUntilRef.current) return;
-    if (!wireSpatialIndex || event.target instanceof Element && event.target.closest('[data-wire-id], [data-node-card-id], [data-note-id], [data-tag-group-id], [data-arrow-id], [data-arrow-control-id], .canvas-note-timeline, .canvas-chat-bubble, button, input, textarea, select, .canvas-tools, .canvas-breadcrumbs')) return;
+    if (!wireSpatialIndex || event.target instanceof Element && event.target.closest('[data-wire-id], [data-node-card-id], [data-note-id], [data-tag-group-id], [data-arrow-id], [data-arrow-control-id], .canvas-note-timeline, button, input, textarea, select, .canvas-tools, .canvas-breadcrumbs, .canvas-chat-bubble')) return;
     const connection = findNearbyWire(event.clientX, event.clientY);
     if (!connection || isLocked) return;
     const wireGroup = [...(canvasWorldRef.current?.querySelectorAll('[data-wire-id]') || [])].find((element) => element.dataset.wireId === connection.id);
@@ -4276,6 +4330,11 @@ const previewOutput = (node, outputId, seen = new Set()) => {
       edge
     };
   });
+
+  const displayedGraphChatMessages = graphChatComposerOpen
+    ? graphChatHistory.filter((bubble) => bubble.projectId === projectId).slice(-60)
+    : liveGraphChatMessages.filter((bubble) => bubble.projectId === projectId
+      && (settings.keepChatMessagesVisible !== false || bubble.removeAt > graphChatClock)).slice(-5);
 
   return (
     <div
@@ -4494,6 +4553,9 @@ const previewOutput = (node, outputId, seen = new Set()) => {
                 templatePreviewValues={templatePreviewValues}
                 modalFieldOptions={modalFieldOptions}
                 appEmojis={appEmojis}
+                mediaAssets={mediaAssets}
+                onUploadMedia={onUploadMedia}
+                onLoadMediaContent={onLoadMediaContent}
                 callableGraphs={callableGraphs}
                 snappedPin={connectingWire?.snapTarget?.nodeId === node.id ? connectingWire.snapTarget : null}
                 selected={isSelected}
@@ -4591,8 +4653,8 @@ const previewOutput = (node, outputId, seen = new Set()) => {
           <CanvasNode node={libraryDragPreview.node} definition={libraryDragPreview.definition} connectedInputIds={EMPTY_PIN_SET} graphVariables={canvasGraphVariables} callableGraphs={callableGraphs} appEmojis={appEmojis} />
         </div>}
         <div className="canvas-chat-bubble-layer" aria-live="polite">
-          {graphChatEnabled && graphChatBubbles.filter((bubble) => bubble.projectId === projectId && bubble.graphId === graphId && bubble.expiresAt > Date.now()).map((bubble) => <GraphChatBubble
-            key={bubble.id}
+          {graphChatEnabled && settings.disableChatBubbles !== true && graphChatBubbles.filter((bubble) => bubble.projectId === projectId && bubble.graphId === graphId && bubble.expiresAt > Date.now()).map((bubble) => <GraphChatBubble
+            key={bubble.clientActionId || bubble.id}
             bubble={bubble}
             isOwn={bubble.userId === currentUser?.id}
             zoom={zoom}
@@ -4602,9 +4664,30 @@ const previewOutput = (node, outputId, seen = new Set()) => {
         </div>
       </div>
 
-      {graphChatEnabled && graphChatComposerOpen && <div className="canvas-chat-composer-layer">
-        <form
-          ref={graphChatComposerRef}
+      {graphChatEnabled && <div ref={graphChatOverlayRef} className={`canvas-chat-overlay${graphChatComposerOpen ? ' is-composing' : ''}`} onMouseEnter={() => { graphChatHoveredRef.current = true; setGraphChatHovered(true); }} onMouseLeave={() => {
+        const now = Date.now();
+        graphChatHoveredRef.current = false;
+        setGraphChatHovered(false);
+        setGraphChatClock(now);
+        setLiveGraphChatMessages((current) => current.map((bubble) => ({ ...bubble, dimAt: now + 5000, fadeAt: now + 10000, removeAt: now + 11000 })));
+      }}>
+        {(graphChatComposerOpen || displayedGraphChatMessages.length > 0) && <div ref={graphChatFeedRef} className={`canvas-chat-feed${graphChatComposerOpen ? ' is-history' : ''}`} aria-live="polite" aria-label={graphChatComposerOpen ? 'Chat history for this session' : 'Recent collaborator messages'} onScroll={(event) => { const feed = event.currentTarget; graphChatHistoryAtBottomRef.current = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 48; }}>
+          {displayedGraphChatMessages.map((bubble) => {
+            const isHistory = graphChatComposerOpen;
+            const keepVisible = settings.keepChatMessagesVisible !== false;
+            const isDimmed = keepVisible ? false : !isHistory && !graphChatHovered && graphChatClock >= bubble.dimAt;
+            const isFading = keepVisible ? false : !isHistory && !graphChatHovered && graphChatClock >= bubble.fadeAt;
+            const isOwnMessage = Boolean(bubble.userId && bubble.userId === currentUser?.id);
+            const sender = isOwnMessage ? currentUser?.username || bubble.username : bubble.username;
+            const location = isOwnMessage ? 'You' : bubble.graphName || 'Current graph';
+            return <div className={`canvas-chat-feed-message${isHistory ? ' is-history' : ' is-live'}${isDimmed || bubble.failed ? ' is-dimmed' : ''}${isFading ? ' is-fading' : ''}${bubble.failed ? ' is-failed' : ''}`} key={`feed-${bubble.clientActionId || bubble.id}`} style={{ '--collaborator-color': bubble.failed ? 'var(--muted)' : bubble.color }}>
+              <span><strong>{chatDisplayName(sender)}</strong><i> · {chatDisplayName(location)}</i>{bubble.failed && (<span className="canvas-chat-feed-not-sent"> Not sent</span>)}</span>
+              <div>{renderGraphChatContent(bubble.content)}</div>
+            </div>;
+          })}
+          {graphChatComposerOpen && !displayedGraphChatMessages.length && <div className="canvas-chat-history-empty">No chat history in this session yet.</div>}
+        </div>}
+        {graphChatComposerOpen && <form
           className="canvas-chat-composer"
           aria-label="Message graph collaborators"
           onPointerDown={(event) => event.stopPropagation()}
@@ -4625,15 +4708,15 @@ const previewOutput = (node, outputId, seen = new Set()) => {
             aria-label="Canvas message"
             placeholder="Send message to users in graph..."
             value={graphChatDraft}
-            maxLength={280}
             rows={1}
             onFocus={() => reportGraphChatCursorMode('move')}
             onBlur={clearGraphChatTyping}
             onChange={(event) => {
-              updateGraphChatTyping(event.target.value);
-              setGraphChatDraft(event.target.value);
-              event.currentTarget.style.height = '42px';
-              event.currentTarget.style.height = `${Math.min(120, Math.max(42, event.currentTarget.scrollHeight))}px`;
+              const nextDraft = Array.from(event.target.value).slice(0, 200).join('');
+              updateGraphChatTyping(nextDraft);
+              setGraphChatDraft(nextDraft);
+              event.currentTarget.style.height = '25px';
+              event.currentTarget.style.height = `${Math.min(70, Math.max(25, event.currentTarget.scrollHeight))}px`;
             }}
             onKeyDown={(event) => {
               event.stopPropagation();
@@ -4653,7 +4736,13 @@ const previewOutput = (node, outputId, seen = new Set()) => {
             discordAutocomplete
             appEmojis={appEmojis}
           />
-        </form>
+          {Array.from(graphChatDraft || '').length >= 150 && (
+            <div className="canvas-chat-char-count" style={{ '--chat-count-progress': `${Math.min(100, Math.round(Array.from(graphChatDraft || '').length / 200 * 100))}%` }}>
+              <span>{Array.from(graphChatDraft || '').length} / 200</span>
+              {Array.from(graphChatDraft || '').length >= 200 && <span className="canvas-chat-char-limit">!</span>}
+            </div>
+          )}
+        </form>}
       </div>}
 
       <div className="canvas-collaborator-offscreen-layer" aria-live="polite">
