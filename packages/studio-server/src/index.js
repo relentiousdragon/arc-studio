@@ -117,6 +117,12 @@ const sendToCollaborationRoom = (roomKey, data, excludedClient = null) => {
     if (client !== excludedClient && client.arcAuthenticated && client.readyState === WebSocket.OPEN && client.arcRoomKey === roomKey) client.send(serialized);
   }
 };
+const sendToProjectChat = (projectId, data, excludedClient = null) => {
+  const serialized = JSON.stringify(data);
+  for (const client of wss.clients) {
+    if (client !== excludedClient && client.arcAuthenticated && client.readyState === WebSocket.OPEN && client.arcProjectId === projectId) client.send(serialized);
+  }
+};
 const removeGraphChatBubble = (roomKey, bubbleId) => {
   const room = liveGraphChatBubbles.get(roomKey);
   const entry = room?.get(bubbleId);
@@ -124,7 +130,7 @@ const removeGraphChatBubble = (roomKey, bubbleId) => {
   clearTimeout(entry.timer);
   room.delete(bubbleId);
   if (!room.size) liveGraphChatBubbles.delete(roomKey);
-  sendToCollaborationRoom(roomKey, { type: 'GRAPH_CHAT_EXPIRED', payload: { projectId: entry.bubble.projectId, graphId: entry.bubble.graphId, id: bubbleId } });
+  sendToProjectChat(entry.bubble.projectId, { type: 'GRAPH_CHAT_EXPIRED', payload: { projectId: entry.bubble.projectId, graphId: entry.bubble.graphId, id: bubbleId } });
   return true;
 };
 const removeCanvasArrow = (roomKey, arrowId, type = 'CANVAS_ARROW_EXPIRED') => {
@@ -153,11 +159,12 @@ const canManageLockedCanvasArrow = (user, arrow, projectId) => Boolean(user && a
   || collaborationRoleRank(user.role) > collaborationRoleRank(arrow.createdByRole)
 ));
 const sendGraphChatSnapshot = (client, roomKey) => {
-  const room = liveGraphChatBubbles.get(roomKey);
+  const projectId = client.arcPresence?.projectId;
+  const room = liveGraphChatBubbles.get(projectId);
   if (!room) return;
   const now = Date.now();
   for (const [bubbleId, entry] of room) {
-    if (entry.bubble.expiresAt <= now) removeGraphChatBubble(roomKey, bubbleId);
+    if (entry.bubble.expiresAt <= now) removeGraphChatBubble(projectId, bubbleId);
     else client.send(JSON.stringify({ type: 'GRAPH_CHAT_BUBBLE', payload: entry.bubble }));
   }
 };
@@ -302,9 +309,15 @@ function clearDeletedGraphCollaboration(projectId, graphId) {
   const locks = liveNoteEditLocks.get(room);
   if (locks) for (const lock of locks.values()) clearTimeout(lock.timer);
   liveNoteEditLocks.delete(room);
-  const bubbles = liveGraphChatBubbles.get(room);
-  if (bubbles) for (const entry of bubbles.values()) clearTimeout(entry.timer);
-  liveGraphChatBubbles.delete(room);
+  const bubbles = liveGraphChatBubbles.get(projectId);
+  if (bubbles) {
+    for (const [bubbleId, entry] of bubbles) {
+      if (entry.bubble.graphId !== graphId) continue;
+      clearTimeout(entry.timer);
+      bubbles.delete(bubbleId);
+    }
+    if (!bubbles.size) liveGraphChatBubbles.delete(projectId);
+  }
   recentProjectGraphUse.delete(key);
 
   const message = JSON.stringify({ type: 'GRAPH_DELETED', payload: { projectId, graphId } });
@@ -337,7 +350,8 @@ app.use(cors(desktopOrigins.length ? {
   }
 } : undefined));
 app.use('/api/auth/passkeys', express.json({ limit: '64kb' }));
-app.use(['/api/graphs/import', '/api/projects/import'], express.json({ limit: '100mb' }));
+app.use(['/api/graphs/import', '/api/projects/import'], express.raw({ type: ['application/vnd.arc-studio.graph+zip', 'application/vnd.arc-studio.project+zip', 'application/zip'], limit: '132mb' }));
+app.use('/api/media-assets', express.raw({ type: 'application/octet-stream', limit: '21mb' }));
 app.use(express.json({ limit: '50mb' }));
 
 function broadcast(data) {
@@ -1095,6 +1109,7 @@ wss.on('connection', (ws, request) => {
             clientActionId: typeof payload.clientActionId === 'string' ? payload.clientActionId.slice(0, 120) : '',
             projectId,
             graphId,
+            graphName: String(ws.arcManager?.getGraphs().find((graph) => graph.id === graphId)?.name || 'Untitled graph').slice(0, 80),
             userId: ws.arcUser.id,
             username: ws.arcUser.username,
             color: ws.arcColor || collaboratorColor(ws.arcUser.id),
@@ -1106,25 +1121,25 @@ wss.on('connection', (ws, request) => {
             fadeMs,
             expiresAt: now + stayMs + fadeMs
           };
-          let room = liveGraphChatBubbles.get(roomKey);
-          if (!room) { room = new Map(); liveGraphChatBubbles.set(roomKey, room); }
+          let room = liveGraphChatBubbles.get(projectId);
+          if (!room) { room = new Map(); liveGraphChatBubbles.set(projectId, room); }
           room.set(bubble.id, { bubble, timer: null });
           const entry = room.get(bubble.id);
-          entry.timer = setTimeout(() => removeGraphChatBubble(roomKey, bubble.id), stayMs + fadeMs + 10);
+          entry.timer = setTimeout(() => removeGraphChatBubble(projectId, bubble.id), stayMs + fadeMs + 10);
           entry.timer.unref?.();
-          sendToCollaborationRoom(roomKey, { type: 'GRAPH_CHAT_BUBBLE', payload: bubble });
+          sendToProjectChat(projectId, { type: 'GRAPH_CHAT_BUBBLE', payload: bubble });
           return;
         }
         const bubbleId = typeof payload.id === 'string' ? payload.id : '';
-        const entry = liveGraphChatBubbles.get(roomKey)?.get(bubbleId);
-        if (!entry || entry.bubble.userId !== ws.arcUser.id || entry.bubble.expiresAt <= now) return;
+        const entry = liveGraphChatBubbles.get(projectId)?.get(bubbleId);
+        if (!entry || entry.bubble.graphId !== graphId || entry.bubble.userId !== ws.arcUser.id || entry.bubble.expiresAt <= now) return;
         if (!ws.arcGraphChatMoveTimes || now - ws.arcGraphChatMoveTimes.windowAt >= 1000) ws.arcGraphChatMoveTimes = { windowAt: now, count: 0 };
         if (++ws.arcGraphChatMoveTimes.count > 30) return;
         entry.bubble = {
           ...entry.bubble, x: point.x, y: point.y,
           clientActionId: typeof payload.clientActionId === 'string' ? payload.clientActionId.slice(0, 120) : ''
         };
-        sendToCollaborationRoom(roomKey, { type: 'GRAPH_CHAT_BUBBLE', payload: entry.bubble });
+        sendToProjectChat(projectId, { type: 'GRAPH_CHAT_BUBBLE', payload: entry.bubble });
       } else if (msg.type === 'CANVAS_ARROW_ACTION') {
         const roomKey = ws.arcRoomKey;
         const payload = msg.payload;
