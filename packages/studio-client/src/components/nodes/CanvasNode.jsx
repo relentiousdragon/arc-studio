@@ -1,6 +1,6 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, FileCode2, Plus, Trash2, X } from 'lucide-react';
+import { AlertTriangle, AudioLines, File, FileCode2, FileImage, FileVideo, List, Plus, Search, Trash2, Upload, X } from 'lucide-react';
 import { functionArgumentPinId, functionInputPinType, functionReturnInputPinId, getFunctionGraphArguments, getFunctionGraphReturnValues, getFunctionInputArguments, getFunctionReturnValues, getNodeTemplateInputPins, getTextTemplateSlots, PinColors } from './nodeDefinitions.js';
 import { bitfieldToPermissions, DISCORD_PERMISSIONS } from './permissionCatalog.js';
 import { AnimatedCheckbox, AnimatedDropdown } from '../ui/CustomControls.jsx';
@@ -12,6 +12,8 @@ import { TemplateVariableHints } from '../ui/TemplateVariableHints.jsx';
 import { DiscordLongTextField, LONG_TEXT_THRESHOLD } from '../ui/DiscordLongTextField.jsx';
 import { apiUrl } from '../../core/api.js';
 import { onPageBlur } from '../../core/pageFocus.js';
+import { MediaPreviewModal } from '../ui/MediaPreviewModal.jsx';
+import { mediaKind, useMediaView } from '../ui/mediaTypes.js';
 import { resolveVariableReference } from '../../core/projectVariables.js';
 import { getInputDefault } from '../../../../studio-server/src/engine/NodeSchemaDefinitions.js';
 import { isReservedTemplateRoot, TEMPLATE_FUNCTION_NAMES, TEMPLATE_SYSTEM_PATHS, validateTemplateSyntax } from '../../../../studio-server/src/engine/TemplateExpressions.js';
@@ -330,7 +332,7 @@ function PropertySuggestInput({ value, onChange, placeholder, ariaLabel, suggest
 
 function CanvasNodeView({
   node, definition, loadFailed = false, authToken = '', connectedInputIds = new Set(), incomingConnections, nodeById, graphVariables = [], eventTemplatePaths = [], templatePreviewValues = {}, callableGraphs = [], selected = false, illuminated = false, simulationMetric = null, simulationActive = false, isLocked = false, findOptions = null, isFindCurrent = false,
-  snappedPin = null, appEmojis = [], modalFieldOptions = [], componentsV2SourceConnected = false, onSelect, onDelete, onNodeDataChange, onPinStartConnect, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph
+  snappedPin = null, appEmojis = [], mediaAssets = [], onUploadMedia, onLoadMediaContent, modalFieldOptions = [], componentsV2SourceConnected = false, onSelect, onDelete, onNodeDataChange, onPinStartConnect, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph
 }) {
   const nodeDef = definition || { label: node.label || node.type, color: '#778196', category: 'Node', inputs: [], outputs: [] };
   const isDeprecated = Boolean(nodeDef.deprecationMessage);
@@ -343,12 +345,13 @@ function CanvasNodeView({
   const templatePaths = React.useMemo(() => {
     const systemPaths = TEMPLATE_SYSTEM_PATHS.map((item) => ({ path: item.path, label: item.label || item.path }));
     const variablePaths = graphVariables.flatMap((variable) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(variable.name || '') ? variableValuePaths(variable.initialValue, variable.name) : []);
+    const mediaPaths = mediaAssets.filter((asset) => asset?.filename && !/[{}]/.test(asset.filename)).map((asset) => ({ path: `path://${asset.filename}`, label: `path://${asset.filename} · Project media` }));
     const eventPaths = (Array.isArray(eventTemplatePaths) ? eventTemplatePaths : []).filter((item) => {
       const root = String(item?.path || '').split(/[.[]/)[0].toLowerCase();
       return item?.path && root && !graphVariables.some((variable) => String(variable?.name || '').toLowerCase() === root);
     }).map((item) => ({ path: item.path, label: item.label || item.path }));
-    return [...new Map([...systemPaths, ...variablePaths, ...eventPaths].map((item) => [item.path, item])).values()];
-  }, [graphVariables, eventTemplatePaths]);
+    return [...new Map([...systemPaths, ...variablePaths, ...eventPaths, ...mediaPaths].map((item) => [item.path, item])).values()];
+  }, [graphVariables, eventTemplatePaths, mediaAssets]);
   const templateFunctions = React.useMemo(() => {
     return (callableGraphs || [])
       .filter((graph) => graph?.graphType === 'function' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(graph.name || '') && !isReservedTemplateRoot(graph.name))
@@ -444,7 +447,7 @@ function CanvasNodeView({
         <div className="node-pin-column node-pin-outputs">{outputs.map((pin, index) => renderPin(pin, 'output', index))}</div>
       </div>
       {!loadFailed && isDeprecated && <div className="node-config node-deprecated-message" role="note"><AlertTriangle size={13} /><span>{nodeDef.deprecationMessage}</span></div>}
-      {!loadFailed && !isDeprecated && !nodeDef.requiresGenericEditor && renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues, componentsV2SourceConnected, templatePaths, incomingConnections, nodeById)}
+      {!loadFailed && !isDeprecated && !nodeDef.requiresGenericEditor && renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues, componentsV2SourceConnected, templatePaths, incomingConnections, nodeById, mediaAssets, onUploadMedia, onLoadMediaContent)}
       {!loadFailed && !isDeprecated && (nodeDef.requiresGenericEditor || nodeDef.editorOnlyInputs?.length > 0) && <div className="node-config node-config-stack node-schema-fallback">
         {nodeDef.requiresGenericEditor && <span className="node-config-hint">This workspace schema differs from this client’s editor. These values are used by the workspace server.</span>}
         {nodeDef.editorOnlyInputs.filter((pin) => pin.type !== 'exec' && !connectedInputIds.has(pin.id)).map((pin) => {
@@ -657,7 +660,7 @@ function renderSchemaControls(node, controls, update, connectedInputIds) {
   </div>;
 }
 
-function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues, componentsV2SourceConnected = false, templatePaths = [], incomingConnections = null, nodeById = null) {
+function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues, componentsV2SourceConnected = false, templatePaths = [], incomingConnections = null, nodeById = null, mediaAssets = [], onUploadMedia, onLoadMediaContent) {
   const isConnected = (pinId) => connectedInputIds.has(pinId);
   const templateFunctions = (callableGraphs || [])
     .filter((graph) => graph?.graphType === 'function' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(graph.name || '') && !isReservedTemplateRoot(graph.name))
@@ -1152,7 +1155,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
   if (node.type === 'build_embed') {
     const templateValuePaths = templatePaths;
     const templateSuggestions = nodeDef.inputs.filter((pin) => /^arg_\d+$/.test(pin.id)).map((pin) => ({ name: pin.id.replace(/^arg_/, 'arg'), label: pin.label }));
-    return <EmbedNodeBuilder data={node.data || {}} connectedInputIds={connectedInputIds} appEmojis={appEmojis} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} templateFunctions={templateFunctions} templatePreviewValues={templatePreviewValues} onChange={(blocks) => update('blocks', blocks)} onOpenStudio={() => onOpenEmbedStudio?.(node)} onOpenTextStudio={(label, value, maxLength, applyValue, parentBlockContext) => onOpenTextStudio?.(node, null, label, value, maxLength, applyValue, '', parentBlockContext)} />;
+    return <EmbedNodeBuilder data={node.data || {}} connectedInputIds={connectedInputIds} appEmojis={appEmojis} mediaAssets={mediaAssets} onSelectMediaAsset={(asset) => { const attachments = [...(node.data?.attachments || []).filter((file) => file.id !== asset.id && String(file.filename || '').toLowerCase() !== asset.filename.toLowerCase()), { ...asset, description: '' }]; update('attachments', attachments); }} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} templateFunctions={templateFunctions} templatePreviewValues={templatePreviewValues} onChange={(blocks) => update('blocks', blocks)} onOpenStudio={() => onOpenEmbedStudio?.(node)} onOpenTextStudio={(label, value, maxLength, applyValue, parentBlockContext) => onOpenTextStudio?.(node, null, label, value, maxLength, applyValue, '', parentBlockContext)} />;
   }
   if (node.type === 'build_components') {
     return <div className="node-config node-config-stack"><span className="node-config-hint">Build a Discord Components V2 message with text, sections, galleries, files, separators, containers, and interactive controls.</span><button type="button" className="node-config-action node-config-studio-action" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onOpenEmbedStudio?.(node); }}><Plus size={12} /> Open Component Studio{node.data?.componentsV2?.length ? ` · ${node.data.componentsV2.length} blocks` : ''}</button></div>;
@@ -1166,7 +1169,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       {(node.data?.componentsV2Enabled || componentsV2SourceConnected) && <span className="node-config-hint">Components V2 is enabled. Message content and embeds are disabled.</span>}
       {!(node.data?.componentsV2Enabled || componentsV2SourceConnected) && !isConnected('content') && <label className="node-config-fallback"><span>Message content</span>{textEditor('content', 'Message content', 2000, 'Used when unconnected')}</label>}
       {!isConnected('mention_replied_user') && <FallbackCheckbox label="Mention Replied User" checked={node.data?.mention_replied_user ?? (isConnected('reply_to_message_id') || Boolean(node.data?.reply_to_message_id))} onChange={(value) => update('mention_replied_user', value)} />}
-      {!isConnected('files') && <AttachmentPicker files={node.data?.files || []} authToken={authToken} onChange={(files) => update('files', files)} />}
+      {!isConnected('files') && <AttachmentPicker files={node.data?.files || []} authToken={authToken} mediaAssets={mediaAssets} onUploadMedia={onUploadMedia} onLoadMediaContent={onLoadMediaContent} onChange={(files) => update('files', files)} />}
       <button type="button" className={`node-config-action ${componentsConnected ? 'is-disabled' : ''}`} disabled={componentsConnected} title={componentsConnected ? 'Components input is connected. Edit the source node on the canvas instead.' : undefined} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { if (componentsConnected) return; event.stopPropagation(); onOpenEmbedStudio?.(node); }}><Plus size={12} /> {componentsConnected ? 'Components wired (edit source node)' : `Edit message components${node.data?.components?.length ? ` · ${node.data.components.length} rows` : ''}`}</button>
     </div>;
   }
@@ -1177,7 +1180,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       {!isConnected('message_id') && <label className="node-config-fallback"><span>Message ID</span><input value={node.data?.message_id ?? ''} onChange={(event) => update('message_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Message ID" /></label>}
       {(node.data?.componentsV2Enabled || componentsV2SourceConnected) && <span className="node-config-hint">Components V2 is enabled. Message content and embeds are disabled.</span>}
       {!(node.data?.componentsV2Enabled || componentsV2SourceConnected) && !isConnected('content') && <label className="node-config-fallback"><span>New content (Optional)</span>{textEditor('content', 'New content', 2000, 'Leave empty to keep existing')}</label>}
-      {!isConnected('files') && <AttachmentPicker files={node.data?.files || []} authToken={authToken} onChange={(files) => update('files', files)} />}
+      {!isConnected('files') && <AttachmentPicker files={node.data?.files || []} authToken={authToken} mediaAssets={mediaAssets} onUploadMedia={onUploadMedia} onLoadMediaContent={onLoadMediaContent} onChange={(files) => update('files', files)} />}
       <button type="button" className={`node-config-action ${componentsConnected ? 'is-disabled' : ''}`} disabled={componentsConnected} title={componentsConnected ? 'Components input is connected. Edit the source node on the canvas instead.' : undefined} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { if (componentsConnected) return; event.stopPropagation(); onOpenEmbedStudio?.(node); }}><Plus size={12} /> {componentsConnected ? 'Components wired (edit source node)' : `Edit message components${node.data?.components?.length ? ` · ${node.data.components.length} rows` : ''}`}</button>
     </div>;
   }
@@ -1226,7 +1229,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       <span className="node-config-hint">Once acknowledged, response visibility is locked and cannot be changed later.</span>
       {(node.data?.componentsV2Enabled || componentsV2SourceConnected) && <span className="node-config-hint">Components V2 is enabled. Message content and embeds are disabled.</span>}
       {!(node.data?.componentsV2Enabled || componentsV2SourceConnected) && !isConnected('content') && <label className="node-config-fallback"><span>Reply content</span>{textEditor('content', 'Reply content', 2000, 'Used when unconnected')}</label>}
-      {!isConnected('files') && <AttachmentPicker files={node.data?.files || []} authToken={authToken} onChange={(files) => update('files', files)} />}
+      {!isConnected('files') && <AttachmentPicker files={node.data?.files || []} authToken={authToken} mediaAssets={mediaAssets} onUploadMedia={onUploadMedia} onLoadMediaContent={onLoadMediaContent} onChange={(files) => update('files', files)} />}
       <button type="button" className={`node-config-action ${componentsConnected ? 'is-disabled' : ''}`} disabled={componentsConnected} title={componentsConnected ? 'Components input is connected. Edit the source node on the canvas instead.' : undefined} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { if (componentsConnected) return; event.stopPropagation(); onOpenEmbedStudio?.(node); }}><Plus size={12} /> {componentsConnected ? 'Components wired (edit source node)' : `Edit message components${node.data?.components?.length ? ` · ${node.data.components.length} rows` : ''}`}</button>
     </div>;
   }
@@ -1238,7 +1241,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       )}
       {(node.data?.componentsV2Enabled || componentsV2SourceConnected) && <span className="node-config-hint">Components V2 is enabled. Message content and embeds are disabled.</span>}
       {!(node.data?.componentsV2Enabled || componentsV2SourceConnected) && !isConnected('content') && <label className="node-config-fallback"><span>New content (Optional)</span>{textEditor('content', 'New content', 2000, 'Leave empty to keep existing')}</label>}
-      {!isConnected('files') && <AttachmentPicker files={node.data?.files || []} authToken={authToken} onChange={(files) => update('files', files)} />}
+      {!isConnected('files') && <AttachmentPicker files={node.data?.files || []} authToken={authToken} mediaAssets={mediaAssets} onUploadMedia={onUploadMedia} onLoadMediaContent={onLoadMediaContent} onChange={(files) => update('files', files)} />}
       <button type="button" className={`node-config-action ${componentsConnected ? 'is-disabled' : ''}`} disabled={componentsConnected} title={componentsConnected ? 'Components input is connected. Edit the source node on the canvas instead.' : undefined} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { if (componentsConnected) return; event.stopPropagation(); onOpenEmbedStudio?.(node); }}><Plus size={12} /> {componentsConnected ? 'Components wired (edit source node)' : `Edit message components${node.data?.components?.length ? ` · ${node.data.components.length} rows` : ''}`}</button>
     </div>;
   }
@@ -1321,7 +1324,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       <span className="node-config-hint">Connect Permissions Bitfield to Check Permission to test a named permission.</span>
     </div>;
   }
-  if (node.type.startsWith('action_') && ['action_create_channel', 'action_create_thread', 'action_start_thread_from_message', 'action_edit_channel', 'action_delete_channel', 'action_delete_message', 'action_create_role', 'action_member_role', 'action_moderate_member', 'action_voice_channel_status', 'action_voice_state'].includes(node.type)) {
+  if (node.type.startsWith('action_') && ['action_create_channel', 'action_create_thread', 'action_start_thread_from_message', 'action_edit_channel', 'action_delete_channel', 'action_delete_message', 'action_bulk_delete_messages', 'action_upload_guild_emoji', 'action_upload_application_emoji', 'action_upload_guild_sticker', 'action_create_role', 'action_member_role', 'action_moderate_member', 'action_voice_channel_status', 'action_voice_state'].includes(node.type)) {
     const textField = (id, label, placeholder = 'Used when unconnected') => isConnected(id) ? null : <FallbackField key={id} label={label}><input value={node.data?.[id] ?? ''} onChange={(event) => update(id, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder={placeholder} aria-label={label} /></FallbackField>;
     const reason = textField('reason', 'Audit Log Reason');
     return <div className="node-config node-config-stack">
@@ -1397,6 +1400,10 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       </>}
       {node.type === 'action_delete_channel' && <>{textField('channel_id', 'Channel ID')}{reason}<span className="node-config-warning"><AlertTriangle size={12} /> Deleting a channel cannot be undone.</span></>}
       {node.type === 'action_delete_message' && <>{textField('channel_id', 'Channel ID')}{textField('message_id', 'Message ID')}{reason}<span className="node-config-hint">Permanently deletes a message. Deleting another user's message requires Manage Messages.</span></>}
+      {node.type === 'action_bulk_delete_messages' && <>{textField('channel_id', 'Channel ID')}{textField('message_ids', 'Message IDs (JSON array)')}{reason}<span className="node-config-warning"><AlertTriangle size={12} /> Deletes 2 to 100 messages. Discord rejects messages older than 14 days.</span></>}
+      {node.type === 'action_upload_guild_emoji' && <>{textField('guild_id', 'Server ID')}{textField('name', 'Emoji Name')}{textField('reason', 'Audit Log Reason')}{!isConnected('files') && <AttachmentPicker files={node.data?.files || []} authToken={authToken} mediaAssets={mediaAssets} onUploadMedia={onUploadMedia} onLoadMediaContent={onLoadMediaContent} onChange={(files) => update('files', files)} />}<span className="node-config-hint">Connect an HTTP Download File node or choose project media. PNG, JPEG, GIF, or WebP up to 256 KiB.</span></>}
+      {node.type === 'action_upload_application_emoji' && <>{textField('name', 'Emoji Name')}{!isConnected('files') && <AttachmentPicker files={node.data?.files || []} authToken={authToken} mediaAssets={mediaAssets} onUploadMedia={onUploadMedia} onLoadMediaContent={onLoadMediaContent} onChange={(files) => update('files', files)} />}<span className="node-config-hint">Connect an HTTP Download File node or choose project media. PNG, JPEG, GIF, or WebP up to 256 KiB.</span></>}
+      {node.type === 'action_upload_guild_sticker' && <>{textField('guild_id', 'Server ID')}{textField('name', 'Sticker Name')}{textField('description', 'Description')}{textField('tags', 'Tags (emoji)')}{textField('reason', 'Audit Log Reason')}{!isConnected('files') && <AttachmentPicker files={node.data?.files || []} authToken={authToken} mediaAssets={mediaAssets} onUploadMedia={onUploadMedia} onLoadMediaContent={onLoadMediaContent} onChange={(files) => update('files', files)} />}<span className="node-config-hint">Connect an HTTP Download File node or choose project media. PNG, APNG, or GIF up to 512 KiB.</span></>}
       {node.type === 'action_create_role' && <>
         {textField('guild_id', 'Server ID')}{textField('name', 'Role name')}
         {!isConnected('color') && <FallbackField label="Color (RGB number)"><NodeNumberInput min="0" max="16777215" value={node.data?.color ?? 0} onChange={(event) => update('color', numericNodeInputValue(event.target.value, { min: 0, max: 16777215, integer: true }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Role RGB color number" /></FallbackField>}
@@ -1532,54 +1539,88 @@ function FallbackCheckbox({ label, checked, onChange }) {
   return <div className="node-checkbox-label"><AnimatedCheckbox checked={checked} onChange={onChange} onPointerDown={(event) => event.stopPropagation()} label={label} /><span>{label}</span></div>;
 }
 
-function readFileAsDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve({ filename: file.name, contentType: file.type || 'application/octet-stream', data: reader.result });
-    reader.onerror = () => reject(new Error(`Could not read ${file.name}.`));
-    reader.readAsDataURL(file);
-  });
-}
-
-function AttachmentPicker({ files = [], authToken = '', onChange }) {
+function AttachmentPicker({ files = [], authToken = '', mediaAssets = [], onUploadMedia, onLoadMediaContent, onChange }) {
   const [error, setError] = React.useState('');
-  const [imagePreview, setImagePreview] = React.useState(null);
-  const [imageZoomed, setImageZoomed] = React.useState(false);
-  const [imageZoomOrigin, setImageZoomOrigin] = React.useState({ x: 50, y: 50 });
+  const [mediaPreview, setMediaPreview] = React.useState(null);
+  const [mediaPickerOpen, setMediaPickerOpen] = React.useState(false);
+  const [mediaPickerFilter, setMediaPickerFilter] = React.useState('all');
+  const [mediaPickerQuery, setMediaPickerQuery] = React.useState('');
+  const [selectedMediaIds, setSelectedMediaIds] = React.useState([]);
+  const [mediaPickerView, setMediaPickerView] = useMediaView();
   const [urlEntryOpen, setUrlEntryOpen] = React.useState(false);
   const [url, setUrl] = React.useState('');
   const [filename, setFilename] = React.useState('');
   const [urlLoading, setUrlLoading] = React.useState(false);
+  const [uploadQueue, setUploadQueue] = React.useState([]);
   const [contextMenu, setContextMenu] = React.useState(null);
   const contextMenuRef = React.useRef(null);
   const fileInputRef = React.useRef(null);
   React.useEffect(() => {
-    if (!imagePreview) return undefined;
-    const closeOnEscape = (event) => { if (event.key === 'Escape') { setImagePreview(null); setImageZoomed(false); setImageZoomOrigin({ x: 50, y: 50 }); } };
+    if (!mediaPickerOpen) return undefined;
+    const closeOnEscape = (event) => { if (event.key === 'Escape') setMediaPickerOpen(false); };
     document.addEventListener('keydown', closeOnEscape);
-    const removePageBlurListener = onPageBlur(() => { setImagePreview(null); setImageZoomed(false); setImageZoomOrigin({ x: 50, y: 50 }); });
-    return () => {
-      document.removeEventListener('keydown', closeOnEscape);
-      removePageBlurListener();
-    };
-  }, [imagePreview]);
+    const removePageBlurListener = onPageBlur(() => setMediaPickerOpen(false));
+    return () => { document.removeEventListener('keydown', closeOnEscape); removePageBlurListener(); };
+  }, [mediaPickerOpen]);
   const onFiles = async (event) => {
     const selected = Array.from(event.target.files || []);
     event.target.value = '';
-    const combined = [...files, ...selected];
-    if (combined.length > 10) { setError('Choose up to 10 files.'); return; }
-    if (selected.some((file) => file.name.length > 100)) { setError('Filenames must be 100 characters or fewer.'); return; }
+    if (!onUploadMedia) { setError('Media uploads are unavailable right now.'); return; }
+    if (files.length + selected.length > 10) { setError('Choose up to 10 files.'); return; }
+    if (selected.some((file) => file.name.length > 120)) { setError('Filenames must be 120 characters or fewer.'); return; }
     if (selected.some((file) => !file.size)) { setError('Empty files cannot be attached.'); return; }
     if (selected.some((file) => file.size > 20 * 1024 * 1024)) { setError('Each file must be 20 MiB or smaller.'); return; }
-    const existingBytes = files.reduce((total, file) => total + Math.floor(String(file.data || '').split(',').pop().length * 3 / 4), 0);
+    const existingBytes = files.reduce((total, file) => total + (Number(file.size) || Math.floor(String(file.data || '').split(',').pop().length * 3 / 4)), 0);
     if (existingBytes + selected.reduce((total, file) => total + file.size, 0) > 24 * 1024 * 1024) { setError('Files must total 24 MiB or less.'); return; }
-    if (new Set(combined.map((file) => String(file.filename || file.name).toLowerCase())).size !== combined.length) { setError('Each attachment needs a unique filename.'); return; }
-    try {
-      setError('');
-      onChange([...files, ...await Promise.all(selected.map(readFileAsDataUrl))]);
-    } catch (readError) { setError(readError.message || 'Could not read selected files.'); }
+    setError('');
+    const jobs = selected.map((file, index) => ({ id: `${Date.now()}_${index}_${Math.random()}`, file }));
+    setUploadQueue((current) => [...current, ...jobs.map(({ id, file }) => ({ id, name: file.name, state: 'queued', progress: 0 }))]);
+    let nextFiles = files;
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < jobs.length) {
+        const job = jobs[cursor++];
+        setUploadQueue((current) => current.map((item) => item.id === job.id ? { ...item, state: 'uploading' } : item));
+        try {
+          const asset = await onUploadMedia(job.file, (progress) => setUploadQueue((current) => current.map((item) => item.id === job.id ? { ...item, progress } : item)));
+          nextFiles = [...nextFiles.filter((item) => item.id !== asset.id && String(item.filename || '').toLowerCase() !== asset.filename.toLowerCase()), { ...asset }];
+          onChange(nextFiles);
+          setUploadQueue((current) => current.map((item) => item.id === job.id ? { ...item, state: 'success', progress: 100 } : item));
+          window.setTimeout(() => setUploadQueue((current) => current.filter((item) => item.id !== job.id)), 1800);
+        } catch (uploadError) {
+          setUploadQueue((current) => current.map((item) => item.id === job.id ? { ...item, state: 'error', message: uploadError.message || 'Upload failed' } : item));
+          window.setTimeout(() => setUploadQueue((current) => current.filter((item) => item.id !== job.id)), 3000);
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(3, jobs.length) }, worker));
   };
   const remove = (index) => onChange(files.filter((_, fileIndex) => fileIndex !== index));
+  const filteredMedia = mediaAssets.filter((asset) => {
+    const kind = mediaKind(asset);
+    const name = `${asset.filename || ''} ${asset.contentType || ''}`.toLowerCase();
+    const matchesFilter = mediaPickerFilter === 'all' || mediaPickerFilter === 'files' ? mediaPickerFilter === 'all' || kind === 'file' : kind === mediaPickerFilter;
+    return matchesFilter && name.includes(mediaPickerQuery.trim().toLowerCase());
+  });
+  const toggleMediaSelection = (asset) => setSelectedMediaIds((current) => current.includes(asset.id)
+    ? current.filter((id) => id !== asset.id)
+    : [...current, asset.id]);
+  const addSelectedMedia = () => {
+    const selected = mediaAssets.filter((asset) => selectedMediaIds.includes(asset.id));
+    let merged = [...files];
+    let totalBytes = merged.reduce((total, file) => total + (Number(file.size) || 0), 0);
+    let rejected = 0;
+    for (const asset of selected) {
+      if (merged.some((file) => file.id === asset.id || String(file.filename || '').toLowerCase() === String(asset.filename || '').toLowerCase())) continue;
+      if (merged.length >= 10 || totalBytes + Number(asset.size || 0) > 24 * 1024 * 1024) { rejected += 1; continue; }
+      merged.push({ ...asset });
+      totalBytes += Number(asset.size) || 0;
+    }
+    onChange(merged);
+    setSelectedMediaIds([]);
+    setMediaPickerOpen(false);
+    setError(rejected ? `${rejected} file${rejected === 1 ? ' was' : 's were'} not added because this message allows 10 files and 24 MiB total.` : '');
+  };
   const openContextMenu = (event) => {
     event.preventDefault();
     event.stopPropagation();
@@ -1627,9 +1668,9 @@ function AttachmentPicker({ files = [], authToken = '', onChange }) {
       });
       let result = {};
       try { result = await response.json(); } catch { }
-      if (!response.ok || !result.file?.data) throw new Error(result.error || 'Could not download this attachment.');
-      const currentBytes = files.reduce((total, file) => total + Math.floor(String(file.data || '').split(',').pop().length * 3 / 4), 0);
-      const addedBytes = Math.floor(String(result.file.data).split(',').pop().length * 3 / 4);
+      if (!response.ok || !result.file?.id) throw new Error(result.error || 'Could not download this attachment.');
+      const currentBytes = files.reduce((total, file) => total + (Number(file.size) || Math.floor(String(file.data || '').split(',').pop().length * 3 / 4)), 0);
+      const addedBytes = Number(result.file.size) || 0;
       if (currentBytes + addedBytes > 24 * 1024 * 1024) throw new Error('Files must total 24 MiB or less.');
       onChange([...files, result.file]);
       setUrl('');
@@ -1641,17 +1682,33 @@ function AttachmentPicker({ files = [], authToken = '', onChange }) {
   return <>
     <div className="node-attachment-picker" onPointerDown={(event) => event.stopPropagation()}>
       <div className="node-attachment-heading"><span>Attachments</span><span>{files.length} / 10 · 20 MiB each</span></div>
-      <button className="node-attachment-choose" type="button" onClick={() => fileInputRef.current?.click()} onContextMenu={openContextMenu}>Choose files</button>
+      <button className="node-attachment-choose" type="button" onClick={() => { setMediaPickerFilter('all'); setSelectedMediaIds([]); setMediaPickerOpen(true); }} onContextMenu={openContextMenu}>Choose files</button>
       <input ref={fileInputRef} className="node-attachment-file-input" type="file" multiple onChange={onFiles} />
+      {mediaPickerOpen && createPortal(<div className="project-asset-picker-backdrop" role="presentation" onPointerDown={(event) => { if (event.target === event.currentTarget) setMediaPickerOpen(false); }}>
+        <section className="project-asset-picker" role="dialog" aria-modal="true" aria-label="Choose files from project media">
+          <header><div><strong>Choose files</strong><small>Select one or more files from this project</small></div><div className="project-asset-picker-header-actions"><button type="button" className="project-media-upload" disabled={!onUploadMedia} onClick={() => fileInputRef.current?.click()}><Upload size={13} /> Upload from device</button><button type="button" onClick={() => setMediaPickerOpen(false)} aria-label="Close media picker"><X size={15} /></button></div></header>
+          <div className="project-asset-picker-tools"><label><Search size={13} /><input autoFocus value={mediaPickerQuery} onChange={(event) => setMediaPickerQuery(event.target.value)} placeholder="Search project files" /></label><select aria-label="Filter file types" value={mediaPickerFilter} onChange={(event) => setMediaPickerFilter(event.target.value)}><option value="all">All file types</option><option value="image">Images</option><option value="video">Videos</option><option value="audio">Audio</option><option value="files">Other files</option></select><button type="button" className={mediaPickerView === 'grid' ? 'is-active' : ''} aria-label="Grid view" title="Grid view" onClick={() => setMediaPickerView('grid')}><FileImage size={13} /></button><button type="button" className={mediaPickerView === 'list' ? 'is-active' : ''} aria-label="List view" title="List view" onClick={() => setMediaPickerView('list')}><List size={13} /></button></div>
+          {!!uploadQueue.length && <div className="node-attachment-upload-queue node-attachment-picker-queue" aria-live="polite">{uploadQueue.map((item) => <div key={item.id}><span>{item.name}</span>{item.state === 'queued' || item.state === 'uploading' ? <progress max="100" value={item.progress} aria-label={`${item.name} upload progress`} /> : <small className={item.state === 'error' ? 'is-error' : ''}>{item.state === 'success' ? 'Uploaded' : item.message || 'Failed'}</small>}</div>)}</div>}
+          <div className={`project-asset-picker-grid${mediaPickerView === 'list' ? ' is-list' : ''}`}>{filteredMedia.map((asset) => { const kind = mediaKind(asset); const Icon = kind === 'image' ? FileImage : kind === 'video' ? FileVideo : kind === 'audio' ? AudioLines : File; return <button type="button" className={`project-asset-picker-card${selectedMediaIds.includes(asset.id) ? ' is-selected' : ''}`} key={asset.id} aria-pressed={selectedMediaIds.includes(asset.id)} onClick={() => toggleMediaSelection(asset)} title={'Select ' + asset.filename}><span>{asset.preview && (kind === 'image' || kind === 'video') ? <img src={asset.preview} alt="" /> : <Icon size={23} />}{selectedMediaIds.includes(asset.id) && <i aria-hidden="true">✓</i>}</span><strong>{asset.filename}</strong><small>{asset.contentType} · {Math.ceil(Number(asset.size || 0) / 1024)} KB</small></button>; })}{!filteredMedia.length && <p>{mediaAssets.length ? 'No files match this filter.' : 'No project media yet. Upload files from this window or use the Assets tab.'}</p>}</div>
+          <footer><span>{selectedMediaIds.length} selected</span><button type="button" disabled={!selectedMediaIds.length} onClick={addSelectedMedia}>Add selected files</button></footer>
+        </section>
+      </div>, document.body)}
       {files.length > 0 && <div className="node-attachment-list">{files.map((file, index) => {
-        const image = String(file.contentType || '').toLowerCase().startsWith('image/') || /^data:image\//i.test(String(file.data || '')) || /\.(apng|avif|bmp|gif|jpe?g|png|svg|webp)$/i.test(String(file.filename || file.name || ''));
-        const source = typeof file.data === 'string' && file.data.startsWith('data:image/') ? file.data : '';
+        const kind = mediaKind(file);
+        const source = typeof file.data === 'string' && file.data.startsWith('data:image/') ? file.data : mediaAssets.find((asset) => asset.id === file.id)?.preview || '';
+        const openPreview = async () => {
+          let full = file;
+          if (!file.data && file.id && onLoadMediaContent) full = await onLoadMediaContent(file).catch(() => file);
+          setMediaPreview({ ...file, ...full, data: full.data || source });
+        };
+        const Icon = kind === 'image' ? FileImage : kind === 'video' ? FileVideo : kind === 'audio' ? AudioLines : File;
         return <div className="node-attachment-item" key={`${file.filename}-${index}`}>
-          {image && source && <button className="node-attachment-open-image" type="button" aria-label={`Preview ${file.filename}`} title="Open image preview" onClick={() => { setImagePreview({ filename: file.filename, source }); setImageZoomed(false); setImageZoomOrigin({ x: 50, y: 50 }); }}><img src={source} alt="" /></button>}
+          {kind !== 'file' && <button className="node-attachment-open-image" type="button" aria-label={`Preview ${file.filename}`} title={`Open ${kind} player`} onClick={() => void openPreview()}>{kind === 'image' && source ? <img src={source} alt="" /> : <Icon size={15} />}</button>}
           <span title={file.url || undefined}>{file.filename}{file.url ? ' · URL' : ''}</span>
           <button className="node-attachment-remove" type="button" onClick={() => remove(index)} aria-label={`Remove ${file.filename}`} title={`Remove ${file.filename}`}><X size={12} /></button>
         </div>;
       })}</div>}
+      {!!uploadQueue.length && !mediaPickerOpen && <div className="node-attachment-upload-queue" aria-live="polite">{uploadQueue.map((item) => <div key={item.id}><span>{item.name}</span>{item.state === 'queued' || item.state === 'uploading' ? <progress max="100" value={item.progress} aria-label={`${item.name} upload progress`} /> : <small className={item.state === 'error' ? 'is-error' : ''}>{item.state === 'success' ? 'Uploaded' : item.message || 'Failed'}</small>}</div>)}</div>}
       {urlEntryOpen && <form className="node-attachment-url-form" onSubmit={addUrl}>
         <input type="url" value={url} onChange={(event) => { setUrl(event.target.value); setError(''); }} onPointerDown={(event) => event.stopPropagation()} placeholder="https://example.com/image.png" aria-label="Attachment URL" autoCapitalize="none" autoCorrect="off" spellCheck="false" required disabled={urlLoading} />
         <input value={filename} onChange={(event) => setFilename(event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Filename (optional)" aria-label="Attachment filename" maxLength={100} autoCapitalize="none" autoCorrect="off" spellCheck="false" disabled={urlLoading} />
@@ -1663,26 +1720,6 @@ function AttachmentPicker({ files = [], authToken = '', onChange }) {
         <button role="menuitem" onClick={() => { setUrlEntryOpen(true); setContextMenu(null); setError(''); }}><span>Use URL</span></button>
       </div>, document.body)}
     </div>
-    {imagePreview && createPortal(<div className={`discord-gallery-lightbox${imageZoomed ? ' is-image-zoomed' : ''}`} role="dialog" aria-modal="true" aria-label={`Image preview: ${imagePreview.filename}`} onClick={(event) => { if (event.target === event.currentTarget) { setImagePreview(null); setImageZoomed(false); setImageZoomOrigin({ x: 50, y: 50 }); } }}>
-      <button type="button" className="discord-gallery-lightbox-close" aria-label="Close image viewer" title="Close image viewer" onClick={() => { setImagePreview(null); setImageZoomed(false); setImageZoomOrigin({ x: 50, y: 50 }); }}><X size={20} /></button>
-      <figure className="discord-gallery-lightbox-content">
-        <button className={`discord-gallery-lightbox-image-frame${imageZoomed ? ' is-zoomed' : ''}`} type="button" aria-label={imageZoomed ? 'Zoom out' : 'Zoom in'} aria-pressed={imageZoomed} title="Click to zoom in or out" onClick={(event) => {
-          if (imageZoomed) {
-            setImageZoomed(false);
-            return;
-          }
-          const image = event.currentTarget.querySelector('.discord-gallery-lightbox-image') || event.currentTarget;
-          const bounds = image.getBoundingClientRect();
-          const originX = bounds.width ? Math.max(0, Math.min(100, ((event.clientX - bounds.left) / bounds.width) * 100)) : 50;
-          const originY = bounds.height ? Math.max(0, Math.min(100, ((event.clientY - bounds.top) / bounds.height) * 100)) : 50;
-          setImageZoomOrigin({ x: originX, y: originY });
-          setImageZoomed(true);
-        }}>
-          <img className={`discord-gallery-lightbox-image${imageZoomed ? ' is-zoomed' : ''}`} style={imageZoomed ? { transformOrigin: `${imageZoomOrigin.x}% ${imageZoomOrigin.y}%` } : undefined} src={imagePreview.source} alt={imagePreview.filename} />
-        </button>
-        <figcaption>{imagePreview.filename}</figcaption>
-        <small>Click the image to zoom</small>
-      </figure>
-    </div>, document.body)}
+    <MediaPreviewModal asset={mediaPreview} onClose={() => setMediaPreview(null)} />
   </>;
 }
