@@ -1102,8 +1102,8 @@ wss.on('connection', (ws, request) => {
           const content = Array.from(typeof payload.content === 'string' ? payload.content.trim() : '').slice(0, 280).join('');
           if (!content) return;
           const length = Array.from(content).length;
-          const stayMs = Math.min(20_000, 5_000 + Math.ceil((length / 280) * 15_000));
-          const fadeMs = Math.min(2_000, 500 + Math.ceil((length / 280) * 1_500));
+          const stayMs = Math.min(30_000, 6_000 + Math.ceil((length / 280) * 24_000));
+          const fadeMs = Math.min(2_500, 600 + Math.ceil((length / 280) * 1_900));
           const bubble = {
             id: randomUUID(),
             clientActionId: typeof payload.clientActionId === 'string' ? payload.clientActionId.slice(0, 120) : '',
