@@ -126,7 +126,7 @@ export async function executeDiscordInteractionNode(node, {
     const content = String(resolveInput('content', node.data?.content || '')).slice(0, 2000);
     const embed = resolveInput('embed', null) || (Array.isArray(node.data?.blocks) ? buildEmbed() : null);
     const components = resolveComponents();
-    const files = resolveFiles(resolveInput('files', node.data?.files || []));
+    const files = await resolveFiles(resolveInput('files', node.data?.files || []), [embed, components]);
     const ephemeral = Boolean(resolveInput('ephemeral', node.data?.ephemeral || false));
     const componentsV2 = components?.format === 'arc-components-v2' || node.data?.componentsV2Enabled === true;
 
@@ -207,7 +207,7 @@ export async function executeDiscordInteractionNode(node, {
   const content = String(resolveInput('content', node.data?.content || '')).slice(0, 2000);
   const embed = resolveInput('embed', null) || (Array.isArray(node.data?.blocks) ? buildEmbed() : null);
   const components = resolveComponents();
-  const files = resolveFiles(resolveInput('files', node.data?.files || []));
+  const files = await resolveFiles(resolveInput('files', node.data?.files || []), [embed, components]);
   const componentsV2 = components?.format === 'arc-components-v2' || node.data?.componentsV2Enabled === true;
 
   if (componentsV2) validateComponentsV2Mode(components, isInputConnected);
