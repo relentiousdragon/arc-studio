@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { AlertCircle, AudioLines, Download, LoaderCircle, Maximize2, Pause, Play, Volume2, VolumeX, X } from 'lucide-react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { AlertCircle, AudioLines, ChevronLeft, ChevronRight, Download, LoaderCircle, Maximize2, Pause, Play, Volume2, VolumeX, X } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { mediaKind } from './mediaTypes.js';
 //
@@ -115,82 +115,95 @@ function MediaPlayer({ src, filename, kind, onError }) {
   </div>;
 }
 
-export function MediaPreviewModal({ asset, onClose, onDownload }) {
+export function MediaPreviewModal({ asset, assets = [], onNavigate, onClose, onDownload }) {
   const [zoomed, setZoomed] = useState(false);
-  const [imagePan, setImagePan] = useState({ x: 0, y: 0 });
-  const [isPanningImage, setIsPanningImage] = useState(false);
+  const [zoomScale, setZoomScale] = useState(1);
+  const [imageLoadState, setImageLoadState] = useState({ src: '', status: 'loading' });
   const [playbackError, setPlaybackError] = useState(false);
   const [playbackSource, setPlaybackSource] = useState('');
+  const dialogRef = useRef(null);
+  const closeButtonRef = useRef(null);
   const imageFrameRef = useRef(null);
-  const imagePointerRef = useRef(null);
-  const suppressImageClickRef = useRef(false);
+  const previousFocusRef = useRef(null);
+  const previousOverflowRef = useRef('');
+  const isOpen = Boolean(asset);
+  const assetIndex = assets.findIndex((item) => item.id === asset?.id);
+  const canNavigate = assets.length > 1 && assetIndex >= 0;
 
   useEffect(() => {
     if (!asset) return undefined;
-    const onKeyDown = (event) => { if (event.key === 'Escape') onClose?.(); };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [asset, onClose]);
+    previousFocusRef.current = document.activeElement;
+    previousOverflowRef.current = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const frame = window.requestAnimationFrame(() => closeButtonRef.current?.focus());
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.body.style.overflow = previousOverflowRef.current;
+      if (previousFocusRef.current instanceof HTMLElement && previousFocusRef.current.isConnected) previousFocusRef.current.focus();
+    };
+  }, [isOpen]);
 
   useEffect(() => {
     setZoomed(false);
-    setImagePan({ x: 0, y: 0 });
-    setIsPanningImage(false);
-    imagePointerRef.current = null;
-    suppressImageClickRef.current = false;
+    setZoomScale(1);
     setPlaybackError(false);
   }, [asset?.id]);
 
-  const clampImagePan = (x, y) => {
-    const frame = imageFrameRef.current;
-    const image = frame?.querySelector('img');
-    if (!frame || !image) return { x: 0, y: 0 };
-    const bounds = image.getBoundingClientRect();
-    const maxX = Math.max(0, (bounds.width - frame.clientWidth) / 2);
-    const maxY = Math.max(0, (bounds.height - frame.clientHeight) / 2);
-    return { x: Math.min(maxX, Math.max(-maxX, x)), y: Math.min(maxY, Math.max(-maxY, y)) };
+  const getImageZoomScale = useCallback(() => {
+    const image = imageFrameRef.current?.querySelector('img');
+    if (!image) return 1;
+    const baseWidth = image.clientWidth;
+    const baseHeight = image.clientHeight;
+    if (!baseWidth || !baseHeight) return 1;
+    const availableWidth = Math.max(240, window.innerWidth - (canNavigate ? 176 : 96));
+    const availableHeight = Math.max(180, window.innerHeight - 184);
+    const naturalScale = Math.max(image.naturalWidth / baseWidth, image.naturalHeight / baseHeight);
+    const preferredScale = Math.max(1.7, Math.min(naturalScale || 2.2, 2.8));
+    return Math.max(1, Math.min(preferredScale, availableWidth / baseWidth, availableHeight / baseHeight));
+  }, [canNavigate]);
+
+  useEffect(() => {
+    if (!zoomed) return undefined;
+    const updateZoom = () => setZoomScale(getImageZoomScale());
+    window.addEventListener('resize', updateZoom);
+    return () => window.removeEventListener('resize', updateZoom);
+  }, [zoomed, getImageZoomScale]);
+
+  const handleViewerClick = (event) => {
+    if (event.target.closest('button, input, video, audio, a, [role="slider"]')) return;
+    if (event.target.closest('.project-media-image-frame, .project-media-viewer-video, .project-media-audio-art')) return;
+    onClose?.();
   };
 
-  const startImagePan = (event) => {
-    if (!zoomed || event.button !== 0) return;
-    event.preventDefault();
-    event.currentTarget.setPointerCapture?.(event.pointerId);
-    imagePointerRef.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, panX: imagePan.x, panY: imagePan.y, moved: false };
+  const navigate = (offset) => {
+    if (!canNavigate) return;
+    const nextIndex = assetIndex + offset;
+    if (nextIndex < 0 || nextIndex >= assets.length) return;
+    onNavigate?.(assets[nextIndex]);
   };
 
-  const moveImagePan = (event) => {
-    const drag = imagePointerRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    const dx = event.clientX - drag.startX;
-    const dy = event.clientY - drag.startY;
-    if (!drag.moved && Math.hypot(dx, dy) < 3) return;
-    drag.moved = true;
-    setIsPanningImage(true);
-    setImagePan(clampImagePan(drag.panX + dx, drag.panY + dy));
-  };
-
-  const endImagePan = (event) => {
-    const drag = imagePointerRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    imagePointerRef.current = null;
-    setIsPanningImage(false);
-    if (drag.moved) {
-      suppressImageClickRef.current = true;
-      window.setTimeout(() => { suppressImageClickRef.current = false; }, 0);
-    }
-    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-  };
-
-  const panImageWithWheel = (event) => {
-    if (!zoomed) return;
-    event.preventDefault();
-    setImagePan((current) => clampImagePan(current.x - event.deltaX, current.y - event.deltaY));
-  };
-
-  const toggleImageZoom = () => {
-    setImagePan({ x: 0, y: 0 });
-    setZoomed((current) => !current);
-  };
+  useEffect(() => {
+    if (!asset) return undefined;
+    const onKeyDown = (event) => {
+      const target = event.target;
+      const isTyping = target instanceof HTMLElement && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName));
+      if (event.key === 'Escape') { onClose?.(); return; }
+      if (event.key === 'Tab') {
+        const controls = [...(dialogRef.current?.querySelectorAll('button:not(:disabled), [href], [tabindex]:not([tabindex="-1"])') || [])]
+          .filter((element) => element.getAttribute('aria-hidden') !== 'true');
+        const first = controls[0];
+        const last = controls.at(-1);
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+        return;
+      }
+      if (isTyping) return;
+      if (event.key === 'ArrowLeft' && canNavigate) { event.preventDefault(); navigate(-1); }
+      else if (event.key === 'ArrowRight' && canNavigate) { event.preventDefault(); navigate(1); }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [asset?.id, assetIndex, assets, canNavigate, onClose, onNavigate]);
 
   useEffect(() => {
     setPlaybackSource('');
@@ -211,16 +224,34 @@ export function MediaPreviewModal({ asset, onClose, onDownload }) {
   if (!asset) return null;
   const kind = mediaKind(asset);
   const isPlayable = kind === 'video' || kind === 'audio';
-  return createPortal(<div className={`discord-gallery-lightbox project-media-viewer${zoomed ? ' is-image-zoomed' : ''}`} role="dialog" aria-modal="true" aria-label={`Preview ${asset.filename}`} onClick={(event) => { if (event.target === event.currentTarget) onClose?.(); }}>
-    <button type="button" className="discord-gallery-lightbox-close" aria-label="Close media viewer" title="Close media viewer" onClick={onClose}><X size={20} /></button>
-    <figure className="discord-gallery-lightbox-content" onClick={(event) => { if (event.target === event.currentTarget) onClose?.(); }}>
+  const imageIsLoading = imageLoadState.src !== asset.data || imageLoadState.status === 'loading';
+  const imageLoadError = imageLoadState.src === asset.data && imageLoadState.status === 'error';
+  return createPortal(<div ref={dialogRef} className="discord-gallery-lightbox project-media-viewer" role="dialog" aria-modal="true" aria-label={`Preview ${asset.filename}`} tabIndex={-1} onClick={handleViewerClick}>
+    <button ref={closeButtonRef} type="button" className="discord-gallery-lightbox-close" aria-label="Close media viewer" title="Close media viewer (Esc)" onClick={onClose}><X size={20} /></button>
+    {canNavigate && <>
+      <button type="button" className="project-media-viewer-nav is-previous" onClick={() => navigate(-1)} disabled={assetIndex === 0} aria-label="Previous media" title="Previous media (←)"><ChevronLeft size={21} /></button>
+      <button type="button" className="project-media-viewer-nav is-next" onClick={() => navigate(1)} disabled={assetIndex === assets.length - 1} aria-label="Next media" title="Next media (→)"><ChevronRight size={21} /></button>
+    </>}
+    <figure className="discord-gallery-lightbox-content">
       {isPlayable
         ? <MediaPlayer src={playbackSource} filename={asset.filename} kind={kind} onError={() => setPlaybackError(true)} />
-        : <button ref={imageFrameRef} type="button" className={`project-media-image-frame${zoomed ? ' is-zoomed' : ''}${isPanningImage ? ' is-panning-image' : ''}`} aria-label={zoomed ? 'Drag to pan, click to zoom out' : 'Zoom in'} aria-pressed={zoomed} title={zoomed ? 'Drag or scroll to pan · Click to zoom out' : 'Click to zoom in'} onPointerDown={startImagePan} onPointerMove={moveImagePan} onPointerUp={endImagePan} onPointerCancel={endImagePan} onLostPointerCapture={endImagePan} onWheel={panImageWithWheel} onClick={(event) => { if (suppressImageClickRef.current) { event.preventDefault(); event.stopPropagation(); suppressImageClickRef.current = false; return; } if (event.target === event.currentTarget) { if (zoomed) toggleImageZoom(); else onClose?.(); } else toggleImageZoom(); }}>
-          <img className="project-media-image" src={asset.data} alt={asset.filename} draggable="false" style={zoomed ? { transform: `translate3d(${imagePan.x}px, ${imagePan.y}px, 0) scale(1.5)` } : undefined} />
-        </button>}
+        : <div className="project-media-image-stage">
+          <button ref={imageFrameRef} type="button" className={`project-media-image-frame${zoomed ? ' is-zoomed' : ''}${imageIsLoading || imageLoadError ? ' has-status' : ''}`} aria-label={zoomed ? 'Fit image to screen' : 'Enlarge image'} aria-pressed={zoomed} onClick={() => {
+            if (zoomed) {
+              setZoomed(false);
+              setZoomScale(1);
+            } else {
+              setZoomScale(getImageZoomScale());
+              setZoomed(true);
+            }
+          }}>
+            {!imageLoadError && <img className="project-media-image" style={{ '--media-image-zoom': zoomScale }} src={asset.data} alt={asset.filename} draggable="false" onLoad={() => setImageLoadState({ src: asset.data, status: 'loaded' })} onError={() => setImageLoadState({ src: asset.data, status: 'error' })} />}
+            {imageIsLoading && !imageLoadError && <span className="project-media-image-status" role="status"><LoaderCircle size={18} /> Loading image</span>}
+            {imageLoadError && <span className="project-media-image-status is-error" role="alert"><AlertCircle size={18} /> This image could not be displayed</span>}
+          </button>
+        </div>}
       {playbackError && <span className="project-media-playback-error"><AlertCircle size={15} /> This {kind} format cannot be played here. Download the file to open it.</span>}
-      <figcaption className="discord-gallery-lightbox-caption">{asset.filename}</figcaption>
+      <figcaption className="discord-gallery-lightbox-caption">{asset.filename}{canNavigate && <small>{assetIndex + 1} of {assets.length}</small>}</figcaption>
       {onDownload && <button type="button" className="project-media-viewer-download" onClick={() => void onDownload(asset)}><Download size={14} /> Download original</button>}
     </figure>
   </div>, document.body);
