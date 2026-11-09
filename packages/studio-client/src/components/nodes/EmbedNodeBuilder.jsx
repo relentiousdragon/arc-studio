@@ -8,6 +8,7 @@ import { DiscordTextField } from '../ui/DiscordTextField.jsx';
 import { TemplateVariableHints } from '../ui/TemplateVariableHints.jsx';
 import { DiscordLongTextField, LONG_TEXT_THRESHOLD } from '../ui/DiscordLongTextField.jsx';
 import { AttachmentUrlInput } from '../ui/AttachmentUrlInput.jsx';
+import { ColorSwatchPicker } from '../ui/ColorSwatchPicker.jsx';
 import { getTextTemplateSlots } from './nodeDefinitions.js';
 //
 export const EmbedBlockTypes = [
@@ -153,7 +154,10 @@ export function EmbedNodeBuilder({
   connectedInputIds = new Set(),
   wiredFields = {},
   appEmojis = [],
+  botProfile = null,
   attachments = [],
+  mediaAssets = [],
+  onSelectMediaAsset,
   graphVariables = [],
   templateValuePaths = [],
   templatePreviewValues = {},
@@ -270,7 +274,7 @@ export function EmbedNodeBuilder({
       try {
         localStorage.setItem('arc_embed_color_palette_v2', JSON.stringify(next));
         localStorage.setItem('arc_embed_recent_colors', JSON.stringify(next));
-      } catch { /* storage can be unavailable in private contexts. */ }
+      } catch { /* ... */ }
       return next;
     });
     if (colorBlock) {
@@ -336,6 +340,9 @@ export function EmbedNodeBuilder({
           <AttachmentUrlInput
             value={block[key] || ''}
             attachments={attachments}
+            mediaAssets={mediaAssets}
+            botProfile={botProfile}
+            onSelectMediaAsset={onSelectMediaAsset}
             imageOnly
             onChange={(next) => patchBlock(block.id, { [key]: next })}
             onOpenTextEditor={() => openTextEditor(block[key] || '')}
@@ -467,12 +474,11 @@ export function EmbedNodeBuilder({
             <label className="embed-color-picker-label">
               <span>Custom Color (Hex)</span>
               <div className="embed-color-inputs">
-                <input
-                  type="color"
+                <ColorSwatchPicker
+                  className="embed-native-color-picker"
                   value={/^#[0-9a-f]{6}$/i.test(block.value || '') ? block.value : '#5865F2'}
                   onChange={(event) => patchBlock(block.id, { value: event.target.value })}
                   onPointerDown={(event) => event.stopPropagation()}
-                  className="embed-native-color-picker"
                   title="Pick color"
                 />
                 <input
@@ -516,16 +522,16 @@ export function EmbedNodeBuilder({
                   style={{ fontSize: '0.75rem', color: 'var(--text-danger, #ed4245)', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 6px' }}
                   onClick={() => removeBlock(activeTimestamp.id)}
                 >
-                  Remove timestamp
+                  - Remove timestamp
                 </button>
               ) : (
                 <button
                   type="button"
                   className="embed-block-action"
-                  style={{ fontSize: '0.75rem', color: 'var(--accent, #5865f2)', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 6px', display: 'flex', alignItems: 'center', gap: 4 }}
+                  style={{ fontSize: '0.75rem', color: 'var(--accent, #5865f2)', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 6px' }}
                   onClick={() => addBlock('timestamp')}
                 >
-                  <Plus size={12} /> Add timestamp
+                  + Add timestamp
                 </button>
               )}
             </div>
@@ -582,7 +588,8 @@ export function EmbedNodeBuilder({
       {/* Quick Action Toolbar */}
       <div className="embed-toolbar-container">
         <div className="embed-quick-bar" aria-label="Quick add embed components">
-          {EmbedBlockTypes.filter((t) => t.type !== 'color').map(({ type, label, icon: Icon }) => {
+          {/* ... */}
+          {EmbedBlockTypes.filter((t) => t.type !== 'color' && t.type !== 'timestamp').map(({ type, label, icon: Icon }) => {
             const isField = type === 'field';
             const isAdded = !isField && blocks.some((b) => b.type === type);
             const countLabel = isField ? ` (${fieldCount}/25)` : '';
@@ -626,12 +633,12 @@ export function EmbedNodeBuilder({
                 onClick={() => setColor(preset.value)}
               />
             ))}
-            <input
-              type="color"
-              value={/^#[0-9a-f]{6}$/i.test(activeColor) ? activeColor : '#5865F2'}
-              onChange={(e) => setColor(e.target.value, true)}
-              title="Custom color picker"
+            <ColorSwatchPicker
               className="embed-color-picker-input"
+              value={/^#[0-9a-f]{6}$/i.test(activeColor) ? activeColor : '#5865F2'}
+              onChange={(e) => setColor(e.target.value, false)}
+              onBlur={(e) => setColor(e.target.value, true)}
+              title="Custom color picker"
             />
           </div>
           {focusOnly && (
