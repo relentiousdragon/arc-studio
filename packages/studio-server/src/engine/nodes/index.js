@@ -141,6 +141,10 @@ import node_action_start_thread_from_message from './discord-actions/action_star
 import node_action_edit_channel from './discord-actions/action_edit_channel.js';
 import node_action_delete_channel from './discord-actions/action_delete_channel.js';
 import node_action_delete_message from './discord-actions/action_delete_message.js';
+import node_action_bulk_delete_messages from './discord-actions/action_bulk_delete_messages.js';
+import node_action_upload_guild_emoji from './discord-actions/action_upload_guild_emoji.js';
+import node_action_upload_application_emoji from './discord-actions/action_upload_application_emoji.js';
+import node_action_upload_guild_sticker from './discord-actions/action_upload_guild_sticker.js';
 import node_action_create_role from './discord-actions/action_create_role.js';
 import node_action_member_role from './discord-actions/action_member_role.js';
 import node_action_moderate_member from './discord-actions/action_moderate_member.js';
@@ -341,6 +345,10 @@ export const nodeDefinitions = [
   node_action_edit_channel,
   node_action_delete_channel,
   node_action_delete_message,
+  node_action_bulk_delete_messages,
+  node_action_upload_guild_emoji,
+  node_action_upload_application_emoji,
+  node_action_upload_guild_sticker,
   node_action_create_role,
   node_action_member_role,
   node_action_moderate_member,
