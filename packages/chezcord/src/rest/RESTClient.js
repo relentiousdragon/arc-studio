@@ -582,10 +582,10 @@ export class RESTClient {
     return this.request('GET', `/guilds/${guildId}/emojis`);
   }
 
-  createGuildEmoji(guildId, { name, image, roles = [] }) {
-    return this.request('POST', `/guilds/${guildId}/emojis`, {
-      body: { name, image, roles }
-    });
+  createGuildEmoji(guildId, { name, image, roles = [], reason }) {
+    const headers = {};
+    if (reason) headers['X-Audit-Log-Reason'] = encodeURIComponent(String(reason));
+    return this.request('POST', `/guilds/${guildId}/emojis`, { body: { name, image, roles }, headers });
   }
 
   deleteGuildEmoji(guildId, emojiId) {
@@ -621,6 +621,28 @@ export class RESTClient {
     const headers = {};
     if (reason) headers['X-Audit-Log-Reason'] = encodeURIComponent(String(reason));
     return this.request('DELETE', `/channels/${channelId}/messages/${messageId}`, { headers });
+  }
+
+  bulkDeleteMessages(channelId, messageIds, reason) {
+    if (!channelId || !Array.isArray(messageIds) || messageIds.length < 2 || messageIds.length > 100) throw new TypeError('Bulk delete needs a channel ID and 2 to 100 message IDs.');
+    if (new Set(messageIds.map(String)).size !== messageIds.length) throw new TypeError('Bulk delete message IDs must be unique.');
+    const headers = {};
+    if (reason) headers['X-Audit-Log-Reason'] = encodeURIComponent(String(reason));
+    return this.request('POST', `/channels/${channelId}/messages/bulk-delete`, { body: { messages: messageIds.map(String) }, headers });
+  }
+
+  createGuildSticker(guildId, { name, description = '', tags, file, filename, contentType, reason }) {
+    if (!guildId || !file) throw new TypeError('Creating a server sticker needs a server ID and file.');
+    const bytes = Buffer.isBuffer(file) ? file : Buffer.from(file);
+    if (!bytes.length || bytes.length > 512 * 1024) throw new RangeError('Sticker files must be 512 KiB or smaller.');
+    const form = new FormData();
+    form.append('name', String(name));
+    form.append('description', String(description));
+    form.append('tags', String(tags));
+    form.append('file', new Blob([bytes], { type: String(contentType || 'application/octet-stream') }), String(filename || 'sticker.png'));
+    const headers = {};
+    if (reason) headers['X-Audit-Log-Reason'] = encodeURIComponent(String(reason));
+    return this.request('POST', `/guilds/${guildId}/stickers`, { body: form, headers });
   }
 
   createInteractionResponse(interactionId, interactionToken, responseData, { withResponse = false } = {}) {
