@@ -1099,11 +1099,11 @@ wss.on('connection', (ws, request) => {
           }
           recent.push(now);
           ws.arcGraphChatSendTimes = recent;
-          const content = Array.from(typeof payload.content === 'string' ? payload.content.trim() : '').slice(0, 280).join('');
+          const content = Array.from(typeof payload.content === 'string' ? payload.content.trim() : '').slice(0, 200).join('');
           if (!content) return;
           const length = Array.from(content).length;
-          const stayMs = Math.min(30_000, 6_000 + Math.ceil((length / 280) * 24_000));
-          const fadeMs = Math.min(2_500, 600 + Math.ceil((length / 280) * 1_900));
+          const stayMs = Math.min(30_000, 6_000 + Math.ceil((length / 200) * 24_000));
+          const fadeMs = Math.min(2_500, 600 + Math.ceil((length / 200) * 1_900));
           const bubble = {
             id: randomUUID(),
             clientActionId: typeof payload.clientActionId === 'string' ? payload.clientActionId.slice(0, 120) : '',
@@ -1137,7 +1137,7 @@ wss.on('connection', (ws, request) => {
         if (++ws.arcGraphChatMoveTimes.count > 30) return;
         entry.bubble = {
           ...entry.bubble, x: point.x, y: point.y,
-          clientActionId: typeof payload.clientActionId === 'string' ? payload.clientActionId.slice(0, 120) : ''
+          clientActionId: entry.bubble.clientActionId
         };
         sendToProjectChat(projectId, { type: 'GRAPH_CHAT_BUBBLE', payload: entry.bubble });
       } else if (msg.type === 'CANVAS_ARROW_ACTION') {
