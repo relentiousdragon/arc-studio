@@ -11,11 +11,14 @@ import {
   validateRepeatInterval, validateWaitConditionSettings, waitFor
 } from './nodes/runtime/control_flow.js';
 import { PluginStore } from './PluginStore.js';
-import { EmbedBuilder, parseEmoji } from 'chezcord';
+import { CDN, EmbedBuilder, parseEmoji } from 'chezcord';
 import { evaluateMathNode } from './MathOperations.js';
-import { getTemplateReferences, isReservedTemplateRoot, renderTextTemplate } from './TemplateExpressions.js';
+import { getTemplateReferences, isReservedTemplateVariableName, renderTextTemplate } from './TemplateExpressions.js';
 import { buildEventTemplateValues } from './EventTemplatePaths.js';
 import { fieldLimitWarning } from './FieldLimits.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
 //
 const DISCORD_GUILD_NODE_TYPES = new Set([
   'action_fetch_user', 'action_fetch_guild', 'action_fetch_member',
@@ -122,6 +125,46 @@ export class GraphRunner {
    */
   static async execute(graph, eventName, eventPayload, context) {
     const { nodes = [], connections = [] } = graph;
+    const projectMediaById = (() => {
+      try {
+        const values = JSON.parse(fs.readFileSync(path.join(context.projectDir, 'media-assets.json'), 'utf8'));
+        if (!Array.isArray(values)) return new Map();
+        return new Map(values.flatMap((asset) => {
+          if (!asset || typeof asset.id !== 'string' || typeof asset.contentType !== 'string' || typeof asset.sha256 !== 'string') return [];
+          try {
+            const bytes = typeof asset.data === 'string'
+              ? Buffer.from(asset.data.slice(asset.data.indexOf(',') + 1), 'base64')
+              : fs.readFileSync(path.join(context.projectDir, 'media', `${asset.id}.bin`));
+            if (createHash('sha256').update(bytes).digest('hex') !== asset.sha256) return [];
+            return [[asset.id, { ...asset, data: `data:${asset.contentType};base64,${bytes.toString('base64')}` }]];
+          } catch { return []; }
+        }));
+      } catch { return new Map(); }
+    })();
+    let appAvatarAttachmentPromise = null;
+    const templateResolutionOptions = () => {
+      const appUser = context.client?.user;
+      const options = {
+        systemTemplateValues: {
+          chezcord: {
+            app: {
+              AVATAR: appUser?.id ? CDN.avatar(appUser.id, appUser.avatar || null, 'png', 1024) : undefined
+            }
+          }
+        }
+      };
+      if (context.templateEnvironmentAccess === true) {
+        options.resolveEnvironment = (name) => Object.hasOwn(process.env, name) ? process.env[name] : undefined;
+      }
+      if (context.templateMediaPathAccess === true && context.projectDir) {
+        options.resolveMediaPath = (filename) => {
+          const requested = String(filename || '').toLowerCase();
+          const asset = [...projectMediaById.values()].find((item) => String(item.filename || '').toLowerCase() === requested);
+          return asset ? path.resolve(context.projectDir, 'media', `${asset.id}.bin`) : undefined;
+        };
+      }
+      return options;
+    };
     const interactionState = context.interactionState || {
       applicationId: eventPayload?.application_id || '',
       acknowledged: false,
@@ -408,6 +451,7 @@ export class GraphRunner {
       try {
         const result = evaluateFunctionGraph(targetGraph, argumentValues, {
           ...context,
+          templateResolutionOptions: templateResolutionOptions(),
           resolveFunctionVariable,
           resolveTemplateFunction: (nestedName, nestedValues, _nestedGraph, nestedStack) => resolveTemplateGraphFunction(nestedName, nestedValues, nestedStack)
         }, callStack);
@@ -478,7 +522,7 @@ export class GraphRunner {
       return connections.find((c) => c.targetNodeId === nodeId && c.targetPinId === pinId);
     };
 
-    const resolveMessageFiles = (node, connectedFiles) => {
+    const resolveMessageFiles = async (node, connectedFiles, referencedPayload = []) => {
       const embedWire = findInputConnection(node.id, 'embed');
       const embedNode = embedWire && nodes.find((item) => item.id === embedWire.sourceNodeId);
       const componentsWire = findInputConnection(node.id, 'components');
@@ -489,7 +533,34 @@ export class GraphRunner {
       }
       const files = [...(Array.isArray(normalizedConnectedFiles) ? normalizedConnectedFiles : normalizedConnectedFiles?.filename && normalizedConnectedFiles?.data ? [normalizedConnectedFiles] : []), ...(Array.isArray(node.data?.attachments) ? node.data.attachments : []), ...(Array.isArray(embedNode?.data?.attachments) ? embedNode.data.attachments : []), ...(Array.isArray(componentsNode?.data?.attachments) ? componentsNode.data.attachments : [])];
       const unique = new Map();
-      for (const file of files) if (file?.filename && file?.data) unique.set(String(file.filename).toLowerCase(), file);
+      for (const file of files) {
+        const resolved = file?.data ? file : projectMediaById.get(file?.assetId || file?.id);
+        if (resolved?.filename && resolved?.data) unique.set(String(resolved.filename).toLowerCase(), resolved);
+      }
+      const referencedContent = (() => { try { return JSON.stringify([node.data || {}, referencedPayload]); } catch { return ''; } })();
+      if (/attachment:\/\/chezcord-app-avatar(?:[?#]|["'\s]|$)/i.test(referencedContent)) {
+        if (!appAvatarAttachmentPromise) appAvatarAttachmentPromise = (async () => {
+          const user = context.client?.user;
+          if (!user?.id) throw new Error('The bot avatar attachment is unavailable until the bot is connected.');
+          if (context.mock) throw new Error('The bot avatar file is unavailable in Offline Simulator.');
+          const url = CDN.avatar(user.id, user.avatar || null, 'png', 1024);
+          const response = await globalThis.fetch(url);
+          if (!response.ok) throw new Error(`Could not load the bot avatar (${response.status}).`);
+          const contentType = String(response.headers.get('content-type') || '').split(';')[0].toLowerCase();
+          if (!['image/png', 'image/gif'].includes(contentType)) throw new Error('Discord returned an unsupported bot avatar format.');
+          const length = Number(response.headers.get('content-length')) || 0;
+          if (length > 20 * 1024 * 1024) throw new Error('The bot avatar exceeds the 20 MiB attachment limit.');
+          const bytes = Buffer.from(await response.arrayBuffer());
+          if (!bytes.length || bytes.length > 20 * 1024 * 1024) throw new Error('The bot avatar exceeds the 20 MiB attachment limit.');
+          const png = bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+          const gif = ['GIF87a', 'GIF89a'].includes(bytes.subarray(0, 6).toString('ascii'));
+          if (contentType === 'image/png' && !png || contentType === 'image/gif' && !gif) throw new Error('The bot avatar failed its image integrity check.');
+          const filename = 'chezcord-app-avatar';
+          return { id: 'chezcord-app-avatar', filename, contentType, size: bytes.length, data: `data:${contentType};base64,${bytes.toString('base64')}` };
+        })();
+        const avatarFile = await appAvatarAttachmentPromise;
+        unique.set(avatarFile.filename.toLowerCase(), avatarFile);
+      }
       return [...unique.values()];
     };
 
@@ -659,6 +730,7 @@ export class GraphRunner {
         }));
         functionResult = evaluateFunctionGraph(targetGraph, argumentValues, {
           ...context,
+          templateResolutionOptions: templateResolutionOptions(),
           resolveFunctionVariable,
           resolveTemplateFunction: (name, values, _callerGraph, callStack) => resolveTemplateGraphFunction(name, values, callStack)
         }, []);
@@ -678,6 +750,7 @@ export class GraphRunner {
           if (argumentMatch && Number(argumentMatch[1]) >= 1 && Number(argumentMatch[1]) <= 50) return resolveDataInput(sourceNode, `arg_${Number(argumentMatch[1])}`, undefined, seen);
           return resolveDataInput(sourceNode, `slot_${name}`, undefined, seen);
         }, context.appEmojis, (expression, references) => warnUndefinedTemplate(sourceNode, expression, references), {
+          ...templateResolutionOptions(),
           resolveFunction: (name, values) => resolveTemplateGraphFunction(name, values, context.graphCallStack || [graph.id])
         });
         dataCache.set(cacheKey, rendered);
@@ -920,6 +993,7 @@ export class GraphRunner {
         }
         return readEventTemplateRoot(name);
       }, context.appEmojis, (expression, references) => warnUndefinedTemplate(node, expression, references), {
+        ...templateResolutionOptions(),
         resolveFunction: (name, values) => resolveTemplateGraphFunction(name, values, context.graphCallStack || [graph.id])
       });
       return warnFieldValue(node, pinId, renderedValue);
@@ -935,6 +1009,7 @@ export class GraphRunner {
         if (findInputConnection(node.id, `slot_${name}`)) return resolveDataInput(node, `slot_${name}`, undefined);
         return readEventTemplateRoot(name);
       }, context.appEmojis, (expression, references) => warnUndefinedTemplate(node, expression, references), {
+        ...templateResolutionOptions(),
         resolveFunction: (name, values) => resolveTemplateGraphFunction(name, values, context.graphCallStack || [graph.id])
       });
     }
@@ -1321,7 +1396,7 @@ export class GraphRunner {
           const renderedName = renderNodeTemplate(targetNode, String(targetNode.data?.name || ''));
           const name = String(resolveDataInput(targetNode, 'name', renderedName) ?? '').trim().slice(0, 64);
           const validName = /^(?=.{1,64}$)[A-Za-z0-9]+(?:_+[A-Za-z0-9]+|-[A-Za-z0-9]+)*$/.test(name);
-          if (isReservedTemplateRoot(name)) {
+          if (isReservedTemplateVariableName(name)) {
             log(`[Variable] Create skipped: “${name}” is reserved for the system template namespace.`);
           } else if (!validName) {
             log(`[Variable] Create skipped: “${name || 'unnamed'}” is not a valid variable name.`);
@@ -1544,11 +1619,23 @@ export class GraphRunner {
           await executeDiscordMessageNode(targetNode, {
             resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
             resolveComponents: () => resolveMessageComponents(targetNode),
-            resolveFiles: (files) => resolveMessageFiles(targetNode, files),
+            resolveFiles: (files, payload) => resolveMessageFiles(targetNode, files, payload),
             buildEmbed: () => buildEmbedFromNode(targetNode),
             isInputConnected: (pinId) => Boolean(findInputConnection(targetNode.id, pinId)),
             rest: context.rest,
             simulation: Boolean(context.simulation || context.mock),
+            setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value),
+            log
+          });
+          currentExecWires.push(...findExecContinuation(targetNode.id, wire.targetPinId));
+        } else if (['action_bulk_delete_messages', 'action_upload_guild_emoji', 'action_upload_application_emoji', 'action_upload_guild_sticker'].includes(targetNode.type)) {
+          const { executeDiscordAssetNode } = await import('./nodes/runtime/discord_assets.js');
+          await executeDiscordAssetNode(targetNode, {
+            resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
+            resolveFiles: (files, payload) => resolveMessageFiles(targetNode, files, payload),
+            rest: context.rest,
+            client: context.client,
+            eventPayload,
             setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value),
             log
           });
@@ -1599,7 +1686,7 @@ export class GraphRunner {
           await executeDiscordInteractionNode(targetNode, {
             resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
             resolveComponents: () => resolveMessageComponents(targetNode),
-            resolveFiles: (files) => resolveMessageFiles(targetNode, files),
+            resolveFiles: (files, payload) => resolveMessageFiles(targetNode, files, payload),
             buildEmbed: () => buildEmbedFromNode(targetNode),
             isInputConnected: (pinId) => Boolean(findInputConnection(targetNode.id, pinId)),
             rest: context.rest,
@@ -1888,6 +1975,7 @@ function evaluateFunctionGraph(graph, argumentValues, context, callStack) {
         const value = resolveInput(node, `slot_${name}`, fallback);
         return value;
       }, context.appEmojis, (expression, references) => warnUndefinedTemplate(node, expression, references), {
+        ...(context.templateResolutionOptions || {}),
         resolveFunction: (name, values) => context.resolveTemplateFunction?.(name, values, graph, nextStack)
       });
     } else if (node.type === 'function_call') {
