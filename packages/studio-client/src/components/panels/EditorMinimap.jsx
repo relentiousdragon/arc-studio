@@ -87,25 +87,60 @@ function drawTokens(ctx, line, y, lh, cw, maxW, regex, classify, colors) {
   ctx.globalAlpha = 1;
 }
 
-function paintMinimap(canvas, text, isJson, lh, colors) {
-  const lines = text.split('\n');
+function drawCompactTokens(ctx, line, y, lh, cw, maxW, regex, classify, colors) {
+  drawBar(ctx, line, y, lh, cw, maxW, colors.text, 0.2);
+  const sample = line.slice(0, 320);
+  regex.lastIndex = 0;
+  let count = 0;
+  let match;
+  while ((match = regex.exec(sample)) && count < 18) {
+    const token = match[0];
+    const start = match.index;
+    const type = classify(token, sample.slice(start + token.length));
+    ctx.fillStyle = colors[type] || colors.text;
+    ctx.globalAlpha = type === 'comment' ? 0.55 : 0.9;
+    const x = start * cw;
+    const width = Math.min(token.length * cw, maxW - x);
+    if (width > 0 && x < maxW) ctx.fillRect(x, y, width, Math.max(1, lh - 1));
+    count += 1;
+  }
+  ctx.globalAlpha = 1;
+}
+
+function paintMinimap(canvas, lines, isJson, lh, colors, simplified, language) {
   const dpr = window.devicePixelRatio || 1;
   const w = canvas.clientWidth;
   if (w <= 0) return;
   const totalH = Math.ceil(lines.length * lh + PAD * 2);
-  canvas.width = Math.round(w * dpr);
-  canvas.height = Math.round(totalH * dpr);
+  const crispRows = simplified && lines.length > 1500;
+  const pixelRows = crispRows
+    ? Math.min(16384, Math.max(1, lines.length))
+    : Math.min(8192, Math.round(totalH * dpr));
+  canvas.width = Math.max(1, Math.round(w * dpr));
+  canvas.height = Math.max(1, pixelRows);
   canvas.style.height = `${totalH}px`;
   const ctx = canvas.getContext('2d', { alpha: true });
-  ctx.scale(dpr, dpr);
+  ctx.setTransform(canvas.width / w, 0, 0, crispRows ? 1 : canvas.height / totalH, 0, 0);
   ctx.clearRect(0, 0, w, totalH);
   const maxW = w - 4;
+  const codeLanguage = Boolean(language && !['markdown', 'text', 'plain', 'plaintext'].includes(language));
+  const rowStride = crispRows ? pixelRows / lines.length : lh;
+  const rowStart = crispRows ? (PAD / totalH) * pixelRows : PAD;
+  const drawLineHeight = crispRows ? 2 : lh;
   let inFence = false;
   let fenceLang = '';
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const y = PAD + i * lh;
+    const y = crispRows ? rowStart + i * rowStride : PAD + i * lh;
     if (!line.trim()) continue;
+    if (simplified) {
+      const useJson = isJson || language === 'json' || language === 'jsonl';
+      const useCode = codeLanguage && !useJson;
+      const regex = useJson ? JSON_RE : useCode ? CODE_RE : MD_RE;
+      const classify = useJson ? classifyJson : useCode ? classifyCode : classifyMd;
+      drawCompactTokens(ctx, line, y, drawLineHeight, CW, maxW, regex, classify, colors);
+      continue;
+    }
     const fenceMatch = line.match(/^\s*```([^`]*)$/);
     if (fenceMatch && !inFence) {
       fenceLang = fenceMatch[1].trim().split(/\s+/)[0] || '';
@@ -127,8 +162,10 @@ function paintMinimap(canvas, text, isJson, lh, colors) {
         const useJson = fenceLang === 'json' || isJson;
         drawTokens(ctx, line, y, lh, CW, maxW, useJson ? JSON_RE : CODE_RE, useJson ? classifyJson : classifyCode, colors);
       }
-    } else if (isJson) {
+    } else if (isJson || language === 'json' || language === 'jsonl') {
       drawTokens(ctx, line, y, lh, CW, maxW, JSON_RE, classifyJson, colors);
+    } else if (codeLanguage) {
+      drawTokens(ctx, line, y, lh, CW, maxW, CODE_RE, classifyCode, colors);
     } else {
       const trimmed = line.trimStart();
       if (/^#{1,6}\s/.test(trimmed)) { drawBar(ctx, line, y, lh, CW, maxW, colors.heading, 0.8); }
@@ -149,7 +186,7 @@ function paintMinimap(canvas, text, isJson, lh, colors) {
   }
 }
 
-export function EditorMinimap({ text, isJson, jsonIssueLines, searchMatches = [], searchOpen = false, scrollTop, scrollHeight, viewHeight, editorLineHeight = 22, onScrollTo }) {
+export function EditorMinimap({ text, lines: providedLines, simplified = false, language = '', isJson, jsonIssueLines, searchMatches = [], searchOpen = false, scrollTop, scrollHeight, viewHeight, editorLineHeight = 22, onScrollTo }) {
   const containerRef = useRef(null);
   const canvasRef = useRef(null);
   const dragRef = useRef(null);
@@ -175,7 +212,7 @@ export function EditorMinimap({ text, isJson, jsonIssueLines, searchMatches = []
     return () => ro.disconnect();
   }, []);
 
-  const lines = useMemo(() => text.split('\n'), [text]);
+  const lines = useMemo(() => providedLines || text.split('\n'), [providedLines, text]);
   const colors = useMemo(() => dark ? DARK : LIGHT, [dark]);
   const lh = useMemo(() => Math.min(LH, Math.max(2, 16000 / Math.max(1, lines.length))), [lines.length]);
   const totalMinimapH = lines.length * lh + PAD * 2;
@@ -184,8 +221,8 @@ export function EditorMinimap({ text, isJson, jsonIssueLines, searchMatches = []
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    paintMinimap(canvas, text, isJson, lh, colors);
-  }, [text, isJson, lh, colors, minimapW]);
+    paintMinimap(canvas, lines, isJson, lh, colors, simplified, language);
+  }, [lines, isJson, lh, colors, minimapW, simplified, language]);
 
   const vpScreenH = Math.max(16, (viewHeight / Math.max(1, scrollHeight)) * containerH);
   const vpScreenTop = editorMaxScroll > 0
