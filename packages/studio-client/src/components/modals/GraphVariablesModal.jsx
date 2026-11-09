@@ -32,7 +32,7 @@ const SYSTEM_MANAGED_IDS = [
   'project_var_bot_statistics'
 ];
 
-export function GraphVariablesModal({ isOpen, requestedView = 'variables', onClose, variables = [], projectVariables = [], mediaAssets = [], onUploadMedia, onDownloadMedia, onDeleteMedia, onLoadMediaContent, onOpenTextAsset, onChange, onProjectChange, onSidebarResize, onOpenTextEditor, onRestoreSystemVariable, isSaving = false, presentation = 'modal', sidebarWidth = 320, canEdit = true, canEditProject = canEdit, canEditGraph = canEdit, activeScope: requestedScope = 'project', onScopeChange }) {
+export function GraphVariablesModal({ isOpen, requestedView = 'variables', onClose, variables = [], projectVariables = [], mediaAssets = [], hasBotToken = false, onUploadMedia, onDownloadMedia, onDeleteMedia, onLoadMediaContent, onOpenTextAsset, onChange, onProjectChange, onSidebarResize, onOpenTextEditor, onRestoreSystemVariable, isSaving = false, presentation = 'modal', sidebarWidth = 320, canEdit = true, canEditProject = canEdit, canEditGraph = canEdit, activeScope: requestedScope = 'project', onScopeChange }) {
   const [activeScope, setActiveScope] = useState(requestedScope);
   const [activeView, setActiveView] = useState('variables');
   const [name, setName] = useState('');
@@ -259,7 +259,7 @@ export function GraphVariablesModal({ isOpen, requestedView = 'variables', onClo
               ) : hasConflict ? (
                 <button type="button" className="system-variable-restore-btn is-disabled" disabled title="Delete the custom variable first">Restore</button>
               ) : (
-                <button type="button" className="system-variable-restore-btn" disabled={restoringName === sysVar.name || !currentCanEdit} onClick={async () => {
+                <button type="button" className="system-variable-restore-btn" disabled={restoringName === sysVar.name || !currentCanEdit || (sysVar.name === 'DISCORD_APP_ID' && !hasBotToken)} title={sysVar.name === 'DISCORD_APP_ID' && !hasBotToken ? 'Configure a bot token for this project first' : undefined} onClick={async () => {
                   setRestoringName(sysVar.name);
                   try {
                     await onRestoreSystemVariable?.(sysVar.name);
