@@ -4,7 +4,7 @@ import {
   CircleDot, ClipboardList, Database, Divide, Dices, GitBranch, GitCompare, GitFork, GitMerge, Hash, KeyRound,
   LockKeyhole, LogIn, LogOut, MessageSquare, MessageSquareReply, Minus,
   MousePointerClick, PanelsTopLeft, Percent, Pi, Plus, Power, Puzzle, Search, Send, ShieldCheck,
-  Slash, SlidersHorizontal, Square, SquareFunction, Sigma, TextCursorInput,
+  Slash, SlidersHorizontal, Square, SquareFunction, Sigma, TextCursorInput, Smile,
   Timer, ToggleLeft, TrendingUp, Trash2, Type, UnlockKeyhole, User, UserRoundPlus, Workflow, RefreshCw, ListFilter
 } from 'lucide-react';
 //
@@ -68,6 +68,10 @@ const icons = {
   action_send_message: Send,
   action_edit_message: MessageSquareReply,
   action_delete_message: Trash2,
+  action_bulk_delete_messages: Trash2,
+  action_upload_guild_emoji: Smile,
+  action_upload_application_emoji: Smile,
+  action_upload_guild_sticker: Smile,
   action_reply_interaction: MessageSquareReply,
   action_await_interaction: Timer,
   action_defer_reply: MessageSquareReply,
