@@ -4,7 +4,7 @@ import { getArcUiScale } from '../../core/uiScale.js';
 import { arcEvents } from '../../core/ArcEvents.js';
 import { readAppStorage, writeAppStorage } from '../../core/storage.js';
 import { onPageBlur } from '../../core/pageFocus.js';
-import { AlertCircle, AlertTriangle, BookmarkPlus, Braces, Calculator, ChevronDown, ChevronRight, Clock3, Copy, Database, Download, FileCode2, FileUp, FolderTree, GitCompare, GripVertical, Layers, MoreHorizontal, PackageOpen, Pencil, Play, Plus, Puzzle, RotateCcw, Save, Search, Sparkles, Star, Trash2, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, AudioLines, BookmarkPlus, Braces, Calculator, ChevronDown, ChevronRight, Clock3, Copy, Database, Download, File, FileCode2, FileImage, FileUp, FileVideo, FolderTree, GitCompare, GripVertical, Layers, MoreHorizontal, PackageOpen, Pencil, Play, Plus, Puzzle, RotateCcw, Save, Search, Sparkles, Star, Trash2, X } from 'lucide-react';
 import { BuiltInNodeDefinitions, createDefaultNodeData, getVisibleNewNodeDefinitions, isNodeDefinitionNew, markNewNodeDefinitionsSeen } from '../nodes/nodeDefinitions.js';
 import { NodeTypeIcon } from '../nodes/NodeTypeIcon.jsx';
 import { CharacterLimit, TextInput } from '../ui/Inputs.jsx';
@@ -13,6 +13,7 @@ import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
 import { createSearchIndex } from '../palette/nodeSearch.js';
 import { readLibraryUsage, recordLibraryItemUsage } from '../../core/libraryUsage.js';
+import { mediaKind } from '../ui/mediaTypes.js';
 
 export { recordLibraryItemUsage };
 
@@ -30,7 +31,7 @@ function readLibraryExpansion() {
 }
 
 export function GraphLibraryPanel({
-  graphs = [], graphValidationReports = new Map(), templates = [], snapshots = [], nodePrefabs = [], embedAssets = [], graphVariables = [], graphActivity = [], definitions = BuiltInNodeDefinitions, newNodesUserKey = 'anonymous', defaultGraphId, activeGraph, openGraphIds = [], activeTabId, usageScope = 'default', desktopMode = false, canImportGraph = true, sidebarWidth = 320, activeSection: activeSectionProp, onActiveSectionChange, onSidebarResize, onClose, onOpenGraph, onOpenGraphReview, onImportGraph, onUseTemplate, onCreateGraph, onCreateFunction, onDeleteGraph, onDeleteGraphs, onDuplicateGraph, onRenameGraph, onSaveTemplate, onDeleteTemplate, onSetDefault, onExportGraph, onExportBot, exportInProgress = false, onAddNode, onAddPrefab, onDeletePrefab, onCreateEmbed, onCreateComponentsV2, onOpenEmbed, onDeleteEmbed, onManageVariables, onCreateSnapshot, onDeleteSnapshot, onRestoreSnapshot
+  graphs = [], graphValidationReports = new Map(), templates = [], snapshots = [], nodePrefabs = [], embedAssets = [], mediaAssets = [], graphVariables = [], graphActivity = [], definitions = BuiltInNodeDefinitions, newNodesUserKey = 'anonymous', defaultGraphId, activeGraph, openGraphIds = [], activeTabId, usageScope = 'default', desktopMode = false, canImportGraph = true, sidebarWidth = 320, activeSection: activeSectionProp, onActiveSectionChange, onSidebarResize, onClose, onOpenGraph, onOpenGraphReview, onImportGraph, onUseTemplate, onCreateGraph, onCreateFunction, onDeleteGraph, onDeleteGraphs, onDuplicateGraph, onRenameGraph, onSaveTemplate, onDeleteTemplate, onSetDefault, onExportGraph, onExportBot, exportInProgress = false, onAddNode, onAddPrefab, onDeletePrefab, onCreateEmbed, onCreateComponentsV2, onOpenEmbed, onDeleteEmbed, onManageVariables, onManageMedia, onCreateSnapshot, onDeleteSnapshot, onRestoreSnapshot
 }) {
   const uiScale = getArcUiScale();
   const [query, setQuery] = useState('');
@@ -135,6 +136,7 @@ export function GraphLibraryPanel({
   const prefabSearchIndex = useMemo(() => createSearchIndex(nodePrefabs, (prefab) => [prefab.name, prefab.node?.label, prefab.node?.type?.replaceAll('_', ' ')]), [nodePrefabs]);
   const embedSearchIndex = useMemo(() => createSearchIndex(embedAssets, (asset) => [asset.name, asset.description]), [embedAssets]);
   const variableSearchIndex = useMemo(() => createSearchIndex(graphVariables, (variable) => [variable.name, variable.type]), [graphVariables]);
+  const mediaSearchIndex = useMemo(() => createSearchIndex(mediaAssets, (asset) => [asset.filename, asset.contentType]), [mediaAssets]);
   const search = (index, source) => query.trim() ? index.search(query, Number.MAX_SAFE_INTEGER).map(({ item }) => item) : source;
   const filteredGraphs = search(graphSearchIndex, graphs);
   const filteredTemplates = search(templateSearchIndex, templates);
@@ -802,6 +804,9 @@ export function GraphLibraryPanel({
           }} title={`Drag to canvas to add Get Variable · ${variable.name || 'Untitled variable'}${selected ? ' · Drag to add selected variables' : ''}`} aria-pressed={selected}><Braces size={13} /><span>{variable.name || 'Untitled variable'}</span><small>{variable.type || 'string'}</small></button>;
         })}
         {!filteredVariables.length && <div className="graph-library-empty">{graphVariables.length ? 'No matching variables' : 'No graph variables'}</div>}
+        <div className="graph-library-section-heading graph-library-subsection"><span><Sparkles size={13} /> Project media</span><small>{mediaAssets.length}</small><button className="graph-library-section-action" onClick={onManageMedia} aria-label="Open project media library" title="Open project media library"><Plus size={13} /></button></div>
+        {search(mediaSearchIndex, mediaAssets).slice(0, 24).map((asset) => { const kind = mediaKind(asset); const Icon = kind === 'image' ? FileImage : kind === 'video' ? FileVideo : kind === 'audio' ? AudioLines : File; return <button className="graph-library-entry graph-library-variable" key={asset.id} onClick={onManageMedia} title={`${asset.filename} · Open project media library`}><Icon className="graph-library-media-icon" size={14} /><span>{asset.filename}</span></button>; })}
+        {!mediaAssets.length && <div className="graph-library-empty">No project media files</div>}
         <div className="graph-library-section-heading graph-library-subsection"><span><Clock3 size={13} /> Snapshots</span><small>{activeSnapshots.length}</small><button className="graph-library-section-action" onClick={() => { setSnapshotError(''); setShowSnapshotName((value) => !value); }} aria-label="Save graph snapshot" title={activeGraph ? 'Save a checkpoint of the active graph' : 'Open a graph to save a snapshot'} disabled={!activeGraph}><Plus size={13} /></button></div>
         {showSnapshotName && activeGraph && <form className="graph-snapshot-form" onSubmit={saveSnapshot}><CharacterLimit value={snapshotName} maxLength={80}><input value={snapshotName} onChange={(event) => setSnapshotName(event.target.value)} maxLength={80} placeholder="Checkpoint name" aria-label="Snapshot name" autoFocus /></CharacterLimit><button type="submit" disabled={snapshotBusy}><Save size={12} />Save</button>{snapshotError && <small role="alert">{snapshotError}</small>}</form>}
         {activeSnapshots.map((snapshot) => <div className="graph-snapshot-row" key={snapshot.id}>
