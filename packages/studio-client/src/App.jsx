@@ -1,9 +1,10 @@
 import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, AppWindow, Bot, Braces, ChevronDown, CircleHelp, Database, Download, FileCode2, FileUp, FolderTree, LayoutGrid, LockKeyhole, MoreHorizontal, PackageOpen, Plus, Save, Search, ShieldCheck, SlidersHorizontal, Sparkles, Ticket, TrendingUp, Trash2, Users, X } from 'lucide-react';
+import { AlertCircle, AppWindow, Bot, Braces, ChevronDown, CircleHelp, Database, Download, FileCode2, FileUp, Folder, FolderTree, LayoutGrid, LockKeyhole, MoreHorizontal, PackageOpen, Plus, Save, Search, ShieldCheck, SlidersHorizontal, Sparkles, Ticket, TrendingUp, Trash2, Users, X } from 'lucide-react';
 import { TopBar } from './components/navigation/TopBar.jsx';
 import { NodeCanvas } from './components/canvas/NodeCanvas.jsx';
 import { ControlDock } from './components/dock/ControlDock.jsx';
 import { onPageBlur } from './core/pageFocus.js';
+import { RenderErrorBoundary } from './components/ui/RenderErrorBoundary.jsx';
 const lazyNamed = (loader, name) => {
   let modulePromise;
   const load = () => modulePromise ||= loader().then((module) => ({ default: module[name] }));
@@ -62,6 +63,57 @@ function getNextProjectGraphName(graphs) {
   while (existingNames.has(`graph ${number}`)) number += 1;
   return `Graph ${number}`;
 }
+async function readArcFilePayload(file, contentType) {
+  let bytes = null;
+  if (typeof file?.arrayBuffer === 'function') bytes = new Uint8Array(await file.arrayBuffer());
+  else if (file instanceof Uint8Array) bytes = file;
+  if (!bytes || !isArcArchive(bytes)) throw new TypeError('This is an older JSON export. Import a current ARC project or graph file instead.');
+  return await readArcArchive(bytes, contentType);
+}
+async function arcFileToBytes(file) {
+  if (typeof file?.arrayBuffer !== 'function') throw new TypeError('This project or graph file cannot be read.');
+  return await file.arrayBuffer();
+}
+async function analyzeProjectArchive(file, signal) {
+  const input = await arcFileToBytes(file);
+  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  const buffer = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength ? bytes.buffer : bytes.slice().buffer;
+  if (signal?.aborted) throw new Error('Project archive check cancelled.');
+  return await new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('./workers/projectImportWorker.js', import.meta.url), { type: 'module' });
+    let settled = false;
+    const cleanup = () => {
+      if (settled) return false;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      worker.terminate();
+      return true;
+    };
+    const onAbort = () => {
+      if (cleanup()) reject(new Error('Project archive check cancelled.'));
+    };
+    const finish = (callback, value) => {
+      if (!cleanup()) return;
+      callback(value);
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    worker.onmessage = ({ data }) => data?.success
+      ? finish(resolve, data)
+      : finish(reject, new TypeError(data?.error || 'This is not a supported ARC project archive.'));
+    worker.onerror = (event) => {
+      event.preventDefault();
+      finish(reject, new Error('Could not check this project archive.'));
+    };
+    try { worker.postMessage({ buffer }, [buffer]); }
+    catch (error) { finish(reject, error); }
+  });
+}
+function encodeHeaderValue(value) {
+  const bytes = new TextEncoder().encode(String(value || ''));
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
 const SplashScreen = lazyNamed(() => import('./components/splash/SplashScreen.jsx'), 'SplashScreen');
 const DesktopPasskeyBridge = lazyNamed(() => import('./components/splash/DesktopPasskeyBridge.jsx'), 'DesktopPasskeyBridge');
 const NodePalette = lazyNamed(() => import('./components/palette/NodePalette.jsx'), 'NodePalette');
@@ -106,8 +158,10 @@ import { flattenSlashParameters, isValidSlashName, slashOptionPinId, validateSla
 import { DEFAULT_SHORTCUTS, formatShortcut, getDefaultShortcut, shortcutMatches } from './core/shortcuts.js';
 import { playUiSound, unlockUiSounds } from './core/uiSounds.js';
 import { notifyDesktopInBackground, requestDesktopNotificationPermission } from './core/desktopNotifications.js';
+import { createArcArchive, isArcArchive, readArcArchive } from '../../studio-server/src/storage/ArcArchive.js';
+import { isSafeImageMedia } from './components/ui/mediaTypes.js';
 import { BuiltInNodeDefinitions, BundledNodeTypes, NODE_SCHEMA_VERSION, CLIENT_PROTOCOL_VERSION, NODE_REGISTRY_PROTOCOL_VERSION, SUPPORTED_NODE_REGISTRY_FEATURES, getNodeRegistryCompatibility, createDefaultNodeData, getAvailableNodeDefinitions, getNodeArgumentPins, getNodeRegistryDefinitions, getNodeTemplateInputPins, getTextTemplateSlots, isNodeTypeSupported, registerPluginNodeDefinitions, renderTextTemplate, resolveDynamicNodePins, setWorkspaceNodeDefinitions, validateTemplateFunctionName } from './components/nodes/nodeDefinitions.js';
-import { isReservedTemplateRoot, TEMPLATE_SYSTEM_PATHS, validateTemplateSyntax } from '../../studio-server/src/engine/TemplateExpressions.js';
+import { isReservedTemplateRoot, isReservedTemplateVariableName, TEMPLATE_SYSTEM_PATHS, validateTemplateSyntax } from '../../studio-server/src/engine/TemplateExpressions.js';
 import { createEmbedBlock, embedBlockPins, getEmbedBlocks } from './components/nodes/EmbedNodeBuilder.jsx';
 import { createDefaultModal } from './components/nodes/ModalNodeBuilder.jsx';
 import { evaluateMathNode } from '../../studio-server/src/engine/MathOperations.js';
@@ -168,7 +222,16 @@ function LazyMountedFeature({ Component, isOpen, loadingLabel, loadingKind = 'mo
   const [hasOpened, setHasOpened] = useState(isOpen);
   useEffect(() => { if (isOpen) setHasOpened(true); }, [isOpen]);
   if (!hasOpened) return null;
-  return <Suspense fallback={<LazyFeatureLoading label={loadingLabel} kind={loadingKind} isDesktop={isDesktop} width={props.sidebarWidth} />}><Component {...props} isOpen={isOpen} /></Suspense>;
+  return <RenderErrorBoundary onError={() => {
+    props.onClose?.();
+    arcEvents.emit('toast:notify', { title: `${loadingLabel?.replace(/^Opening /, '').replace(/…$/, '') || 'Studio'} closed`, message: 'Something went wrong while opening this view. You are back where you were.', type: 'error' });
+  }}><Suspense fallback={<LazyFeatureLoading label={loadingLabel} kind={loadingKind} isDesktop={isDesktop} width={props.sidebarWidth} />}><Component {...props} isOpen={isOpen} /></Suspense></RenderErrorBoundary>;
+}
+function StudioErrorGuard({ name, onRecover, children }) {
+  return <RenderErrorBoundary onError={() => {
+    onRecover?.();
+    arcEvents.emit('toast:notify', { title: `${name} closed`, message: `Something went wrong while opening ${name}. You are back on the graph.`, type: 'error' });
+  }}>{children}</RenderErrorBoundary>;
 }
 const TAG_GROUP_COLORS = [
   { id: 'blue', label: 'Blue', value: '#5798ee' },
@@ -439,8 +502,12 @@ function getEventTemplatePaths(graph) {
   return [...paths.values()];
 }
 
-function getTemplateValuePaths(graph, node, variables) {
+function getTemplateValuePaths(graph, node, variables, mediaAssets = []) {
   const paths = TEMPLATE_SYSTEM_PATHS.map((item) => ({ path: item.path, label: item.label || item.path }));
+  for (const asset of mediaAssets) {
+    if (!asset?.filename || /[{}]/.test(asset.filename)) continue;
+    paths.push({ path: `path://${asset.filename}`, label: `path://${asset.filename} · Project media` });
+  }
   for (const variable of variables) {
     if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(variable.name || '')) collectTemplateValuePaths(variable.initialValue, variable.name, 0, paths);
   }
@@ -563,6 +630,7 @@ function exportGraphPayload(graph) {
   return makeExportJsonSafe({
     id: graph?.id,
     name: graph?.name,
+    ...(graph?.enabled === false ? { enabled: false } : {}),
     graphType: graph?.graphType,
     variables: graph?.variables || [],
     nodes: graph?.nodes || [],
@@ -823,6 +891,30 @@ export function App() {
   const [projectCollaboration, setProjectCollaboration] = useState({ projectId: '', graphIds: [], tabsInitialized: false, users: [] });
   const [remoteCollaborationActions, setRemoteCollaborationActions] = useState([]);
   const [graphChatBubbles, setGraphChatBubbles] = useState([]);
+  const [graphChatHistory, setGraphChatHistory] = useState([]);
+  const graphChatNotificationTimesRef = useRef(new Map());
+  const graphChatHistoryUserRef = useRef(null);
+  useEffect(() => {
+    const userId = currentUser?.id || null;
+    if (graphChatHistoryUserRef.current && graphChatHistoryUserRef.current !== userId) setGraphChatHistory([]);
+    graphChatHistoryUserRef.current = userId;
+  }, [currentUser?.id]);
+  useEffect(() => {
+    const incoming = graphChatBubbles.filter((bubble) => bubble?.id && typeof bubble.content === 'string' && bubble.projectId);
+    if (!incoming.length) return;
+    setGraphChatHistory((current) => {
+      const byKey = new Map(current.map((item) => [item.clientActionId || item.id, item]));
+      let changed = false;
+      for (const bubble of incoming) {
+        const key = bubble.clientActionId || bubble.id;
+        if (byKey.get(key) !== bubble) {
+          byKey.set(key, bubble);
+          changed = true;
+        }
+      }
+      return changed ? [...byKey.values()].slice(-80) : current;
+    });
+  }, [graphChatBubbles]);
   const [transientCanvasArrows, setTransientCanvasArrows] = useState([]);
   const [followCollaboratorRequest, setFollowCollaboratorRequest] = useState(null);
   const [noteEditLockState, setNoteEditLockState] = useState({ roomKey: '', locks: {} });
@@ -930,6 +1022,8 @@ export function App() {
   const desktopGraphImportHandlerRef = useRef(null);
   const [projectImportTrusted, setProjectImportTrusted] = useState(false);
   const [projectImportEncrypted, setProjectImportEncrypted] = useState(false);
+  const [projectImportHasText, setProjectImportHasText] = useState(false);
+  const [projectImportAnalysisStatus, setProjectImportAnalysisStatus] = useState('idle');
   const [projectImportPassword, setProjectImportPassword] = useState('');
   const [projectImportSharingWarning, setProjectImportSharingWarning] = useState(null);
   const [projectImportSharingApproved, setProjectImportSharingApproved] = useState(false);
@@ -989,6 +1083,7 @@ export function App() {
   const [commandBrowserRequest, setCommandBrowserRequest] = useState(0);
   const [isVariablesOpen, setIsVariablesOpen] = useState(false);
   const [variableScope, setVariableScope] = useState('project');
+  const [requestedVariableView, setRequestedVariableView] = useState('variables');
   const [paletteNodePosition, setPaletteNodePosition] = useState(null);
   const viewportCenterRef = useRef({ x: 0, y: 0 });
   const [isLibraryOpen, setIsLibraryOpen] = useState(false);
@@ -1012,6 +1107,7 @@ export function App() {
   const [gatewayIntentConfirm, setGatewayIntentConfirm] = useState([]);
   const [validationResult, setValidationResult] = useState(null);
   const [botStatus, setBotStatus] = useState('DISCONNECTED');
+  const [projectHasBotToken, setProjectHasBotToken] = useState(false);
   const [botMetrics, setBotMetrics] = useState({ latencyMs: null, averageLatencyMs: null, jitterMs: null, rateLimitedUntil: 0, rateLimitScope: null });
   const [discordAuthWarning, setDiscordAuthWarning] = useState(null);
   const botStartPendingRef = useRef(false);
@@ -1068,7 +1164,6 @@ export function App() {
   const pendingCollaborationActionRef = useRef(new Map());
   const latestRemoteCollaborationRevisionRef = useRef(new Map());
   const pendingCanvasArrowActionsRef = useRef(new Map());
-  const pendingGraphChatMovesRef = useRef(new Map());
   const localCanvasMotionRoomRef = useRef('');
   const collaborationPresenceRef = useRef({ projectId: '', graphId: '' });
   const errorPulseUntilRef = useRef(new Map());
@@ -1097,7 +1192,7 @@ export function App() {
     const normalizedPath = String(path).replace(/\\/g, '/');
     const name = normalizedPath.split('/').pop() || 'project.arcproject';
     const lowerName = name.toLowerCase();
-    if (lowerName.endsWith('.arcgraph') || lowerName.endsWith('.arc.json') || lowerName.endsWith('.arcgraph.json') || lowerName.endsWith('.graph.json')) {
+    if (lowerName.endsWith('.arcgraph')) {
       const invoke = window.__TAURI_INTERNALS__?.invoke;
       if (typeof invoke !== 'function') {
         arcEvents.emit('toast:notify', { title: 'Open failed', message: 'ARC Studio could not read this graph file.', type: 'error' });
@@ -1105,22 +1200,22 @@ export function App() {
       }
       setDesktopFileImportBusy(true);
       invoke('read_arc_graph_file', { path })
-        .then((contents) => desktopGraphImportHandlerRef.current?.({ name, text: async () => contents }))
+        .then((contents) => desktopGraphImportHandlerRef.current?.({ name, arrayBuffer: async () => new Uint8Array(contents).buffer }))
         .catch((error) => arcEvents.emit('toast:notify', { title: 'Open failed', message: error.message || 'Could not read this graph file.', type: 'error' }))
         .finally(() => setDesktopFileImportBusy(false));
       return;
     }
-    if (!lowerName.endsWith('.arcproject') && !lowerName.endsWith('.arcproject.json')) {
+    if (!lowerName.endsWith('.arcproject')) {
       arcEvents.emit('toast:notify', { title: 'Unsupported file', message: 'Choose an .arcgraph file or .arcproject file.', type: 'error' });
       return;
     }
     projectImportPathRef.current = path;
     setProjectImportSharingWarning(null);
     setProjectImportSharingApproved(false);
-    setProjectImportFile({ name, path, text: async () => {
+    setProjectImportFile({ name, path, arrayBuffer: async () => {
       const invoke = window.__TAURI_INTERNALS__?.invoke;
       if (typeof invoke !== 'function') throw new Error('ARC Studio could not open this project file.');
-      return invoke('read_arc_project_file', { path });
+      return new Uint8Array(await invoke('read_arc_project_file', { path })).buffer;
     } });
     setProjectImportTrusted(false);
     setProjectImportError('');
@@ -1173,7 +1268,7 @@ export function App() {
         const name = file.name || '';
         const lowerName = name.toLowerCase();
 
-        if (lowerName.endsWith('.arcproject') || lowerName.endsWith('.arcproject.json')) {
+        if (lowerName.endsWith('.arcproject')) {
           setProjectImportPathRef.current = null;
           setProjectImportTrusted(false);
           setProjectImportError('');
@@ -1182,7 +1277,7 @@ export function App() {
           setProjectImportCompatibility(null);
           setProjectImportOldVersionApproved(false);
           setProjectImportFile(file);
-        } else if (lowerName.endsWith('.arcgraph') || lowerName.endsWith('.arc.json') || lowerName.endsWith('.arcgraph.json') || lowerName.endsWith('.graph.json')) {
+        } else if (lowerName.endsWith('.arcgraph')) {
           await desktopGraphImportHandlerRef.current?.(file);
         } else if (lowerName.endsWith('.json')) {
           try {
@@ -1237,22 +1332,40 @@ export function App() {
   }, []);
   useEffect(() => {
     let active = true;
+    const controller = new AbortController();
     setProjectImportEncrypted(false);
+    setProjectImportHasText(false);
     setProjectImportPassword('');
     setProjectImportSharingWarning(null);
     setProjectImportSharingApproved(false);
-    if (!projectImportFile?.text) return undefined;
-    Promise.resolve(projectImportFile.text()).then((text) => {
-      const parsed = JSON.parse(text);
+    setProjectImportError('');
+    if (!projectImportFile?.arrayBuffer) {
+      setProjectImportAnalysisStatus('idle');
+      return undefined;
+    }
+    setProjectImportAnalysisStatus('checking');
+    analyzeProjectArchive(projectImportFile, controller.signal).then((analysis) => {
       if (!active) return;
-      const encrypted = parsed?.format === 'arc-project-encrypted';
-      setProjectImportEncrypted(encrypted);
-      if (!encrypted && externalCollaborativeWorkspace && hasImportableTextContent(parsed)) {
-        setProjectImportSharingWarning({ workspaceName: externalWorkspaceName });
+      setProjectImportEncrypted(analysis.encrypted);
+      setProjectImportHasText(analysis.hasImportableTextContent);
+      setProjectImportAnalysisStatus('ready');
+    }).catch((error) => {
+      if (active) {
+        setProjectImportAnalysisStatus('error');
+        setProjectImportError(error.message || 'This is not a supported ARC project archive.');
       }
-    }).catch(() => {});
-    return () => { active = false; };
-  }, [externalCollaborativeWorkspace, externalWorkspaceName, projectImportFile]);
+    });
+    return () => { active = false; controller.abort(); };
+  }, [projectImportFile]);
+  useEffect(() => {
+    if (!projectImportFile || projectImportAnalysisStatus !== 'ready' || projectImportEncrypted || !projectImportHasText || !externalCollaborativeWorkspace) {
+      setProjectImportSharingWarning(null);
+      setProjectImportSharingApproved(false);
+      return;
+    }
+    setProjectImportSharingWarning({ workspaceName: externalWorkspaceName });
+    setProjectImportSharingApproved(false);
+  }, [externalCollaborativeWorkspace, externalWorkspaceName, projectImportAnalysisStatus, projectImportEncrypted, projectImportFile, projectImportHasText]);
   useEffect(() => {
     let active = true;
     let probeInFlight = false;
@@ -1572,6 +1685,9 @@ export function App() {
     catch { return []; }
   });
   const [embedAssets, setEmbedAssets] = useState([]);
+  const [mediaAssets, setMediaAssets] = useState([]);
+  const mediaTextLoadRef = useRef(null);
+  const mediaUploadLimiterRef = useRef({ active: 0, queue: [] });
   const [embedStudio, setEmbedStudioState] = useState(null);
   const embedStudioRef = useRef(null);
   const embedStudioHistoryRef = useRef(new Map());
@@ -1681,9 +1797,35 @@ export function App() {
     return false;
   }, [desktopMode]);
   const [warmTabIds, setWarmTabIds] = useState(() => (activeTabId ? [activeTabId] : []));
-  const [graphSwitchingLoading, setGraphSwitchingLoading] = useState(false);
-  const [graphLoadingName, setGraphLoadingName] = useState('');
-  const graphLoadingTimerRef = useRef(null);
+  const [loadingGraphIds, setLoadingGraphIds] = useState([]);
+  const graphLoadingTimersRef = useRef(new Map());
+  const observedGraphTabsRef = useRef(new Set());
+  const markGraphLoading = useCallback((graphId, duration = isLowEndDevice ? 200 : 140) => {
+    if (!graphId || graphLoadingTimersRef.current.has(graphId)) return;
+    setLoadingGraphIds((current) => current.includes(graphId) ? current : [...current, graphId]);
+    const timer = window.setTimeout(() => {
+      graphLoadingTimersRef.current.delete(graphId);
+      setLoadingGraphIds((current) => current.filter((id) => id !== graphId));
+    }, duration);
+    graphLoadingTimersRef.current.set(graphId, timer);
+  }, [isLowEndDevice]);
+  useEffect(() => {
+    const currentIds = new Set(tabs.map((tab) => tab.id));
+    for (const graphId of observedGraphTabsRef.current) {
+      if (!currentIds.has(graphId)) {
+        observedGraphTabsRef.current.delete(graphId);
+        const timer = graphLoadingTimersRef.current.get(graphId);
+        if (timer) window.clearTimeout(timer);
+        graphLoadingTimersRef.current.delete(graphId);
+        setLoadingGraphIds((current) => current.filter((id) => id !== graphId));
+      }
+    }
+    for (const graphId of currentIds) {
+      if (observedGraphTabsRef.current.has(graphId)) continue;
+      observedGraphTabsRef.current.add(graphId);
+      markGraphLoading(graphId);
+    }
+  }, [tabs, markGraphLoading]);
   const activeNodesGraphIdRef = useRef(activeTabId);
   useEffect(() => {
     if (!activeTabId) return;
@@ -1694,7 +1836,8 @@ export function App() {
   }, [activeTabId, tabs, maxWarmTabs]);
   useEffect(() => {
     return () => {
-      if (graphLoadingTimerRef.current) window.clearTimeout(graphLoadingTimerRef.current);
+      for (const timer of graphLoadingTimersRef.current.values()) window.clearTimeout(timer);
+      graphLoadingTimersRef.current.clear();
     };
   }, []);
   const [selectedCanvasNodeId, setSelectedCanvasNodeId] = useState('');
@@ -1776,25 +1919,32 @@ export function App() {
       positions: positions.map((position) => ({ id: position.id, x: Math.round(position.x), y: Math.round(position.y) }))
     }));
   }, [activeProjectId, activeTabId, localDesktopWorkspace]);
+  const activeGraph = tabs.find((tab) => tab.id === activeTabId);
   const sendGraphChatMessage = useCallback((content, position) => {
     const socket = wsRef.current;
     if (localDesktopWorkspace || !activeProjectId || !activeTabId || !liveGraphReadyRef.current.has(`${activeProjectId}:${activeTabId}`)
       || !socket || socket.readyState !== WebSocket.OPEN) return false;
     const now = Date.now();
     const clientActionId = globalThis.crypto?.randomUUID?.() || `chat-${now}-${Math.random().toString(36).slice(2)}`;
-    const cleanContent = Array.from(String(content || '').trim()).slice(0, 280).join('');
+    const cleanContent = Array.from(String(content || '').trim()).slice(0, 200).join('');
     if (!cleanContent || !Number.isFinite(position?.x) || !Number.isFinite(position?.y)) return false;
     const length = Array.from(cleanContent).length;
-    const stayMs = Math.min(20_000, 5_000 + Math.ceil((length / 280) * 15_000));
-    const fadeMs = Math.min(2_000, 500 + Math.ceil((length / 280) * 1_500));
+    const stayMs = Math.min(30_000, 6_000 + Math.ceil((length / 200) * 24_000));
+    const fadeMs = Math.min(2_500, 600 + Math.ceil((length / 200) * 1_900));
     setGraphChatBubbles((previous) => [...previous.filter((bubble) => bubble.expiresAt > now), {
       id: `local:${clientActionId}`, clientActionId, projectId: activeProjectId, graphId: activeTabId,
-      userId: currentUser?.id || '', username: currentUser?.username || 'You', color: getLocalCollaboratorColor(currentUser?.id),
+      userId: currentUser?.id || '', username: currentUser?.username || 'You', graphName: activeGraph?.name || 'Current graph', color: getLocalCollaboratorColor(currentUser?.id),
       content: cleanContent, x: position.x, y: position.y, createdAt: now, stayMs, fadeMs, expiresAt: now + stayMs + fadeMs
     }]);
     socket.send(JSON.stringify({ type: 'GRAPH_CHAT_SEND', projectId: activeProjectId, graphId: activeTabId, payload: { content: cleanContent, position, clientActionId } }));
     return true;
-  }, [activeProjectId, activeTabId, currentUser, localDesktopWorkspace]);
+  }, [activeGraph?.name, activeProjectId, activeTabId, currentUser, localDesktopWorkspace]);
+  const moveGraphChatBubble = useCallback((id, position) => {
+    const socket = wsRef.current;
+    if (localDesktopWorkspace || !activeProjectId || !activeTabId || !socket || socket.readyState !== WebSocket.OPEN) return;
+    const clientActionId = globalThis.crypto?.randomUUID?.() || `chat-move-${Date.now()}`;
+    socket.send(JSON.stringify({ type: 'GRAPH_CHAT_MOVE', projectId: activeProjectId, graphId: activeTabId, payload: { id, position, clientActionId } }));
+  }, [activeProjectId, activeTabId, localDesktopWorkspace]);
   const sendCanvasArrowAction = useCallback((operation, payload) => {
     const socket = wsRef.current;
     if (!activeProjectId || !activeTabId || !liveGraphReadyRef.current.has(`${activeProjectId}:${activeTabId}`)
@@ -1821,15 +1971,6 @@ export function App() {
     socket.send(JSON.stringify({ type: 'CANVAS_ARROW_ACTION', projectId: activeProjectId, graphId: activeTabId, payload: actionPayload }));
     return true;
   }, [activeProjectId, activeTabId]);
-  const moveGraphChatBubble = useCallback((id, position) => {
-    const socket = wsRef.current;
-    if (localDesktopWorkspace || !id || !activeProjectId || !activeTabId || !socket || socket.readyState !== WebSocket.OPEN) return;
-    const clientActionId = globalThis.crypto?.randomUUID?.() || `chat-move-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    pendingGraphChatMovesRef.current.set(id, clientActionId);
-    setGraphChatBubbles((previous) => previous.map((bubble) => bubble.id === id
-      ? { ...bubble, x: position.x, y: position.y, clientActionId } : bubble));
-    socket.send(JSON.stringify({ type: 'GRAPH_CHAT_MOVE', projectId: activeProjectId, graphId: activeTabId, payload: { id, position, clientActionId } }));
-  }, [activeProjectId, activeTabId, localDesktopWorkspace]);
   const requestNoteEditLock = useCallback((noteId) => {
     const socket = wsRef.current;
     if (!noteId || !activeProjectId || !activeTabId || !liveGraphReadyRef.current.has(`${activeProjectId}:${activeTabId}`)
@@ -1856,7 +1997,6 @@ export function App() {
   const historyRef = useRef(new Map());
   const historyGroupRef = useRef(false);
   const [historyRevision, setHistoryRevision] = useState(0);
-  const activeGraph = tabs.find((tab) => tab.id === activeTabId);
   const canWriteGraphs = Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'));
   const activeGraphSyncReady = tabs.length
     ? Boolean(activeTabId && activeGraph && (activeGraph.localRecoveryOnly || liveGraphReadyRef.current.has(`${activeProjectId}:${activeTabId}`)))
@@ -1988,8 +2128,8 @@ export function App() {
   }, [activeConnections, activeNodes, discordTextStudio?.nodeId, embedStudio?.nodeId]);
   const embedTemplateValuePaths = useMemo(() => {
     if (!embedStudio?.nodeId) return [];
-    return getTemplateValuePaths(activeGraph, activeGraph?.nodes?.find((node) => node.id === embedStudio.nodeId), availableVariables);
-  }, [activeGraph, availableVariables, embedStudio?.nodeId]);
+    return getTemplateValuePaths(activeGraph, activeGraph?.nodes?.find((node) => node.id === embedStudio.nodeId), availableVariables, mediaAssets);
+  }, [activeGraph, availableVariables, embedStudio?.nodeId, mediaAssets]);
   const anyStudioOpenForActiveGraph = embedStudioOpenForActiveGraph || discordTextStudioOpenForActiveGraph || permissionStudioOpenForActiveGraph || slashCommandStudioOpenForActiveGraph || modalStudioOpenForActiveGraph;
   const activeStudioKind = modalStudioOpenForActiveGraph ? 'popup-modal'
     : slashCommandStudioOpenForActiveGraph ? 'arguments'
@@ -2637,6 +2777,239 @@ export function App() {
     loadEmbeds();
     return () => { current = false; };
   }, [authToken, workspaceRevision, workspaceMode, desktopMode]);
+
+  const loadMediaAssets = async (token = authToken, projectId = activeProjectId) => {
+    if (!token) { setMediaAssets([]); return []; }
+    const response = await fetch(apiUrl('/api/media-assets'), { headers: { 'x-arc-token': token } });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Could not load project media.');
+    const assets = Array.isArray(data.assets) ? data.assets : [];
+    if (projectId === activeProjectIdRef.current) setMediaAssets(assets);
+    return assets;
+  };
+
+  useEffect(() => {
+    if (!authToken) { setMediaAssets([]); return undefined; }
+    let current = true;
+    loadMediaAssets().catch((error) => { if (current) arcEvents.emit('toast:notify', { title: 'Project media', message: error.message, type: 'error' }); });
+    return () => { current = false; };
+  }, [authToken, activeProjectId, workspaceRevision, workspaceMode]);
+
+  const uploadProjectMedia = async (file, onProgress = () => {}) => {
+    const limiter = mediaUploadLimiterRef.current;
+    if (limiter.active >= 3) await new Promise((resolve) => limiter.queue.push(resolve));
+    limiter.active += 1;
+    try {
+    const fileBytes = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onprogress = (event) => { if (event.lengthComputable) onProgress(Math.round(event.loaded / event.total * 25)); };
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('Could not read this file.'));
+      reader.onabort = () => reject(new Error('File reading was cancelled.'));
+      reader.readAsArrayBuffer(file);
+    });
+    onProgress(25);
+    let preview = '';
+    if (isSafeImageMedia(file)) {
+      try {
+        const objectUrl = URL.createObjectURL(file);
+        try {
+          preview = await new Promise((resolve) => {
+            const image = new Image();
+            image.onload = () => {
+              const scale = Math.min(1, 320 / image.naturalWidth, 200 / image.naturalHeight);
+              const canvas = document.createElement('canvas');
+              canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+              canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+              canvas.getContext('2d')?.drawImage(image, 0, 0, canvas.width, canvas.height);
+              resolve(canvas.toDataURL('image/webp', 0.78));
+            };
+            image.onerror = () => resolve('');
+            image.src = objectUrl;
+          });
+        } finally { URL.revokeObjectURL(objectUrl); }
+      } catch {}
+    } else if (file.type.startsWith('video/')) {
+      try {
+        const objectUrl = URL.createObjectURL(file);
+        try {
+          preview = await new Promise((resolve) => {
+            const video = document.createElement('video');
+            video.muted = true;
+            video.playsInline = true;
+            video.preload = 'metadata';
+            let settled = false;
+            let timeoutId;
+            const finish = (value = '') => {
+              if (settled) return;
+              settled = true;
+              window.clearTimeout(timeoutId);
+              video.pause();
+              video.onloadedmetadata = null;
+              video.onloadeddata = null;
+              video.onseeked = null;
+              video.onerror = null;
+              video.removeAttribute('src');
+              video.load();
+              resolve(value);
+            };
+            const captureFrame = () => {
+              if (video.seeking || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+              try {
+                const canvas = document.createElement('canvas');
+                canvas.width = 320;
+                canvas.height = 200;
+                const context = canvas.getContext('2d');
+                if (!context || !video.videoWidth || !video.videoHeight) return finish();
+                const scale = Math.max(canvas.width / video.videoWidth, canvas.height / video.videoHeight);
+                const width = video.videoWidth * scale;
+                const height = video.videoHeight * scale;
+                context.drawImage(video, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
+                finish(canvas.toDataURL('image/webp', 0.78));
+              } catch { finish(); }
+            };
+            video.onloadedmetadata = () => {
+              if (Number.isFinite(video.duration) && video.duration > 0) {
+                try { video.currentTime = Math.min(0.25, video.duration / 10); } catch {}
+              }
+            };
+            video.onloadeddata = captureFrame;
+            video.onseeked = captureFrame;
+            video.onerror = () => finish();
+            timeoutId = window.setTimeout(() => finish(), 5000);
+            video.src = objectUrl;
+            video.load();
+          });
+        } finally { URL.revokeObjectURL(objectUrl); }
+      } catch {}
+    }
+    const data = await new Promise((resolve, reject) => {
+      const previewMatch = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/]*={0,2})$/i.exec(preview);
+      const previewBytes = previewMatch ? Uint8Array.from(atob(previewMatch[2]), (character) => character.charCodeAt(0)) : new Uint8Array();
+      const sourceBytes = new Uint8Array(fileBytes);
+      const prefixLength = previewBytes.length ? 4 : 0;
+      const payload = new Uint8Array(prefixLength + previewBytes.length + sourceBytes.length);
+      if (previewBytes.length) {
+        new DataView(payload.buffer).setUint32(0, previewBytes.length);
+        payload.set(previewBytes, 4);
+      }
+      payload.set(sourceBytes, prefixLength + previewBytes.length);
+      const request = new XMLHttpRequest();
+      request.open('POST', apiUrl('/api/media-assets'));
+      request.setRequestHeader('Content-Type', 'application/octet-stream');
+      request.setRequestHeader('x-arc-token', authToken || '');
+      request.setRequestHeader('x-arc-filename', encodeURIComponent(file.name));
+      request.setRequestHeader('x-arc-content-type', encodeURIComponent(file.type || 'application/octet-stream'));
+      request.setRequestHeader('x-arc-preview-length', String(previewBytes.length));
+      if (previewBytes.length) request.setRequestHeader('x-arc-preview-type', previewMatch[1]);
+      request.upload.onprogress = (event) => { if (event.lengthComputable) onProgress(25 + Math.round(event.loaded / event.total * 74)); };
+      request.onerror = () => reject(new Error('The upload could not reach the workspace.'));
+      request.onload = () => {
+        let result = {};
+        try { result = JSON.parse(request.responseText || '{}'); } catch {}
+        if (request.status < 200 || request.status >= 300) reject(new Error(result.error || 'The upload failed.'));
+        else resolve(result);
+      };
+      request.send(payload);
+    });
+    onProgress(100);
+    if (data.asset) setMediaAssets((current) => [data.asset, ...current.filter((item) => item.id !== data.asset.id)]);
+    return data.asset;
+    } finally {
+      limiter.active -= 1;
+      limiter.queue.shift()?.();
+    }
+  };
+
+  const downloadProjectMedia = async (asset) => {
+    const response = await fetch(apiUrl(`/api/media-assets/${encodeURIComponent(asset.id)}/download`), { headers: { 'x-arc-token': authToken } });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || 'Could not download this file.');
+    }
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = asset.filename || 'download';
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const loadProjectMediaContent = async (asset) => {
+    const response = await fetch(apiUrl(`/api/media-assets/${encodeURIComponent(asset.id)}/content`), { headers: { 'x-arc-token': authToken } });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Could not load this media file.');
+    return data;
+  };
+
+  const openProjectMediaText = (asset) => {
+    if (!asset?.id || !activeProjectId) return;
+    const graphId = activeTabId || null;
+    const collabId = `media-text:${activeProjectId}:${asset.id}:${Date.now()}`;
+    const studio = {
+      projectId: activeProjectId,
+      graphId,
+      collabId,
+      route: { kind: 'media-text', mediaAssetId: asset.id, label: asset.filename, readOnly: true },
+      readOnly: true,
+      plainText: true,
+      label: asset.filename || 'Text file',
+      contentType: asset.contentType || '',
+      value: '',
+      localDraft: '',
+      loading: true,
+      loadError: '',
+      maxLength: undefined,
+      templateValuePaths: [],
+      templateSuggestions: [],
+      applyValue: undefined
+    };
+    requestStudioOpen('text', () => {
+      mediaTextLoadRef.current?.controller.abort();
+      const controller = new AbortController();
+      mediaTextLoadRef.current = { controller, collabId };
+      setDiscordTextStudio(studio);
+      fetch(apiUrl(`/api/media-assets/${encodeURIComponent(asset.id)}/text`), { headers: { 'x-arc-token': authToken }, signal: controller.signal })
+        .then(async (response) => {
+          if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            throw new Error(data.error || 'Could not open this text file.');
+          }
+          return response.text();
+        })
+        .then((value) => {
+          if (mediaTextLoadRef.current?.collabId !== collabId) return;
+          setDiscordTextStudio((current) => current?.collabId === collabId
+            ? { ...current, value, localDraft: value, loading: false }
+            : current);
+        })
+        .catch((error) => {
+          if (controller.signal.aborted || mediaTextLoadRef.current?.collabId !== collabId) return;
+          setDiscordTextStudio((current) => current?.collabId === collabId
+            ? { ...current, loading: false, loadError: error.message || 'Could not open this text file.' }
+            : current);
+        })
+        .finally(() => {
+          if (mediaTextLoadRef.current?.collabId === collabId) mediaTextLoadRef.current = null;
+        });
+    });
+  };
+
+  useEffect(() => {
+    const pending = mediaTextLoadRef.current;
+    if (pending && pending.collabId !== discordTextStudio?.collabId) {
+      pending.controller.abort();
+      mediaTextLoadRef.current = null;
+    }
+  }, [discordTextStudio?.collabId]);
+  useEffect(() => () => mediaTextLoadRef.current?.controller.abort(), []);
+
+  const deleteProjectMedia = async (asset) => {
+    const response = await fetch(apiUrl(`/api/media-assets/${encodeURIComponent(asset.id)}`), { method: 'DELETE', headers: { 'x-arc-token': authToken } });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Could not delete this file.');
+    setMediaAssets((current) => current.filter((item) => item.id !== asset.id));
+  };
 
   useEffect(() => {
     if (!authToken) { setAppEmojis([]); setAppEmojisLoading(false); setAppEmojisCachedAt(0); return undefined; }
@@ -3521,22 +3894,36 @@ export function App() {
             });
           } else if (msg.type === 'GRAPH_CHAT_BUBBLE') {
             const bubble = msg.payload;
-            if (!bubble?.id || bubble.projectId !== activeProjectIdRef.current || bubble.graphId !== activeTabIdRef.current
+            if (!bubble?.id || bubble.projectId !== activeProjectIdRef.current || typeof bubble.graphId !== 'string'
               || typeof bubble.content !== 'string' || !Number.isFinite(bubble.x) || !Number.isFinite(bubble.y)
               || !Number.isFinite(bubble.expiresAt) || bubble.expiresAt <= Date.now()) return;
-            const pendingMoveId = pendingGraphChatMovesRef.current.get(bubble.id);
-            if (pendingMoveId && bubble.clientActionId !== pendingMoveId) return;
-            if (pendingMoveId) pendingGraphChatMovesRef.current.delete(bubble.id);
             setGraphChatBubbles((previous) => [...previous.filter((item) => item.id !== bubble.id
               && (!bubble.clientActionId || item.clientActionId !== bubble.clientActionId) && item.expiresAt > Date.now()), bubble]);
+            if (bubble.userId !== currentUser?.id && settings.desktopNotifications) {
+              const key = bubble.projectId;
+              const now = Date.now();
+              const lastNotified = graphChatNotificationTimesRef.current.get(key) || 0;
+              if (now - lastNotified >= 30_000) {
+                graphChatNotificationTimesRef.current.set(key, now);
+                void notifyDesktopInBackground({ enabled: true, title: `${bubble.username} · ${bubble.graphName || 'Graph chat'}`, body: bubble.content.slice(0, 180) }).then((sent) => {
+                  if (!sent && graphChatNotificationTimesRef.current.get(key) === now) graphChatNotificationTimesRef.current.set(key, lastNotified);
+                });
+              }
+            }
           } else if (msg.type === 'GRAPH_CHAT_EXPIRED') {
             const expired = msg.payload;
-            if (expired?.projectId === activeProjectIdRef.current && expired?.graphId === activeTabIdRef.current && expired?.id) {
-              pendingGraphChatMovesRef.current.delete(expired.id);
+            if (expired?.projectId === activeProjectIdRef.current && expired?.id) {
               setGraphChatBubbles((previous) => previous.filter((item) => item.id !== expired.id));
             }
           } else if (msg.type === 'GRAPH_CHAT_REJECTED') {
-            if (msg.payload?.clientActionId) setGraphChatBubbles((previous) => previous.filter((bubble) => bubble.clientActionId !== msg.payload.clientActionId));
+            if (msg.payload?.clientActionId) {
+              const failedAt = Date.now();
+              const markFailed = (bubble) => bubble.clientActionId === msg.payload.clientActionId
+                ? { ...bubble, failed: true, createdAt: failedAt, stayMs: 0, fadeMs: 5000, dimAt: failedAt, fadeAt: failedAt + 5000, removeAt: failedAt + 6000, expiresAt: failedAt + 6000 }
+                : bubble;
+              setGraphChatBubbles((previous) => previous.map(markFailed));
+              setGraphChatHistory((previous) => previous.map(markFailed));
+            }
             arcEvents.emit('toast:notify', { title: 'Canvas message not sent', message: msg.payload?.message || 'Please try again in a moment.', type: 'warning' });
           } else if (msg.type === 'CANVAS_ARROWS_SYNC') {
             const arrows = Array.isArray(msg.payload?.arrows) ? msg.payload.arrows.filter((arrow) => arrow?.projectId === activeProjectIdRef.current
@@ -3622,6 +4009,8 @@ export function App() {
             setLogs([]);
           } else if (msg.type === 'EMBEDS_UPDATED' && Array.isArray(msg.payload?.embeds)) {
             setEmbedAssets(msg.payload.embeds);
+          } else if (msg.type === 'MEDIA_ASSETS_UPDATED' && (!msg.payload?.projectId || msg.payload.projectId === activeProjectIdRef.current)) {
+            void loadMediaAssets().catch((error) => arcEvents.emit('toast:notify', { title: 'Project media', message: error.message, type: 'error' }));
           } else if (msg.type === 'BOT_STATUS') {
             setBotStatus(msg.payload.status);
             if (msg.payload.user) setBotProfile((profile) => ({ ...profile, ...msg.payload.user }));
@@ -3800,7 +4189,7 @@ export function App() {
         socket.send(JSON.stringify({ type: 'COLLAB_ACTION', projectId: entry.projectId, graphId: entry.graphId, action: entry.action }));
       }
     }
-  }, [activeProjectId, activeGraphIsLocalRecovery, activeTabId, authToken, socketReadyRevision]);
+  }, [activeProjectId, activeGraphIsLocalRecovery, activeTabId, authToken, currentUser?.id, settings.desktopNotifications, socketReadyRevision]);
 
   useEffect(() => {
     if (!authToken || !activeProjectId || !graphsHydratedRef.current) return;
@@ -4170,6 +4559,24 @@ export function App() {
     }
   }, [authToken, activeProjectId]);
 
+  useEffect(() => {
+    if (!isVariablesOpen || !authToken || !activeProjectId) {
+      setProjectHasBotToken(false);
+      return undefined;
+    }
+    const controller = new AbortController();
+    setProjectHasBotToken(false);
+    fetch(apiUrl('/api/bot/state'), { headers: { 'x-arc-token': authToken }, signal: controller.signal })
+      .then((response) => response.ok ? response.json() : null)
+      .then((state) => {
+        if (!controller.signal.aborted) setProjectHasBotToken(state?.hasToken === true);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setProjectHasBotToken(false);
+      });
+    return () => controller.abort();
+  }, [isVariablesOpen, authToken, activeProjectId]);
+
   useEffect(() => () => {
     projectVariablesSaveRef.current.pending = false;
     window.clearTimeout(projectVariablesSaveRef.current.timer);
@@ -4362,6 +4769,39 @@ export function App() {
     await persistGraph(graph);
   }, [activeTabId, authToken, persistGraph, savedGraphs, tabs]);
 
+  const setGraphEnabled = useCallback(async (graph, enabled) => {
+    if (!graph || !authToken) return false;
+    const previousSaved = savedGraphsRef.current.find((item) => item.id === graph.id) || graph;
+    const previousTab = tabsRef.current.find((item) => item.id === graph.id);
+    const nextEnabled = enabled === true;
+    const restoreEnabled = (item, previous) => {
+      if (!item) return item;
+      const restored = { ...item };
+      if (previous?.enabled === false) restored.enabled = false;
+      else delete restored.enabled;
+      return restored;
+    };
+    setSavedGraphs((current) => current.map((item) => item.id === graph.id ? { ...item, enabled: nextEnabled } : item));
+    setTabs((current) => current.map((item) => item.id === graph.id ? { ...item, enabled: nextEnabled } : item));
+    try {
+      const response = await fetch(apiUrl(`/api/graphs/${encodeURIComponent(graph.id)}/enabled`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
+        body: JSON.stringify({ enabled: nextEnabled })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.graph) throw new Error(data.error || 'Could not update graph status.');
+      setSavedGraphs((current) => current.map((item) => item.id === graph.id ? data.graph : item));
+      setTabs((current) => current.map((item) => item.id === graph.id ? { ...item, enabled: data.graph.enabled === true } : item));
+      return true;
+    } catch (error) {
+      setSavedGraphs((current) => current.map((item) => item.id === graph.id ? restoreEnabled(item, previousSaved) : item));
+      setTabs((current) => current.map((item) => item.id === graph.id ? restoreEnabled(item, previousTab) : item));
+      arcEvents.emit('toast:notify', { title: 'Graph status not saved', message: error.message || 'Could not update graph status.', type: 'error' });
+      return false;
+    }
+  }, [authToken]);
+
   const handleRenameGraph = useCallback((graph) => {
     if (!graph) return;
     setNameDialogError('');
@@ -4467,13 +4907,30 @@ export function App() {
       arcEvents.emit('toast:notify', { title: 'Nothing to export', message: 'Add a node to this graph before exporting it.', type: 'warning' });
       return;
     }
-    const exportData = { ...graph };
-    delete exportData.isDirty;
+    const mediaContentCache = new Map();
+    const hydrateMediaReferences = async (value, depth = 0) => {
+      if (depth > 40 || !value || typeof value !== 'object') return value;
+      if (Array.isArray(value)) return Promise.all(value.map((item) => hydrateMediaReferences(item, depth + 1)));
+      let result = Object.fromEntries(await Promise.all(Object.entries(value).map(async ([key, item]) => [key, await hydrateMediaReferences(item, depth + 1)])));
+      if (typeof value.id === 'string' && value.id.startsWith('media_') && typeof value.filename === 'string' && typeof value.data !== 'string') {
+        if (!mediaContentCache.has(value.id)) {
+          mediaContentCache.set(value.id, fetch(apiUrl(`/api/media-assets/${encodeURIComponent(value.id)}/content`), { headers: { 'x-arc-token': authToken } }).then(async (response) => {
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.error || `Could not load ${value.filename} for export.`);
+            return data.data;
+          }));
+        }
+        result.data = await mediaContentCache.get(value.id);
+      }
+      return result;
+    };
     let blob;
     try {
+      const exportData = await hydrateMediaReferences({ ...graph });
+      delete exportData.isDirty;
       const payload = { format: 'arc-graph', version: 1, graph: exportData };
       payload.integrity = { algorithm: 'sha256', digest: await sha256Hex(stableJson(payload)) };
-      blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/vnd.arc-studio.graph+json' });
+      blob = new Blob([await createArcArchive(payload)], { type: 'application/vnd.arc-studio.graph+zip' });
     } catch (error) {
       arcEvents.emit('toast:notify', { title: 'Graph export failed', message: error.message || 'Could not calculate the file integrity check.', type: 'error' });
       return;
@@ -4489,7 +4946,7 @@ export function App() {
       title: 'Graph export complete',
       body: 'Your graph file is ready.'
     });
-  }, [activeTabId, settings.desktopNotifications, tabs]);
+  }, [activeTabId, authToken, settings.desktopNotifications, tabs]);
 
   const ensureWorkspaceGraphsSaved = useCallback(async () => {
     if (!authToken) throw new Error('Sign in again before saving graphs.');
@@ -4515,6 +4972,7 @@ export function App() {
   }, [activeProjectId, currentUser?.id, localDesktopWorkspace]);
 
   const handleAddTab = useCallback((sourceGraph = null, { blank = false } = {}) => {
+    if (authToken && !workspaceHydrated && !needsSetup) return null;
     if (tabs.length >= MAX_OPEN_GRAPH_TABS) {
       arcEvents.emit('toast:notify', { title: 'Graph tab limit reached', message: 'Close a tab to open another graph. Saved graphs remain available in the Library.', type: 'warning' });
       return null;
@@ -4537,11 +4995,12 @@ export function App() {
     setActiveTabId(id);
     rememberUserGraph(id);
     return graph;
-  }, [defaultGraphId, graphTemplates, rememberUserGraph, savedGraphs, tabs]);
+  }, [authToken, defaultGraphId, graphTemplates, needsSetup, rememberUserGraph, savedGraphs, tabs, workspaceHydrated]);
 
   const handleAddBlankGraph = useCallback(() => handleAddTab(null, { blank: true }), [handleAddTab]);
 
   const handleAddFunctionGraph = useCallback(() => {
+    if (authToken && !workspaceHydrated && !needsSetup) return;
     if (tabs.length >= MAX_OPEN_GRAPH_TABS) {
       arcEvents.emit('toast:notify', { title: 'Graph tab limit reached', message: 'Close a tab to open another graph.', type: 'warning' });
       return;
@@ -4578,7 +5037,7 @@ export function App() {
     setActiveTabId(graphId);
     rememberUserGraph(graphId);
     setIsLibraryOpen(false);
-  }, [functionGraphs, rememberUserGraph, tabs.length]);
+  }, [authToken, functionGraphs, needsSetup, rememberUserGraph, tabs.length, workspaceHydrated]);
 
   const handleSaveGraphTemplate = useCallback(async (graph) => {
     if (!authToken || !graph) return;
@@ -4691,14 +5150,7 @@ export function App() {
       arcEvents.emit('toast:notify', { title: 'Graph tab limit reached', message: 'Close a tab to open another graph. Saved graphs remain available in the Library.', type: 'warning' });
       return;
     }
-    if (isLowEndDevice || !warmTabIds.includes(graph.id)) {
-      setGraphLoadingName(graph.name || 'graph');
-      setGraphSwitchingLoading(true);
-      if (graphLoadingTimerRef.current) window.clearTimeout(graphLoadingTimerRef.current);
-      graphLoadingTimerRef.current = window.setTimeout(() => {
-        setGraphSwitchingLoading(false);
-      }, isLowEndDevice ? 200 : 140);
-    }
+    if (isLowEndDevice || !warmTabIds.includes(graph.id)) markGraphLoading(graph.id);
     if (!existing) setTabs((previous) => [...previous, { ...graph, isDirty: false }]);
     setActiveNodes(graph.nodes || []);
     setActiveConnections(graph.connections || []);
@@ -4706,7 +5158,7 @@ export function App() {
     setActiveTabId(graph.id);
     rememberUserGraph(graph.id);
     setIsLibraryOpen(false);
-  }, [isLowEndDevice, rememberUserGraph, tabs, warmTabIds]);
+  }, [isLowEndDevice, markGraphLoading, rememberUserGraph, tabs, warmTabIds]);
 
   const traceGraphNode = useCallback((graphId, nodeId) => {
     const graph = graphLookup.get(graphId);
@@ -4731,7 +5183,7 @@ export function App() {
   const handleImportGraph = useCallback(async (file) => {
     if (!authToken || !file) return;
     try {
-      const parsed = JSON.parse(await file.text());
+      const parsed = await readArcFilePayload(file, 'arc-graph');
       let integrityWarning = '';
       if (parsed?.format === 'arc-graph') {
         if (!parsed.integrity) integrityWarning = 'This graph has no integrity record. It may be an older export.';
@@ -4766,14 +5218,14 @@ export function App() {
         });
         if (!confirmCollaborativeText) return;
       }
-      const body = JSON.stringify({ graph, confirmCollaborativeText });
+      const body = await arcFileToBytes(file);
       const hasAttachments = (graph.nodes || []).some((node) => (node.data?.attachments || []).some((attachment) => typeof attachment.data === 'string' && attachment.data.startsWith('data:')));
       if (hasAttachments) setGraphUploadProgress({ graphId: graph.id || 'import', graphName: graph.name || 'Graph', percent: 0 });
       let data;
       try {
         const response = await xhrJson(apiUrl('/api/graphs/import'), {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
+          headers: { 'Content-Type': 'application/vnd.arc-studio.graph+zip', 'x-arc-token': authToken, 'x-arc-confirm-collaborative-text': String(confirmCollaborativeText) },
           body,
           onUploadProgress: hasAttachments ? (percent) => setGraphUploadProgress({ graphId: graph.id || 'import', graphName: graph.name || 'Graph', percent }) : undefined
         });
@@ -4863,22 +5315,23 @@ export function App() {
     const exportProjectId = typeof projectId === 'string' ? projectId : activeProjectId;
     if (!skipReview) {
       const exportGraphs = [...new Map(savedGraphs.map((graph) => [graph.id, graph])).values()];
-      const issues = exportGraphs.flatMap((graph) => {
+      const enabledExportGraphs = exportGraphs.filter((graph) => graph.enabled !== false);
+      const issues = enabledExportGraphs.flatMap((graph) => {
         const report = validateGraph(graph, graphLookup, botProfile?.intentSummary, projectVariables);
         return [
           ...report.errors.map((message) => ({ graphId: graph.id, nodeId: report.errorNodeIds?.[message], graphName: graph.name || 'Untitled graph', kind: 'error', message })),
           ...report.warnings.map((message) => ({ graphId: graph.id, nodeId: report.warningNodeIds?.[message], graphName: graph.name || 'Untitled graph', kind: 'warning', message }))
         ];
       });
-      for (const graph of exportGraphs) for (const node of graph.nodes || []) {
+      for (const graph of enabledExportGraphs) for (const node of graph.nodes || []) {
         const definition = BuiltInNodeDefinitions.find((item) => item.type === node.type);
         if (!definition || definition.pluginAdapter) issues.push({ graphId: graph.id, nodeId: node.id, graphName: graph.name || 'Untitled graph', kind: 'error', message: `${node.label || node.type}: this node type is not supported by the standalone bot runtime.` });
       }
-      const gatewayIntents = [...new Set(['GUILDS', 'GUILD_EMOJIS_AND_STICKERS', ...exportGraphs.flatMap((graph) => (graph.nodes || []).flatMap((node) => BuiltInNodeDefinitions.find((definition) => definition.type === node.type)?.gatewayIntents || []))])].sort();
+      const gatewayIntents = [...new Set(['GUILDS', 'GUILD_EMOJIS_AND_STICKERS', ...enabledExportGraphs.flatMap((graph) => (graph.nodes || []).flatMap((node) => BuiltInNodeDefinitions.find((definition) => definition.type === node.type)?.gatewayIntents || []))])].sort();
       const disabledIntents = gatewayIntents.filter((intent) => botProfile?.intentSummary?.some((item) => item.key === intent && item.portalEnabled === false));
       for (const intent of disabledIntents) issues.push({ kind: 'warning', message: `${intent.replaceAll('_', ' ')} is required by the exported graphs but is currently disabled in the Discord Developer Portal.` });
       const permissions = new Set();
-      for (const graph of exportGraphs) for (const node of graph.nodes || []) {
+      for (const graph of enabledExportGraphs) for (const node of graph.nodes || []) {
         if (['action_send_message', 'action_edit_message'].includes(node.type)) {
           permissions.add('View Channels');
           permissions.add('Send Messages');
@@ -4906,7 +5359,7 @@ export function App() {
         if (node.type === 'action_voice_state') permissions.add('Move Members');
       }
       const graphNames = exportGraphs.map((graph) => graph.name || 'Untitled graph');
-      const usesCryptoNodes = exportGraphs.some((graph) => (graph.nodes || []).some((node) => ['action_crypto_encrypt', 'action_crypto_decrypt'].includes(node.type)));
+      const usesCryptoNodes = enabledExportGraphs.some((graph) => (graph.nodes || []).some((node) => ['action_crypto_encrypt', 'action_crypto_decrypt'].includes(node.type)));
       let canIncludeBotToken = false;
       let hasBotToken = false;
       try {
@@ -4924,7 +5377,7 @@ export function App() {
         variableCount: exportGraphs.reduce((count, graph) => count + (graph.variables?.length || 0), 0) + projectVariables.length,
         requiredIntents: gatewayIntents,
         requiredPermissions: [...permissions].sort(),
-        unsupportedNodeCount: exportGraphs.reduce((count, graph) => count + (graph.nodes || []).filter((node) => {
+        unsupportedNodeCount: enabledExportGraphs.reduce((count, graph) => count + (graph.nodes || []).filter((node) => {
           const definition = BuiltInNodeDefinitions.find((item) => item.type === node.type);
           return !definition || definition.pluginAdapter;
         }).length, 0),
@@ -5304,14 +5757,14 @@ export function App() {
       value: initialText,
       localDraft: initialText,
       maxLength,
-      templateValuePaths: getTemplateValuePaths(activeGraph, node, availableVariables),
+      templateValuePaths: getTemplateValuePaths(activeGraph, node, availableVariables, mediaAssets),
       templatePreviewValues: getTemplatePreviewInputs(previewGraph, previewNode, availableVariables),
       templateSuggestions: getTemplateSocketSuggestions(activeGraph, node).filter((item) => !availableVariables.some((variable) => variable.name?.toLowerCase() === item.name.toLowerCase())),
       applyValue,
       parentBlockContext
     };
     requestStudioOpen('text', () => setDiscordTextStudio(studio), Boolean(parentStudioId));
-  }, [activeGraph, activeConnections, activeNodes, activeProjectId, availableVariables, embedStudio, requestStudioOpen]);
+  }, [activeGraph, activeConnections, activeNodes, activeProjectId, availableVariables, embedStudio, mediaAssets, requestStudioOpen]);
 
   const openVariableTextEditor = useCallback((variable, scope, isReadOnly = false) => {
     const targetGraphId = activeTabId;
@@ -6173,11 +6626,11 @@ export function App() {
         bundle = projectExportDialog.bundle;
       }
       const filename = `${String(project.name || 'project').replace(/[\\/:*?"<>|]/g, '_')}.arcproject`;
-      const contents = JSON.stringify(bundle, null, 2);
+      const contents = await createArcArchive(bundle);
       if (desktopMode) {
         const invoke = window.__TAURI_INTERNALS__?.invoke;
         if (typeof invoke !== 'function') throw new Error('ARC Studio could not save the project file.');
-        const receipt = await invoke('save_project_export', { filename, contents });
+        const receipt = await invoke('save_project_export', { filename, contents: Array.from(contents) });
         const revealed = receipt?.revealed === true;
         void notifyDesktopInBackground({
           enabled: settings.desktopNotifications,
@@ -6191,7 +6644,7 @@ export function App() {
         });
         if (typeof receipt?.path === 'string') console.info(`ARC Studio project export saved to ${receipt.path}`);
       } else {
-        const blob = new Blob([contents], { type: 'application/vnd.arc-studio.project+json' });
+        const blob = new Blob([contents], { type: 'application/vnd.arc-studio.project+zip' });
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
@@ -6207,14 +6660,21 @@ export function App() {
   };
 
   const handleImportProject = async () => {
-    if (!projectImportFile || !projectImportTrusted || projectBusy || projectImportSharingWarning && !projectImportSharingApproved || projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && !projectImportOldVersionApproved) return;
+    if (!projectImportFile || projectImportAnalysisStatus !== 'ready' || !projectImportTrusted || projectBusy || projectImportSharingWarning && !projectImportSharingApproved || projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && !projectImportOldVersionApproved) return;
     setProjectBusy(true);
     setProjectImportError('');
     try {
-      const bundle = JSON.parse(await projectImportFile.text());
       const response = await fetch(apiUrl('/api/projects/import'), {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
-        body: JSON.stringify({ bundle, trusted: true, allowOldVersion: projectImportOldVersionApproved, password: projectImportPassword, confirmCollaborativeText: projectImportSharingApproved })
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/vnd.arc-studio.project+zip',
+          'x-arc-token': authToken,
+          'x-arc-trusted': 'true',
+          'x-arc-allow-old-version': String(projectImportOldVersionApproved),
+          'x-arc-confirm-collaborative-text': String(projectImportSharingApproved),
+          'x-arc-project-password': encodeHeaderValue(projectImportPassword)
+        },
+        body: await arcFileToBytes(projectImportFile)
       });
       let data = {};
       try { data = await response.json(); } catch {}
@@ -6297,8 +6757,8 @@ export function App() {
       switch (event.detail) {
         case 'file.new-graph': handleAddTab(); break;
         case 'file.new-blank-graph': handleAddBlankGraph(); break;
-        case 'file.open-graph': openFilePicker('.arcgraph,application/vnd.arc-studio.graph+json', (file) => handleImportGraph(file)); break;
-        case 'file.open-project': openFilePicker('.arcproject,.arcproject.json,application/json', (file) => {
+        case 'file.open-graph': openFilePicker('.arcgraph,application/zip', (file) => handleImportGraph(file)); break;
+        case 'file.open-project': openFilePicker('.arcproject,application/zip', (file) => {
           setProjectImportFile(file);
           setProjectImportTrusted(false);
           setProjectImportError('');
@@ -6823,6 +7283,7 @@ export function App() {
     setTabs([]);
     setSavedGraphs([]);
     setEmbedAssets([]);
+    setMediaAssets([]);
     setActiveTabId(null);
     setActiveNodes([]);
     setActiveConnections([]);
@@ -7533,6 +7994,8 @@ export function App() {
       <div className="app-client-surface">
       <TopBar
         tabs={tabs}
+        loadingGraphIds={loadingGraphIds}
+        isWorkspaceLoading={!workspaceHydrated && Boolean(authToken) && !needsSetup}
         projectCollaborators={projectCollaboration.projectId === activeProjectId ? projectCollaboration.users : []}
         graphTabStatuses={graphTabStatuses}
         saveFeedbackGraphId={saveFeedback?.graphId}
@@ -7548,16 +8011,8 @@ export function App() {
         onSelectTab={(graphId) => {
           if (graphId !== activeTabId) {
             const targetGraph = tabs.find((tab) => tab.id === graphId);
-            const targetName = targetGraph?.name || 'graph';
             const isAlreadyWarm = warmTabIds.includes(graphId);
-            if (isLowEndDevice || !isAlreadyWarm) {
-              setGraphLoadingName(targetName);
-              setGraphSwitchingLoading(true);
-              if (graphLoadingTimerRef.current) window.clearTimeout(graphLoadingTimerRef.current);
-              graphLoadingTimerRef.current = window.setTimeout(() => {
-                setGraphSwitchingLoading(false);
-              }, isLowEndDevice ? 200 : 140);
-            }
+            if (isLowEndDevice || !isAlreadyWarm) markGraphLoading(graphId);
             if (targetGraph) {
               setActiveNodes(targetGraph.nodes || []);
               setActiveConnections(targetGraph.connections || []);
@@ -7610,11 +8065,11 @@ export function App() {
 
       <div className="editor-workspace">
         <aside className="workspace-rail" aria-label="Workspace tools">
-          <button className={`rail-button rail-button-primary ${isProjectsOpen ? 'is-selected' : ''}`} onClick={() => { setProjectError(''); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(false); setIsProjectsOpen((open) => !open); }} title={`${projects.find((project) => project.id === activeProjectId)?.name || 'Projects'} · switch project`} aria-label="Projects"><Plus size={18} /></button>
+          <button className={`rail-button rail-button-primary ${isProjectsOpen ? 'is-selected' : ''}`} onClick={() => { setProjectError(''); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(false); setIsProjectsOpen((open) => !open); }} title={`${projects.find((project) => project.id === activeProjectId)?.name || 'Projects'} · manage projects`} aria-label="Projects"><span className="rail-projects-icon"><Folder size={18} /><i><Plus size={9} strokeWidth={3} /></i></span></button>
           <div className="rail-divider" />
-          <button className={`rail-button ${isBotSidebarOpen ? 'is-selected' : ''}`} onClick={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsVariablesOpen(false); setIsBotSidebarOpen((open) => !open); }} title="App settings and profile" aria-label="App settings and profile"><Bot size={17} /></button>
-          <button className={`rail-button ${isVariablesOpen ? 'is-selected' : ''}`} onClick={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen((open) => !open); }} title="Graph variables" aria-label="Graph variables"><Database size={17} /></button>
           <button className={`rail-button ${isLibraryOpen ? 'is-selected' : ''}`} onClick={() => { setIsProjectsOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(false); setIsLibraryOpen((open) => !open); }} title="Graph library (Shift + L)" aria-label="Graph library"><FolderTree size={17} /></button>
+          <button className={`rail-button ${isVariablesOpen ? 'is-selected' : ''}`} onClick={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen((open) => !open); }} title="Graph variables" aria-label="Graph variables"><Database size={17} /></button>
+          <button className={`rail-button ${isBotSidebarOpen ? 'is-selected' : ''}`} onClick={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsVariablesOpen(false); setIsBotSidebarOpen((open) => !open); }} title="App settings and profile" aria-label="App settings and profile"><Bot size={17} /></button>
           <button className={`rail-button ${isPluginStoreOpen ? 'is-selected' : ''}`} onClick={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(false); setIsPluginStoreOpen((open) => !open); }} title="Plugin store" aria-label="Plugin store"><PackageOpen size={17} /></button>
           <button className="rail-button" onClick={() => setIsSettingsOpen(true)} title="Canvas settings" aria-label="Canvas settings"><SlidersHorizontal size={17} /></button>
           {localDesktopWorkspace && <button className="rail-button" onClick={handleAutoLayout} title="Arrange nodes" aria-label="Arrange nodes"><LayoutGrid size={17} /></button>}
@@ -7644,8 +8099,11 @@ export function App() {
           aria-label="Graph editor"
         >
           <Suspense fallback={<LazyFeatureLoading label="Opening editor…" kind="editor" isDesktop={desktopMode} />}>
-          {embedStudioOpenForActiveGraph && <EmbedStudioView
-            key={`${embedStudio.graphId}:${embedStudio.nodeId || embedStudio.id || 'new'}`}
+          {embedStudioOpenForActiveGraph && <StudioErrorGuard
+            name="Embed Studio"
+            onRecover={() => setEmbedStudio(null)}
+          ><EmbedStudioView
+            key={embedStudio.collabId || `${embedStudio.graphId}:${embedStudio.nodeId || embedStudio.id || embedStudio.kind || 'new'}`}
             name={embedStudio.name}
             content={embedStudio.content || ''}
             blocks={embedStudio.blocks}
@@ -7680,6 +8138,9 @@ export function App() {
             onNameChange={(name) => updateEmbedStudioDraft({ name })}
             onBlocksChange={(blocksOrUpdater) => updateEmbedStudioDraft(typeof blocksOrUpdater === 'function' ? (current) => ({ blocks: blocksOrUpdater(current.blocks || []) }) : { blocks: blocksOrUpdater })}
             attachments={embedStudio.attachments || []}
+            mediaAssets={mediaAssets}
+            onUploadMedia={uploadProjectMedia}
+            onLoadMediaContent={loadProjectMediaContent}
             onAttachmentsChange={(attachments) => updateEmbedStudioDraft({ attachments })}
             onOpenTextStudio={(label, value, maxLength, applyValue, parentBlockContext) => openDiscordTextStudio(null, null, label, value, maxLength, applyValue, embedStudio.collabId, parentBlockContext)}
             onActiveTabChange={(tab) => setEmbedStudio((current) => current ? { ...current, route: { ...current.route, tab } } : current)}
@@ -7694,13 +8155,15 @@ export function App() {
             saveLabel={['node', 'components-node'].includes(embedStudio.mode) ? 'Apply to node' : embedStudio.kind === 'components-v2' ? 'Save Components' : 'Save embed'}
             saveAsLabel={embedStudio.componentsV2Enabled ? 'Save Components to Library' : 'Save to library'}
             showSave={embedStudio.mode !== 'new'}
-          />}
+          /></StudioErrorGuard>}
 
-          {discordTextStudioOpenForActiveGraph && <TextStudioView
+          {discordTextStudioOpenForActiveGraph && <StudioErrorGuard name="Text Studio" onRecover={() => setDiscordTextStudio(null)}><TextStudioView
             key={discordTextStudio.collabId}
             label={discordTextStudio.label}
+            contentType={discordTextStudio.contentType || ''}
             value={discordTextStudio.value}
             readOnly={Boolean(discordTextStudio.readOnly)}
+            plainText={Boolean(discordTextStudio.plainText)}
             sharedDraft={discordTextStudio.sharedDraft}
             maxLength={discordTextStudio.maxLength}
             appEmojis={appEmojis}
@@ -7721,10 +8184,18 @@ export function App() {
             }}
             onCursorChange={(caret) => sendCollaborationAction({ kind: 'studio-cursor', studioId: discordTextStudio.collabId, caret })}
             onApply={applyDiscordTextStudio}
-            onClose={() => finishStudioClose('text', () => setDiscordTextStudio(null))}
-          />}
+            loading={Boolean(discordTextStudio.loading)}
+            loadError={discordTextStudio.loadError || ''}
+            onClose={() => {
+              if (mediaTextLoadRef.current?.collabId === discordTextStudio.collabId) {
+                mediaTextLoadRef.current.controller.abort();
+                mediaTextLoadRef.current = null;
+              }
+              finishStudioClose('text', () => setDiscordTextStudio(null));
+            }}
+          /></StudioErrorGuard>}
 
-          {permissionStudioOpenForActiveGraph && <PermissionStudioView
+          {permissionStudioOpenForActiveGraph && <StudioErrorGuard name="Permission Studio" onRecover={() => setPermissionStudio(null)}><PermissionStudioView
             key={`${permissionStudio.graphId}:${permissionStudio.nodeId}`}
             mode={permissionStudio.mode}
             nodeName={permissionStudio.nodeName}
@@ -7734,9 +8205,9 @@ export function App() {
             variables={availableVariables}
             onApply={applyPermissionStudio}
             onClose={() => finishStudioClose('permission', () => setPermissionStudio(null))}
-          />}
+          /></StudioErrorGuard>}
 
-          {slashCommandStudioOpenForActiveGraph && <SlashCommandStudioView
+          {slashCommandStudioOpenForActiveGraph && <StudioErrorGuard name="Command Studio" onRecover={() => setSlashCommandStudio(null)}><SlashCommandStudioView
             key={slashCommandStudio.collabId}
             commandName={slashCommandStudio.commandName}
             options={slashCommandStudio.options}
@@ -7748,20 +8219,20 @@ export function App() {
             onDraftChange={updateSlashCommandStudioDraft}
             onApply={applySlashCommandStudio}
             onClose={() => finishStudioClose('arguments', () => setSlashCommandStudio(null))}
-          />}
+          /></StudioErrorGuard>}
 
-          {modalStudioOpenForActiveGraph && <PopupModalStudioView
+          {modalStudioOpenForActiveGraph && <StudioErrorGuard name="Popup Studio" onRecover={() => setModalStudio(null)}><PopupModalStudioView
             key={`${modalStudio.projectId}:${modalStudio.graphId}:${modalStudio.nodeId}`}
             graphName={activeGraph?.name || 'Untitled graph'}
             nodeName={modalStudio.nodeName}
             theme={theme}
             modal={modalStudio.modal}
             graphVariables={availableVariables}
-            templateValuePaths={getTemplateValuePaths(activeGraph, activeGraph?.nodes?.find((node) => node.id === modalStudio.nodeId), availableVariables)}
+            templateValuePaths={getTemplateValuePaths(activeGraph, activeGraph?.nodes?.find((node) => node.id === modalStudio.nodeId), availableVariables, mediaAssets)}
             onDraftChange={updateModalStudioDraft}
             onApply={applyModalStudio}
             onClose={() => finishStudioClose('popup-modal', () => setModalStudio(null))}
-          />}
+          /></StudioErrorGuard>}
           </Suspense>
 
           <div className="canvas-viewport-host" style={anyStudioOpenForActiveGraph ? { display: 'none' } : { width: '100%', height: '100%', position: 'absolute', inset: 0 }}>
@@ -7801,6 +8272,9 @@ export function App() {
                   functionGraphs={functionGraphs}
                   callableGraphs={callableGraphs}
                   appEmojis={appEmojis}
+                  mediaAssets={mediaAssets}
+                  onUploadMedia={uploadProjectMedia}
+                  onLoadMediaContent={loadProjectMediaContent}
                   nodeDefinitions={availableNodeDefinitions}
                   nodeDefinitionsReady={supportedWorkspaceNodeTypes !== null || failedWorkspaceNodeTypes.size > 0}
                   settings={settings}
@@ -7834,7 +8308,7 @@ export function App() {
                   onOpenPalette={isTabActive ? openPaletteAt : () => {}}
                   onViewportCenterChange={isTabActive ? ((position) => { viewportCenterRef.current = position; }) : () => {}}
                   onOpenLibrary={() => { setIsProjectsOpen(false); setIsPluginStoreOpen(false); setIsLibraryOpen(true); }}
-                  onOpenVariables={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(true); }}
+                  onOpenVariables={() => { setRequestedVariableView('variables'); setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(true); }}
                   onHistoryGroupStart={isTabActive ? handleHistoryGroupStart : () => {}}
                   onHistoryGroupEnd={isTabActive ? handleHistoryGroupEnd : () => {}}
                   onNodeDrop={isTabActive ? handleDropNode : () => {}}
@@ -7850,17 +8324,18 @@ export function App() {
                   onNodeMoveCommit={isTabActive ? commitNodePositions : () => {}}
                   graphChatEnabled={isTabActive && !localDesktopWorkspace && Boolean(activeGraph) && !activeGraphIsLocalRecovery}
                   graphChatBubbles={isTabActive ? graphChatBubbles : []}
+                  graphChatHistory={isTabActive ? graphChatHistory : []}
                   onSendGraphChat={isTabActive ? sendGraphChatMessage : () => {}}
                   onMoveGraphChatBubble={isTabActive ? moveGraphChatBubble : () => {}}
                 />
               );
             })}
-            {(graphSwitchingLoading || (!workspaceHydrated && Boolean(authToken) && !needsSetup)) && (
+            {(loadingGraphIds.includes(activeTabId) || (!workspaceHydrated && Boolean(authToken) && !needsSetup)) && (
               <div className="canvas-graph-loading-overlay" role="status" aria-live="polite">
-                <span className="canvas-graph-loading-text">Loading {graphLoadingName || activeGraph?.name || 'graph'}...</span>
+                <span className="canvas-graph-loading-text">Loading {activeGraph?.name || 'graph'}...</span>
               </div>
             )}
-            {!graphSwitchingLoading && workspaceHydrated && !activeTabId && !needsSetup && (
+            {!loadingGraphIds.includes(activeTabId) && workspaceHydrated && !activeTabId && !needsSetup && (
               <div className="canvas-empty-workspace">
                 <div className="canvas-empty-hint">
                   <span className="empty-hint-glyph"><Plus size={17} /></span>
@@ -7870,14 +8345,10 @@ export function App() {
               </div>
             )}
           </div>
-          {(isAutoSavingActiveGraph || savingGraphIds.includes(activeTabId)) && (
-            <div className="canvas-saving-status" role="status" aria-live="polite">
-              Saving…
-            </div>
-          )}
           <div className={`canvas-context-label ${!activeGraph ? 'is-no-graph' : graphValidation.errors.length ? 'has-validation-errors' : graphValidation.warnings.length ? 'has-validation-warnings' : 'is-validation-ready'}`}>
             {activeGraph ? <><span className="context-dot" />
               {activeNodes.length} nodes <span className="context-separator">·</span> {activeConnections.length} connections
+              {activeGraph.enabled === false && <><span className="context-separator">·</span><span className="canvas-disabled-status" role="status">Disabled</span></>}
               <span className="context-separator">·</span> {graphValidation.errors.length || graphValidation.warnings.length
                 ? <button type="button" className="canvas-context-validation" onClick={handleValidateGraph} aria-label={`Open graph review with ${graphValidation.errors.length ? `${graphValidation.errors.length} issues` : `${graphValidation.warnings.length} warnings`}`}>{graphValidation.errors.length ? `${graphValidation.errors.length} issues` : 'Review'}</button>
                 : 'Ready'}</>
@@ -7885,11 +8356,12 @@ export function App() {
             {(!desktopMode || !localDesktopWorkspace) && collaborationSocketStatus !== 'connected' && <span className={`collaboration-connection is-reconnecting ${collaborationSocketStatus === 'blocked' ? 'is-blocked' : ''}`} role="status" aria-live="polite">{collaborationSocketStatus === 'incompatible' ? `Update ARC Studio to ${minimumRequiredClientVersion} or newer to connect.` : collaborationSocketStatus === 'blocked' ? 'This client is not allowed by the workspace owner.' : collaborationSocketStatus === 'connecting' ? 'Connecting…' : 'Reconnecting…'}</span>}
             {activeGraph && (!desktopMode || !localDesktopWorkspace) && collaborationSocketStatus === 'connected' && collaborationConnectionFlaky && <span className="collaboration-connection is-flaky" role="status" aria-live="polite">Flaky connection</span>}
             {activeGraph && collaborators.length > 0 && <span className="canvas-collaborators" title={collaborators.slice(0, 8).map((person) => person.username).concat(collaborators.length > 8 ? [`…and ${collaborators.length - 8} more`] : []).join('\n')}><span className="context-separator">·</span> {collaborators.slice(0, 2).map((person) => person.username).join(', ')}{collaborators.length > 2 ? ` …and ${collaborators.length - 2} more` : ''}</span>}
+            {(isAutoSavingActiveGraph || savingGraphIds.includes(activeTabId)) && <span className="canvas-saving-status" role="status" aria-live="polite">Saving…</span>}
           </div>
           {isLocked && <div className="canvas-lock-state"><LockKeyhole size={13} /> Locked</div>}
           </div>
 
-          {isLibraryOpen && <Suspense fallback={<LazyFeatureLoading label="Opening Library…" kind="sidebar" isDesktop={desktopMode} width={sidebarWidths.library} />}><GraphLibraryPanel definitions={availableNodeDefinitions} newNodesUserKey={newNodesUserKey} graphActivity={projectCollaboration.projectId === activeProjectId ? projectCollaboration.graphActivity || [] : []} sidebarWidth={sidebarWidths.library} onSidebarResize={(width) => handleSidebarResize('library', width)} activeSection={librarySection} onActiveSectionChange={setLibrarySection} usageScope={activeProjectId} desktopMode={desktopMode} canImportGraph={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onImportGraph={handleImportGraph} graphs={savedGraphs} graphValidationReports={graphValidationReportsMap} templates={graphTemplates} snapshots={graphSnapshots} nodePrefabs={nodePrefabs} embedAssets={embedAssets} graphVariables={availableVariables} defaultGraphId={defaultGraphId} activeGraph={activeGraph} openGraphIds={tabs.map((tab) => tab.id)} activeTabId={activeTabId} onClose={() => setIsLibraryOpen(false)} onOpenGraph={handleOpenGraph} onOpenGraphReview={handleOpenGraphReview} onUseTemplate={(template) => handleAddTab(template)} onCreateGraph={handleAddBlankGraph} onCreateFunction={handleAddFunctionGraph} onDeleteGraph={handleDeleteSavedGraph} onDeleteGraphs={handleDeleteSavedGraphs} onDuplicateGraph={handleDuplicateGraph} onRenameGraph={handleRenameGraph} onSaveTemplate={handleSaveGraphTemplate} onDeleteTemplate={handleDeleteGraphTemplate} onSetDefault={handleSetDefaultGraph} onExportBot={handleExportBot} exportInProgress={exportInProgress} onAddNode={handlePlaceNode} onAddPrefab={(prefab) => handleDropNode({ type: 'prefab', prefabId: prefab.id })} onDeletePrefab={handleDeleteNodePrefab} onCreateEmbed={createEmbedAsset} onCreateComponentsV2={createComponentsV2Asset} onOpenEmbed={openEmbedAsset} onDeleteEmbed={handleDeleteEmbedAsset} onManageVariables={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(true); }} onCreateSnapshot={async (graph, name) => {
+          {isLibraryOpen && <Suspense fallback={<LazyFeatureLoading label="Opening Library…" kind="sidebar" isDesktop={desktopMode} width={sidebarWidths.library} />}><GraphLibraryPanel definitions={availableNodeDefinitions} newNodesUserKey={newNodesUserKey} graphActivity={projectCollaboration.projectId === activeProjectId ? projectCollaboration.graphActivity || [] : []} sidebarWidth={sidebarWidths.library} onSidebarResize={(width) => handleSidebarResize('library', width)} activeSection={librarySection} onActiveSectionChange={setLibrarySection} usageScope={activeProjectId} desktopMode={desktopMode} canImportGraph={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} canEditGraphs={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onSetGraphEnabled={setGraphEnabled} onImportGraph={handleImportGraph} graphs={savedGraphs} graphValidationReports={graphValidationReportsMap} templates={graphTemplates} snapshots={graphSnapshots} nodePrefabs={nodePrefabs} embedAssets={embedAssets} mediaAssets={mediaAssets} graphVariables={availableVariables} defaultGraphId={defaultGraphId} activeGraph={activeGraph} openGraphIds={tabs.map((tab) => tab.id)} activeTabId={activeTabId} onClose={() => setIsLibraryOpen(false)} onOpenGraph={handleOpenGraph} onOpenGraphReview={handleOpenGraphReview} onUseTemplate={(template) => handleAddTab(template)} onCreateGraph={handleAddBlankGraph} onCreateFunction={handleAddFunctionGraph} onDeleteGraph={handleDeleteSavedGraph} onDeleteGraphs={handleDeleteSavedGraphs} onDuplicateGraph={handleDuplicateGraph} onRenameGraph={handleRenameGraph} onSaveTemplate={handleSaveGraphTemplate} onDeleteTemplate={handleDeleteGraphTemplate} onSetDefault={handleSetDefaultGraph} onExportBot={handleExportBot} exportInProgress={exportInProgress} onAddNode={handlePlaceNode} onAddPrefab={(prefab) => handleDropNode({ type: 'prefab', prefabId: prefab.id })} onDeletePrefab={handleDeleteNodePrefab} onCreateEmbed={createEmbedAsset} onCreateComponentsV2={createComponentsV2Asset} onOpenEmbed={openEmbedAsset} onDeleteEmbed={handleDeleteEmbedAsset} onManageVariables={() => { setRequestedVariableView('variables'); setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(true); }} onManageMedia={() => { setRequestedVariableView('media'); setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(true); }} onCreateSnapshot={async (graph, name) => {
             await ensureWorkspaceGraphsSaved();
             const response = await fetch(apiUrl(`/api/graphs/${encodeURIComponent(graph.id)}/snapshots`), { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken }, body: JSON.stringify({ graph, name }) });
             const data = await response.json();
@@ -7912,7 +8384,7 @@ export function App() {
           {isProjectsOpen && <aside className="project-sidebar" aria-label="Projects" style={{ '--arc-sidebar-width': `${sidebarWidths.projects}px` }}>
             <SidebarResizeHandle width={sidebarWidths.projects} defaultWidth={DEFAULT_SIDEBAR_WIDTHS.projects} onResize={(width) => handleSidebarResize('projects', width)} />
             <header className="graph-library-header">
-              <span><FolderTree size={14} />Projects <small>{projects.length}</small></span>
+              <span><Folder size={14} />Projects <small>{projects.length}</small></span>
               <button className="icon-button compact" type="button" aria-label="Close projects" onClick={() => { if (!projectBusy) setIsProjectsOpen(false); }} disabled={projectBusy}><X size={14} /></button>
             </header>
             <p className="project-sidebar-description">Switch between bot projects or create a new one. {!localDesktopWorkspace && (maxProjects === null ? 'No project limit.' : `${projects.length} of ${maxProjects} projects.`)}</p>
@@ -7953,7 +8425,7 @@ export function App() {
                 <Button type="submit" icon={Plus} onContextMenu={(event) => openProjectMenu(event, null)} disabled={projectBusy || maxProjects !== null && projects.length >= maxProjects} loading={projectBusy}>Create project</Button>
                 <button className="project-import-button" type="button" disabled={projectBusy || maxProjects !== null && projects.length >= maxProjects} onClick={() => { document.getElementById('project-import-file')?.click(); }}><FileUp size={14} />Import project file</button>
               </div>
-              <input id="project-import-file" type="file" accept=".arcproject,.arcproject.json" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) { setProjectImportFile(file); setProjectImportTrusted(false); setProjectImportError(''); setProjectImportSharingWarning(null); setProjectImportSharingApproved(false); setProjectImportCompatibility(null); setProjectImportOldVersionApproved(false); } event.target.value = ''; }} />
+              <input id="project-import-file" type="file" accept=".arcproject,application/zip" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) { setProjectImportFile(file); setProjectImportTrusted(false); setProjectImportError(''); setProjectImportSharingWarning(null); setProjectImportSharingApproved(false); setProjectImportCompatibility(null); setProjectImportOldVersionApproved(false); } event.target.value = ''; }} />
               {!localDesktopWorkspace && currentUser?.role === 'admin' && <div className="project-limit-disclosure">
                 <button type="button" className="project-limit-toggle" aria-expanded={projectLimitExpanded} aria-controls="project-limit-panel" onClick={() => setProjectLimitExpanded((expanded) => !expanded)}><ChevronDown size={12} aria-hidden="true" />{projectLimitExpanded ? 'Show less' : 'Show more'}</button>
                 <div id="project-limit-panel" className={`project-limit-panel${projectLimitExpanded ? ' is-expanded' : ''}`} aria-hidden={!projectLimitExpanded} inert={!projectLimitExpanded}>
@@ -7986,7 +8458,7 @@ export function App() {
           </div>}
           <LazyMountedFeature Component={BotSettingsModal} isOpen={isBotSidebarOpen} loadingLabel="Opening app settings…" loadingKind="sidebar" isDesktop={desktopMode} presentation="sidebar" sidebarWidth={sidebarWidths.bot} onSidebarResize={(width) => handleSidebarResize('bot', width)} onClose={() => setIsBotSidebarOpen(false)} onViewCommands={() => setCommandBrowserRequest((request) => request + 1)} authToken={authToken} profile={botProfile} onProfileChange={setBotProfile} />
           <LazyMountedFeature Component={PluginStoreModal} isOpen={isPluginStoreOpen} loadingLabel="Opening Plugin Store…" loadingKind="sidebar" isDesktop={desktopMode} sidebarWidth={sidebarWidths.plugins} onSidebarResize={(width) => handleSidebarResize('plugins', width)} onClose={() => setIsPluginStoreOpen(false)} authToken={authToken} canInstall={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} canManageSource={currentUser?.permissions?.includes('*')} onInstalled={handlePluginsChanged} />
-          <LazyMountedFeature Component={GraphVariablesModal} isOpen={isVariablesOpen} loadingLabel="Opening variables…" loadingKind="sidebar" isDesktop={desktopMode} presentation="sidebar" sidebarWidth={sidebarWidths.variables} activeScope={variableScope} onScopeChange={setVariableScope} onSidebarResize={(width) => handleSidebarResize('variables', width)} onClose={() => setIsVariablesOpen(false)} variables={graphVariables.filter((variable) => !variable.nodeOwned)} projectVariables={projectVariables} canEdit={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} canEditGraph={Boolean(activeGraph && (currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write')))} canEditProject={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onChange={handleVariablesChange} onProjectChange={handleProjectVariablesChange} onOpenTextEditor={openVariableTextEditor} onRestoreSystemVariable={handleRestoreSystemVariable} isSaving={savingProjectVariables || savingGraphIds.includes(activeTabId)} />
+          <LazyMountedFeature Component={GraphVariablesModal} isOpen={isVariablesOpen} requestedView={requestedVariableView} loadingLabel="Opening variables…" loadingKind="sidebar" isDesktop={desktopMode} presentation="sidebar" sidebarWidth={sidebarWidths.variables} activeScope={variableScope} onScopeChange={setVariableScope} onSidebarResize={(width) => handleSidebarResize('variables', width)} onClose={() => setIsVariablesOpen(false)} variables={graphVariables.filter((variable) => !variable.nodeOwned)} projectVariables={projectVariables} mediaAssets={mediaAssets} hasBotToken={projectHasBotToken} onUploadMedia={uploadProjectMedia} onDownloadMedia={downloadProjectMedia} onDeleteMedia={deleteProjectMedia} onLoadMediaContent={loadProjectMediaContent} onOpenTextAsset={openProjectMediaText} canEdit={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} canEditGraph={Boolean(activeGraph && (currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write')))} canEditProject={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onChange={handleVariablesChange} onProjectChange={handleProjectVariablesChange} onOpenTextEditor={openVariableTextEditor} onRestoreSystemVariable={handleRestoreSystemVariable} isSaving={savingProjectVariables || savingGraphIds.includes(activeTabId)} />
         </main>
       </div>
 
@@ -8228,17 +8700,20 @@ export function App() {
         title="Import project file?"
         subtitle={projectImportFile?.name || ''}
         icon={ShieldCheck}
-        footer={<><Button variant="secondary" disabled={projectBusy} onClick={cancelProjectImport}>Cancel</Button><Button icon={FileUp} loading={projectBusy} disabled={!projectImportTrusted || projectBusy || projectImportSharingWarning && !projectImportSharingApproved || (!projectImportSharingWarning && !projectImportCompatibility && projectImportEncrypted && projectImportPassword.length < 12) || projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' || projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && !projectImportOldVersionApproved} onClick={handleImportProject}>{projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' ? 'Newer ARC Studio required' : projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' ? 'Import older project' : projectImportSharingWarning ? 'Import project' : 'Trust and import'}</Button></>}
+        footer={<><Button variant="secondary" disabled={projectBusy} onClick={cancelProjectImport}>Cancel</Button><Button icon={FileUp} loading={projectBusy} disabled={projectImportAnalysisStatus !== 'ready' || !projectImportTrusted || projectBusy || projectImportSharingWarning && !projectImportSharingApproved || !projectImportCompatibility && projectImportEncrypted && projectImportPassword.length < 12 || projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' || projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && !projectImportOldVersionApproved} onClick={handleImportProject}>{projectImportAnalysisStatus === 'checking' ? 'Checking file…' : projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' ? 'Newer ARC Studio required' : projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' ? 'Import older project' : projectImportSharingWarning ? 'Import project' : projectImportTrusted ? 'Trust and import' : 'Review and trust'}</Button></>}
       >
         <div className="project-import-warning">
           <strong>Only import a project from someone you trust.</strong>
           <p>Project files contain graphs, settings, and assets. Importing adds the project to this workspace and marks it trusted here.</p>
-          {projectImportSharingWarning && <div className="project-import-compatibility-warning" role="alert">
+          {projectImportAnalysisStatus === 'checking' && <div className="project-import-analysis-status" role="status" aria-live="polite">Checking project file…</div>}
+          {projectImportAnalysisStatus === 'error' && <div className="project-import-analysis-status" role="alert">Could not verify this project file.</div>}
+          {!projectImportCompatibility && <label className="project-import-checkbox-label"><input type="checkbox" checked={projectImportTrusted} onChange={(event) => setProjectImportTrusted(event.target.checked)} /><span>I trust the source of this project file.</span></label>}
+          {projectImportTrusted && projectImportSharingWarning && <div className="project-import-compatibility-warning" role="alert">
             <strong>Workspace members may access imported text</strong>
             <p>This project contains text or request fields. Importing it into “{projectImportSharingWarning.workspaceName}” makes that content visible to members with graph read permission and editable by members with graph write permission.</p>
             <label><input type="checkbox" checked={projectImportSharingApproved} onChange={(event) => setProjectImportSharingApproved(event.target.checked)} /><span>I understand who can access this content.</span></label>
           </div>}
-          {!projectImportSharingWarning && !projectImportCompatibility && (
+          {projectImportTrusted && !projectImportCompatibility && (
             <>
               {projectImportEncrypted && (
                 <div className="project-import-password-card">
@@ -8259,7 +8734,6 @@ export function App() {
                   />
                 </div>
               )}
-              <label className="project-import-checkbox-label"><input type="checkbox" checked={projectImportTrusted} onChange={(event) => setProjectImportTrusted(event.target.checked)} /><span>I trust the source of this project file.</span></label>
             </>
           )}
           {projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && <div className="project-import-compatibility-warning" role="alert"><strong>Older project version</strong><p>{projectImportCompatibility.unknownProjectVersion ? 'This file does not record an ARC Studio version.' : `Created with ARC Studio ${projectImportCompatibility.projectVersion}; this is at least 10 releases older than ${projectImportCompatibility.currentVersion}.`} Its graphs or settings may behave differently. Review it before using it.</p><label><input type="checkbox" checked={projectImportOldVersionApproved} onChange={(event) => setProjectImportOldVersionApproved(event.target.checked)} /><span>I understand and want to import this older project.</span></label></div>}
@@ -8618,6 +9092,7 @@ function sameGraphContent(left, right) {
   if (!left || !right) return false;
   const serialize = (graph) => JSON.stringify({
     graphType: graph.graphType || null,
+    enabled: graph.enabled !== false,
     name: graph.name,
     variables: graph.variables || [],
     nodes: graph.nodes || [],
@@ -9074,6 +9549,7 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
       const rawName = String(node.data?.name || '').trim();
       const nameWired = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'name');
       if (!rawName && !nameWired) addError(`${node.label || 'Create Variable'}: enter a variable name or connect the Name socket.`, node.id);
+      else if (rawName && !rawName.includes('{{') && isReservedTemplateVariableName(rawName)) addError(`${node.label || 'Create Variable'}: names starting with “chezcord” are reserved for the system template namespace.`, node.id);
       else if (rawName && !rawName.includes('{{') && !/^(?=.{1,64}$)[A-Za-z0-9]+(?:_+[A-Za-z0-9]+|-[A-Za-z0-9]+)*$/.test(rawName)) addError(`${node.label || 'Create Variable'}: variable names must start and end with a letter or number, with letters, numbers, hyphens, or underscores inside.`, node.id);
     }
     if (node.type === 'function_call') {
@@ -9279,6 +9755,7 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
   for (const variable of variables) {
     const normalized = String(variable.name || '').trim().toLowerCase();
     if (!normalized) addError('Every graph variable needs a name.');
+    else if (isReservedTemplateVariableName(normalized)) addError(`Variable name “${variable.name}” starts with the reserved “chezcord” namespace.`);
     else if (names.has(normalized)) addError(`Variable name “${variable.name}” is used more than once.`);
     names.add(normalized);
   }
@@ -9319,6 +9796,15 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
   };
   const uniqueErrors = [...new Set(errors)];
   const uniqueWarnings = [...new Set(warnings)];
+  const issueKeys = new Set(issueItems.map((item) => `${item.kind}\0${item.message}`));
+  for (const [kind, messages] of [['error', uniqueErrors], ['warning', uniqueWarnings]]) {
+    for (const message of messages) {
+      const key = `${kind}\0${message}`;
+      if (issueKeys.has(key)) continue;
+      issueKeys.add(key);
+      issueItems.push({ kind, message, nodeId: locateNodeId(message), graphId: graph.id });
+    }
+  }
   const errorNodeIds = Object.fromEntries(issueItems.filter((i) => i.kind === 'error' && i.nodeId).map((i) => [i.message, i.nodeId]));
   const warningNodeIds = Object.fromEntries(issueItems.filter((i) => i.kind === 'warning' && i.nodeId).map((i) => [i.message, i.nodeId]));
   for (const message of uniqueErrors) {
