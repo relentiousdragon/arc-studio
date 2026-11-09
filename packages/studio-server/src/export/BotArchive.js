@@ -35,6 +35,16 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
     .map(projectRuntimeGraph);
   const safeProjectVariables = (Array.isArray(projectVariables) ? projectVariables : [])
     .map((variable) => pickOwnFields(variable, ['id', 'name', 'type', 'initialValue']));
+  const exportedMediaAssets = (Array.isArray(exportOptions.mediaAssets) ? exportOptions.mediaAssets : []).map((asset) => {
+    if (!asset || !/^media_[0-9a-f-]{36}$/i.test(String(asset.id || '')) || typeof asset.filename !== 'string'
+      || typeof asset.contentType !== 'string' || typeof asset.sha256 !== 'string'
+      || !/^data:[^;,]+;base64,[A-Za-z0-9+/]*={0,2}$/i.test(String(asset.data || ''))) throw new Error('Project media could not be verified for the standalone export.');
+    const bytes = Buffer.from(asset.data.slice(asset.data.indexOf(',') + 1), 'base64');
+    if (!bytes.length || bytes.length > 20 * 1024 * 1024 || bytes.length !== Number(asset.size)
+      || createHash('sha256').update(bytes).digest('hex') !== asset.sha256) throw new Error(`Project media ${asset.filename} failed its export integrity check.`);
+    return { metadata: { id: asset.id, filename: asset.filename, contentType: asset.contentType, size: bytes.length, sha256: asset.sha256 }, bytes };
+  });
+  if (exportedMediaAssets.reduce((total, asset) => total + asset.bytes.length, 0) > 100 * 1024 * 1024) throw new Error('Project media exceeds the standalone export size limit.');
   const includeCryptoSecret = exportOptions.includeCryptoSecret === true;
   const includeBotToken = exportOptions.includeBotToken === true;
   const botToken = includeBotToken ? String(exportOptions.botToken || '').replace(/[\r\n]/g, '') : '';
@@ -55,6 +65,7 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
     [['action_websocket_connect', 'action_websocket_send', 'action_websocket_close'], 'websocket.js'],
     [['action_set_presence'], 'discord_presence.js'],
     [['action_send_message', 'action_edit_message', 'action_delete_message'], 'discord_messages.js'],
+    [['action_bulk_delete_messages', 'action_upload_guild_emoji', 'action_upload_application_emoji', 'action_upload_guild_sticker'], 'discord_assets.js'],
     [[
       'action_reply_interaction', 'action_defer_reply', 'action_defer_update', 'action_await_interaction',
       'action_edit_interaction_reply', 'action_show_modal', 'action_respond_autocomplete'
@@ -136,6 +147,7 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
     { name: 'scripts/ensure-dependencies.mjs', data: runtimeDependencyBootstrap },
     { name: 'graphs.json', data: JSON.stringify(safeGraphs) },
     { name: 'project-variables.json', data: JSON.stringify(safeProjectVariables) },
+    { name: 'media-assets.json', data: JSON.stringify(exportedMediaAssets.map((asset) => asset.metadata)) },
     { name: 'src/env.js', data: runtimeEnv },
     { name: 'src/index.js', data: runtimeIndex
       .replace('__ARC_WEBSOCKET_IMPORT__', requiredRuntimeModules.has('websocket.js') ? "import { GraphWebSocketManager } from './engine/nodes/runtime/websocket.js';" : '')
@@ -160,6 +172,7 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
     { name: 'LICENSE', data: readText('LICENSE', repoRoot) },
     { name: 'THIRD-PARTY-LICENSES.md', data: generateThirdPartyLicenses({ exports, dependencies }) }
   ];
+  for (const asset of exportedMediaAssets) entries.push({ name: `media/${asset.metadata.id}.bin`, data: asset.bytes });
   if (requiredRuntimeModules.has('network.js')) {
     entries.push({ name: 'src/engine/SafeHttpRequest.js', data: readText('src/engine/SafeHttpRequest.js') });
   }
@@ -678,6 +691,7 @@ function formatError(error) {
   return error instanceof Error ? (error.stack || error.message) : String(error);
 }
 const graphs = JSON.parse(fs.readFileSync(new URL('../graphs.json', import.meta.url), 'utf8'));
+const projectDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const requiredIntentNames = new Set(['GUILDS', 'GUILD_EMOJIS_AND_STICKERS']);
 for (const graph of graphs) for (const node of graph.nodes || []) {
   for (const intent of NodeDefinitions[node.type]?.gatewayIntents || []) requiredIntentNames.add(intent);
@@ -916,6 +930,7 @@ async function trackGraphRun(run) {
 function graphContext(graph, eventPayload = null, interactionState = null) {
   return {
     rest: client.rest, client, resolveFunctionGraph, resolveFunctionGraphByName, variablesState: variableState(graph), projectVariables, deploySlashCommands,
+    projectDir, templateEnvironmentAccess: true, templateMediaPathAccess: true,
     webSockets: graphWebSockets,
     ...(interactionState ? { interactionState } : {}),
     canDeploySlashCommands: () => {
