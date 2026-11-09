@@ -554,6 +554,12 @@ kbd {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--line-soft) 45%, transparent);
 }
 
+.graph-tab-loading-icon {
+  flex: 0 0 auto;
+  color: var(--accent);
+  animation: spin 1s linear infinite;
+}
+
 .graph-tab-select {
   display: flex;
   align-items: center;
@@ -1314,6 +1320,10 @@ kbd {
   color: #fff;
   background: var(--accent);
 }
+
+.rail-projects-icon { position: relative; display: block; width: 18px; height: 18px; }
+.rail-projects-icon > svg { position: absolute; inset: 0; }
+.rail-projects-icon > i { position: absolute; right: -4px; bottom: -3px; display: grid; width: 11px; height: 11px; place-items: center; border: 1px solid var(--accent-strong); border-radius: 50%; color: #fff; background: var(--accent); font-style: normal; }
 
 .project-sidebar {
   position: absolute;
@@ -7217,6 +7227,11 @@ body.is-resizing-sidebar .slash-command-studio {
   color: var(--line-strong);
 }
 
+.canvas-disabled-status {
+  color: var(--warning, #f2b84b);
+  font-weight: 600;
+}
+
 .canvas-saving-status {
   position: static;
   display: flex;
@@ -7265,14 +7280,20 @@ body.is-resizing-sidebar .slash-command-studio {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: color-mix(in srgb, var(--canvas) 60%, transparent);
-  backdrop-filter: blur(2px);
+  background-color: color-mix(in srgb, var(--canvas) 38%, transparent);
+  background-image: radial-gradient(circle, color-mix(in srgb, var(--grid-dot) 78%, transparent) 1.2px, transparent 1.5px);
+  background-position: 11px 11px;
+  background-size: 22px 22px;
   pointer-events: none;
   animation: fadeInFast .12s ease forwards;
 }
 
 .canvas-graph-loading-text {
-  color: var(--muted);
+  padding: 9px 13px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--canvas) 82%, transparent);
+  color: var(--text-secondary);
   font-family: "DM Mono", monospace;
   font-size: calc((10px) * var(--arc-font-scale, 1));
 }
@@ -10333,6 +10354,11 @@ body:has(.control-dock.is-resizing) .canvas-collaborator-navigation-layer {
   background: rgba(8, 10, 14, .56);
   backdrop-filter: blur(8px);
   animation: scrimIn .16s ease both;
+}
+
+.dialog-scrim:has(.modal-editor-settings),
+.dialog-scrim:has(.modal-team-access) {
+  backdrop-filter: none;
 }
 
 @keyframes scrimIn {
@@ -16121,6 +16147,16 @@ body[data-compact-context="true"] .context-menu-heading {
   transition: background .16s ease, color .16s ease, border-color .16s ease, box-shadow .16s ease;
 }
 
+.graph-library-item.is-disabled-graph {
+  opacity: .52;
+}
+
+.graph-library-item.is-disabled-graph .graph-library-entry-title>span:first-child::after {
+  content: " · Disabled";
+  color: var(--muted);
+  font-size: .9em;
+}
+
 .graph-library-item:hover,
 .graph-library-item.is-context-menu-open {
   color: var(--text);
@@ -17654,6 +17690,63 @@ body.is-resizing-dock .discord-text-studio {
   border-radius: 8px;
   background: var(--editor-bg);
   box-shadow: var(--editor-inner-shadow);
+}
+
+.discord-text-studio-file-status {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--editor-gutter-text);
+  text-align: center;
+}
+
+.discord-text-studio-file-status strong {
+  color: var(--editor-text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.discord-text-studio-file-status span {
+  max-width: min(520px, 90%);
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.discord-text-studio-file-status.is-error strong {
+  color: var(--danger, #e45858);
+}
+
+.discord-text-studio-gutter.is-virtual {
+  position: relative;
+  display: block;
+  flex: 0 0 64px;
+  width: 64px;
+  padding-right: 10px;
+}
+
+.discord-text-studio-gutter.is-virtual > div {
+  position: absolute;
+  right: 10px;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.discord-text-studio-editor-shell.is-large-file .discord-text-studio-editor,
+.discord-text-studio-editor-shell.is-plain-text .discord-text-studio-editor {
+  color: var(--editor-text);
+  -webkit-text-fill-color: var(--editor-text);
+}
+
+.discord-text-studio-editor-shell.is-large-file .discord-text-studio-editor::selection,
+.discord-text-studio-editor-shell.is-plain-text .discord-text-studio-editor::selection {
+  color: var(--editor-text);
+  background: var(--editor-selection);
 }
 
 .discord-text-studio-gutter {
@@ -21617,7 +21710,7 @@ a.embed-preview-title:hover {
 }
 
 .canvas-chat-char-count span {
-  color: var(--muted);
+  color: color-mix(in srgb, var(--muted), #ef4444 var(--chat-count-progress, 0%));
 }
 
 .canvas-chat-char-limit {
@@ -23252,11 +23345,6 @@ body.is-resizing-dock .popup-modal-studio {
   animation: discord-gallery-viewer-content-out .16s ease-in both;
 }
 
-.discord-gallery-lightbox.is-image-zoomed .discord-gallery-lightbox-content {
-  animation: none;
-  transform: none;
-}
-
 @keyframes discord-gallery-viewer-in {
   from {
     opacity: 0;
@@ -24368,6 +24456,8 @@ body.is-resizing-dock .popup-modal-studio {
 .project-media-open:disabled { cursor: default; }
 .project-media-thumbnail { display: flex; width: 100%; flex: 0 0 auto; aspect-ratio: 1; align-items: center; justify-content: center; overflow: hidden; border-radius: 5px; color: var(--muted); background: var(--panel-raised); }
 .project-media-thumbnail img { width: 100%; height: 100%; object-fit: cover; }
+.project-media-thumbnail.is-arc-file { background: color-mix(in srgb, var(--panel-raised) 88%, var(--accent)); }
+.project-media-arc-icon { width: 46px; height: 46px; object-fit: contain; }
 .project-media-card-info { display: flex; min-width: 0; width: 100%; flex-direction: column; gap: 3px; }
 .project-media-card-info strong, .project-media-card-info small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-media-card-info strong { font-size: 10px; font-weight: 600; }
@@ -24381,6 +24471,8 @@ body.is-resizing-dock .popup-modal-studio {
 .project-media-empty { grid-column: 1 / -1; padding: 28px 12px; color: var(--muted); text-align: center; font-size: 11px; line-height: 1.5; }
 .project-media-error { margin: 0; color: var(--danger); font-size: 10px; }
 .project-media-queue { display: flex; max-height: 190px; flex: 0 0 auto; flex-direction: column; gap: 6px; overflow: auto; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-raised); }
+.project-media-queue.is-leaving { animation: project-media-queue-out .24s ease-in forwards; pointer-events: none; }
+@keyframes project-media-queue-out { to { opacity: 0; transform: translateY(-8px); max-height: 0; margin-block: -8px; padding-block: 0; border-width: 0; } }
 .project-media-queue > strong { display: flex; justify-content: space-between; font-size: 10px; }
 .project-media-queue > strong span, .project-media-queue-item small { color: var(--muted); font-weight: 400; }
 .project-media-queue-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; align-items: center; font-size: 9px; }
@@ -24393,6 +24485,7 @@ body.is-resizing-dock .popup-modal-studio {
 .project-media-queue > button:disabled { opacity: .5; cursor: wait; }
 .graph-library-media-icon { flex: 0 0 14px; color: var(--accent); }
 .project-media-custom-player { position: relative; display: flex; width: min(900px, 88vw); max-height: 78vh; flex-direction: column; align-items: stretch; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 11px; color: var(--text); background: var(--panel); box-shadow: var(--shadow); }
+.project-media-viewer .project-media-custom-player.is-video { height: auto; align-self: center; flex: 0 1 auto; }
 .project-media-custom-player.is-video:fullscreen, .project-media-custom-player.is-video:-webkit-full-screen { width: 100vw; width: 100dvw; height: 100vh; height: 100dvh; max-width: none; max-height: none; flex: none; border: 0; border-radius: 0; background: #050608; box-shadow: none; }
 .project-media-custom-player.is-audio { width: min(560px, 84vw); align-items: center; gap: 22px; padding: 24px; background: color-mix(in srgb, var(--panel) 92%, var(--accent)); }
 .project-media-viewer-video { display: block; width: 100%; max-height: 70vh; object-fit: contain; background: #07080b; cursor: pointer; }
@@ -24402,7 +24495,7 @@ body.is-resizing-dock .popup-modal-studio {
 .project-media-audio-art > div { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
 .project-media-audio-art strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .project-media-audio-art small { color: var(--muted); font-size: 10px; }
-.project-media-custom-controls { display: flex; min-height: 42px; align-items: center; gap: 9px; padding: 5px 10px; background: var(--panel); }
+.project-media-custom-controls { display: flex; min-height: 42px; flex: 0 0 42px; align-items: center; gap: 9px; padding: 5px 10px; background: var(--panel); }
 .project-media-custom-player.is-video:fullscreen .project-media-custom-controls, .project-media-custom-player.is-video:-webkit-full-screen .project-media-custom-controls { min-height: 48px; flex: 0 0 48px; padding: 6px 14px; background: color-mix(in srgb, var(--panel) 94%, transparent); }
 .project-media-custom-player.is-audio .project-media-custom-controls { width: 100%; padding: 0; background: transparent; }
 .project-media-control-button { display: grid; width: 28px; height: 28px; flex: 0 0 auto; place-items: center; border: 1px solid transparent; border-radius: 6px; color: var(--text); background: transparent; cursor: pointer; }
@@ -24419,13 +24512,26 @@ body.is-resizing-dock .popup-modal-studio {
 .project-media-playback-error { display: flex; align-items: center; gap: 6px; color: var(--warning); font-size: 10px; text-align: center; }
 .project-media-viewer-download { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; padding: 7px 10px; border: 1px solid var(--line-strong); border-radius: 7px; color: var(--text); background: var(--panel-raised); font: inherit; font-size: 10px; cursor: pointer; }
 .project-media-viewer-download:hover { border-color: var(--accent); }
-.project-media-image-frame { display: grid; width: fit-content; height: fit-content; max-width: min(88vw, 1080px); max-height: 76vh; place-items: center; overflow: visible; padding: 0; border: 0; border-radius: 7px; background: transparent; cursor: zoom-in; }
-.project-media-image-frame.is-zoomed { position: fixed; z-index: 2; inset: 0; width: 100vw; width: 100dvw; height: 100vh; height: 100dvh; max-width: none; max-height: none; overflow: hidden; border-radius: 0; background: transparent; cursor: grab; touch-action: none; user-select: none; }
-.project-media-image-frame.is-zoomed.is-panning-image { cursor: grabbing; }
-.project-media-image { display: block; max-width: min(88vw, 1080px); max-height: 76vh; object-fit: contain; border-radius: 5px; box-shadow: 0 10px 42px rgba(0, 0, 0, .42); transform: scale(1); transform-origin: center; transition: transform .18s ease; }
-.project-media-image-frame.is-zoomed .project-media-image { max-width: 90vw; max-height: 90vh; transform: scale(1.5); }
-.project-media-image-frame.is-panning-image .project-media-image { transition: none; }
+.project-media-viewer { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 64px 18px 20px; }
+.project-media-viewer .discord-gallery-lightbox-content { width: min(1200px, 100%); max-width: 100%; max-height: 100%; flex: 1 1 auto; grid-column: auto; grid-template-rows: minmax(0, 1fr) auto auto; gap: 8px; }
+.project-media-viewer-nav { position: absolute; z-index: 4; top: 50%; display: grid; width: 42px; height: 52px; place-items: center; border: 1px solid rgba(255, 255, 255, .17); border-radius: 10px; color: #f2f3f5; background: rgba(25, 27, 32, .82); cursor: pointer; transform: translateY(-50%); }
+.project-media-viewer-nav:hover:not(:disabled) { background: rgba(75, 77, 84, .94); }
+.project-media-viewer-nav:disabled { opacity: .32; cursor: default; }
+.project-media-viewer-nav.is-previous { left: 18px; }
+.project-media-viewer-nav.is-next { right: 18px; }
+.project-media-image-stage { display: flex; width: 100%; min-height: 0; flex: 1 1 auto; align-items: center; justify-content: center; }
+.project-media-image-frame { position: relative; display: grid; width: fit-content; height: fit-content; max-width: calc(100vw - 96px); max-height: calc(100dvh - 132px); flex: 0 1 auto; place-items: center; overflow: visible; padding: 0; border: 0; border-radius: 7px; background: transparent; cursor: zoom-in; }
+.project-media-image-frame.is-zoomed { cursor: zoom-out; }
+.project-media-image-frame.has-status { width: min(70vw, 500px); height: min(42vh, 360px); min-height: 150px; place-content: center; }
+.project-media-image { display: block; width: auto; height: auto; max-width: min(70vw, 900px); max-height: min(62vh, 640px); object-fit: contain; border-radius: 5px; box-shadow: 0 10px 42px rgba(0, 0, 0, .42); transform: scale(var(--media-image-zoom, 1)); transform-origin: center; transition: transform .24s cubic-bezier(.2, .75, .25, 1); will-change: transform; }
+.project-media-image-status { position: absolute; display: inline-flex; align-items: center; gap: 8px; color: #d5d8de; font-size: 11px; pointer-events: none; }
+.project-media-image-status svg { animation: project-media-spin .8s linear infinite; }
+.project-media-image-status.is-error { color: #f0a6a6; }
+.project-media-image-frame:focus-visible { outline: 2px solid #b78aff; outline-offset: 4px; }
+.project-media-viewer .project-media-custom-player { cursor: default; }
+@media (prefers-reduced-motion: reduce) { .project-media-image { transition-duration: .01ms; } }
 .project-media-viewer .discord-gallery-lightbox-caption { max-width: 80vw; margin-top: 10px; color: var(--text); text-align: center; overflow-wrap: anywhere; }
+.project-media-viewer .discord-gallery-lightbox-caption small { display: block; margin-top: 3px; }
 .attachment-url-browse { display: inline-flex; align-items: center; gap: 4px; margin-top: 4px; padding: 3px 5px; border: 1px solid transparent; border-radius: 5px; color: var(--muted); background: transparent; font: inherit; font-size: 9px; cursor: pointer; }
 .attachment-url-browse:hover { border-color: var(--line); color: var(--accent); background: var(--panel-raised); }
 .project-asset-picker-backdrop { position: fixed; inset: 0; z-index: 10030; display: grid; place-items: center; padding: 24px; background: rgba(0, 0, 0, .64); backdrop-filter: blur(8px); }
