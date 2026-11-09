@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ChevronDown, ChevronUp, Search, X } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronUp, LoaderCircle, Search, X } from 'lucide-react';
 import { countDiscordCodeBlocks, detectDiscordCodeLanguages, inferDiscordCodeLanguage } from '../ui/DiscordLongTextField.jsx';
 import { TemplateSyntaxHelp } from '../ui/TemplateSyntaxHelp.jsx';
 import { renderTextTemplate } from '../../../../studio-server/src/engine/TemplateExpressions.js';
@@ -10,10 +10,14 @@ import { Button } from '../ui/Button.jsx';
 import { notifyStudioSwitchCancelled, useStudioEscape, useStudioSwitchClose } from './useStudioEscape.js';
 import { getJsonIssues } from '../../core/jsonDiagnostics.js';
 import { replaceNullTemplateValues } from '../../core/templatePreview.js';
+import { getTextLanguage } from '../ui/mediaTypes.js';
 
-const CODE_TOKENS = /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\/\/.*|#.*|--.*|\b\d+(?:\.\d+)?\b|\b(?:const|let|var|function|return|if|else|for|while|class|new|this|import|from|export|default|async|await|try|catch|throw|true|false|null|undefined|None|True|False|def|print|interface|type|extends|implements|public|private|static|SELECT|FROM|WHERE|INSERT|UPDATE|DELETE|CREATE|TABLE|AS|AND|OR|NOT)\b|\b[A-Za-z_$][\w$]*(?=\s*\()|[{}()[\],.;:]|[=+*/<>!-]+)/gi;
+const CODE_TOKENS = /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\/\*.*?\*\/|\/\/.*|--.*|\b\d+(?:\.\d+)?\b|\b(?:const|let|var|function|return|if|else|elif|for|while|class|new|this|import|from|export|default|async|await|try|catch|throw|true|false|null|undefined|None|True|False|def|print|pass|lambda|fn|mut|impl|struct|enum|pub|use|mod|match|self|package|func|defer|chan|range|go|select|void|int|String|boolean|char|long|short|float|double|static|public|private|protected|interface|type|extends|implements|SELECT|FROM|WHERE|INSERT|UPDATE|DELETE|CREATE|TABLE|AS|AND|OR|NOT)\b|\b[A-Za-z_$][\w$]*(?=\s*\()|[{}()[\],.;:]|[=+*/<>!-]+)/gi;
 const MARKDOWN_TOKENS = /(`[^`]*`|\*\*[^*]+\*\*|__[^_]+__|~~[^~]+~~|\|\|[^|]+\|\||\*[^*]+\*|_[^_]+_|https?:\/\/[^\s]+)/g;
 const JSON_TOKENS = /"(?:\\.|[^"\\])*"(?=\s*:)|"(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|\b(?:true|false|null)\b|[{}\[\],:]/g;
+const MARKUP_TOKENS = /<!--[\s\S]*?-->|<\/?[A-Za-z][\w:.-]*|\/?>|[A-Za-z_:][\w:.-]*(?=\s*=)|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|=|&(?:#[\da-f]+|#\d+|[A-Za-z][\w]+);/gi;
+const CSS_TOKENS = /\/\*.*?\*\/|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|#[\da-f]{3,8}\b|@[A-Za-z_-][\w-]*|\b\d+(?:\.\d+)?(?:%|[A-Za-z]+)?\b|[A-Za-z_-][\w-]*|[{}()[\]:;,]/gi;
+const CONFIG_TOKENS = /#.*|;.*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|-?\b\d+(?:\.\d+)?\b|\b(?:true|false|null|yes|no|on|off)\b|[:=\[\]{},]/gi;
 //
 function highlightJson(line) {
   const tokens = [];
@@ -72,6 +76,69 @@ function renderSearchLine(line, lineStart, matches, activeMatchIndex, startIndex
   return { content: segments.length ? segments : line || ' ', nextIndex };
 }
 
+function highlightTokenMatches(line, expression, classify) {
+  const tokens = [];
+  let cursor = 0;
+  for (const match of line.matchAll(expression)) {
+    const token = match[0];
+    const start = match.index ?? cursor;
+    if (start > cursor) tokens.push(line.slice(cursor, start));
+    const type = classify(token, start);
+    tokens.push(type ? <span key={`${start}-${token}`} className={`syntax-${type}`}>{token}</span> : token);
+    cursor = start + token.length;
+  }
+  if (cursor < line.length) tokens.push(line.slice(cursor));
+  return tokens.length ? tokens : line || ' ';
+}
+
+function highlightMarkup(line) {
+  return highlightTokenMatches(line, MARKUP_TOKENS, (token) => {
+    if (token.startsWith('<!--')) return 'comment';
+    if (token.startsWith('<')) return 'keyword';
+    if (token.startsWith('"') || token.startsWith("'") || token.startsWith('&')) return 'string';
+    if (token === '=' || token === '>' || token === '/>') return 'punctuation';
+    return 'function';
+  });
+}
+
+function highlightCss(line) {
+  const inDeclaration = line.lastIndexOf('{') > line.lastIndexOf('}');
+  return highlightTokenMatches(line, CSS_TOKENS, (token, start) => {
+    if (token.startsWith('/*')) return 'comment';
+    if (token.startsWith('"') || token.startsWith("'")) return 'string';
+    if (token.startsWith('@')) return 'keyword';
+    if (/^#[\da-f]{3,8}$/i.test(token)) return 'number';
+    if (/^\d/.test(token)) return 'number';
+    if (/^[{}()[\]:;,]$/.test(token)) return 'punctuation';
+    if (/^[A-Za-z_-]/.test(token) && /^\s*:/.test(line.slice(start + token.length))) return 'function';
+    if (!inDeclaration && /^[A-Za-z_-]/.test(token)) return 'keyword';
+    return '';
+  });
+}
+
+function highlightConfig(line) {
+  const keyMatch = /^(\s*)([^\s:=#[\],{}]+)(\s*)(?=[:=])/.exec(line);
+  const highlightedKeyEnd = keyMatch ? keyMatch[0].length : 0;
+  const content = highlightTokenMatches(line.slice(highlightedKeyEnd), CONFIG_TOKENS, (token) => {
+    if (token.startsWith('#') || token.startsWith(';')) return 'comment';
+    if (token.startsWith('"') || token.startsWith("'")) return 'string';
+    if (/^(?:true|false|null|yes|no|on|off)$/i.test(token)) return 'literal';
+    if (/^-?\d/.test(token)) return 'number';
+    return 'punctuation';
+  });
+  if (!keyMatch) return content;
+  return <>{line.slice(0, keyMatch[1].length)}<span className="syntax-json-key">{keyMatch[2]}</span>{line.slice(keyMatch[1].length + keyMatch[2].length, highlightedKeyEnd)}{content}</>;
+}
+
+function highlightCsv(line) {
+  return highlightTokenMatches(line, /"(?:""|[^"])*"|[^\t,]+|[\t,]/g, (token) => {
+    if (token.startsWith('"')) return 'string';
+    if (token === ',' || token === '\t') return 'punctuation';
+    if (/^-?\d+(?:\.\d+)?$/.test(token.trim())) return 'number';
+    return '';
+  });
+}
+
 function highlightCode(line, language) {
   if (language === 'diff') {
     const kind = line.startsWith('+') ? 'diff-added' : line.startsWith('-') ? 'diff-removed' : line.startsWith('@@') ? 'diff-meta' : '';
@@ -85,11 +152,11 @@ function highlightCode(line, language) {
     if (start > cursor) tokens.push(line.slice(cursor, start));
     let type = 'punctuation';
     if (/^(?:"|'|`)/.test(token)) type = 'string';
-    else if (/^(?:\/\/|#|--)/.test(token)) type = 'comment';
+    else if (/^(?:\/\/|\/\*|--)/.test(token) || (token.startsWith('#') && ['python', 'ruby', 'shell'].includes(language))) type = 'comment';
     else if (/^\d/.test(token)) type = 'number';
     else if (/^(?:true|false|null|undefined|None|True|False)$/i.test(token)) type = 'literal';
     else if (/^(?:SELECT|FROM|WHERE|INSERT|UPDATE|DELETE|CREATE|TABLE|AS|AND|OR|NOT)$/i.test(token)) type = 'keyword';
-    else if (/^(?:const|let|var|function|return|if|else|for|while|class|new|this|import|from|export|default|async|await|try|catch|throw|def|print|interface|type|extends|implements|public|private|static)$/.test(token)) type = 'keyword';
+    else if (/^(?:const|let|var|function|return|if|else|elif|for|while|class|new|this|import|from|export|default|async|await|try|catch|throw|def|print|pass|lambda|fn|mut|impl|struct|enum|pub|use|mod|match|self|package|func|defer|chan|range|go|void|int|string|boolean|char|long|short|float|double|interface|type|extends|implements|public|private|protected|static|echo|namespace|use|trait|yield|foreach|endforeach|endif)$/.test(token)) type = 'keyword';
     else if (/^[A-Za-z_$]/.test(token) && /\($/.test(line.slice(start + token.length).match(/^\s*\(/)?.[0] || '')) type = 'function';
     tokens.push(<span key={`${start}-${token}`} className={`syntax-${type}`}>{token}</span>);
     cursor = start + token.length;
@@ -123,7 +190,17 @@ function highlightMarkdown(line) {
   return <span className={lineClass}>{tokens.length ? tokens : line || ' '}</span>;
 }
 
-function buildHighlightedLines(text, isJson) {
+function highlightSourceLine(line, language) {
+  if (language === 'json' || language === 'jsonl') return highlightJson(line);
+  if (language === 'html' || language === 'xml') return highlightMarkup(line);
+  if (language === 'css') return highlightCss(line);
+  if (language === 'yaml' || language === 'toml' || language === 'ini') return highlightConfig(line);
+  if (language === 'csv') return highlightCsv(line);
+  if (language === 'markdown') return highlightMarkdown(line);
+  return highlightCode(line, language);
+}
+
+function buildHighlightedLines(text, isJson, sourceLanguage = '') {
   let language = '';
   let inFence = false;
   return String(text ?? '').split('\n').map((line, index, allLines) => {
@@ -139,11 +216,15 @@ function buildHighlightedLines(text, isJson) {
       inFence = false;
       return { content: <span className="syntax-fence">{line || ' '}</span>, isCode: true };
     }
-    return { content: inFence ? (language === 'json' ? highlightJson(line) : highlightCode(line, language)) : (isJson ? highlightJson(line) : highlightMarkdown(line)), isCode: inFence || isJson };
+    const detectedLanguage = sourceLanguage || (isJson ? 'json' : '');
+    return {
+      content: inFence ? highlightSourceLine(line, language) : detectedLanguage ? highlightSourceLine(line, detectedLanguage) : highlightMarkdown(line),
+      isCode: inFence || Boolean(detectedLanguage)
+    };
   });
 }
 
-export function TextStudioView({ label, value = '', readOnly = false, plainText = false, sharedDraft, remoteCursors = [], collaborators = [], appEmojis = [], graphVariables = [], templateValuePaths = [], templateSuggestions = [], templateFunctions = [], connectedTemplateArguments = [], templatePreviewValues = {}, maxLength, onApply, onClose, onDraftChange, onCursorChange }) {
+export function TextStudioView({ label, contentType = '', value = '', readOnly = false, plainText = false, loading = false, loadError = '', sharedDraft, remoteCursors = [], collaborators = [], appEmojis = [], graphVariables = [], templateValuePaths = [], templateSuggestions = [], templateFunctions = [], connectedTemplateArguments = [], templatePreviewValues = {}, maxLength, onApply, onClose, onDraftChange, onCursorChange }) {
   const [draft, setDraft] = useState(String(value ?? ''));
   const [activePane, setActivePane] = useState('editor');
   const [scrollMetrics, setScrollMetrics] = useState({ top: 0, height: 0, view: 0 });
@@ -166,12 +247,15 @@ export function TextStudioView({ label, value = '', readOnly = false, plainText 
   const remoteCaretLayerRef = useRef(null);
   const previewScrollRef = useRef(null);
   const lines = useMemo(() => draft.split('\n'), [draft]);
-  const blocks = useMemo(() => countDiscordCodeBlocks(draft), [draft]);
-  const characterCount = Array.from(draft).length;
-  const jsonBlock = useMemo(() => /(```json[^\n]*\n)([\s\S]*?)(```)/i.exec(draft), [draft]);
-  const isJson = useMemo(() => !plainText && (/json/i.test(label) || Boolean(jsonBlock) || /^[\s\uFEFF]*[\[{]/.test(draft)), [draft, jsonBlock, label, plainText]);
+  const largeFileMode = lines.length > 2500 || draft.length > 200000;
+  const blocks = useMemo(() => plainText || largeFileMode ? [] : countDiscordCodeBlocks(draft), [draft, largeFileMode, plainText]);
+  const characterCount = useMemo(() => largeFileMode ? draft.length : Array.from(draft).length, [draft, largeFileMode]);
+  const sourceLanguage = useMemo(() => getTextLanguage({ filename: label, contentType }), [label, contentType]);
+  const useHighlightLayer = !largeFileMode && (!plainText || Boolean(sourceLanguage));
+  const jsonBlock = useMemo(() => plainText || largeFileMode || sourceLanguage ? null : /(```json[^\n]*\n)([\s\S]*?)(```)/i.exec(draft), [draft, largeFileMode, plainText, sourceLanguage]);
+  const isJson = useMemo(() => !largeFileMode && (sourceLanguage === 'json' || (!plainText && (/json/i.test(label) || Boolean(jsonBlock) || /^[\s\uFEFF]*[\[{]/.test(draft)))), [draft, jsonBlock, label, largeFileMode, plainText, sourceLanguage]);
   const jsonContent = jsonBlock?.[2] ?? draft;
-  const jsonIssues = useMemo(() => (isJson ? getJsonIssues(jsonContent) : []), [isJson, jsonContent]);
+  const jsonIssues = useMemo(() => (isJson && !largeFileMode ? getJsonIssues(jsonContent) : []), [isJson, jsonContent, largeFileMode]);
   const jsonIssueLineOffset = useMemo(() => (jsonBlock ? draft.slice(0, draft.indexOf(jsonBlock[0]) + jsonBlock[1].length).split('\n').length - 1 : 0), [draft, jsonBlock]);
   const jsonIssueLines = useMemo(() => new Set(jsonIssues.map((issue) => issue.line + jsonIssueLineOffset)), [jsonIssues, jsonIssueLineOffset]);
   const jsonError = useMemo(() => {
@@ -195,8 +279,12 @@ export function TextStudioView({ label, value = '', readOnly = false, plainText 
       beforeInputRef.current = null;
     }
   }, [sharedDraft, draft]);
-  const highlightedLines = useMemo(() => plainText ? lines.map((line) => ({ content: line || ' ', isCode: false })) : buildHighlightedLines(draft, isJson), [draft, isJson, lines, plainText]);
+  useEffect(() => {
+    if (!loading && readOnly && plainText && String(value ?? '') !== draft) setDraft(String(value ?? ''));
+  }, [loading, readOnly, plainText, value, draft]);
+  const highlightedLines = useMemo(() => useHighlightLayer ? buildHighlightedLines(draft, isJson, sourceLanguage) : [], [draft, isJson, sourceLanguage, useHighlightLayer]);
   const templatePreview = useMemo(() => {
+    if (plainText || largeFileMode) return draft;
     const values = new Map(graphVariables.filter((item) => item?.name).map((item) => [item.name.toLowerCase(), item.initialValue]));
     for (const [pinId, previewValue] of Object.entries(templatePreviewValues || {})) {
       const slot = /^slot_(.+)$/.exec(pinId); const arg = /^arg_(\d+)$/.exec(pinId);
@@ -205,15 +293,16 @@ export function TextStudioView({ label, value = '', readOnly = false, plainText 
     }
     const resolve = (name) => values.get(String(name).toLowerCase());
     return renderTextTemplate(replaceNullTemplateValues(draft, resolve, (name) => values.has(String(name).toLowerCase())), resolve, appEmojis);
-  }, [draft, graphVariables, templatePreviewValues, appEmojis]);
-  const containsTemplate = /(?<!\\)\{\{\s*[^{}]+?\s*\}\}/.test(draft);
+  }, [draft, graphVariables, templatePreviewValues, appEmojis, largeFileMode, plainText]);
+  const containsTemplate = useMemo(() => !plainText && !largeFileMode && /(?<!\\)\{\{\s*[^{}]+?\s*\}\}/.test(draft), [draft, largeFileMode, plainText]);
   const previewText = templatePreview || '(empty)';
-  const previewLines = useMemo(() => buildHighlightedLines(previewText, isJson), [previewText, isJson]);
+  const previewLines = useMemo(() => largeFileMode ? [] : buildHighlightedLines(previewText, isJson, sourceLanguage), [previewText, isJson, sourceLanguage, largeFileMode]);
   const { matches: searchMatches, error: searchError } = useMemo(
     () => getSearchMatches(draft, searchQuery, { matchCase, wholeWord, useRegex }),
     [draft, searchQuery, matchCase, wholeWord, useRegex]
   );
   const searchLines = useMemo(() => {
+    if (!searchOpen || largeFileMode) return [];
     let offset = 0;
     let matchIndex = 0;
     return draft.split('\n').map((line) => {
@@ -222,7 +311,7 @@ export function TextStudioView({ label, value = '', readOnly = false, plainText 
       offset += line.length + 1;
       return result.content;
     });
-  }, [draft, searchMatches, activeMatchIndex]);
+  }, [draft, searchMatches, activeMatchIndex, searchOpen, largeFileMode]);
 
   const navigateSearch = (direction, fromOffset = editorRef.current?.selectionStart ?? 0) => {
     if (!searchMatches.length) {
@@ -321,7 +410,7 @@ export function TextStudioView({ label, value = '', readOnly = false, plainText 
 
   const syncScroll = (event) => {
     const editor = event.currentTarget;
-    if (gutterRef.current) gutterRef.current.scrollTop = editor.scrollTop;
+    if (gutterRef.current && !largeFileMode) gutterRef.current.scrollTop = editor.scrollTop;
     if (codeLayerRef.current) codeLayerRef.current.style.transform = `translate(${-editor.scrollLeft}px, ${-editor.scrollTop}px)`;
     if (searchLayerRef.current) searchLayerRef.current.style.transform = `translate(${-editor.scrollLeft}px, ${-editor.scrollTop}px)`;
     if (remoteCaretLayerRef.current) remoteCaretLayerRef.current.style.transform = `translate(${-editor.scrollLeft}px, ${-editor.scrollTop}px)`;
@@ -346,6 +435,9 @@ export function TextStudioView({ label, value = '', readOnly = false, plainText 
     if (!el) return;
     el.scrollTop = Math.max(0, Math.min(next, el.scrollHeight - el.clientHeight));
   };
+  const gutterStart = largeFileMode ? Math.max(0, Math.floor(scrollMetrics.top / 22) - 4) : 0;
+  const gutterEnd = largeFileMode ? Math.min(lines.length, Math.ceil((scrollMetrics.top + scrollMetrics.view) / 22) + 5) : lines.length;
+  const gutterRows = useMemo(() => lines.slice(gutterStart, gutterEnd), [lines, gutterStart, gutterEnd]);
   const changeDraft = (event) => {
     if (readOnly) return;
     const next = event.target.value;
@@ -474,21 +566,28 @@ export function TextStudioView({ label, value = '', readOnly = false, plainText 
       <label className="text-studio-search-option" title="Use regular expression"><input type="checkbox" checked={useRegex} onChange={(event) => setUseRegex(event.target.checked)} /> .* </label>
       <button type="button" className="text-studio-search-close" onClick={() => { setSearchOpen(false); editorRef.current?.focus(); }} aria-label="Close find"><X size={15} /></button>
     </div>}
-    <div className={`discord-text-studio-editor-shell ${activePane === 'preview' ? 'is-pane-hidden' : ''}`}>
-      <div className="discord-text-studio-gutter" ref={gutterRef} aria-hidden="true">{lines.map((_, index) => <span key={index} className={jsonIssueLines.has(index + 1) ? 'is-invalid-line' : undefined}>{index + 1}</span>)}</div>
-      <div className="discord-text-studio-editor-viewport">
-        <pre ref={codeLayerRef} className="discord-text-studio-code-layer" aria-hidden="true">{highlightedLines.map((line, index) => <span key={index} className={`discord-text-studio-line ${line.isCode ? 'is-code' : ''}`}>{line.content}</span>)}</pre>
-        {searchOpen && <pre ref={searchLayerRef} className="text-studio-search-layer" aria-hidden="true">{searchLines.map((line, index) => <span key={index} className="discord-text-studio-line">{line}</span>)}</pre>}
-        <div ref={remoteCaretLayerRef} className="discord-text-remote-caret-layer" aria-hidden="true">{remoteCursors.map((peer) => {
-          const caret = Math.min(peer.caret, draft.length);
-          const before = draft.slice(0, caret).split('\n');
-          const line = before.length - 1;
-          const column = before.at(-1).length;
-          return <span key={peer.username} className="discord-text-remote-caret" style={{ left: 18 + column * 7.83, top: 15 + line * 22, '--collaborator-color': peer.color }}><i /><b>{peer.username}</b></span>;
-        })}</div>
-        <DiscordTextField as="textarea" ref={editorRef} className="discord-text-studio-editor" readOnly={readOnly} value={draft} onBeforeInput={handleBeforeInput} onChange={changeDraft} onKeyDown={handleEditorKeyDown} onKeyUp={(event) => onCursorChange?.(event.currentTarget.selectionStart)} onClick={(event) => onCursorChange?.(event.currentTarget.selectionStart)} onScroll={syncScroll} onPointerDown={(event) => event.stopPropagation()} spellCheck={false} autoFocus wrap="off" aria-label={`${label} text`} discordAutocomplete templateAutocomplete appEmojis={appEmojis} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} templateFunctions={templateFunctions} />
-      </div>
-      <EditorMinimap text={draft} isJson={isJson} jsonIssueLines={jsonIssueLines} searchMatches={searchMatches} searchOpen={searchOpen} scrollTop={scrollMetrics.top} scrollHeight={scrollMetrics.height} viewHeight={scrollMetrics.view} editorLineHeight={22} onScrollTo={scrollEditorTo} />
+    <div className={`discord-text-studio-editor-shell ${activePane === 'preview' ? 'is-pane-hidden' : ''} ${largeFileMode ? 'is-large-file' : ''} ${plainText && !useHighlightLayer ? 'is-plain-text' : ''}`}>
+      {loading ? <div className="discord-text-studio-file-status" role="status" aria-live="polite"><LoaderCircle size={20} className="is-spinning" /><strong>Loading {label}…</strong></div>
+        : loadError ? <div className="discord-text-studio-file-status is-error" role="alert"><strong>Could not load this file</strong><span>{loadError}</span></div>
+          : <>
+            <div className={`discord-text-studio-gutter ${largeFileMode ? 'is-virtual' : ''}`} ref={gutterRef} aria-hidden="true">
+              {largeFileMode ? <div style={{ top: 15 + gutterStart * 22 - scrollMetrics.top }}>{gutterRows.map((_, index) => <span key={gutterStart + index}>{gutterStart + index + 1}</span>)}</div>
+                : lines.map((_, index) => <span key={index} className={jsonIssueLines.has(index + 1) ? 'is-invalid-line' : undefined}>{index + 1}</span>)}
+            </div>
+            <div className="discord-text-studio-editor-viewport">
+              {useHighlightLayer && <pre ref={codeLayerRef} className="discord-text-studio-code-layer" aria-hidden="true">{highlightedLines.map((line, index) => <span key={index} className={`discord-text-studio-line ${line.isCode ? 'is-code' : ''}`}>{line.content}</span>)}</pre>}
+              {searchOpen && !largeFileMode && <pre ref={searchLayerRef} className="text-studio-search-layer" aria-hidden="true">{searchLines.map((line, index) => <span key={index} className="discord-text-studio-line">{line}</span>)}</pre>}
+              {!largeFileMode && <div ref={remoteCaretLayerRef} className="discord-text-remote-caret-layer" aria-hidden="true">{remoteCursors.map((peer) => {
+                const caret = Math.min(peer.caret, draft.length);
+                const before = draft.slice(0, caret).split('\n');
+                const line = before.length - 1;
+                const column = before.at(-1).length;
+                return <span key={peer.username} className="discord-text-remote-caret" style={{ left: 18 + column * 7.83, top: 15 + line * 22, '--collaborator-color': peer.color }}><i /><b>{peer.username}</b></span>;
+              })}</div>}
+              <DiscordTextField as="textarea" ref={editorRef} className="discord-text-studio-editor" readOnly={readOnly} value={draft} onBeforeInput={handleBeforeInput} onChange={changeDraft} onKeyDown={handleEditorKeyDown} onKeyUp={(event) => onCursorChange?.(event.currentTarget.selectionStart)} onClick={(event) => onCursorChange?.(event.currentTarget.selectionStart)} onScroll={syncScroll} onPointerDown={(event) => event.stopPropagation()} spellCheck={false} autoFocus wrap="off" aria-label={`${label} text`} discordAutocomplete templateAutocomplete appEmojis={appEmojis} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} templateFunctions={templateFunctions} />
+            </div>
+            <EditorMinimap text={draft} lines={lines} simplified={largeFileMode} language={sourceLanguage} isJson={isJson} jsonIssueLines={jsonIssueLines} searchMatches={largeFileMode ? [] : searchMatches} searchOpen={searchOpen && !largeFileMode} scrollTop={scrollMetrics.top} scrollHeight={scrollMetrics.height} viewHeight={scrollMetrics.view} editorLineHeight={22} onScrollTo={scrollEditorTo} />
+          </>}
     </div>
     {activePane === 'preview' && <div className="discord-text-studio-preview-pane" role="tabpanel" aria-label="Template preview">
       {!containsTemplate && <p className="discord-text-studio-preview-note">This text has no template placeholders</p>}
@@ -499,7 +598,7 @@ export function TextStudioView({ label, value = '', readOnly = false, plainText 
             <pre className="discord-text-studio-preview-code">{previewLines.map((line, index) => <span key={index} className={`discord-text-studio-line ${line.isCode ? 'is-code' : ''}`}>{line.content}</span>)}</pre>
           </div>
         </div>
-        <EditorMinimap text={previewText} isJson={isJson} jsonIssueLines={jsonIssueLines} searchMatches={[]} searchOpen={false} scrollTop={previewScrollMetrics.top} scrollHeight={previewScrollMetrics.height} viewHeight={previewScrollMetrics.view} editorLineHeight={22} onScrollTo={scrollPreviewTo} />
+        <EditorMinimap text={previewText} language={sourceLanguage} isJson={isJson} jsonIssueLines={jsonIssueLines} searchMatches={[]} searchOpen={false} scrollTop={previewScrollMetrics.top} scrollHeight={previewScrollMetrics.height} viewHeight={previewScrollMetrics.view} editorLineHeight={22} onScrollTo={scrollPreviewTo} />
       </div>
     </div>}
     <footer className="discord-text-studio-footer"><TemplateSyntaxHelp connectedArguments={connectedTemplateArguments} /><span className={maxLength && characterCount > maxLength ? 'is-over-limit' : ''}>{characterCount.toLocaleString()}{maxLength ? ` / ${maxLength.toLocaleString()} characters` : ' characters'}</span><span>{jsonError ? <em className="text-editor-json-error" role="status">{jsonError}</em> : isJson ? 'Valid JSON' : `${lines.length.toLocaleString()} lines${blocks.length ? ` · ${blocks.length} code ${blocks.length === 1 ? 'block' : 'blocks'}` : ''}`}</span>{isJson && !readOnly && <button type="button" className="text-editor-format-json" disabled={Boolean(jsonError)} onClick={formatJson}>Format JSON</button>}</footer>
