@@ -16,9 +16,12 @@ const TEMPLATE_SYSTEM_VALUES = Object.freeze({
 export const TEMPLATE_SYSTEM_PATHS = Object.freeze(TEMPLATE_PERMISSION_ENTRIES.map(({ name, label }) => Object.freeze({
   path: `${TEMPLATE_SYSTEM_ROOT}.permissions.${name}`,
   label: `${TEMPLATE_SYSTEM_ROOT}.permissions.${name} · ${label}`
-})));
+})).concat([{ path: `${TEMPLATE_SYSTEM_ROOT}.app.AVATAR`, label: `${TEMPLATE_SYSTEM_ROOT}.app.AVATAR · Bot avatar URL` }]));
 export function isReservedTemplateRoot(value) {
   return String(value ?? '').trim().toLowerCase() === TEMPLATE_SYSTEM_ROOT;
+}
+export function isReservedTemplateVariableName(value) {
+  return String(value ?? '').trim().toLowerCase().startsWith(TEMPLATE_SYSTEM_ROOT);
 }
 function templateText(value) {
   if (value == null) return '';
@@ -164,9 +167,12 @@ function evaluate(ast, resolveSlot, options = {}) {
   switch (ast.kind) {
     case 'literal': return { found: true, value: ast.value };
     case 'path': {
-      let value = Object.hasOwn(TEMPLATE_SYSTEM_VALUES, ast.root)
-        ? TEMPLATE_SYSTEM_VALUES[ast.root]
-        : resolveSlot?.(ast.root, `{{${ast.root}}}`);
+      const runtimeSystemValue = options.systemTemplateValues?.[ast.root];
+      let value = runtimeSystemValue && TEMPLATE_SYSTEM_VALUES[ast.root]
+        ? { ...TEMPLATE_SYSTEM_VALUES[ast.root], ...runtimeSystemValue }
+        : runtimeSystemValue ?? (Object.hasOwn(TEMPLATE_SYSTEM_VALUES, ast.root)
+          ? TEMPLATE_SYSTEM_VALUES[ast.root]
+          : resolveSlot?.(ast.root, `{{${ast.root}}}`));
       if (value === undefined) return { found: false, value };
       for (const key of ast.keys) { if (['__proto__', 'prototype', 'constructor'].includes(String(key)) || value == null || !Object.hasOwn(Object(value), key)) return { found: false, value: undefined }; value = value[key]; }
       return { found: true, value };
@@ -251,6 +257,7 @@ export function applyTemplateTransforms(value, transforms = []) {
 
 export function getTemplateReferences(source) {
   const refs = new Set(); const parts = splitTemplatePipeline(source); const expr = parts[0] || '';
+  if (/^(?:env:[A-Za-z_][A-Za-z0-9_]*|path:\/\/[^{}]+)$/i.test(expr.trim())) return refs;
   const constants = new Set(['true', 'false', 'null', 'undefined', 'pi', 'tau', 'e', TEMPLATE_SYSTEM_ROOT]);
   let quote = '';
   let escaped = false;
@@ -379,6 +386,12 @@ export function validateTemplateSyntax(text) {
     if (!base) {
       return 'Missing expression in template';
     }
+    if (/^(?:env:[A-Za-z_][A-Za-z0-9_]*|path:\/\/[^{}]+)$/i.test(base)) {
+      for (let i = 1; i < parts.length; i += 1) {
+        if (!/^[A-Za-z][A-Za-z0-9]*(?:\(.*\))?$/.test(parts[i].trim())) return `Invalid template filter syntax: "${parts[i]}"`;
+      }
+      continue;
+    }
     try {
       parse(base);
     } catch (err) {
@@ -411,6 +424,19 @@ export function renderTextTemplate(template, resolveSlot, appEmojis = [], onUnde
       const source = block.content.trim();
       const parts = splitTemplatePipeline(source);
       const base = parts.shift() || '';
+
+      const envReference = /^env:([A-Za-z_][A-Za-z0-9_]*)$/.exec(base);
+      const mediaReference = /^path:\/\/([^{}]+)$/i.exec(base);
+      if (envReference || mediaReference) {
+        const externalValue = envReference ? options.resolveEnvironment?.(envReference[1]) : options.resolveMediaPath?.(mediaReference[1]);
+        if (externalValue === undefined || externalValue === null) {
+          nextResult += block.raw;
+          continue;
+        }
+        nextResult += applyTemplateTransforms(externalValue, parts);
+        changed = true;
+        continue;
+      }
 
       const emojiName = /^e_([A-Za-z0-9_-]+)$/.exec(base.trim())?.[1];
       if (emojiName) {
