@@ -160,6 +160,27 @@ test('standalone bot export packages only runtime modules required by graph node
   assert.ok(!entries.has('src/security/CryptoEngine.js'));
 });
 
+test('standalone bot export preserves disabled graphs and excludes their commands and runtime', () => {
+  const archive = buildBotArchive([{
+    id: 'disabled-slash',
+    enabled: false,
+    nodes: [
+      { id: 'slash', type: 'event_slash_command', data: { commandName: 'sleep', description: 'Disabled command' } },
+      { id: 'presence', type: 'action_set_presence', data: { status: 'idle' } }
+    ],
+    connections: []
+  }]);
+  const exportedGraphs = JSON.parse(readZipEntry(archive, 'graphs.json'));
+  const exportedRuntime = readZipEntry(archive, 'src/engine/GraphRunner.js');
+  const exportedMain = readZipEntry(archive, 'src/index.js');
+
+  assert.equal(exportedGraphs[0].enabled, false);
+  assert.match(exportedMain, /if \(graph\.enabled === false\) continue;/);
+  assert.match(exportedMain, /disabledCommandKeys/);
+  assert.match(exportedRuntime, /graph\?\.enabled === false/);
+  assert.ok(!listZipEntries(archive).has('src/engine/nodes/runtime/discord_presence.js'));
+});
+
 test('standalone bot export includes the console log runtime when its nodes are used', () => {
   const archive = buildBotArchive([{
     id: 'console-export',
