@@ -1,10 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { AlertTriangle, Braces, Check, Cpu, FileCode2, Plus, RotateCcw, Search, Trash2, X } from 'lucide-react';
+import { AlertTriangle, Braces, Check, Cpu, FileCode2, Image, Plus, RotateCcw, Search, Trash2, X } from 'lucide-react';
 import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
 import { SidebarResizeHandle } from '../ui/SidebarResizeHandle.jsx';
 import { AnimatedCheckbox, AnimatedDropdown } from '../ui/CustomControls.jsx';
-import { isReservedTemplateRoot } from '../../../../studio-server/src/engine/TemplateExpressions.js';
+import { isReservedTemplateVariableName } from '../../../../studio-server/src/engine/TemplateExpressions.js';
+import { ProjectMediaPanel } from '../panels/ProjectMediaPanel.jsx';
 
 const VARIABLE_TYPES = [
   { value: 'string', label: 'Text' },
@@ -31,8 +32,9 @@ const SYSTEM_MANAGED_IDS = [
   'project_var_bot_statistics'
 ];
 
-export function GraphVariablesModal({ isOpen, onClose, variables = [], projectVariables = [], onChange, onProjectChange, onSidebarResize, onOpenTextEditor, onRestoreSystemVariable, isSaving = false, presentation = 'modal', sidebarWidth = 320, canEdit = true, canEditProject = canEdit, canEditGraph = canEdit, activeScope: requestedScope = 'project', onScopeChange }) {
+export function GraphVariablesModal({ isOpen, requestedView = 'variables', onClose, variables = [], projectVariables = [], mediaAssets = [], onUploadMedia, onDownloadMedia, onDeleteMedia, onLoadMediaContent, onOpenTextAsset, onChange, onProjectChange, onSidebarResize, onOpenTextEditor, onRestoreSystemVariable, isSaving = false, presentation = 'modal', sidebarWidth = 320, canEdit = true, canEditProject = canEdit, canEditGraph = canEdit, activeScope: requestedScope = 'project', onScopeChange }) {
   const [activeScope, setActiveScope] = useState(requestedScope);
+  const [activeView, setActiveView] = useState('variables');
   const [name, setName] = useState('');
   const [type, setType] = useState('string');
   const [secretOnCreate, setSecretOnCreate] = useState(false);
@@ -53,6 +55,7 @@ export function GraphVariablesModal({ isOpen, onClose, variables = [], projectVa
   const systemMenuRef = useRef(null);
 
   useEffect(() => { setActiveScope(requestedScope === 'graph' ? 'graph' : 'project'); }, [requestedScope]);
+  useEffect(() => { setActiveView(requestedView === 'media' ? 'media' : 'variables'); }, [requestedView]);
 
   useEffect(() => {
     if (!systemMenuOpen) return undefined;
@@ -96,8 +99,8 @@ export function GraphVariablesModal({ isOpen, onClose, variables = [], projectVa
       window.setTimeout(() => row?.classList.remove('field-shake'), 360);
       return;
     }
-    if (isReservedTemplateRoot(cleanName)) {
-      setNameError('“chezcord” is reserved for the system template namespace.');
+    if (isReservedTemplateVariableName(cleanName)) {
+      setNameError('Variable names starting with “chezcord” are reserved for the system template namespace.');
       return;
     }
     if (!isValidVariableName(cleanName) && !(['DISCORD_APP_ID', 'APP_LATENCY', 'GATEWAY_LATENCY', 'BOT_UPTIME', 'BOT_STATISTICS'].includes(cleanName) && (cleanName === 'BOT_STATISTICS' ? type === 'object' : type === 'number'))) {
@@ -202,9 +205,12 @@ export function GraphVariablesModal({ isOpen, onClose, variables = [], projectVa
         {['string', 'array', 'object'].includes(variable.type) && !variable.secret && <button className="variable-open-editor" type="button" disabled={!currentCanEdit && !isReadOnly} title={isReadOnly ? `View ${variable.name} in Text Editor (Read only)` : `Open ${variable.name} in Text Editor`} aria-label={isReadOnly ? `View ${variable.name} in Text Editor (Read only)` : `Open ${variable.name} in Text Editor`} onClick={() => onOpenTextEditor?.(variable, activeScope, isReadOnly)}><FileCode2 size={14} /></button>}
         <button className="variable-delete" disabled={!currentCanEdit || isNodeOwned || variable.readOnly} onClick={() => changeVariables?.(currentVariables.filter((item) => item.id !== variable.id))} title={isNodeOwned ? 'Remove the Create Variable node to delete this variable.' : variable.readOnly ? 'Provided by a slash command option.' : `Delete ${variable.name}`} aria-label={`Delete ${variable.name}`}><Trash2 size={15} /></button>
       </div>;
-      }) : <div className="variable-empty">{currentVariables.length ? 'No matching variables' : `No ${activeScope === 'project' ? 'project' : 'graph'} variables`}</div>}
+      }) : <div className="variable-empty">{currentVariables.length
+        ? 'No matching variables'
+        : !currentCanEdit
+          ? activeScope === 'graph' ? 'Open an editable graph to add graph variables.' : 'You do not have permission to edit project variables.'
+          : `No ${activeScope === 'project' ? 'project' : 'graph'} variables`}</div>}
     </div>
-    {!currentCanEdit && <div className="variable-empty">{activeScope === 'graph' ? 'Open an editable graph to add graph variables.' : 'You do not have permission to edit project variables.'}</div>}
     <form ref={createRowRef} className={`variable-create-row ${!currentCanEdit ? 'is-disabled' : ''}`} noValidate onSubmit={addVariable}>
       <input value={name} maxLength={64} pattern="(?:[A-Za-z0-9]+(?:_+[A-Za-z0-9]+|-[A-Za-z0-9]+)*|DISCORD_APP_ID|APP_LATENCY|GATEWAY_LATENCY|BOT_UPTIME|BOT_STATISTICS)" disabled={!currentCanEdit} autoCapitalize="none" autoCorrect="off" spellCheck={false} onChange={(event) => { setName(event.target.value.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64)); setNameError(''); }} placeholder="Variable name" aria-label="New variable name" aria-invalid={Boolean(nameError)} title="Start and end with a letter or number. Underscores and hyphens are allowed inside." />
       <AnimatedDropdown value={type} disabled={!currentCanEdit} onChange={setType} ariaLabel="New variable type" options={VARIABLE_TYPES} className="variable-type-dropdown" />
@@ -216,10 +222,11 @@ export function GraphVariablesModal({ isOpen, onClose, variables = [], projectVa
   const selectScope = (scope) => { setActiveScope(scope); onScopeChange?.(scope); setNameError(''); };
   const scopeTabs = <>
     <div className="graph-variable-tabs" role="tablist" aria-label="Variable scope">
-      <button type="button" role="tab" aria-selected={activeScope === 'project'} className={activeScope === 'project' ? 'is-active' : ''} onClick={() => selectScope('project')}>Project <span>{projectVariables.length}</span></button>
-      <button type="button" role="tab" aria-selected={activeScope === 'graph'} className={activeScope === 'graph' ? 'is-active' : ''} onClick={() => selectScope('graph')}>Graph <span>{variables.length}</span></button>
+      <button type="button" role="tab" aria-selected={activeView === 'variables' && activeScope === 'project'} className={activeView === 'variables' && activeScope === 'project' ? 'is-active' : ''} onClick={() => { setActiveView('variables'); selectScope('project'); }}>Project <span>{projectVariables.length}</span></button>
+      <button type="button" role="tab" aria-selected={activeView === 'variables' && activeScope === 'graph'} className={activeView === 'variables' && activeScope === 'graph' ? 'is-active' : ''} onClick={() => { setActiveView('variables'); selectScope('graph'); }}>Graph <span>{variables.length}</span></button>
+      <button type="button" role="tab" aria-selected={activeView === 'media'} className={activeView === 'media' ? 'is-active' : ''} onClick={() => setActiveView('media')}><Image size={12} /> Media <span>{mediaAssets.length}</span></button>
     </div>
-    <small className="graph-variable-scope-hint">{activeScope === 'project' ? 'Project variables are shared across graphs and always persist.' : 'Graph variables persist by default. Turn off Persist to reset a value after each run.'}</small>
+    {activeView === 'variables' && <small className="graph-variable-scope-hint">{activeScope === 'project' ? 'Project variables are shared across graphs and always persist.' : 'Graph variables persist by default. Turn off Persist to reset a value after each run.'}</small>}
   </>;
 
   const systemVariablesControl = <div className={`system-variables-menu-container ${presentation === 'sidebar' ? 'is-sidebar' : ''}`} ref={systemMenuRef}>
@@ -286,16 +293,17 @@ export function GraphVariablesModal({ isOpen, onClose, variables = [], projectVa
       </div>
     </header>
     <div className="graph-variable-tabs" role="tablist" aria-label="Variable scope">
-      <button type="button" role="tab" aria-selected={activeScope === 'project'} className={activeScope === 'project' ? 'is-active' : ''} onClick={() => selectScope('project')}>Project <span>{projectVariables.length}</span></button>
-      <button type="button" role="tab" aria-selected={activeScope === 'graph'} className={activeScope === 'graph' ? 'is-active' : ''} onClick={() => selectScope('graph')}>Graph <span>{variables.length}</span></button>
+      <button type="button" role="tab" aria-selected={activeView === 'variables' && activeScope === 'project'} className={activeView === 'variables' && activeScope === 'project' ? 'is-active' : ''} onClick={() => { setActiveView('variables'); selectScope('project'); }}>Project <span>{projectVariables.length}</span></button>
+      <button type="button" role="tab" aria-selected={activeView === 'variables' && activeScope === 'graph'} className={activeView === 'variables' && activeScope === 'graph' ? 'is-active' : ''} onClick={() => { setActiveView('variables'); selectScope('graph'); }}>Graph <span>{variables.length}</span></button>
+      <button type="button" role="tab" aria-selected={activeView === 'media'} className={activeView === 'media' ? 'is-active' : ''} onClick={() => setActiveView('media')}><Image size={12} /> Media <span>{mediaAssets.length}</span></button>
     </div>
     <div className={`graph-variables-sidebar-content ${isSaving ? 'is-saving' : ''}`}>
       {isSaving && <div className="variable-save-progress" role="status" aria-label="Saving variables"><i /></div>}
       <small className="graph-variable-scope-hint">{activeScope === 'project' ? 'Project variables are shared across graphs and always persist.' : 'Graph variables persist by default. Turn off Persist to reset a value after each run.'}</small>
-      {content}
+      {activeView === 'media' ? <ProjectMediaPanel assets={mediaAssets} canEdit={canEditProject} onUpload={onUploadMedia} onDownload={onDownloadMedia} onDelete={onDeleteMedia} onLoadContent={onLoadMediaContent} onOpenText={onOpenTextAsset} /> : content}
     </div>
   </aside> : null}{secretConversionModal}</>;
-  return <><Modal isOpen={isOpen} onClose={onClose} title="Variables" subtitle="Project-wide and graph-specific values" icon={Braces} maxWidth="lg" headerMeta={systemVariablesControl}>{scopeTabs}{content}</Modal>{secretConversionModal}</>;
+  return <><Modal isOpen={isOpen} onClose={onClose} title="Variables" subtitle="Project values and media assets" icon={Braces} maxWidth="lg" headerMeta={systemVariablesControl}>{scopeTabs}{activeView === 'media' ? <ProjectMediaPanel assets={mediaAssets} canEdit={canEditProject} onUpload={onUploadMedia} onDownload={onDownloadMedia} onDelete={onDeleteMedia} onLoadContent={onLoadMediaContent} onOpenText={onOpenTextAsset} /> : content}</Modal>{secretConversionModal}</>;
 }
 
 function defaultForType(type) {
@@ -307,7 +315,7 @@ function defaultForType(type) {
 }
 
 function isValidVariableName(name, type = '') {
-  if (isReservedTemplateRoot(name)) return false;
+  if (isReservedTemplateVariableName(name)) return false;
   if (['DISCORD_APP_ID', 'APP_LATENCY', 'GATEWAY_LATENCY', 'BOT_UPTIME'].includes(String(name || ''))) {
     return !type || type === 'number';
   }
