@@ -56,13 +56,13 @@
         ],
         "name": "ARC Studio Project",
         "description": "ARC Studio project file",
-        "mimeType": "application/vnd.arc-studio.project+json",
+        "mimeType": "application/vnd.arc-studio.project+zip",
         "role": "Editor",
         "rank": "Owner",
         "exportedType": {
           "identifier": "studio.arc.desktop.project",
           "conformsTo": [
-            "public.json"
+            "public.zip-archive"
           ]
         }
       },
@@ -72,13 +72,13 @@
         ],
         "name": "ARC Studio Graph",
         "description": "ARC Studio graph file",
-        "mimeType": "application/vnd.arc-studio.graph+json",
+        "mimeType": "application/vnd.arc-studio.graph+zip",
         "role": "Editor",
         "rank": "Owner",
         "exportedType": {
           "identifier": "studio.arc.desktop.graph",
           "conformsTo": [
-            "public.json"
+            "public.zip-archive"
           ]
         }
       }
