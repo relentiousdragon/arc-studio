@@ -740,13 +740,13 @@ export class BotManager {
   }
 
   getDesiredSlashCommands(graphs = this.getGraphs()) {
-    const definitions = graphs.flatMap((graph) => (graph.nodes || [])
+    const definitions = graphs.filter((graph) => graph?.enabled !== false).flatMap((graph) => (graph.nodes || [])
       .filter((node) => ['event_slash_command', 'event_user_command', 'event_message_command'].includes(node.type))
       .map((node) => ({ graph, node })));
     const desired = [];
     const errors = [];
     const seen = new Set();
-    if (!definitions.length) errors.push('Add a slash or context command event node to a graph before deploying.');
+    if (!definitions.length && !(this.botProfile?.managedSlashCommandNames || []).length) errors.push('Add a slash or context command event node to a graph before deploying.');
     const slashCount = definitions.filter((d) => d.node.type === 'event_slash_command').length;
     const userCount = definitions.filter((d) => d.node.type === 'event_user_command').length;
     const messageCount = definitions.filter((d) => d.node.type === 'event_message_command').length;
@@ -846,13 +846,14 @@ export class BotManager {
   }
 
   getCommandPlanHash(commands, graphs = []) {
-    const reviewedWorkspace = graphs.map((graph) => ({ id: graph.id, name: graph.name, graphType: graph.graphType, variables: graph.variables || [], nodes: graph.nodes || [], connections: graph.connections || [] }));
+    const reviewedWorkspace = graphs.map((graph) => ({ id: graph.id, name: graph.name, enabled: graph.enabled !== false, graphType: graph.graphType, variables: graph.variables || [], nodes: graph.nodes || [], connections: graph.connections || [] }));
     return createHash('sha256').update(JSON.stringify({ commands, graphs: reviewedWorkspace })).digest('hex');
   }
 
   getCommandPermissionRequirements(graphs) {
     const permissions = new Set();
-    for (const graph of graphs) for (const node of graph.nodes || []) {
+    const enabledGraphs = graphs.filter((graph) => graph?.enabled !== false);
+    for (const graph of enabledGraphs) for (const node of graph.nodes || []) {
       if (['action_send_message', 'action_edit_message'].includes(node.type)) {
         permissions.add('View Channels');
         permissions.add('Send Messages');
@@ -875,7 +876,7 @@ export class BotManager {
         for (const permission of ['View Channels', 'Send Messages', 'Create Public Threads']) permissions.add(permission);
       }
     }
-    if (graphs.some((graph) => (graph.nodes || []).some((node) => ['action_send_message', 'action_edit_message'].includes(node.type) && graph.connections?.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'embed')))) permissions.add('Embed Links');
+    if (enabledGraphs.some((graph) => (graph.nodes || []).some((node) => ['action_send_message', 'action_edit_message'].includes(node.type) && graph.connections?.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'embed')))) permissions.add('Embed Links');
     return [...permissions];
   }
 
@@ -1619,7 +1620,7 @@ export class BotManager {
     return state;
   }
 
-  saveGraph(tabId, graphData, { quiet = false } = {}) {
+  saveGraph(tabId, graphData, { quiet = false, allowEnabledChange = false } = {}) {
     if (!graphData || !Array.isArray(graphData.nodes) || !Array.isArray(graphData.connections)) {
       throw new TypeError('A graph must include nodes and connections arrays.');
     }
@@ -1629,6 +1630,11 @@ export class BotManager {
       if (reservedArgument) throw new TypeError(`“${reservedArgument.name}” is reserved for the system template namespace.`);
     }
     const previousGraph = this.graphs.get(tabId);
+    if (previousGraph && !allowEnabledChange) {
+      graphData = { ...graphData };
+      if (previousGraph.enabled === false) graphData.enabled = false;
+      else delete graphData.enabled;
+    }
     if (isFunctionGraph(graphData) && (!previousGraph || previousGraph.name !== graphData.name)) {
       const nameError = validateTemplateFunctionName(graphData.name);
       if (nameError) throw new TypeError(nameError);
@@ -1688,6 +1694,10 @@ export class BotManager {
         }
         for (const variableId of state.keys()) if (!nextIds.has(variableId)) state.delete(variableId);
       }
+    }
+    if (graphData.enabled === false && previousGraph?.enabled !== false) {
+      for (const controller of this.graphRunControllers.get(tabId) || []) controller.abort();
+      this.graphRunControllers.delete(tabId);
     }
     this.deletedGraphIds.delete(tabId);
     this.graphs.set(tabId, { ...graphData, id: tabId, updatedAt: new Date().toISOString() });
@@ -1882,7 +1892,7 @@ export class BotManager {
       const interactionState = normalizedEventName === 'INTERACTION_CREATE'
         ? sharedInteractionState || { applicationId: payload?.application_id || '', acknowledged: false, deferred: false, pending: null }
         : null;
-      const listeningGraphs = [...this.graphs.values()].filter((graph) => graph.graphType !== 'function'
+      const listeningGraphs = [...this.graphs.values()].filter((graph) => graph.enabled !== false && graph.graphType !== 'function'
         && (!onlyGraphId || graph.id === onlyGraphId)
         && (graph.nodes || []).some((node) => {
           const definition = NodeDefinitions[node.type];
@@ -1977,7 +1987,7 @@ export class BotManager {
       dispatchGraphEvent('READY', { user: this.client.user }).catch((error) => this.log('ERROR', `Bot-ready graph failed: ${error.message}`));
       this.stopCronScheduler?.();
       this.stopCronScheduler = startCronScheduler({
-        getGraphs: () => [...this.graphs.values()],
+        getGraphs: () => [...this.graphs.values()].filter((graph) => graph.enabled !== false),
         dispatch: (graph, _node, payload) => dispatchGraphEvent('CRON_TICK', payload, graph.id),
         onError: ({ graph, node, error }) => {
           const failure = { graphId: graph.id, graphName: graph.name || graph.id, nodeId: node.id, nodeLabel: node.label || 'On Schedule', error };
@@ -2052,7 +2062,7 @@ export class BotManager {
     this.client.on('gatewayDispatch', (eventName, payload) => {
       this.cacheDiscordDirectory(payload);
       if (['READY', 'MESSAGE_CREATE', 'INTERACTION_CREATE', 'GUILD_MEMBER_ADD'].includes(eventName)) return;
-      const graphNeedsEvent = [...this.graphs.values()].some((graph) => graph.graphType !== 'function'
+      const graphNeedsEvent = [...this.graphs.values()].some((graph) => graph.enabled !== false && graph.graphType !== 'function'
         && (graph.nodes || []).some((node) => NodeDefinitions[node.type]?.gatewayEvent === eventName));
       if (!graphNeedsEvent) return;
       dispatchGraphEvent(eventName, payload).catch((error) => this.log('ERROR', `Graph event ${eventName} failed: ${error.message}`));
@@ -2087,7 +2097,7 @@ export class BotManager {
   }
 
   getIntentPlan(graphs = [...this.graphs.values()]) {
-    const requiredIntents = new Set(graphs.flatMap((graph) => (graph.nodes || [])
+    const requiredIntents = new Set(graphs.filter((graph) => graph?.enabled !== false).flatMap((graph) => (graph.nodes || [])
       .flatMap((node) => NodeDefinitions[node.type]?.gatewayIntents || [])));
     const appFlags = this.botProfile?.application?.flags_new ?? this.botProfile?.application?.flags;
     let flags = null;
