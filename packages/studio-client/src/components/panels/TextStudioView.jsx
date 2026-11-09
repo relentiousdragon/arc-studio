@@ -143,7 +143,7 @@ function buildHighlightedLines(text, isJson) {
   });
 }
 
-export function TextStudioView({ label, value = '', readOnly = false, sharedDraft, remoteCursors = [], collaborators = [], appEmojis = [], graphVariables = [], templateValuePaths = [], templateSuggestions = [], templateFunctions = [], connectedTemplateArguments = [], templatePreviewValues = {}, maxLength, onApply, onClose, onDraftChange, onCursorChange }) {
+export function TextStudioView({ label, value = '', readOnly = false, plainText = false, sharedDraft, remoteCursors = [], collaborators = [], appEmojis = [], graphVariables = [], templateValuePaths = [], templateSuggestions = [], templateFunctions = [], connectedTemplateArguments = [], templatePreviewValues = {}, maxLength, onApply, onClose, onDraftChange, onCursorChange }) {
   const [draft, setDraft] = useState(String(value ?? ''));
   const [activePane, setActivePane] = useState('editor');
   const [scrollMetrics, setScrollMetrics] = useState({ top: 0, height: 0, view: 0 });
@@ -169,7 +169,7 @@ export function TextStudioView({ label, value = '', readOnly = false, sharedDraf
   const blocks = useMemo(() => countDiscordCodeBlocks(draft), [draft]);
   const characterCount = Array.from(draft).length;
   const jsonBlock = useMemo(() => /(```json[^\n]*\n)([\s\S]*?)(```)/i.exec(draft), [draft]);
-  const isJson = useMemo(() => /json/i.test(label) || Boolean(jsonBlock) || /^[\s\uFEFF]*[\[{]/.test(draft), [draft, jsonBlock, label]);
+  const isJson = useMemo(() => !plainText && (/json/i.test(label) || Boolean(jsonBlock) || /^[\s\uFEFF]*[\[{]/.test(draft)), [draft, jsonBlock, label, plainText]);
   const jsonContent = jsonBlock?.[2] ?? draft;
   const jsonIssues = useMemo(() => (isJson ? getJsonIssues(jsonContent) : []), [isJson, jsonContent]);
   const jsonIssueLineOffset = useMemo(() => (jsonBlock ? draft.slice(0, draft.indexOf(jsonBlock[0]) + jsonBlock[1].length).split('\n').length - 1 : 0), [draft, jsonBlock]);
@@ -195,7 +195,7 @@ export function TextStudioView({ label, value = '', readOnly = false, sharedDraf
       beforeInputRef.current = null;
     }
   }, [sharedDraft, draft]);
-  const highlightedLines = useMemo(() => buildHighlightedLines(draft, isJson), [draft, isJson]);
+  const highlightedLines = useMemo(() => plainText ? lines.map((line) => ({ content: line || ' ', isCode: false })) : buildHighlightedLines(draft, isJson), [draft, isJson, lines, plainText]);
   const templatePreview = useMemo(() => {
     const values = new Map(graphVariables.filter((item) => item?.name).map((item) => [item.name.toLowerCase(), item.initialValue]));
     for (const [pinId, previewValue] of Object.entries(templatePreviewValues || {})) {
@@ -454,10 +454,10 @@ export function TextStudioView({ label, value = '', readOnly = false, sharedDraf
     <header className="discord-text-studio-header">
       <button type="button" className="discord-text-studio-back" onClick={close}><ArrowLeft size={15} /><span>Back</span></button>
       <div className="discord-text-studio-title"><div><strong>Text editor</strong>{readOnly && <span className="read-only-badge">Locked (Read only)</span>}</div>
-        <div className="discord-text-studio-tabs" role="tablist" aria-label="Text editor panes">
+        {!plainText && <div className="discord-text-studio-tabs" role="tablist" aria-label="Text editor panes">
           <button type="button" role="tab" aria-selected={activePane === 'editor'} className={activePane === 'editor' ? 'is-active' : ''} onClick={() => { setActivePane('editor'); requestAnimationFrame(() => editorRef.current?.focus()); }}>Editor</button>
           <button type="button" role="tab" aria-selected={activePane === 'preview'} className={activePane === 'preview' ? 'is-active' : ''} onClick={() => setActivePane('preview')}>Template preview</button>
-        </div>
+        </div>}
         {collaborators.length > 0 && <div className="studio-collaborators" title={collaborators.map((peer) => peer.username).join(', ')} aria-label={`Editing with ${collaborators.map((peer) => peer.username).join(', ')}`}>{collaborators.slice(0, 5).map((peer) => <span key={peer.userId} style={{ '--collaborator-color': peer.color }}>{peer.username.slice(0, 1).toUpperCase()}</span>)}</div>}</div>
       <div className="discord-text-studio-actions">{!readOnly && <button type="button" className="discord-text-studio-apply" onClick={apply}>Apply</button>}<button type="button" className="discord-text-studio-close" onClick={close} aria-label="Close editor"><X size={16} /></button></div>
     </header>
