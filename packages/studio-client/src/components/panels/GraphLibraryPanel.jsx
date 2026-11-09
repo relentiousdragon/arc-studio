@@ -4,7 +4,7 @@ import { getArcUiScale } from '../../core/uiScale.js';
 import { arcEvents } from '../../core/ArcEvents.js';
 import { readAppStorage, writeAppStorage } from '../../core/storage.js';
 import { onPageBlur } from '../../core/pageFocus.js';
-import { AlertCircle, AlertTriangle, AudioLines, BookmarkPlus, Braces, Calculator, ChevronDown, ChevronRight, Clock3, Copy, Database, Download, File, FileCode2, FileImage, FileUp, FileVideo, FolderTree, GitCompare, GripVertical, Layers, MoreHorizontal, PackageOpen, Pencil, Play, Plus, Puzzle, RotateCcw, Save, Search, Sparkles, Star, Trash2, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, AudioLines, BookmarkPlus, Braces, Calculator, ChevronDown, ChevronRight, Clock3, Copy, Database, Download, File, FileCode2, FileImage, FileUp, FileVideo, FolderTree, GitCompare, GripVertical, Layers, MoreHorizontal, PackageOpen, Pencil, Play, Plus, Puzzle, RotateCcw, Save, Search, Sparkles, Star, ToggleLeft, ToggleRight, Trash2, X } from 'lucide-react';
 import { BuiltInNodeDefinitions, createDefaultNodeData, getVisibleNewNodeDefinitions, isNodeDefinitionNew, markNewNodeDefinitionsSeen } from '../nodes/nodeDefinitions.js';
 import { NodeTypeIcon } from '../nodes/NodeTypeIcon.jsx';
 import { CharacterLimit, TextInput } from '../ui/Inputs.jsx';
@@ -31,7 +31,7 @@ function readLibraryExpansion() {
 }
 
 export function GraphLibraryPanel({
-  graphs = [], graphValidationReports = new Map(), templates = [], snapshots = [], nodePrefabs = [], embedAssets = [], mediaAssets = [], graphVariables = [], graphActivity = [], definitions = BuiltInNodeDefinitions, newNodesUserKey = 'anonymous', defaultGraphId, activeGraph, openGraphIds = [], activeTabId, usageScope = 'default', desktopMode = false, canImportGraph = true, sidebarWidth = 320, activeSection: activeSectionProp, onActiveSectionChange, onSidebarResize, onClose, onOpenGraph, onOpenGraphReview, onImportGraph, onUseTemplate, onCreateGraph, onCreateFunction, onDeleteGraph, onDeleteGraphs, onDuplicateGraph, onRenameGraph, onSaveTemplate, onDeleteTemplate, onSetDefault, onExportGraph, onExportBot, exportInProgress = false, onAddNode, onAddPrefab, onDeletePrefab, onCreateEmbed, onCreateComponentsV2, onOpenEmbed, onDeleteEmbed, onManageVariables, onManageMedia, onCreateSnapshot, onDeleteSnapshot, onRestoreSnapshot
+  graphs = [], graphValidationReports = new Map(), templates = [], snapshots = [], nodePrefabs = [], embedAssets = [], mediaAssets = [], graphVariables = [], graphActivity = [], definitions = BuiltInNodeDefinitions, newNodesUserKey = 'anonymous', defaultGraphId, activeGraph, openGraphIds = [], activeTabId, usageScope = 'default', desktopMode = false, canImportGraph = true, canEditGraphs = true, sidebarWidth = 320, activeSection: activeSectionProp, onActiveSectionChange, onSidebarResize, onClose, onOpenGraph, onOpenGraphReview, onImportGraph, onUseTemplate, onCreateGraph, onCreateFunction, onDeleteGraph, onDeleteGraphs, onDuplicateGraph, onRenameGraph, onSaveTemplate, onDeleteTemplate, onSetDefault, onExportGraph, onExportBot, onSetGraphEnabled, exportInProgress = false, onAddNode, onAddPrefab, onDeletePrefab, onCreateEmbed, onCreateComponentsV2, onOpenEmbed, onDeleteEmbed, onManageVariables, onManageMedia, onCreateSnapshot, onDeleteSnapshot, onRestoreSnapshot
 }) {
   const uiScale = getArcUiScale();
   const [query, setQuery] = useState('');
@@ -742,7 +742,7 @@ export function GraphLibraryPanel({
             const report = graphValidationReports?.get?.(graph.id);
             const errorCount = report?.errors?.length || 0;
             const warningCount = report?.warnings?.length || 0;
-            return <div key={graphKey} className={`graph-library-item ${active ? 'is-active' : ''}${selected ? ' is-multi-selected' : ''} ${contextMenu?.kind === 'graph' && graphSelectionKey(contextMenu.graph) === graphKey ? 'is-context-menu-open' : ''}`} role="treeitem" aria-selected={selected} aria-current={active ? 'page' : undefined}>
+            return <div key={graphKey} className={`graph-library-item ${active ? 'is-active' : ''}${graph.enabled === false ? ' is-disabled-graph' : ''}${selected ? ' is-multi-selected' : ''} ${contextMenu?.kind === 'graph' && graphSelectionKey(contextMenu.graph) === graphKey ? 'is-context-menu-open' : ''}`} role="treeitem" aria-selected={selected} aria-current={active ? 'page' : undefined}>
               <button className={`graph-library-entry${lastSeen?.username ? ' graph-library-entry-with-activity' : ''}`} aria-pressed={selected} draggable={!desktopMode} onPointerDown={(event) => {
                 const graphIds = uniqueSelectedGraphKeys.includes(graphKey)
                   ? uniqueSelectedGraphKeys.map((key) => graphs.find((item) => graphSelectionKey(item) === key)?.id).filter(Boolean)
@@ -847,6 +847,7 @@ export function GraphLibraryPanel({
     {contextMenu && createPortal(<div ref={contextMenuRef} className="graph-context-menu" style={{ left: contextMenu.x, top: contextMenu.y, transform: `scale(${uiScale})`, transformOrigin: 'top left' }} onPointerDown={(event) => event.stopPropagation()}>
       {contextMenu.kind === 'graph' ? <>
         <button onClick={() => { onOpenGraph?.(contextMenu.graph); setContextMenu(null); }}><FileCode2 size={14} /> Open graph</button>
+        <button disabled={!canEditGraphs} title={!canEditGraphs ? 'Graph editing access required' : undefined} onClick={() => { onSetGraphEnabled?.(contextMenu.graph, contextMenu.graph.enabled === false); setContextMenu(null); }}>{contextMenu.graph.enabled === false ? <ToggleLeft size={14} /> : <ToggleRight size={14} />} {contextMenu.graph.enabled === false ? 'Enable graph' : 'Disable graph'}</button>
         <button onClick={() => { onDuplicateGraph?.(contextMenu.graph); setContextMenu(null); }}><Copy size={14} /> Duplicate graph</button>
         <button onClick={() => { onRenameGraph?.(contextMenu.graph); setContextMenu(null); }}><Pencil size={14} /> Rename graph</button>
         {Object.entries(graphCategories).filter(([id, value]) => id !== '__order' && value?.name).map(([id, value]) => <button key={id} onClick={() => { const ids = (contextMenu.graphKeys || [graphSelectionKey(contextMenu.graph)]).map((key) => graphs.find((graph) => graphSelectionKey(graph) === key)?.id).filter(Boolean); setGraphCategories((current) => Object.fromEntries(Object.entries(current).map(([key, category]) => [key, key === id ? { ...category, graphIds: [...new Set([...(category.graphIds || []), ...ids])] } : key === '__order' ? [key, category] : { ...category, graphIds: (category.graphIds || []).filter((graphId) => !ids.includes(graphId)) }]))); setContextMenu(null); }}><FolderTree size={14} /> Move to {value.name}</button>)}
