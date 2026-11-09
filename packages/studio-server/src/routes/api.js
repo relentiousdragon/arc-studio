@@ -23,11 +23,28 @@ import path from 'node:path';
 import { dataDir } from '../storage.js';
 import { botManagerContext } from '../engine/RequestBotManager.js';
 import { stableJson } from '../storage/Integrity.js';
+import { readArcArchive, validateArcAttachments } from '../storage/ArcArchive.js';
 import { readClientAccessSettings, writeClientAccessSettings, isArcStudioOrigin, isArcStudioClientIdentity } from '../security/ClientAccessPolicy.js';
 import { isArcStudioClientVersionAllowed } from '../versioning/arcProjectCompatibility.js';
 import { normalizeGraphRouteId, normalizeProjectRouteId } from './routeResourceIds.js';
+import { ProjectMediaStore } from '../engine/ProjectMediaStore.js';
 //
 const ACTIVITY_WEBHOOK_AVATAR_URL = 'https://raw.githubusercontent.com/relentiousdragon/arc-studio/main/packages/studio-client/public/arc.png';
+
+function decodeArcArchiveRequest(value, fileKind) {
+  const fileLabel = fileKind === 'project' ? 'project file' : 'graph file';
+  if (!Buffer.isBuffer(value)) {
+    throw new TypeError(`Upload a supported ARC ${fileLabel}.`);
+  }
+  if (value.length > 132 * 1024 * 1024) throw new RangeError(`The ARC ${fileLabel} exceeds the 132 MiB limit.`);
+  return value;
+}
+
+function readProjectImportPassword(req) {
+  const encoded = String(req.headers['x-arc-project-password'] || '');
+  if (encoded.length > 6000 || !/^[A-Za-z0-9_-]*$/.test(encoded)) throw new TypeError('The project password header is invalid.');
+  return Buffer.from(encoded, 'base64url').toString('utf8');
+}
 
 function graphNodeChanges(previous, next) {
   const before = new Map((previous?.nodes || []).filter((node) => node && typeof node === 'object').map((node) => [node.id, node]));
@@ -174,6 +191,105 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     if (!embedStores.has(filePath)) embedStores.set(filePath, new EmbedStore(filePath));
     return embedStores.get(filePath);
   };
+  const mediaDownloadCooldowns = new Map();
+  const mediaReadCooldowns = new Map();
+  const getProjectMediaStore = (req) => {
+    const selectedManager = managerForUser(req.user) || botManager;
+    return new ProjectMediaStore(selectedManager.projectDir || botManager.projectDir);
+  };
+  router.get('/media-assets', authMiddleware, requirePermission('graphs:read'), (req, res) => {
+    try {
+      const assets = getProjectMediaStore(req).list().map(({ data, ...metadata }) => metadata);
+      res.json({ assets });
+    } catch (error) { res.status(500).json({ error: error.message || 'Could not load project media.' }); }
+  });
+  router.post('/media-assets', authMiddleware, requirePermission('graphs:write'), (req, res) => {
+    try {
+      let input = req.body;
+      if (Buffer.isBuffer(req.body)) {
+        const filename = decodeURIComponent(String(req.headers['x-arc-filename'] || ''));
+        const contentType = decodeURIComponent(String(req.headers['x-arc-content-type'] || 'application/octet-stream'));
+        const previewType = decodeURIComponent(String(req.headers['x-arc-preview-type'] || ''));
+        const previewLength = Number(req.headers['x-arc-preview-length'] || 0);
+        let bytes = req.body;
+        let preview = '';
+        if (previewLength) {
+          if (!Number.isInteger(previewLength) || previewLength < 1 || previewLength > 256 * 1024 || req.body.length < previewLength + 4 || req.body.readUInt32BE(0) !== previewLength) throw new TypeError('The upload thumbnail is invalid.');
+          const previewBytes = req.body.subarray(4, 4 + previewLength);
+          bytes = req.body.subarray(4 + previewLength);
+          preview = `data:${previewType};base64,${previewBytes.toString('base64')}`;
+        }
+        input = { filename, contentType, bytes, preview };
+      }
+      const asset = getProjectMediaStore(req).add(input);
+      const selectedManager = managerForUser(req.user) || botManager;
+      broadcastProject(selectedManager.project?.id, { type: 'MEDIA_ASSETS_UPDATED', payload: { projectId: selectedManager.project?.id } });
+      res.status(201).json({ success: true, asset });
+    } catch (error) { res.status(error instanceof RangeError ? 413 : 400).json({ error: error.message || 'Could not save this media file.' }); }
+  });
+  router.get('/media-assets/:assetId/content', authMiddleware, requirePermission('graphs:read'), (req, res) => {
+    const selectedManager = managerForUser(req.user) || botManager;
+    const key = `${req.user?.id || 'user'}:${selectedManager.project?.id || 'project'}:${req.params.assetId}`;
+    const now = Date.now();
+    const previous = mediaReadCooldowns.get(key) || 0;
+    if (now - previous < 500) return res.status(429).json({ error: 'Wait briefly before opening this file again.', retryAfterMs: 500 - (now - previous) });
+    const asset = getProjectMediaStore(req).get(req.params.assetId);
+    if (!asset) return res.status(404).json({ error: 'Project media was not found.' });
+    mediaReadCooldowns.set(key, now);
+    if (mediaReadCooldowns.size > 5000) {
+      for (const [readKey, timestamp] of mediaReadCooldowns) if (now - timestamp > 60_000) mediaReadCooldowns.delete(readKey);
+    }
+    const { data, ...metadata } = asset;
+    res.json({ ...metadata, data });
+  });
+  router.get('/media-assets/:assetId/text', authMiddleware, requirePermission('graphs:read'), (req, res) => {
+    try {
+      const store = getProjectMediaStore(req);
+      const result = store.getBytes(req.params.assetId);
+      if (!result) return res.status(404).json({ error: 'Project media was not found.' });
+      const { asset, bytes } = result;
+      const type = String(asset.contentType || '').toLowerCase().split(';', 1)[0];
+      const textType = type.startsWith('text/') || new Set(['application/json', 'application/ld+json', 'application/xml', 'application/yaml', 'application/x-yaml', 'application/toml', 'application/javascript', 'application/x-javascript', 'application/sql', 'application/rtf', 'application/x-sh', 'application/x-httpd-php', 'image/svg+xml']).has(type);
+      const textExtension = /\.(?:txt|text|md|markdown|json|jsonl|xml|yaml|yml|toml|csv|tsv|log|ini|conf|cfg|js|jsx|mjs|cjs|ts|tsx|css|html|htm|sh|bash|py|rb|rs|go|java|c|h|cpp|hpp|sql|svg|rtf)$/i.test(asset.filename || '');
+      if (!textType && !(type === 'application/octet-stream' && textExtension)) return res.status(415).json({ error: 'This file is not recognized as text.' });
+      if (bytes.length > 1024 * 1024) return res.status(413).json({ error: 'This text file is too large to open in Text Studio. Files up to 1 MiB can be viewed.' });
+      const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+      if (text.includes('\u0000')) return res.status(415).json({ error: 'This file contains binary data and cannot be opened as text.' });
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Cache-Control', 'no-store');
+      return res.send(text);
+    } catch (error) {
+      if (error instanceof TypeError) return res.status(415).json({ error: 'This file is not valid UTF-8 text.' });
+      return res.status(500).json({ error: 'Could not open this text file.' });
+    }
+  });
+  router.get('/media-assets/:assetId/download', authMiddleware, requirePermission('graphs:read'), (req, res) => {
+    const selectedManager = managerForUser(req.user) || botManager;
+    const key = `${req.user?.id || 'user'}:${selectedManager.project?.id || 'project'}:${req.params.assetId}`;
+    const now = Date.now();
+    const previous = mediaDownloadCooldowns.get(key) || 0;
+    if (now - previous < 2000) return res.status(429).json({ error: 'Wait a moment before downloading this file again.', retryAfterMs: 2000 - (now - previous) });
+    const asset = getProjectMediaStore(req).get(req.params.assetId);
+    if (!asset) return res.status(404).json({ error: 'Project media was not found.' });
+    mediaDownloadCooldowns.set(key, now);
+    if (mediaDownloadCooldowns.size > 5000) {
+      for (const [cooldownKey, timestamp] of mediaDownloadCooldowns) if (now - timestamp > 60_000) mediaDownloadCooldowns.delete(cooldownKey);
+    }
+    const data = Buffer.from(String(asset.data).slice(String(asset.data).indexOf(',') + 1), 'base64');
+    const filename = encodeURIComponent(asset.filename).replace(/['()]/g, escape);
+    res.set({ 'Content-Type': 'application/octet-stream', 'Content-Length': data.length, 'Content-Disposition': `attachment; filename*=UTF-8''${filename}`, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, no-store' });
+    res.send(data);
+  });
+  router.delete('/media-assets/:assetId', authMiddleware, requirePermission('graphs:write'), (req, res) => {
+    const selectedManager = managerForUser(req.user) || botManager;
+    const store = getProjectMediaStore(req);
+    try {
+      if (!store.delete(req.params.assetId)) return res.status(404).json({ error: 'Project media was not found.' });
+      broadcastProject(selectedManager.project?.id, { type: 'MEDIA_ASSETS_UPDATED', payload: { projectId: selectedManager.project?.id } });
+      res.json({ success: true });
+    } catch (error) { res.status(409).json({ error: error.message || 'Could not delete this project file.' }); }
+  });
   const activityStores = new Map();
   const legacyActivityPath = path.join(dataDir, 'activity.json');
   const activityStoreForProject = (projectManager = botManager) => {
@@ -803,10 +919,10 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     } catch (error) { res.status(404).json({ error: error.message }); }
   });
 
-  router.post('/projects/:projectId/export/encrypted', requirePermission('graphs:read'), (req, res) => {
+  router.post('/projects/:projectId/export/encrypted', requirePermission('graphs:read'), async (req, res) => {
     try {
       const projectManager = managerForUser({ ...req.user, activeProjectId: req.params.projectId }) || botManager;
-      const bundle = botManager.projectStore.exportEncryptedProject(req.params.projectId, req.body?.password, {
+      const bundle = await botManager.projectStore.exportEncryptedProject(req.params.projectId, req.body?.password, {
         includeSecrets: req.body?.includeSecrets === true,
         secretValueResolver: (scope, graphId, variableId) => projectManager.getSecretValue(scope, graphId, variableId)
       });
@@ -816,20 +932,20 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     } catch (error) { res.status(400).json({ error: error.message || 'Could not encrypt the project export.' }); }
   });
 
-  router.post('/projects/import', requirePermission('graphs:write'), (req, res) => {
+  router.post('/projects/import', requirePermission('graphs:write'), async (req, res) => {
     try {
-      const submittedBundle = req.body?.bundle;
+      const submittedBundle = await readArcArchive(decodeArcArchiveRequest(req.body, 'project'), 'arc-project');
       const bundle = submittedBundle?.format === 'arc-project-encrypted'
-        ? botManager.projectStore.decryptProjectBundle(submittedBundle, req.body?.password)
+        ? await botManager.projectStore.decryptProjectBundle(submittedBundle, readProjectImportPassword(req))
         : submittedBundle;
-      if (!serverConfig.desktopMode && hasImportableTextContent(bundle) && req.body?.confirmCollaborativeText !== true) {
+      if (!serverConfig.desktopMode && hasImportableTextContent(bundle) && req.headers['x-arc-confirm-collaborative-text'] !== 'true') {
         return res.status(409).json({
           code: 'IMPORT_SHARED_CONTENT_CONFIRMATION_REQUIRED',
           workspaceName: userStore.workspaceName || 'ARC Studio Workspace'
         });
       }
       const integrityWarning = !bundle?.integrity;
-      const project = botManager.projectStore.importProject(bundle, { trusted: req.body?.trusted === true, allowOldVersion: req.body?.allowOldVersion === true, ownerId: req.user.id });
+      const project = botManager.projectStore.importProject(bundle, { trusted: req.headers['x-arc-trusted'] === 'true', allowOldVersion: req.headers['x-arc-allow-old-version'] === 'true', ownerId: req.user.id });
       managerForUser({ ...req.user, activeProjectId: project.id })?.importProjectSecretValues();
       recordTeamActivity(req, 'project.imported', `Imported project “${project.name}”`, { projectId: project.id });
       broadcastWorkspace({ type: 'PROJECTS_UPDATED', payload: botManager.projectStore.list() });
@@ -1583,8 +1699,25 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
           projectVariables = Array.isArray(storedVariables) ? storedVariables : [];
         } else projectVariables = [];
       }
+      const projectDirectory = botManager.projectStore.directory(projectId);
+      let projectMedia = [];
+      try {
+        const mediaStore = new ProjectMediaStore(projectDirectory);
+        projectMedia = mediaStore.getAll();
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+      const mediaById = new Map(projectMedia.map((asset) => [asset.id, asset]));
+      const hydrateMedia = (value, depth = 0) => {
+        if (depth > 40 || !value || typeof value !== 'object') return value;
+        if (Array.isArray(value)) return value.map((item) => hydrateMedia(item, depth + 1));
+        const asset = mediaById.get(value.assetId || value.id);
+        const hydrated = Object.fromEntries(Object.entries(value).map(([key, item]) => [key, hydrateMedia(item, depth + 1)]));
+        if (asset && value.filename === asset.filename && typeof value.data !== 'string') hydrated.data = asset.data;
+        return hydrated;
+      };
       const exportGraphs = projectGraphs.map((graph) => ({
-        ...graph,
+        ...hydrateMedia(graph),
         variables: Array.isArray(graph.variables) ? graph.variables.filter((variable) => variable?.secret !== true) : graph.variables
       }));
       projectVariables = projectVariables.filter((variable) => variable?.secret !== true);
@@ -1596,9 +1729,10 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
         projectName: project.name,
         projectAuthor: projectOwner?.username || req.user?.username || 'Unknown',
         logRetentionDays: project.logRetentionDays ?? process.env.LOG_RETENTION_DAYS ?? 7,
-        statisticsSettings: botManager.commandStatistics.getSettings()
+        statisticsSettings: botManager.commandStatistics.getSettings(),
+        mediaAssets: projectMedia
       };
-      const fingerprintInput = { graphs: exportGraphs, projectVariables, adapters, project: project.name, owner: exportSettings.projectAuthor, logRetentionDays: exportSettings.logRetentionDays, statisticsSettings: exportSettings.statisticsSettings, includeCryptoSecret, includeBotToken, botTokenDigest: includeBotToken ? createHash('sha256').update(botToken).digest('hex') : '' };
+      const fingerprintInput = { graphs: exportGraphs, projectVariables, adapters, mediaAssets: projectMedia.map(({ data, ...asset }) => asset), project: project.name, owner: exportSettings.projectAuthor, logRetentionDays: exportSettings.logRetentionDays, statisticsSettings: exportSettings.statisticsSettings, includeCryptoSecret, includeBotToken, botTokenDigest: includeBotToken ? createHash('sha256').update(botToken).digest('hex') : '' };
       const fingerprint = createHash('sha256').update(stableJson(fingerprintInput)).digest('hex');
       const cacheKey = `${projectId}:${fingerprint}`;
       let archive;
@@ -1636,31 +1770,63 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     }
   });
 
-  router.post('/graphs/import', requirePermission('graphs:write'), (req, res) => {
-    const source = req.body?.graph;
+  router.post('/graphs/import', requirePermission('graphs:write'), async (req, res) => {
+    let payload;
+    try { payload = await readArcArchive(decodeArcArchiveRequest(req.body, 'graph'), 'arc-graph'); }
+    catch (error) { return res.status(error instanceof RangeError ? 413 : 400).json({ error: error.message || 'Upload a valid .arcgraph file.' }); }
+    const source = payload?.graph;
     if (!source || !Array.isArray(source.nodes) || !Array.isArray(source.connections)) {
-      return res.status(400).json({ error: 'Choose a valid ARC Studio graph JSON file.' });
+      return res.status(400).json({ error: 'Choose a valid ARC Studio graph file.' });
+    }
+    const { integrity, ...integrityContent } = payload;
+    const digest = createHash('sha256').update(stableJson(integrityContent)).digest('hex');
+    if (!integrity || integrity.algorithm !== 'sha256' || integrity.digest !== digest) {
+      return res.status(400).json({ error: 'The graph integrity check failed. The file may be corrupted or altered.' });
     }
     if (source.nodes.length > 5000 || source.connections.length > 25000) {
       return res.status(413).json({
         error: `This graph is too large to import. It contains ${source.nodes.length} nodes and ${source.connections.length} connections which exceeds the workspace limit of 5000 nodes and 25000 connections.`
       });
     }
-    if (!serverConfig.desktopMode && hasImportableTextContent(source) && req.body?.confirmCollaborativeText !== true) {
+    try { validateArcAttachments(source); }
+    catch (error) { return res.status(error instanceof RangeError ? 413 : 400).json({ error: error.message }); }
+    if (!serverConfig.desktopMode && hasImportableTextContent(source) && req.headers['x-arc-confirm-collaborative-text'] !== 'true') {
       return res.status(409).json({
         code: 'IMPORT_SHARED_CONTENT_CONFIRMATION_REQUIRED',
         workspaceName: userStore.workspaceName || 'ARC Studio Workspace'
       });
     }
+    let importMediaStore = null;
+    let mediaBeforeImport = new Set();
+    let importedGraphSaved = false;
     try {
+      const mediaStore = getProjectMediaStore(req);
+      importMediaStore = mediaStore;
+      mediaBeforeImport = new Set(mediaStore.list().map((asset) => asset.id));
+      const normalizeAttachments = (value, depth = 0) => {
+        if (depth > 40) throw new RangeError('This graph contains data nested too deeply.');
+        if (Array.isArray(value)) return value.map((item) => normalizeAttachments(item, depth + 1));
+        if (!value || typeof value !== 'object') return value;
+        if (typeof value.data === 'string' && value.data.startsWith('data:') && typeof value.filename === 'string') {
+          const asset = mediaStore.add({ filename: value.filename, data: value.data, preview: value.preview });
+          const { data, preview, ...metadata } = value;
+          return { ...metadata, ...asset };
+        }
+        return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, normalizeAttachments(item, depth + 1)]));
+      };
       const id = `graph_import_${randomUUID()}`;
       const name = String(source.name || 'Imported graph').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 80) || 'Imported graph';
-      const graph = { ...source, id, name };
+      const graph = { ...normalizeAttachments(source), id, name };
       delete graph.isDirty;
       const saved = botManager.saveGraph(id, graph);
+      importedGraphSaved = true;
       recordTeamActivity(req, 'graph.imported', `Imported graph “${saved.name}”`, { graphId: saved.id, graphName: saved.name, graphType: saved.graphType || 'event', nodeCount: saved.nodes.length });
+      if (mediaStore.list().some((asset) => !mediaBeforeImport.has(asset.id))) broadcastProject(botManager.project?.id, { type: 'MEDIA_ASSETS_UPDATED', payload: { projectId: botManager.project?.id } });
       res.status(201).json({ success: true, graph: saved });
     } catch (error) {
+      if (importMediaStore && !importedGraphSaved) {
+        try { for (const asset of importMediaStore.list()) if (!mediaBeforeImport.has(asset.id)) importMediaStore.delete(asset.id); } catch {}
+      }
       res.status(400).json({ error: error.message || 'Could not import this graph.' });
     }
   });
@@ -1676,7 +1842,10 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
         catch { filename = 'attachment.bin'; }
       }
       filename = filename.replace(/[\\/\0-\x1f]/g, '_').slice(0, 100) || 'attachment.bin';
-      res.json({ success: true, file: { filename, contentType, data: `data:${contentType};base64,${bytes.toString('base64')}` } });
+      const asset = getProjectMediaStore(req).add({ filename, contentType, bytes });
+      const selectedManager = managerForUser(req.user) || botManager;
+      broadcastProject(selectedManager.project?.id, { type: 'MEDIA_ASSETS_UPDATED', payload: { projectId: selectedManager.project?.id } });
+      res.status(201).json({ success: true, file: asset });
     } catch (error) {
       res.status(/exceeds the .* download limit/i.test(error.message) ? 413 : 400).json({ error: error.message || 'Could not download this attachment.' });
     }
