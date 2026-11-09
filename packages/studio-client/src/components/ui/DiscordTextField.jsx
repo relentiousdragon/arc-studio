@@ -47,6 +47,13 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
     if (!match) return [];
     if (match.kind === 'template') {
       const query = match.query.toLowerCase();
+      if (match.mediaPathStage) {
+        const candidates = templateValuePaths
+          .map((item) => typeof item === 'string' ? { path: item, label: item } : item)
+          .filter((item) => item.path?.startsWith('path://') && item.path.toLowerCase().includes(query));
+        return candidates.slice(0, 8).map((item) => ({ key: `media:${item.path}`, label: item.label || item.path, insert: `${item.path}}}`, type: 'path' }));
+      }
+      if (match.environmentStage) return [{ key: 'template-env-reference', label: 'env:NAME · standalone bot environment', insert: 'env:NAME}}', type: 'system' }];
       if (match.filterStage) {
         return TEMPLATE_FILTERS
           .filter((name) => !query || name.toLowerCase().includes(query))
@@ -98,6 +105,7 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
       const combined = [
         ...variableItems,
         ...socketItems,
+        { key: 'template-env-reference', label: 'env:NAME · standalone bot environment', insert: 'env:NAME}}', type: 'system' },
         ...builtInFuncItems,
         ...customFuncItems,
         ...pathItems
@@ -250,6 +258,16 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
           return;
         }
 
+        const externalMatch = /(?:^|\s)(env:[A-Za-z0-9_]*|path:\/\/[^{}]*)$/i.exec(expression);
+        if (externalMatch) {
+          const token = externalMatch[1];
+          const environmentStage = /^env:/i.test(token);
+          const closingBrace = event.target.value.indexOf('}}', caret);
+          const end = closingBrace >= 0 && closingBrace === caret ? closingBrace + 2 : caret;
+          setMatch({ kind: 'template', start: caret - token.length, end, query: environmentStage ? token.slice(4) : token.slice(7), filterStage: false, pathStage: false, mediaPathStage: !environmentStage, environmentStage, isLone: expression.slice(0, -token.length).trim() === '' });
+          return;
+        }
+
         const tokenMatch = /([A-Za-z_$][A-Za-z0-9_$.]*)$/.exec(expression);
         const query = tokenMatch ? tokenMatch[1] : '';
         const pathStage = query.includes('.');
@@ -335,9 +353,10 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
     event.stopPropagation();
     setTextMenu({ x: Math.min(event.clientX, window.innerWidth - 210), y: Math.min(event.clientY, window.innerHeight - 54) });
   };
+  const maxLen = props.maxLength ?? undefined;
   const showSuggestions = suggestions.length > 0 || (match?.kind !== 'template' && emojiEntries === null);
   return <>
-    <Component {...fieldProps} data-template-autocomplete="native" data-soft-maxlength={props.maxLength ?? undefined} ref={inputRef} className={className} value={value} onFocus={handleFocus} onChange={onInputChange} onKeyDown={handleKeyDown} onPointerDown={onPointerDown} onContextMenu={handleContextMenu} />
+    <Component {...fieldProps} {...(maxLen !== undefined ? { maxLength: maxLen } : {})} data-template-autocomplete="native" data-soft-maxlength={props.maxLength ?? undefined} ref={inputRef} className={className} value={value} onFocus={handleFocus} onChange={onInputChange} onKeyDown={handleKeyDown} onPointerDown={onPointerDown} onContextMenu={handleContextMenu} />
     {textMenu && <div className="discord-text-context-menu" style={{ left: textMenu.x, top: textMenu.y }} role="menu"><button type="button" role="menuitem" onPointerDown={(event) => event.preventDefault()} onClick={(event) => { event.stopPropagation(); setTextMenu(null); onOpenTextEditor?.(); }}>Open in text editor</button></div>}
     {(discordAutocomplete || templateAutocomplete) && match && position && showSuggestions && createPortal(<div ref={pickerRef} className="discord-emoji-suggestions" style={{ left: position.left, top: position.top, bottom: position.bottom, width: position.width, maxHeight: position.maxHeight, overflowY: 'auto' }} role="listbox" aria-label={match.kind === 'template' ? 'Template suggestions' : 'Emoji suggestions'}>
       <div className="discord-emoji-suggestion-heading">{match.kind === 'template' ? (match.filterStage ? 'FILTER' : match.pathStage ? 'VALUE PATH' : 'TEMPLATE') : 'EMOJI'}{match.query ? ` · ${match.query}` : ''}</div>
