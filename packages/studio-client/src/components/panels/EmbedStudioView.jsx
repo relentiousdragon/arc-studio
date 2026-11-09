@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronLeft, ChevronRight, ExternalLink, Image as ImageIcon, MessageSquare, Layers, Save, Bot, Moon, Sun, Upload, X, Plus, ZoomIn } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronLeft, ChevronRight, ExternalLink, FileVideo, Image as ImageIcon, MessageSquare, Layers, Save, Bot, Moon, Sun, Upload, X, Plus, ZoomIn } from 'lucide-react';
 import { createEmbedBlock, EmbedNodeBuilder, getEmbedBlocks } from '../nodes/EmbedNodeBuilder.jsx';
 import { CharacterLimit } from '../ui/Inputs.jsx';
 import { createComponentRow, createMessageButton, createStringSelect, MessageComponentsBuilder, renderComponentEmoji, toDiscordComponents } from './MessageComponentsBuilder.jsx';
@@ -11,6 +11,7 @@ import { Button } from '../ui/Button.jsx';
 import { CustomEmoji } from '../ui/CustomEmoji.jsx';
 import { notifyStudioSwitchCancelled, useStudioEscape, useStudioSwitchClose } from './useStudioEscape.js';
 import { onPageBlur } from '../../core/pageFocus.js';
+import { isSafeImageMedia } from '../ui/mediaTypes.js';
 
 const EMPTY_ATTACHMENTS = [];
 const STUDIO_DIVIDER_WIDTH = 6;
@@ -223,6 +224,9 @@ export function EmbedStudioView({
   wiredFields = {},
   hasParentNode = false,
   attachments = EMPTY_ATTACHMENTS,
+  mediaAssets = [],
+  onUploadMedia,
+  onLoadMediaContent,
   components = [],
   componentsV2Layout = [],
   componentsV2Enabled = false,
@@ -284,6 +288,7 @@ export function EmbedStudioView({
   const [previewTheme, setPreviewTheme] = useState(() => (theme === 'light' ? 'light' : 'dark'));
   const [attachedFiles, setAttachedFiles] = useState(attachments);
   const [uploadingImage, setUploadingImage] = useState(false);
+  const [loadedMediaById, setLoadedMediaById] = useState({});
   const [attachmentStatuses, setAttachmentStatuses] = useState([]);
   const [attachmentStatusesExpanded, setAttachmentStatusesExpanded] = useState(false);
   const [thumbnailContextMenu, setThumbnailContextMenu] = useState(null);
@@ -302,6 +307,7 @@ export function EmbedStudioView({
   const activeStudioSnapRef = useRef(null);
   const v2ContainerContextMenuRef = useRef(null);
   const attachmentStatusCollapseTimerRef = useRef(null);
+  const attachmentStatusDismissTimerRef = useRef(null);
   const galleryCloseTimerRef = useRef(null);
   const completedFirstAttachmentBatchRef = useRef(false);
   useEffect(() => {
@@ -647,6 +653,7 @@ export function EmbedStudioView({
 
   useEffect(() => () => {
     window.clearTimeout(attachmentStatusCollapseTimerRef.current);
+    window.clearTimeout(attachmentStatusDismissTimerRef.current);
     window.clearTimeout(galleryCloseTimerRef.current);
   }, []);
 
@@ -923,9 +930,43 @@ export function EmbedStudioView({
   const thumbnailUrl = safePreviewUrl(thumbnail);
   const resolvePreviewImageSource = (value) => {
     const filename = attachmentName(value);
-    if (filename) return attachedFiles.find((file) => String(file.filename || '').toLowerCase() === filename.toLowerCase())?.data || '';
+    if (filename) {
+      const attachment = attachedFiles.find((file) => String(file.filename || '').toLowerCase() === filename.toLowerCase());
+      const asset = mediaAssets.find((file) => String(file.filename || '').toLowerCase() === filename.toLowerCase());
+      if (attachment && isSafeImageMedia(attachment)) return attachment.data || asset?.preview || '';
+      if (asset && isSafeImageMedia(asset)) return asset.preview || '';
+      return '';
+    }
     return safePreviewUrl(value);
   };
+  const mediaForUrl = (value) => {
+    const filename = attachmentName(value).toLowerCase();
+    const attachment = attachedFiles.find((file) => String(file.filename || '').toLowerCase() === filename);
+    const asset = mediaAssets.find((file) => String(file.filename || '').toLowerCase() === filename);
+    return { file: attachment || asset, asset };
+  };
+  const attachMediaAsset = (asset) => {
+    if (!asset?.id) return;
+    setAttachedFiles((current) => {
+      const next = [...current.filter((file) => file.id !== asset.id && String(file.filename || '').toLowerCase() !== String(asset.filename || '').toLowerCase()), { ...asset, description: '' }];
+      onAttachmentsChange?.(next);
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    if (!galleryViewer || !onLoadMediaContent) return;
+    const gallery = findV2Block(componentsV2Layout, galleryViewer.blockId);
+    const item = gallery?.items?.[galleryViewer.index];
+    if (!item) return;
+    const { file, asset } = mediaForUrl(item.url);
+    const isVideo = String(file?.contentType || asset?.contentType || '').startsWith('video/');
+    const assetId = file?.assetId || file?.id || asset?.id;
+    if (!isVideo || !assetId || file?.data || loadedMediaById[assetId]) return;
+    let cancelled = false;
+    onLoadMediaContent({ id: assetId }).then((content) => { if (!cancelled) setLoadedMediaById((current) => ({ ...current, [assetId]: content })); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [galleryViewer, componentsV2Layout, attachedFiles, mediaAssets, onLoadMediaContent, loadedMediaById]);
   const attachedImage = attachmentName(image);
   const attachedThumbnail = attachmentName(thumbnail);
   const titleUrlBlock = previewItems.find((block) => block.type === 'url');
@@ -1223,7 +1264,9 @@ export function EmbedStudioView({
         const spoilerRevealed = revealedGallerySpoilers.has(spoilerKey);
         const isOverflowTile = block.items.length > 5 && index === 4;
         const overflowCount = block.items.length - 5;
-        return <figure className="discord-v2-gallery-item" data-preview-validation-target={`${block.id}:media:${index}`} key={`${key}_media_${index}`}><button type="button" className={`discord-v2-gallery-open${item.spoiler ? ' is-spoiler' : ''}${spoilerRevealed ? ' is-revealed' : ''}${isOverflowTile ? ' has-overflow' : ''}`} data-gallery-cropped="false" data-gallery-image-available="false" aria-label={isOverflowTile ? `Show ${overflowCount} more images` : item.spoiler && !spoilerRevealed ? `Reveal spoiler image ${index + 1}` : `Edit gallery image ${index + 1} of ${block.items.length}`} onMouseEnter={(event) => updateGalleryCropState(event.currentTarget)} onClick={(event) => {
+        const { file, asset } = mediaForUrl(item.url);
+        const isVideo = String(file?.contentType || asset?.contentType || '').startsWith('video/');
+        return <figure className="discord-v2-gallery-item" data-preview-validation-target={`${block.id}:media:${index}`} key={`${key}_media_${index}`}><button type="button" className={`discord-v2-gallery-open${item.spoiler ? ' is-spoiler' : ''}${spoilerRevealed ? ' is-revealed' : ''}${isOverflowTile ? ' has-overflow' : ''}${isVideo ? ' is-video' : ''}`} data-gallery-cropped="false" data-gallery-image-available={isVideo ? 'true' : 'false'} aria-label={isOverflowTile ? `Show ${overflowCount} more media items` : item.spoiler && !spoilerRevealed ? `Reveal media ${index + 1}` : `Edit gallery media ${index + 1} of ${block.items.length}`} onMouseEnter={(event) => updateGalleryCropState(event.currentTarget)} onClick={(event) => {
           const cropped = updateGalleryCropState(event.currentTarget);
           focusV2Block(block.id, { kind: 'media', index });
           if (event.shiftKey || galleryShiftHeld) return;
@@ -1235,9 +1278,10 @@ export function EmbedStudioView({
             openGalleryViewer(block.id, index);
             return;
           }
+          if (isVideo) { openGalleryViewer(block.id, index); return; }
           if (event.currentTarget.dataset.galleryImageAvailable !== 'true') return;
           if (item.spoiler || cropped) openGalleryViewer(block.id, index);
-        }}><PreviewImage src={resolvePreviewImageSource(item.url)} className={`discord-v2-gallery-image${item.spoiler && !spoilerRevealed ? ' is-spoiler-hidden' : ''}`} alt={item.description || `Gallery image ${index + 1}`} placeholderText="Image unavailable" title={item.spoiler && !spoilerRevealed ? 'Click to reveal spoiler' : 'Edit gallery image'} onLoad={(event) => { const image = event.currentTarget; const button = image.closest('.discord-v2-gallery-open'); if (button) button.dataset.galleryImageAvailable = 'true'; requestAnimationFrame(() => updateGalleryCropState(button)); }} onError={(event) => { const button = event.currentTarget.closest('.discord-v2-gallery-open'); if (button) { button.dataset.galleryImageAvailable = 'false'; button.dataset.galleryCropped = 'false'; } }} /><span className="discord-v2-gallery-zoom" aria-hidden="true"><ZoomIn size={18} /></span>{item.spoiler && !spoilerRevealed && <span className="discord-v2-gallery-spoiler-cover" aria-hidden="true">SPOILER</span>}{isOverflowTile && <span className="discord-v2-gallery-overflow-count" aria-hidden="true">+{overflowCount}</span>}</button>{item.description && <figcaption>{item.description}</figcaption>}</figure>;
+        }}>{isVideo ? <div className="discord-v2-gallery-video-poster">{(file?.preview || asset?.preview) && <img src={file?.preview || asset?.preview} alt="" />}{!file?.preview && !asset?.preview && <FileVideo size={23} />}<span>VIDEO</span></div> : <PreviewImage src={resolvePreviewImageSource(item.url)} className={`discord-v2-gallery-image${item.spoiler && !spoilerRevealed ? ' is-spoiler-hidden' : ''}`} alt={item.description || `Gallery image ${index + 1}`} placeholderText="Image unavailable" title={item.spoiler && !spoilerRevealed ? 'Click to reveal spoiler' : 'Edit gallery image'} onLoad={(event) => { const image = event.currentTarget; const button = image.closest('.discord-v2-gallery-open'); if (button) button.dataset.galleryImageAvailable = 'true'; requestAnimationFrame(() => updateGalleryCropState(button)); }} onError={(event) => { const button = event.currentTarget.closest('.discord-v2-gallery-open'); if (button) { button.dataset.galleryImageAvailable = 'false'; button.dataset.galleryCropped = 'false'; } }} />}<span className="discord-v2-gallery-zoom" aria-hidden="true">{isVideo ? <FileVideo size={18} /> : <ZoomIn size={18} />}</span>{item.spoiler && !spoilerRevealed && <span className="discord-v2-gallery-spoiler-cover" aria-hidden="true">SPOILER</span>}{isOverflowTile && <span className="discord-v2-gallery-overflow-count" aria-hidden="true">+{overflowCount}</span>}</button>{item.description && <figcaption>{item.description}</figcaption>}</figure>;
       })}</div>
       : v2EmptyBlock('Empty media gallery');
     if (block.type === 'file') return <div className="discord-v2-file is-interactive" key={key} onClick={() => focusV2Block(block.id)} title="Click to edit attachment"><Upload size={15} /><span>{String(block.url || '').replace(/^attachment:\/\//i, '') || 'File attachment'}</span></div>;
@@ -1267,62 +1311,60 @@ export function EmbedStudioView({
 
   const addImageAttachments = async (fileList) => {
     const selectedFiles = Array.from(fileList || []);
-    if (!selectedFiles.length || uploadingImage) return;
+    if (!selectedFiles.length || uploadingImage || !onUploadMedia) return;
     window.clearTimeout(attachmentStatusCollapseTimerRef.current);
+    window.clearTimeout(attachmentStatusDismissTimerRef.current);
     attachmentStatusCollapseTimerRef.current = null;
+    attachmentStatusDismissTimerRef.current = null;
     const isFirstBatch = !completedFirstAttachmentBatchRef.current;
     const initialBatchCollapseAt = isFirstBatch ? Date.now() + 10000 : null;
     setUploadingImage(true);
     setAttachmentStatusesExpanded(true);
-    setAttachmentStatuses(selectedFiles.map((file, index) => ({ id: `${Date.now()}_${index}`, name: file.name, state: 'queued', progress: 0, message: 'Waiting' })));
+    const jobs = selectedFiles.map((file, index) => ({ id: `${Date.now()}_${index}_${Math.random()}`, file, index }));
+    setAttachmentStatuses(jobs.map(({ id, file }) => ({ id, name: file.name, state: 'queued', progress: 0, message: 'Waiting' })));
     let currentAttachments = attachedFiles;
     let currentBlocks = blocks;
     let currentBytes = currentAttachments.reduce((total, item) => total + (Number(item.size) || (String(item.data || '').startsWith('data:') ? Math.floor(String(item.data).length * 0.75) : 0)), 0);
     let currentCount = currentAttachments.length;
 
-    const updateStatus = (index, patch) => setAttachmentStatuses((statuses) => statuses.map((status, i) => i === index ? { ...status, ...patch } : status));
-    const readFile = (file, index) => new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onprogress = (event) => {
-        if (event.lengthComputable) updateStatus(index, { state: 'reading', progress: Math.min(99, Math.round(event.loaded / event.total * 100)), message: 'Reading file' });
-      };
-      reader.onload = () => resolve(String(reader.result || ''));
-      reader.onerror = () => reject(new Error('Could not read this file.'));
-      reader.onabort = () => reject(new Error('File reading was cancelled.'));
-      reader.readAsDataURL(file);
-    });
-
+    const updateStatus = (id, patch) => setAttachmentStatuses((statuses) => statuses.map((status) => status.id === id ? { ...status, ...patch } : status));
+    let cursor = 0;
     try {
-      for (const [index, file] of selectedFiles.entries()) {
-        const filename = file.name.replace(/[\\/\0-\x1f]/g, '_').slice(0, 100) || 'attachment.bin';
+      const worker = async () => {
+        while (cursor < jobs.length) {
+          const job = jobs[cursor++];
+          const { file, index, id } = job;
+          const filename = file.name.replace(/[\\/\0-\x1f]/g, '_').slice(0, 100) || 'attachment.bin';
         const existingIndex = currentAttachments.findIndex((item) => String(item.filename || '').toLowerCase() === filename.toLowerCase());
-        const maxFileBytes = componentsV2Enabled ? 24 * 1024 * 1024 : 8 * 1024 * 1024;
-        if (!componentsV2Enabled && !file.type.startsWith('image/')) { updateStatus(index, { state: 'error', message: 'Choose an image file.' }); continue; }
-        if (file.size > maxFileBytes) { updateStatus(index, { state: 'error', message: componentsV2Enabled ? 'File exceeds 24 MB.' : 'Image exceeds 8 MB.' }); continue; }
-        if (existingIndex < 0 && currentCount >= 10) { updateStatus(index, { state: 'error', message: 'A message can have up to 10 files.' }); continue; }
+          const maxFileBytes = componentsV2Enabled ? 20 * 1024 * 1024 : 8 * 1024 * 1024;
+          if (!componentsV2Enabled && !file.type.startsWith('image/')) { updateStatus(id, { state: 'error', message: 'Choose an image file.' }); continue; }
+          if (file.size > maxFileBytes) { updateStatus(id, { state: 'error', message: componentsV2Enabled ? 'File exceeds 20 MB.' : 'Image exceeds 8 MB.' }); continue; }
+          if (existingIndex < 0 && currentCount >= 10) { updateStatus(id, { state: 'error', message: 'A message can have up to 10 files.' }); continue; }
         const replacedSize = existingIndex >= 0 ? (Number(currentAttachments[existingIndex].size) || (String(currentAttachments[existingIndex].data || '').startsWith('data:') ? Math.floor(String(currentAttachments[existingIndex].data).length * 0.75) : 0)) : 0;
-        if (currentBytes - replacedSize + file.size > 24 * 1024 * 1024) { updateStatus(index, { state: 'error', message: 'Attachments must total 24 MB or less.' }); continue; }
-
-        updateStatus(index, { state: 'reading', progress: 0, message: 'Reading file' });
-        try {
-          const data = await readFile(file, index);
-          const attachment = { filename, contentType: file.type, size: file.size, data, description: '' };
-          currentAttachments = [...currentAttachments.filter((item) => String(item.filename || '').toLowerCase() !== filename.toLowerCase()), attachment];
+          if (currentBytes - replacedSize + file.size > 24 * 1024 * 1024) { updateStatus(id, { state: 'error', message: 'Attachments must total 24 MB or less.' }); continue; }
+          updateStatus(id, { state: 'uploading', progress: 0, message: 'Uploading to project media' });
+          try {
+            const asset = await onUploadMedia(file, (progress) => updateStatus(id, { progress, message: progress < 25 ? 'Reading file' : 'Uploading to project media' }));
+            if (!asset) throw new Error('The workspace did not return the uploaded file.');
+            const attachment = { ...asset, description: '' };
+            currentAttachments = [...currentAttachments.filter((item) => item.id !== asset.id && String(item.filename || '').toLowerCase() !== asset.filename.toLowerCase()), attachment];
           currentBytes = currentBytes - replacedSize + file.size;
           if (existingIndex < 0) currentCount += 1;
           setAttachedFiles(currentAttachments);
           onAttachmentsChange?.(currentAttachments);
           if (!componentsV2Enabled) {
-            if (!currentBlocks.some((block) => block.type === 'image' && String(block.url || '').toLowerCase() === `attachment://${filename}`.toLowerCase())) {
-              currentBlocks = [...currentBlocks, { id: `image_${Date.now()}_${index}`, type: 'image', url: `attachment://${filename}` }];
+            if (!currentBlocks.some((block) => block.type === 'image' && String(block.url || '').toLowerCase() === `attachment://${asset.filename}`.toLowerCase())) {
+              currentBlocks = [...currentBlocks, { id: `image_${Date.now()}_${index}`, type: 'image', url: `attachment://${asset.filename}` }];
               onBlocksChange?.(currentBlocks);
             }
           }
-          updateStatus(index, { state: 'success', progress: 100, message: 'Added to message' });
-        } catch (error) {
-          updateStatus(index, { state: 'error', message: error.message || 'Could not read this file.' });
+            updateStatus(id, { state: 'success', progress: 100, message: 'Added to message' });
+          } catch (error) {
+            updateStatus(id, { state: 'error', message: error.message || 'Could not upload this file.' });
+          }
         }
-      }
+      };
+      await Promise.all(Array.from({ length: Math.min(3, jobs.length) }, worker));
     } finally {
       setUploadingImage(false);
       completedFirstAttachmentBatchRef.current = true;
@@ -1331,6 +1373,10 @@ export function EmbedStudioView({
       } else {
         setAttachmentStatusesExpanded(false);
       }
+      attachmentStatusDismissTimerRef.current = window.setTimeout(() => {
+        setAttachmentStatuses([]);
+        setAttachmentStatusesExpanded(false);
+      }, 2500);
     }
   };
 
@@ -1421,7 +1467,7 @@ export function EmbedStudioView({
                   </span>
                 </button>}
               </div>
-              {(!componentsOnly || componentsV2Enabled) && <label className="embed-studio-upload"><Upload size={13} />{uploadingImage ? 'Adding files…' : componentsV2Enabled ? 'Attach files' : 'Choose images'}<input type="file" multiple accept={componentsV2Enabled ? undefined : 'image/*'} disabled={uploadingImage} onChange={(event) => { addImageAttachments(event.target.files); event.target.value = ''; }} /></label>}
+              {(!componentsOnly || componentsV2Enabled) && <label className="embed-studio-upload"><Upload size={13} />{uploadingImage ? 'Adding files…' : componentsV2Enabled ? 'Attach files' : 'Choose images'}<input type="file" multiple accept={componentsV2Enabled ? undefined : 'image/avif,image/gif,image/jpeg,image/png,image/webp'} disabled={uploadingImage} onChange={(event) => { addImageAttachments(event.target.files); event.target.value = ''; }} /></label>}
             </div>
           )}
 
@@ -1434,11 +1480,11 @@ export function EmbedStudioView({
             <div className="embed-studio-attachment-status-list" aria-hidden={!attachmentStatusesExpanded}>
               {attachmentStatuses.map((status) => <div className={`embed-studio-attachment-status-item is-${status.state}`} key={status.id}>
                 <div><span title={status.name}>{status.name}</span><small>{status.message}</small></div>
-                {status.state === 'reading' || status.state === 'queued'
+                {status.state === 'uploading' || status.state === 'queued'
                   ? <progress max="100" value={status.progress} aria-label={`${status.name} progress`} />
                   : <b>{status.state === 'success' ? 'Added' : 'Failed'}</b>}
               </div>)}
-              <small>Files are added to the draft now and uploaded with the graph when you save.</small>
+              <small>Project media is stored once and linked from this draft.</small>
             </div>
           </section>}
 
@@ -1481,7 +1527,10 @@ export function EmbedStudioView({
                 wiredFields={wiredFields}
                 hasParentNode={hasParentNode}
                 appEmojis={appEmojis}
+                botProfile={botProfile}
                 attachments={attachedFiles}
+                mediaAssets={mediaAssets}
+                onSelectMediaAsset={attachMediaAsset}
                 graphVariables={graphVariables}
                 connectedInputIds={new Set(Object.keys(wiredFields))}
                 templateValuePaths={templateValuePaths}
@@ -1493,7 +1542,7 @@ export function EmbedStudioView({
                 validation={validation}
               />
             ) : componentsV2Enabled ? (
-              <ComponentsV2Builder value={componentsV2Layout} focusedBlockId={focusedV2BlockId} focusedItemId={focusedV2ItemId} focusedSectionItem={focusedV2SectionItem} focusedComponentId={selectedComponentId} onSelectComponent={setSelectedComponentId} focusOnly onSelectBlock={setFocusedV2BlockId} onChange={onComponentsV2LayoutChange} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} templateFunctions={templateFunctions} appEmojis={appEmojis} attachments={attachedFiles} />
+              <ComponentsV2Builder value={componentsV2Layout} focusedBlockId={focusedV2BlockId} focusedItemId={focusedV2ItemId} focusedSectionItem={focusedV2SectionItem} focusedComponentId={selectedComponentId} onSelectComponent={setSelectedComponentId} focusOnly onSelectBlock={setFocusedV2BlockId} onChange={onComponentsV2LayoutChange} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} templateFunctions={templateFunctions} appEmojis={appEmojis} botProfile={botProfile} attachments={attachedFiles} mediaAssets={mediaAssets} onSelectMediaAsset={attachMediaAsset} />
             ) : (
               <MessageComponentsBuilder
                 rows={components}
@@ -1908,14 +1957,23 @@ export function EmbedStudioView({
       const gallery = findV2Block(componentsV2Layout, galleryViewer.blockId);
       const item = gallery?.items?.[galleryViewer.index];
       if (!item) return null;
+      const { file, asset } = mediaForUrl(item.url);
+      const assetId = file?.assetId || file?.id || asset?.id;
+      const videoSource = file?.data || loadedMediaById[assetId]?.data || '';
+      const isVideo = String(file?.contentType || asset?.contentType || '').startsWith('video/');
       const isZoomed = galleryZoom?.blockId === galleryViewer.blockId && galleryZoom?.index === galleryViewer.index;
       return createPortal(<div className={`discord-gallery-lightbox${galleryClosing ? ' is-closing' : ''}${isZoomed ? ' is-image-zoomed' : ''}`} role="dialog" aria-modal="true" aria-label={`Image ${galleryViewer.index + 1} of ${gallery.items.length}`} onClick={(event) => { if (event.target === event.currentTarget) closeGalleryViewer(); }}>
         <button type="button" className="discord-gallery-lightbox-close" aria-label="Close image viewer" title="Close image viewer" onClick={closeGalleryViewer}><X size={20} /></button>
         {gallery.items.length > 1 && <button type="button" className="discord-gallery-lightbox-nav is-previous" aria-label="Previous image" onClick={() => setGalleryViewer((current) => ({ ...current, index: (current.index - 1 + gallery.items.length) % gallery.items.length }))}><ChevronLeft size={26} /></button>}
-        <figure className="discord-gallery-lightbox-content">
-          <div className={`discord-gallery-lightbox-image-frame ${galleryZoom?.blockId === galleryViewer.blockId && galleryZoom?.index === galleryViewer.index ? 'is-zoomed' : ''}`} role="button" tabIndex={0} aria-label={galleryZoom?.blockId === galleryViewer.blockId && galleryZoom?.index === galleryViewer.index ? 'Zoom out' : 'Zoom in at pointer'} aria-pressed={galleryZoom?.blockId === galleryViewer.blockId && galleryZoom?.index === galleryViewer.index} title="Click to zoom in or out" onClick={toggleGalleryZoom} onKeyDown={handleGalleryZoomKeyDown}>
-            <PreviewImage src={resolvePreviewImageSource(item.url)} className={`discord-gallery-lightbox-image ${galleryZoom?.blockId === galleryViewer.blockId && galleryZoom?.index === galleryViewer.index ? 'is-zoomed' : ''}`} style={{ transformOrigin: `${galleryZoom?.originX ?? 50}% ${galleryZoom?.originY ?? 50}%` }} alt={item.description || `Gallery image ${galleryViewer.index + 1}`} placeholderText="Image unavailable" />
-          </div>
+        <figure className="discord-gallery-lightbox-content" onClick={(event) => { if (event.target === event.currentTarget) closeGalleryViewer(); }}>
+          {isVideo ? videoSource ? <video className="project-media-viewer-video" src={videoSource} controls playsInline preload="metadata" aria-label={file?.filename || `Video ${galleryViewer.index + 1}`} /> : <div className="discord-gallery-lightbox-image-frame"><span>Loading video…</span></div>
+            : <div className={`discord-gallery-lightbox-image-frame ${galleryZoom?.blockId === galleryViewer.blockId && galleryZoom?.index === galleryViewer.index ? 'is-zoomed' : ''}`} role="button" tabIndex={0} aria-label={galleryZoom?.blockId === galleryViewer.blockId && galleryZoom?.index === galleryViewer.index ? 'Zoom out' : 'Zoom in at pointer'} aria-pressed={galleryZoom?.blockId === galleryViewer.blockId && galleryZoom?.index === galleryViewer.index} title="Click to zoom in or out" onClick={(event) => {
+              if (event.target?.classList?.contains('discord-gallery-lightbox-image')) toggleGalleryZoom(event);
+              else if (isZoomed) setGalleryZoom(null);
+              else closeGalleryViewer();
+            }} onKeyDown={handleGalleryZoomKeyDown}>
+              <PreviewImage src={resolvePreviewImageSource(item.url)} className={`discord-gallery-lightbox-image ${galleryZoom?.blockId === galleryViewer.blockId && galleryZoom?.index === galleryViewer.index ? 'is-zoomed' : ''}`} style={{ transformOrigin: `${galleryZoom?.originX ?? 50}% ${galleryZoom?.originY ?? 50}%` }} alt={item.description || `Gallery image ${galleryViewer.index + 1}`} placeholderText="Image unavailable" />
+            </div>}
           {item.description && <figcaption>{item.description}</figcaption>}
           {gallery.items.length > 1 && <small>{galleryViewer.index + 1} / {gallery.items.length}</small>}
         </figure>
