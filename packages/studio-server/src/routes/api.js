@@ -1850,6 +1850,21 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     }
   });
 
+  router.post('/graphs/:tabId/enabled', requirePermission('graphs:write'), (req, res) => {
+    const { tabId } = req.params;
+    if (typeof req.body?.enabled !== 'boolean') return res.status(400).json({ error: 'Choose whether this graph is enabled.' });
+    const existing = botManager.getGraphs().find((graph) => graph.id === tabId);
+    if (!existing) return res.status(404).json({ error: 'Graph not found.' });
+    try {
+      const saved = botManager.saveGraph(tabId, { ...existing, enabled: req.body.enabled }, { quiet: true, allowEnabledChange: true });
+      onGraphSaved(botManager.project?.id, saved);
+      botManager.broadcastWS({ type: 'GRAPH_UPDATED', payload: { graph: saved, updatedBy: req.user?.username || 'Workspace member' } });
+      res.json({ success: true, graph: saved });
+    } catch (error) {
+      res.status(400).json({ error: error.message || 'Could not update the graph status.' });
+    }
+  });
+
   router.post('/graphs/:tabId', requirePermission('graphs:write'), (req, res) => {
     try {
       if (botManager.deletedGraphIds?.has(req.params.tabId)) {
