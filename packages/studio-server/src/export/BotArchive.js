@@ -22,6 +22,7 @@ function pickOwnFields(source, fields) {
 function projectRuntimeGraph(graph) {
   return {
     id: graph.id,
+    ...(graph.enabled === false ? { enabled: false } : {}),
     ...(graph.graphType === 'function' ? { graphType: 'function' } : {}),
     variables: (Array.isArray(graph.variables) ? graph.variables : []).map((variable) => pickOwnFields(variable, ['id', 'name', 'type', 'valueType', 'initialValue', 'persist'])),
     nodes: graph.nodes.map((node) => pickOwnFields(node, ['id', 'type', 'data', 'permission', 'requiredPermission'])),
@@ -33,6 +34,7 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
   const safeGraphs = graphs
     .filter((graph) => graph && typeof graph.id === 'string' && Array.isArray(graph.nodes) && Array.isArray(graph.connections))
     .map(projectRuntimeGraph);
+  const enabledGraphs = safeGraphs.filter((graph) => graph.enabled !== false);
   const safeProjectVariables = (Array.isArray(projectVariables) ? projectVariables : [])
     .map((variable) => pickOwnFields(variable, ['id', 'name', 'type', 'initialValue']));
   const exportedMediaAssets = (Array.isArray(exportOptions.mediaAssets) ? exportOptions.mediaAssets : []).map((asset) => {
@@ -57,7 +59,7 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
   const projectName = String(exportOptions.projectName || 'Untitled Project').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 64) || 'Untitled Project';
   const projectAuthor = String(exportOptions.projectAuthor || 'Unknown').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 32) || 'Unknown';
   const statisticsSettings = exportOptions.statisticsSettings || { enabled: true, retentionDays: 30, commandUsage: true, uniqueUsers: true, returningUsers: true };
-  const usedTypes = new Set(safeGraphs.flatMap((graph) => graph.nodes.map((node) => node?.type).filter((type) => typeof type === 'string')));
+  const usedTypes = new Set(enabledGraphs.flatMap((graph) => graph.nodes.map((node) => node?.type).filter((type) => typeof type === 'string')));
   const requiredRuntimeModules = new Set(['builders.js', 'control_flow.js', 'data.js', 'logic.js']);
   const runtimeTypeGroups = [
     [['action_console_log', 'action_console_warn', 'action_console_error'], 'console_log.js'],
@@ -693,7 +695,7 @@ function formatError(error) {
 const graphs = JSON.parse(fs.readFileSync(new URL('../graphs.json', import.meta.url), 'utf8'));
 const projectDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const requiredIntentNames = new Set(['GUILDS', 'GUILD_EMOJIS_AND_STICKERS']);
-for (const graph of graphs) for (const node of graph.nodes || []) {
+for (const graph of graphs.filter((item) => item.enabled !== false)) for (const node of graph.nodes || []) {
   for (const intent of NodeDefinitions[node.type]?.gatewayIntents || []) requiredIntentNames.add(intent);
 }
 const intents = [...requiredIntentNames].reduce((mask, name) => mask | (GatewayIntents[name] || 0), 0);
@@ -774,7 +776,12 @@ async function deploySlashCommands() {
   if (!application?.id) throw new Error('Could not get the Discord application ID.');
   const desired = [];
   const names = new Set();
-  for (const graph of graphs) for (const node of graph.nodes || []) {
+  const disabledCommandKeys = new Set(graphs.filter((graph) => graph.enabled === false).flatMap((graph) => (graph.nodes || [])
+    .filter((node) => ['event_slash_command', 'event_user_command', 'event_message_command'].includes(node.type))
+    .map((node) => (node.type === 'event_user_command' ? '2:' : node.type === 'event_message_command' ? '3:' : '1:') + String(node.data?.commandName || '').trim().toLowerCase())));
+  for (const graph of graphs) {
+    if (graph.enabled === false) continue;
+    for (const node of graph.nodes || []) {
     if (!['event_slash_command', 'event_user_command', 'event_message_command'].includes(node.type)) continue;
     const rawName = String(node.data?.commandName || '').trim();
     if (node.type === 'event_user_command' || node.type === 'event_message_command') {
@@ -807,11 +814,12 @@ async function deploySlashCommands() {
     }
     const options = normalizeSlashCommandOptions(node.data?.options || []);
     desired.push({ name, description, type: 1, ...(options.length ? { options } : {}), ...(node.data?.defaultMemberPermissions ? { default_member_permissions: String(node.data.defaultMemberPermissions) } : {}), ...(Array.isArray(node.data?.integrationTypes) ? { integration_types: node.data.integrationTypes } : {}), ...(Array.isArray(node.data?.contexts) ? { contexts: node.data.contexts } : {}) });
+    }
   }
   const current = await client.rest.getGlobalApplicationCommands(application.id);
   const commandKey = (cmd) => (Number(cmd?.type || 1)) + ':' + String(cmd?.name || '').toLowerCase();
   const desiredByKey = new Map(desired.map((command) => [commandKey(command), command]));
-  const payload = (Array.isArray(current) ? current : []).map((command) => {
+  const payload = (Array.isArray(current) ? current : []).filter((command) => !disabledCommandKeys.has(commandKey(command)) || desiredByKey.has(commandKey(command))).map((command) => {
     const raw = Object.fromEntries(['name', 'name_localizations', 'description', 'description_localizations', 'options', 'default_member_permissions', 'dm_permission', 'default_permission', 'integration_types', 'contexts', 'nsfw', 'type'].filter((key) => command[key] !== undefined).map((key) => [key, command[key]]));
     const key = commandKey(command);
     return desiredByKey.has(key) ? { ...raw, ...desiredByKey.get(key) } : raw;
@@ -826,7 +834,7 @@ client.on('ready', () => {
   writeLog('INFO', 'Connected as ' + (client.user?.username || 'Discord bot') + '; ' + graphs.length + ' graph(s) loaded.');
   stopCronScheduler?.();
   stopCronScheduler = startCronScheduler({
-    getGraphs: () => graphs,
+    getGraphs: () => graphs.filter((graph) => graph.enabled !== false),
     dispatch: async (graph, _node, payload) => {
       const result = await trackGraphRun(GraphRunner.execute(graph, 'CRON_TICK', payload, graphContext(graph)));
       if (result.error && !graphRunAbortController.signal.aborted) writeLog('ERROR', '[Graph ' + graph.id + '] ' + result.error);
@@ -854,7 +862,7 @@ client.on('messageCreate', async (message) => {
 client.on('interactionCreate', async (interaction) => {
   if (Number(interaction.type) === 4) {
     const commandName = String(interaction.data?.name || '').toLowerCase();
-    const graph = graphs.find((item) => (item.nodes || []).some((node) => node.type === 'event_slash_command' && String(node.data?.commandName || '').toLowerCase() === commandName));
+    const graph = graphs.find((item) => item.enabled !== false && (item.nodes || []).some((node) => node.type === 'event_slash_command' && String(node.data?.commandName || '').toLowerCase() === commandName));
     const commandNode = graph?.nodes?.find((node) => node.type === 'event_slash_command' && String(node.data?.commandName || '').toLowerCase() === commandName);
     const findFocusedPath = (options, path = []) => {
       for (const option of options || []) {
@@ -909,7 +917,7 @@ client.on('error', (error) => writeLog('ERROR', 'Chezcord: ' + formatError(error
 client.on('fatalError', (error) => { writeLog('ERROR', 'Fatal gateway error: ' + formatError(error)); process.exitCode = 1; void shutdown('fatal gateway error'); });
 async function dispatchGraphs(eventName, payload, onlyGraphId = null, interactionState = null) {
   if (stopping || graphRunAbortController.signal.aborted) return;
-  const run = Promise.all(graphs.filter((graph) => !onlyGraphId || graph.id === onlyGraphId).map(async (graph) => {
+  const run = Promise.all(graphs.filter((graph) => graph.enabled !== false && (!onlyGraphId || graph.id === onlyGraphId)).map(async (graph) => {
     try {
       const result = await GraphRunner.execute(graph, eventName, payload, graphContext(graph, payload, interactionState));
       if (result.error && !graphRunAbortController.signal.aborted) writeLog('ERROR', '[Graph ' + graph.id + '] Event ' + eventName + ' failed: ' + result.error);
