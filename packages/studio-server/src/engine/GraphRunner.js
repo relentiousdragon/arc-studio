@@ -124,6 +124,7 @@ export class GraphRunner {
    * @returns {Promise<{ executedNodeIds: string[], traces: string[], error: any }>}
    */
   static async execute(graph, eventName, eventPayload, context) {
+    if (graph?.enabled === false) return { executedNodeIds: [], traces: [], error: null, disabled: true };
     const { nodes = [], connections = [] } = graph;
     const projectMediaById = (() => {
       try {
