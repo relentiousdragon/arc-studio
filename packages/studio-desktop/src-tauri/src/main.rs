@@ -440,7 +440,7 @@ fn get_staged_update_status<R: tauri::Runtime>(app: tauri::AppHandle<R>, channel
 }
 
 #[tauri::command]
-fn read_arc_project_file(path: String) -> Result<String, String> {
+fn read_arc_project_file(path: String) -> Result<Vec<u8>, String> {
     let path = PathBuf::from(path);
     if !is_arc_project_path(&path) {
         return Err("Choose an .arcproject file.".to_string());
@@ -449,18 +449,18 @@ fn read_arc_project_file(path: String) -> Result<String, String> {
     if !metadata.is_file() || metadata.len() > 128 * 1024 * 1024 {
         return Err("The project file is too large to open.".to_string());
     }
-    fs::read_to_string(path).map_err(|error| format!("Could not read the project file: {error}"))
+    fs::read(path).map_err(|error| format!("Could not read the project file: {error}"))
 }
 
 fn is_arc_graph_path(path: &Path) -> bool {
     path.file_name().and_then(|name| name.to_str()).is_some_and(|name| {
         let name = name.to_ascii_lowercase();
-        name.ends_with(".arcgraph") || name.ends_with(".arc.json") || name.ends_with(".arcgraph.json") || name.ends_with(".graph.json")
+        name.ends_with(".arcgraph")
     })
 }
 
 #[tauri::command]
-fn read_arc_graph_file(path: String) -> Result<String, String> {
+fn read_arc_graph_file(path: String) -> Result<Vec<u8>, String> {
     let path = PathBuf::from(path);
     if !is_arc_graph_path(&path) {
         return Err("Choose an .arcgraph file.".to_string());
@@ -469,7 +469,7 @@ fn read_arc_graph_file(path: String) -> Result<String, String> {
     if !metadata.is_file() || metadata.len() > 128 * 1024 * 1024 {
         return Err("The graph file is too large to open.".to_string());
     }
-    fs::read_to_string(path).map_err(|error| format!("Could not read the graph file: {error}"))
+    fs::read(path).map_err(|error| format!("Could not read the graph file: {error}"))
 }
 
 #[derive(serde::Serialize)]
@@ -480,7 +480,7 @@ struct ProjectExportReceipt {
 }
 
 #[tauri::command]
-fn save_project_export<R: tauri::Runtime>(app: tauri::AppHandle<R>, filename: String, contents: String) -> Result<ProjectExportReceipt, String> {
+fn save_project_export<R: tauri::Runtime>(app: tauri::AppHandle<R>, filename: String, contents: Vec<u8>) -> Result<ProjectExportReceipt, String> {
     if contents.len() > 128 * 1024 * 1024 {
         return Err("The project export is too large to save.".to_string());
     }
@@ -506,7 +506,7 @@ fn save_project_export<R: tauri::Runtime>(app: tauri::AppHandle<R>, filename: St
             Ok(mut file) => {
                 #[cfg(unix)]
                 file.set_permissions(fs::Permissions::from_mode(0o600)).map_err(|error| format!("Could not secure the project export: {error}"))?;
-                file.write_all(contents.as_bytes()).map_err(|error| {
+                file.write_all(&contents).map_err(|error| {
                     let _ = fs::remove_file(&path);
                     format!("Could not write the project export: {error}")
                 })?;
@@ -551,7 +551,7 @@ fn open_project_window(project_id: String) -> Result<(), String> {
 fn is_arc_project_path(path: &Path) -> bool {
     path.file_name().and_then(|name| name.to_str()).is_some_and(|name| {
         let name = name.to_ascii_lowercase();
-        name.ends_with(".arcproject") || name.ends_with(".arcproject.json")
+        name.ends_with(".arcproject")
     })
 }
 
