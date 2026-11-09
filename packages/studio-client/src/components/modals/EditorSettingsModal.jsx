@@ -137,7 +137,7 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
   }, [isOpen, activeTab, authToken, activeProjectId]);
 
   useEffect(() => {
-    if (!isOpen || activeTab !== 'collaboration' || !authToken || !externalWorkspace || !canManageClientAccess) return undefined;
+    if (!isOpen || activeTab !== 'collaboration' || !authToken || !externalWorkspace) return undefined;
     if (!networkOnline) { setClientAccessMessage('Connect to the workspace to load this setting.'); return undefined; }
     let active = true;
     setClientAccessLoading(true);
@@ -150,9 +150,10 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
       .catch((error) => { if (active) setClientAccessMessage(error.message || 'Could not load client access settings.'); })
       .finally(() => { if (active) setClientAccessLoading(false); });
     return () => { active = false; };
-  }, [isOpen, activeTab, authToken, externalWorkspace, canManageClientAccess, networkOnline]);
+  }, [isOpen, activeTab, authToken, externalWorkspace, networkOnline]);
 
   const saveClientAccess = async (allow) => {
+    if (!canManageClientAccess) return;
     setClientAccessSaving(true);
     setClientAccessMessage('Saving…');
     try {
@@ -289,9 +290,10 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
         <small className="settings-shortcut-hint">Project owners and workspace admins can change this.</small>
       </> : <p className="settings-description">Local Workspace is exempt from idle disconnects.</p>}
       {!networkOnline && <small className="settings-shortcut-hint">Live collaboration pauses while this device is offline. The workspace keeps the last graph state it received.</small>}
-      {externalWorkspace && canManageClientAccess && <>
+      {externalWorkspace && <>
         <div className="settings-section-heading"><span>Client access</span></div>
-        <Toggle label="Allow unknown clients" description="Allows other compatible clients to connect." checked={allowUnknownClients} disabled={clientAccessLoading || clientAccessSaving || !networkOnline} onChange={saveClientAccess} />
+        <Toggle label="Allow unknown clients" description="Let compatible apps connect to this workspace." checked={allowUnknownClients} disabled={!canManageClientAccess || clientAccessLoading || clientAccessSaving || !networkOnline} onChange={saveClientAccess} />
+        {!canManageClientAccess && <small className="settings-shortcut-hint">Only the workspace owner can change client access.</small>}
         {clientAccessMessage && <small className="settings-shortcut-hint" role="status">{clientAccessMessage}</small>}
       </>}
       <div className="settings-section-heading"><span>Automatic snapshots</span></div>
@@ -304,6 +306,9 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
           ['12', '12 hours'], ['24', '1 day'], ['168', '7 days'], ['720', '30 days'], ['2160', '90 days'], ['4320', '180 days'], ['8760', '365 days'], ['0', 'Forever']
         ].map(([value, label]) => ({ value, label }))} onChange={(value) => update('snapshotRetentionHours', Number(value))} />
       </div>
+      <div className="settings-section-heading"><span>Graph chat</span></div>
+      <Toggle label="Keep chat visible" description="Keep chat messages on the feed." checked={settings.keepChatMessagesVisible !== false} onChange={(value) => update('keepChatMessagesVisible', value)} />
+      <Toggle label="Hide canvas bubbles" description="Keep chat in the feed without canvas bubbles." checked={settings.disableChatBubbles === true} onChange={(value) => update('disableChatBubbles', value)} />
     </div>}
 
     {activeTab === 'logs' && <div className="settings-section settings-tab-content">
