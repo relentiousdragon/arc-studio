@@ -4,7 +4,7 @@ import { getArcUiScale } from '../../core/uiScale.js';
 import { onPageBlur } from '../../core/pageFocus.js';
 import { getContrastTextColor } from '../../core/colorContrast.js';
 import {
-  AlertCircle, AlertTriangle, ArrowLeftRight, Check, BookmarkPlus, Calculator, CircleAlert, ChevronDown, CircleUserRound, Copy, Download, FilePlus2, LockKeyhole, LogOut, Pencil, Sparkles, Star,
+  AlertCircle, AlertTriangle, ArrowLeftRight, Check, BookmarkPlus, Calculator, CircleAlert, ChevronDown, CircleUserRound, Copy, Download, FilePlus2, LoaderCircle, LockKeyhole, LogOut, Pencil, Sparkles, Star,
   LockOpen, Play, Redo2, Save, Settings2, Square, Undo2, Users, WifiOff, X
 } from 'lucide-react';
 //
@@ -15,7 +15,7 @@ function getCollaboratorColor(userId) {
   return COLLABORATOR_COLORS[(hash >>> 0) % COLLABORATOR_COLORS.length];
 }
 export function TopBar({
-  tabs = [], graphTabStatuses = new Map(), projectCollaborators = [], activeTabId, saveFeedbackGraphId, hideGraphSave = false, botStatus = 'DISCONNECTED', botProfile, currentUser, graphTemplates = [], defaultGraphId = 'tab_slash_help',
+  tabs = [], loadingGraphIds = [], isWorkspaceLoading = false, graphTabStatuses = new Map(), projectCollaborators = [], activeTabId, saveFeedbackGraphId, hideGraphSave = false, botStatus = 'DISCONNECTED', botProfile, currentUser, graphTemplates = [], defaultGraphId = 'tab_slash_help',
   desktopMode = false, localWorkspace = false, workspaceLabel = '', activeProjectId = '', uploadProgress = null, shortcutPlatform = 'windows',
   isLocked = false, onToggleLock, onSelectTab, onFollowCollaborator,
   onAddTab, onAddBlankGraph, onAddFunctionGraph, onNewEmbed, onUseTemplate, onCloseTab, onSaveGraph, onRenameGraph, onDuplicateGraph, onSetDefault, onOpenSettings, onOpenUsers, onLogout,
@@ -110,8 +110,10 @@ export function TopBar({
       </div>
 
       <div className="graph-tabs" role="tablist" aria-label="Graphs">
+        {!tabs.length && isWorkspaceLoading && <div className="graph-tab is-active is-loading" role="presentation"><button className="graph-tab-select" role="tab" aria-selected="true" aria-busy="true" disabled><LoaderCircle className="graph-tab-loading-icon" size={13} /><span className="graph-tab-name">Loading graph…</span></button></div>}
         {tabs.map((tab) => {
           const active = tab.id === activeTabId;
+          const isLoading = loadingGraphIds.includes(tab.id);
           const graphStatus = graphTabStatuses.get(tab.id);
           const hasErrors = Boolean(graphStatus?.hasErrors);
           const unsaved = graphStatus ? graphStatus.unsaved : Boolean(tab.isDirty);
@@ -126,7 +128,7 @@ export function TopBar({
               setTabMenu({ tab, x: Math.max(8, Math.min(event.clientX, window.innerWidth - 198 * uiScale)) / uiScale, y: Math.max(8, Math.min(event.clientY, window.innerHeight - 150 * uiScale)) / uiScale });
             }}>
               <button className={`graph-tab-select${tabCollaborators.length ? ' has-collaborators' : ''}`} role="tab" aria-selected={active} onClick={() => onSelectTab?.(tab.id)} title={tab.name}>
-                {hasErrors ? <AlertTriangle className="graph-tab-status-error" size={13} aria-label={statusTitle} title={statusTitle} /> : unsaved ? <span className="graph-tab-dirty" role="img" aria-label={statusTitle} title={statusTitle} /> : null}
+                {isLoading ? <LoaderCircle className="graph-tab-loading-icon" size={13} aria-label={`Loading ${tab.name || 'graph'}`} /> : hasErrors ? <AlertTriangle className="graph-tab-status-error" size={13} aria-label={statusTitle} title={statusTitle} /> : unsaved ? <span className="graph-tab-dirty" role="img" aria-label={statusTitle} title={statusTitle} /> : null}
                 <span className="graph-tab-name">{tab.name || 'Untitled graph'}</span>
                 {defaultGraphId === tab.id && <Star className="graph-default-star" size={11} fill="currentColor" title="Default for new graphs" />}
               </button>
@@ -138,7 +140,8 @@ export function TopBar({
             </div>
           );
         })}
-        <button className={`topbar-icon-button new-tab-button${tabs.length === 0 ? ' is-empty' : ''}`} onClick={() => onAddTab?.()} onContextMenu={(event) => {
+        <button className={`topbar-icon-button new-tab-button${tabs.length === 0 ? ' is-empty' : ''}`} onClick={() => onAddTab?.()} disabled={isWorkspaceLoading} onContextMenu={(event) => {
+          if (isWorkspaceLoading) { event.preventDefault(); return; }
           event.preventDefault();
           const templatesHeight = Math.min(graphTemplates.length, 4) * 32 + (graphTemplates.length ? 30 : 0);
           const height = 200 + templatesHeight;
@@ -147,9 +150,9 @@ export function TopBar({
       </div>
 
       {newGraphMenu && createPortal(<div ref={newGraphMenuRef} className="graph-context-menu new-graph-context-menu" style={{ left: newGraphMenu.x, top: newGraphMenu.y, transform: `scale(${uiScale})`, transformOrigin: 'top left' }} onPointerDown={(event) => event.stopPropagation()}>
-        <button onClick={() => { onAddTab?.(); setNewGraphMenu(null); }}><FilePlus2 size={14} /> New graph</button>
-        <button onClick={() => { onAddBlankGraph?.(); setNewGraphMenu(null); }}><FilePlus2 size={14} /> Create new blank graph</button>
-        <button onClick={() => { onAddFunctionGraph?.(); setNewGraphMenu(null); }}><Calculator size={14} /> New function graph</button>
+        <button disabled={isWorkspaceLoading} onClick={() => { onAddTab?.(); setNewGraphMenu(null); }}><FilePlus2 size={14} /> New graph</button>
+        <button disabled={isWorkspaceLoading} onClick={() => { onAddBlankGraph?.(); setNewGraphMenu(null); }}><FilePlus2 size={14} /> Create new blank graph</button>
+        <button disabled={isWorkspaceLoading} onClick={() => { onAddFunctionGraph?.(); setNewGraphMenu(null); }}><Calculator size={14} /> New function graph</button>
         <button onClick={() => { onNewEmbed?.(); setNewGraphMenu(null); }}><Sparkles size={14} /> New embed graph</button>
         {graphTemplates.length > 0 && <>
           <div className="context-menu-heading"><BookmarkPlus size={13} /> Templates</div>
