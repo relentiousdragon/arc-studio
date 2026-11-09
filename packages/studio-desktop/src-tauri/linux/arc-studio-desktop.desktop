@@ -7,4 +7,4 @@ Icon=arc-studio-desktop
 Name=ARC Studio
 Terminal=false
 Type=Application
-MimeType=application/vnd.arc-studio.project+json;application/vnd.arc-studio.graph+json;x-scheme-handler/arcstudio;
+MimeType=application/vnd.arc-studio.project+zip;application/vnd.arc-studio.graph+zip;x-scheme-handler/arcstudio;
