@@ -818,7 +818,6 @@ export function SplashScreen({
               ? <div className="workspace-connect-warning" role="alert"><AlertTriangle size={15} aria-hidden="true" /><span>{compatibilityDetailsLink(connectError || workspaceError)}</span></div>
               : renderInlineError(connectError || workspaceError))}
             <button className="workspace-connect-button" type="submit" disabled={!networkOnline || connecting || !remoteUrl.trim()}>{connecting ? <><LoaderCircle size={14} className="is-spinning" /> Connecting</> : <>Continue <ArrowRight size={14} /></>}</button>
-            {workspaceMode === 'remote' && <button className="auth-back" type="button" onClick={() => { setShowWorkspaceUrl(false); setConnectError(''); setError(''); }}><ArrowLeft size={14} /> Back to sign in</button>}
           </form>}
 
           {!needsProjectOnboarding && desktopMode && workspaceMode === 'remote' && !showWorkspaceUrl && <button className="auth-back workspace-change-server" type="button" onClick={() => { setShowWorkspaceUrl(true); setConnectError(''); setError(''); }}>Change workspace URL</button>}
