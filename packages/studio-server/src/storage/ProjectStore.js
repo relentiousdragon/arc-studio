@@ -6,12 +6,14 @@ import { serverConfig } from '../config.js';
 import { getStarterProject } from './StarterProjects.js';
 import { compareArcStudioVersions, currentArcStudioVersion, projectVersionAge } from '../versioning/arcProjectCompatibility.js';
 import { withIntegrity, verifyIntegrity } from './Integrity.js';
+import { createArcArchive, readArcArchive, validateArcAttachments } from './ArcArchive.js';
+import { ProjectMediaStore } from '../engine/ProjectMediaStore.js';
 
 const registryPath = path.join(dataDir, 'projects.json');
 const projectRoot = path.resolve(process.env.ARC_PROJECTS_DIR?.trim() || path.join(dataDir, 'projects'));
-const projectFiles = ['graphs.json', 'graph-library.json', 'bot-config.json', 'statistics.json', 'embeds.json', 'project-variables.json'];
+const projectFiles = ['graphs.json', 'graph-library.json', 'bot-config.json', 'statistics.json', 'embeds.json', 'project-variables.json', 'media-assets.json'];
 const DEFAULT_MAX_PROJECTS = 10;
-const PROJECT_EXPORT_KDF = Object.freeze({ N: 32768, r: 8, p: 1 });
+const PROJECT_EXPORT_KDF = Object.freeze({ N: 131072, r: 8, p: 1 });
 const PROJECT_EXPORT_AAD = 'arc-studio-encrypted-project-v1';
 //
 function normalizeExportPassword(password) {
@@ -19,23 +21,24 @@ function normalizeExportPassword(password) {
   return password;
 }
 
-function encryptProjectBundle(bundle, password) {
+async function encryptProjectBundle(bundle, password) {
   normalizeExportPassword(password);
   const salt = randomBytes(16);
   const iv = randomBytes(12);
-  const key = scryptSync(password, salt, 32, { ...PROJECT_EXPORT_KDF, maxmem: 128 * 1024 * 1024 });
+  const key = scryptSync(password, salt, 32, { ...PROJECT_EXPORT_KDF, maxmem: 256 * 1024 * 1024 });
   const cipher = createCipheriv('aes-256-gcm', key, iv);
   cipher.setAAD(Buffer.from(PROJECT_EXPORT_AAD));
-  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(bundle), 'utf8'), cipher.final()]);
+  const archive = await createArcArchive(bundle);
+  const ciphertext = Buffer.concat([cipher.update(archive), cipher.final()]);
   return {
-    format: 'arc-project-encrypted', version: 1, cipher: 'aes-256-gcm', kdf: 'scrypt', ...PROJECT_EXPORT_KDF,
+    format: 'arc-project-encrypted', version: 3, cipher: 'aes-256-gcm', kdf: 'scrypt', ...PROJECT_EXPORT_KDF,
     salt: salt.toString('base64'), iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), data: ciphertext.toString('base64')
   };
 }
 
-function decryptProjectBundle(envelope, password) {
+async function decryptProjectBundle(envelope, password) {
   normalizeExportPassword(password);
-  if (!envelope || envelope.format !== 'arc-project-encrypted' || envelope.version !== 1 || envelope.cipher !== 'aes-256-gcm'
+  if (!envelope || envelope.format !== 'arc-project-encrypted' || envelope.version !== 3 || envelope.cipher !== 'aes-256-gcm'
     || envelope.kdf !== 'scrypt' || envelope.N !== PROJECT_EXPORT_KDF.N || envelope.r !== PROJECT_EXPORT_KDF.r || envelope.p !== PROJECT_EXPORT_KDF.p) {
     throw new TypeError('This encrypted project format is not supported.');
   }
@@ -45,12 +48,12 @@ function decryptProjectBundle(envelope, password) {
     const tag = Buffer.from(envelope.tag, 'base64');
     const data = Buffer.from(envelope.data, 'base64');
     if (salt.length !== 16 || iv.length !== 12 || tag.length !== 16 || data.length > 128 * 1024 * 1024) throw new Error('Invalid encrypted project data.');
-    const key = scryptSync(password, salt, 32, { ...PROJECT_EXPORT_KDF, maxmem: 128 * 1024 * 1024 });
+    const key = scryptSync(password, salt, 32, { ...PROJECT_EXPORT_KDF, maxmem: 256 * 1024 * 1024 });
     const decipher = createDecipheriv('aes-256-gcm', key, iv);
     decipher.setAAD(Buffer.from(PROJECT_EXPORT_AAD));
     decipher.setAuthTag(tag);
-    const plaintext = Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8');
-    const bundle = JSON.parse(plaintext);
+    const plaintext = Buffer.concat([decipher.update(data), decipher.final()]);
+    const bundle = await readArcArchive(plaintext, 'arc-project');
     if (!bundle || bundle.format !== 'arc-project') throw new Error('Invalid project payload.');
     return bundle;
   } catch {
@@ -78,7 +81,7 @@ function writeStarterFiles(destination, starter) {
         ? { graphs: [], deletedIds: [] }
         : filename === 'graph-library.json'
           ? { defaultGraphId: '', templates: [], snapshots: [] }
-          : filename === 'embeds.json' || filename === 'project-variables.json' ? [] : {};
+          : filename === 'embeds.json' || filename === 'project-variables.json' || filename === 'media-assets.json' ? [] : {};
       const value = Object.hasOwn(files, filename) ? structuredClone(files[filename]) : fallback;
       const temporaryPath = path.join(destination, `.${filename}.tmp`);
       fs.writeFileSync(temporaryPath, JSON.stringify(value, null, 2), { mode: 0o600 });
@@ -259,8 +262,10 @@ export class ProjectStore {
     const files = {};
     for (const filename of projectFiles) {
       try { files[filename] = JSON.parse(fs.readFileSync(path.join(this.directory(id), filename), 'utf8')); }
-      catch { files[filename] = filename === 'graphs.json' ? { graphs: [], deletedIds: [] } : filename === 'graph-library.json' ? { templates: [], snapshots: [] } : {}; }
+      catch { files[filename] = filename === 'graphs.json' ? { graphs: [], deletedIds: [] } : filename === 'graph-library.json' ? { templates: [], snapshots: [] } : ['embeds.json', 'project-variables.json', 'media-assets.json'].includes(filename) ? [] : {}; }
     }
+    const mediaStore = new ProjectMediaStore(this.directory(id));
+    files['media-assets.json'] = mediaStore.getAll();
     let sensitiveCount = 0;
     const defaultValueForType = (type) => type === 'number' ? 0 : type === 'boolean' ? false : type === 'array' ? [] : type === 'object' ? {} : '';
     const sanitizeVariables = (variables, scope, graphId, allowSecretValues = true) => variables.map((variable) => {
@@ -334,6 +339,7 @@ export class ProjectStore {
       error.code = 'PROJECT_INTEGRITY_FAILED';
       throw error;
     }
+    validateArcAttachments(bundle.files, 100 * 1024 * 1024);
     const createdWithVersion = bundle.project?.createdWithVersion;
     const versionOrder = createdWithVersion ? compareArcStudioVersions(createdWithVersion, currentArcStudioVersion) : null;
     if (versionOrder === 1) {
@@ -362,10 +368,12 @@ export class ProjectStore {
     try {
       for (const filename of projectFiles) {
         if (!Object.prototype.hasOwnProperty.call(bundle.files, filename)) continue;
+        if (filename === 'media-assets.json') continue;
         const content = JSON.stringify(bundle.files[filename], null, 2);
-        if (content.length > 40 * 1024 * 1024) throw new RangeError(`Project file ${filename} is too large.`);
+        if (content.length > 180 * 1024 * 1024) throw new RangeError(`Project file ${filename} is too large.`);
         fs.writeFileSync(path.join(destination, filename), content, { mode: 0o600 });
       }
+      new ProjectMediaStore(destination).importAssets(bundle.files['media-assets.json'] || []);
       this.projects.push(project);
       this.persist();
       return { ...project };
