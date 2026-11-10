@@ -91,6 +91,36 @@ test('data node runtime preserves value conversion, path, and regex behavior', (
   assert.equal(evaluateDataNode('data_regex', { text: 'aaa', pattern: '(a+)+$', flags: 'g' }, {}).valid, false);
 });
 
+test('content scan data node reads attachment, embed, and unfurled media flags', () => {
+  const result = evaluateDataNode('data_check_content_scan', { message: {
+    flags: 1 << 4,
+    attachments: [{ id: 'attachment-1', flags: 1 << 4 }],
+    embeds: [{ type: 'image', flags: 1 << 6, components: [{ type: 12, items: [{ media: { content_scan_metadata: { flags: 1 << 0 } } }] }] }],
+    components: [{ type: 12, items: [{ media: { content_scan_metadata: { flags: 1 << 2 } } }] }],
+    message_snapshots: [{ message: { embeds: [{ type: 'image', flags: 1 << 7 }] } }]
+  } });
+
+  assert.equal(result.contains_explicit, true);
+  assert.equal(result.contains_gore, true);
+  assert.equal(result.contains_self_harm, true);
+  assert.equal(result.contains_flagged_content, true);
+  assert.equal(result.scan_metadata_present, true);
+  assert.equal(result.scanned_item_count, 5);
+  assert.equal(result.flagged_item_count, 5);
+  assert.deepEqual(result.findings.map(({ source }) => source), ['attachment', 'embed', 'unfurled_media', 'unfurled_media', 'embed']);
+});
+
+test('content scan data node distinguishes absent metadata from present unflagged metadata', () => {
+  const absent = evaluateDataNode('data_check_content_scan', { message: { attachments: [{}] } });
+  const clear = evaluateDataNode('data_check_content_scan', { message: { attachments: [{ flags: 0 }] } });
+
+  assert.equal(absent.scan_metadata_present, false);
+  assert.equal(absent.contains_flagged_content, false);
+  assert.equal(clear.scan_metadata_present, true);
+  assert.equal(clear.scanned_item_count, 1);
+  assert.equal(clear.contains_flagged_content, false);
+});
+
 test('current timestamp returns matching Unix milliseconds and ISO time', () => {
   const before = Date.now();
   const result = evaluateDataNode('data_current_timestamp');
