@@ -14,10 +14,10 @@ export function TemplateSyntaxHelp({ connectedArguments = [] }) {
       {visibleArguments.map((argument) => <span className="template-argument-chip" key={`${argument.name}-${argument.sourcePinId || ''}`} title={`${argument.name} from ${argument.sourceLabel || 'connected node'}`}><code>{argument.name}</code><span>{argument.sourceLabel || 'Connected node'}</span></span>)}
       {connectedArguments.length > 2 && <button type="button" className="template-arguments-more" onClick={() => setIsArgumentsOpen(true)} aria-label={`Show all ${connectedArguments.length} connected arguments`}>+{connectedArguments.length - 2}</button>}
     </div>
-    <Modal isOpen={isArgumentsOpen} onClose={() => setIsArgumentsOpen(false)} title="Connected template inputs" subtitle="These wires are available as {{argN}} values in template fields." maxWidth="md">
+    {isArgumentsOpen && <Modal isOpen onClose={() => setIsArgumentsOpen(false)} title="Connected template inputs" subtitle="These wires are available as {{argN}} values in template fields." maxWidth="md">
       <div className="template-arguments-list">{connectedArguments.map((argument) => <div className="template-arguments-list-row" key={`${argument.name}-${argument.sourcePinId || ''}`}><code>{`{{${argument.name}}}`}</code><span>{argument.sourceLabel || 'Connected node'}</span><small>{argument.sourcePinId || 'Output'}</small></div>)}</div>
-    </Modal>
-    <Modal isOpen={isOpen} onClose={() => setIsOpen(false)} title="Template syntax" subtitle="Use templates in text fields, embed content, and message components." maxWidth="lg">
+    </Modal>}
+    {isOpen && <Modal isOpen onClose={() => setIsOpen(false)} title="Template syntax" subtitle="Use templates in text fields, embed content, and message components." maxWidth="lg">
       <div className="template-syntax-help-content">
         <p>Insert a variable with double braces. Variables resolve from the current graph and event data.</p>
         <pre>{'{{username}}'}</pre>
@@ -51,6 +51,6 @@ export function TemplateSyntaxHelp({ connectedArguments = [] }) {
         <p>Choose text with a ternary expression. Conditions support truthy checks, negation, and comparisons: <code>==</code>, <code>!=</code>, <code>&gt;</code>, <code>&gt;=</code>, <code>&lt;</code>, <code>&lt;=</code> (also <code>===</code> and <code>!==</code>).</p>
         <pre>{'{{isAdmin ? "Admin" : "Member"}}\n{{status == "ready" ? "Online" : "Offline"}}\n{{nickname | default("Guest")}}'}</pre>
       </div>
-    </Modal>
+    </Modal>}
   </>;
 }
