@@ -8,42 +8,42 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Starts Respond to Autocomplete."},
     {
       "id": "interaction_id",
       "label": "Interaction ID",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "ID of the interaction to respond to."},
     {
       "id": "interaction_token",
       "label": "Interaction Token",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "Token used to respond to the interaction."},
     {
       "id": "choices",
       "label": "Suggestions",
       "type": "object",
-      "defaultValue": []
-    }
+      "defaultValue": [],
+      description: "Suggestions to return for the focused command option."}
   ],
   "outputs": [
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Continues after Respond to Autocomplete completes."},
     {
       "id": "choice_count",
       "label": "Suggestions Sent",
-      "type": "number"
-    },
+      "type": "number",
+      description: "Number of suggestions sent to Discord."},
     {
       "id": "success",
       "label": "Success",
-      "type": "boolean"
-    }
+      "type": "boolean",
+      description: "Whether the action completed successfully."}
   ]
 };
