@@ -128,6 +128,70 @@ function compareArrayItem(actual, expected, operator) {
 }
 
 export function evaluateDataNode(type, inputs = {}, data = {}) {
+  if (type === 'data_check_content_scan') {
+    const message = inputs.message;
+    const findings = [];
+    let scannedItemCount = 0;
+    const messageMasks = { explicit: 1n << 4n, gore: 1n << 6n, selfHarm: 1n << 7n };
+    const unfurledMasks = { explicit: 1n << 0n, gore: 1n << 1n, selfHarm: 1n << 2n };
+    const visited = new WeakSet();
+    const readFlags = (value) => {
+      if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+      if (typeof value === 'string' && /^(?:0|[1-9]\d{0,15})$/.test(value)) {
+        const parsed = Number(value);
+        if (Number.isSafeInteger(parsed)) return BigInt(parsed);
+      }
+      return null;
+    };
+    const inspect = (value, source, itemPath, masks) => {
+      const flags = readFlags(value);
+      if (flags === null) return;
+      scannedItemCount += 1;
+      const finding = {
+        source,
+        path: itemPath,
+        flags: Number(flags),
+        explicit: (flags & masks.explicit) !== 0n,
+        gore: (flags & masks.gore) !== 0n,
+        self_harm: (flags & masks.selfHarm) !== 0n
+      };
+      if (finding.explicit || finding.gore || finding.self_harm) findings.push(finding);
+    };
+    const visit = (value, itemPath = 'message', depth = 0) => {
+      if (depth > 40 || !value || typeof value !== 'object' || visited.has(value)) return;
+      visited.add(value);
+      if (Array.isArray(value)) {
+        value.forEach((item, index) => visit(item, `${itemPath}[${index}]`, depth + 1));
+        return;
+      }
+      if (Array.isArray(value.attachments)) value.attachments.forEach((attachment, index) => {
+        inspect(attachment?.flags, 'attachment', `${itemPath}.attachments[${index}]`, messageMasks);
+        visit(attachment, `${itemPath}.attachments[${index}]`, depth + 1);
+      });
+      if (Array.isArray(value.embeds)) value.embeds.forEach((embed, index) => {
+        inspect(embed?.flags, 'embed', `${itemPath}.embeds[${index}]`, messageMasks);
+        visit(embed, `${itemPath}.embeds[${index}]`, depth + 1);
+      });
+      if (value.content_scan_metadata && Object.hasOwn(value.content_scan_metadata, 'flags')) {
+        inspect(value.content_scan_metadata.flags, 'unfurled_media', `${itemPath}.content_scan_metadata`, unfurledMasks);
+      }
+      for (const [key, child] of Object.entries(value)) {
+        if (key === 'attachments' || key === 'embeds' || key === 'content_scan_metadata') continue;
+        visit(child, `${itemPath}.${key}`, depth + 1);
+      }
+    };
+    visit(message);
+    return {
+      contains_explicit: findings.some((finding) => finding.explicit),
+      contains_gore: findings.some((finding) => finding.gore),
+      contains_self_harm: findings.some((finding) => finding.self_harm),
+      contains_flagged_content: findings.length > 0,
+      scan_metadata_present: scannedItemCount > 0,
+      scanned_item_count: scannedItemCount,
+      flagged_item_count: findings.length,
+      findings
+    };
+  }
   if (type === 'data_check_permission') {
     const rawPermissions = inputs.permissions;
     const text = typeof rawPermissions === 'string' ? rawPermissions.trim()
