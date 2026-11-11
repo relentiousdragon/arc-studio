@@ -15,36 +15,42 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
+      "type": "exec",
+      description: "Starts variable creation."
     },
     {
       "id": "name",
       "label": "Name",
       "type": "arg",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Name for the new graph or project variable."
     },
     {
       "id": "value",
       "label": "Value",
       "type": "arg",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Initial value assigned when the variable is created."
     }
   ],
   "outputs": [
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
+      "type": "exec",
+      description: "Continues after the variable is available."
     },
     {
       "id": "variable",
       "label": "Variable",
-      "type": "variable"
+      "type": "variable",
+      description: "Reference to the created or existing variable."
     },
     {
       "id": "value",
       "label": "Value",
-      "type": "arg"
+      "type": "arg",
+      description: "Initial value of the created variable."
     }
   ]
 };

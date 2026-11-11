@@ -8,30 +8,35 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
+      "type": "exec",
+      description: "Starts updating the variable."
     },
     {
       "id": "variable",
       "label": "Variable",
-      "type": "variable"
+      "type": "variable",
+      description: "Variable to update."
     },
     {
       "id": "value",
       "label": "Value",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "New value to store in the variable."
     }
   ],
   "outputs": [
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
+      "type": "exec",
+      description: "Continues after the variable is updated."
     },
     {
       "id": "variable",
       "label": "Variable",
-      "type": "variable"
+      "type": "variable",
+      description: "Reference to the updated variable."
     }
   ]
 };

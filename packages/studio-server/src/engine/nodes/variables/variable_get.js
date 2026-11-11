@@ -8,19 +8,22 @@ export default {
     {
       "id": "variable",
       "label": "Variable",
-      "type": "variable"
+      "type": "variable",
+      description: "Variable to read."
     }
   ],
   "outputs": [
     {
       "id": "variable",
       "label": "Variable",
-      "type": "variable"
+      "type": "variable",
+      description: "Reference to the variable that was read."
     },
     {
       "id": "value",
       "label": "Value",
-      "type": "string"
+      "type": "string",
+      description: "Current value stored in the variable."
     }
   ]
 };
