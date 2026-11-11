@@ -162,7 +162,7 @@ import { playUiSound, unlockUiSounds } from './core/uiSounds.js';
 import { notifyDesktopInBackground, requestDesktopNotificationPermission } from './core/desktopNotifications.js';
 import { createArcArchive, isArcArchive, readArcArchive } from '../../studio-server/src/storage/ArcArchive.js';
 import { isSafeImageMedia } from './components/ui/mediaTypes.js';
-import { BuiltInNodeDefinitions, BundledNodeTypes, NODE_SCHEMA_VERSION, CLIENT_PROTOCOL_VERSION, NODE_REGISTRY_PROTOCOL_VERSION, SUPPORTED_NODE_REGISTRY_FEATURES, getNodeRegistryCompatibility, createDefaultNodeData, getAvailableNodeDefinitions, getNodeArgumentPins, getNodeRegistryDefinitions, getNodeTemplateInputPins, getTextTemplateSlots, isNodeTypeCreatable, isNodeTypeSupported, registerPluginNodeDefinitions, renderTextTemplate, resolveDynamicNodePins, setWorkspaceNodeDefinitions, validateTemplateFunctionName } from './components/nodes/nodeDefinitions.js';
+import { BuiltInNodeDefinitions, BundledNodeTypes, NODE_SCHEMA_VERSION, CLIENT_PROTOCOL_VERSION, NODE_REGISTRY_PROTOCOL_VERSION, SUPPORTED_NODE_REGISTRY_FEATURES, getNodeRegistryCompatibility, createDefaultNodeData, getAvailableNodeDefinitions, getNodeArgumentPins, getNodeRegistryDefinitions, getNodeTemplateInputPins, getTextTemplateSlots, isConvertiblePinPair, isNodeTypeCreatable, isNodeTypeSupported, registerPluginNodeDefinitions, renderTextTemplate, resolveDynamicNodePins, setWorkspaceNodeDefinitions, validateTemplateFunctionName } from './components/nodes/nodeDefinitions.js';
 import { isReservedTemplateRoot, isReservedTemplateVariableName, isTemplateEnvironmentNameAllowed, TEMPLATE_SYSTEM_PATHS, validateTemplateSyntax } from '../../studio-server/src/engine/TemplateExpressions.js';
 import { createEmbedBlock, embedBlockPins, getEmbedBlocks } from './components/nodes/EmbedNodeBuilder.jsx';
 import { createDefaultModal } from './components/nodes/ModalNodeBuilder.jsx';
@@ -10136,7 +10136,7 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
     const source = nodeById.get(wire.sourceNodeId);
     const target = nodeById.get(wire.targetNodeId);
     if (!source || !target) {
-      addError('A connection points to a missing node.', wire.targetNodeId || wire.sourceNodeId);
+      addError('A connection points to a missing node.', target?.id || source?.id || null);
       continue;
     }
     const sourcePin = graphPin(source, 'outputs', wire.sourcePinId, variableById, graphLookup, connections);
@@ -10150,7 +10150,7 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
       addError(`A connection uses a missing node pin: ${missing.join(' → ')}.`, target.id);
     }
     else if (sourcePin.type === 'arg' && (targetPin.type === 'boolean' || targetPin.type === 'exec')) addError('An arg socket cannot connect to a boolean input. Use Check Value or a comparison node to produce a boolean.', target.id);
-    else if (sourcePin.type !== targetPin.type && sourcePin.type !== 'any' && targetPin.type !== 'any' && sourcePin.type !== 'arg' && targetPin.type !== 'arg') addError('A connection joins incompatible pin types.', target.id);
+    else if (sourcePin.type !== targetPin.type && sourcePin.type !== 'any' && targetPin.type !== 'any' && sourcePin.type !== 'arg' && targetPin.type !== 'arg' && !isConvertiblePinPair(sourcePin.type, targetPin.type)) addError('A connection joins incompatible pin types.', target.id);
     else if (sourcePin.type === 'string' && targetPin.type === 'string') {
       const sourceMeaning = semanticStringPin(wire.sourcePinId, sourcePin);
       const targetMeaning = semanticStringPin(wire.targetPinId, targetPin);
@@ -10204,7 +10204,7 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
         const sourcePin = graphPin(source, 'outputs', wire.sourcePinId, variableById, graphLookup, connections);
         const targetPin = graphPin(target, 'inputs', wire.targetPinId, variableById, graphLookup, connections);
         if (!sourcePin || !targetPin) return message.includes('missing node pin');
-        return message.includes('incompatible pin types') && sourcePin.type !== targetPin.type && sourcePin.type !== 'any' && targetPin.type !== 'any' && sourcePin.type !== 'arg' && targetPin.type !== 'arg';
+        return message.includes('incompatible pin types') && sourcePin.type !== targetPin.type && sourcePin.type !== 'any' && targetPin.type !== 'any' && sourcePin.type !== 'arg' && targetPin.type !== 'arg' && !isConvertiblePinPair(sourcePin.type, targetPin.type);
       });
       return nodeById.get(invalidWire?.targetNodeId)?.id || nodeById.get(invalidWire?.sourceNodeId)?.id;
     }

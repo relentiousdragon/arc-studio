@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { CanvasNode } from '../nodes/CanvasNode.jsx';
-import { BuiltInNodeDefinitions, functionArgumentPinId, functionInputPinType, functionReturnInputPinId, functionReturnOutputPinId, getFunctionGraphArguments, getFunctionGraphReturnValues, getFunctionInputArguments, getFunctionReturnValues, getNodeArgumentPins, getNodeTemplateInputPins, PinColors, getTextTemplateSlots, resolveDynamicNodePins } from '../nodes/nodeDefinitions.js';
+import { BuiltInNodeDefinitions, functionArgumentPinId, functionInputPinType, functionReturnInputPinId, functionReturnOutputPinId, getFunctionGraphArguments, getFunctionGraphReturnValues, getFunctionInputArguments, getFunctionReturnValues, getNodeArgumentPins, getNodeTemplateInputPins, isConvertiblePinPair, PinColors, getTextTemplateSlots, resolveDynamicNodePins } from '../nodes/nodeDefinitions.js';
 import { ChevronDown, ChevronUp, FastForward, FileCode2, FolderTree, Hand, Link2, LockKeyhole, LockOpen, Maximize, Minus, MousePointer2, Plus, Scissors, Search, StepForward, Type, X } from 'lucide-react';
 import { embedBlockPins, getEmbedBlocks, getEmbedFieldSocketLabels } from '../nodes/EmbedNodeBuilder.jsx';
 import { getArcUiScale } from '../../core/uiScale.js';
@@ -54,8 +54,6 @@ const nodeMoveLockIds = (drag) => drag?.lockNodeIds || drag?.nodeIds || (drag?.i
 const textInputPopupOpen = () => typeof document !== 'undefined' && Boolean(document.querySelector('.arc-full-emoji-picker, .discord-emoji-suggestions'));
 const graphChatEmojiPattern = /^<(a?):([a-zA-Z0-9_~]{2,32}):(\d+)>$/;
 //
-const CONVERTIBLE_TYPES = new Set(['string', 'number']);
-const isConvertiblePair = (a, b) => (CONVERTIBLE_TYPES.has(a) && CONVERTIBLE_TYPES.has(b) && a !== b) || (a === 'arg' && (b === 'string' || b === 'number'));
 export const getConversionType = (outputType, inputType) => {
   if (outputType === 'number' && inputType === 'string') return 'number-to-string';
   if (outputType === 'string' && inputType === 'number') return 'string-to-number';
@@ -2011,7 +2009,7 @@ export function NodeCanvas({
     if (output.pinType === 'arg') {
       return ['string', 'number', 'object', 'array', 'arg', 'any'].includes(input.pinType);
     }
-    return output.pinType === input.pinType || output.pinType === 'any' || input.pinType === 'any' || input.pinType === 'arg' || isConvertiblePair(output.pinType, input.pinType);
+    return output.pinType === input.pinType || output.pinType === 'any' || input.pinType === 'any' || input.pinType === 'arg' || isConvertiblePinPair(output.pinType, input.pinType);
   }, []);
 
   const findClosestPin = useCallback((clientX, clientY, start, maxDistance = 42) => {
@@ -2364,7 +2362,7 @@ export function NodeCanvas({
       if (!sourceNode || !targetNode) return false;
       const sourcePin = getNodeDefinition(sourceNode)?.outputs?.find((pin) => pin.id === connection.sourcePinId);
       const targetPin = getNodeDefinition(targetNode)?.inputs?.find((pin) => pin.id === connection.targetPinId);
-      return sourcePin && targetPin && (sourcePin.type === targetPin.type || sourcePin.type === 'arg' || targetPin.type === 'arg' || sourcePin.type === 'any' || targetPin.type === 'any' || isConvertiblePair(sourcePin.type, targetPin.type));
+      return sourcePin && targetPin && (sourcePin.type === targetPin.type || sourcePin.type === 'arg' || targetPin.type === 'arg' || sourcePin.type === 'any' || targetPin.type === 'any' || isConvertiblePinPair(sourcePin.type, targetPin.type));
     });
     onNodesChange?.(nextNodes);
     if (nextConnections.length !== connections.length || nextConnections.some((connection, index) => connection !== connections[index])) onConnectionsChange?.(nextConnections);
