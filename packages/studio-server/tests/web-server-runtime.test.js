@@ -110,7 +110,7 @@ test('web server rejects route patterns that shadow static files or duplicate pa
   }
 });
 
-test('web server route bearer tokens are read from the environment and checked', async () => {
+test('web server route bearer tokens are resolved before registration and checked', async () => {
   const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-web-server-auth-'));
   const previousToken = process.env.WEB_SERVER_RUNTIME_TEST_TOKEN;
   process.env.WEB_SERVER_RUNTIME_TEST_TOKEN = 'runtime-secret';
@@ -119,7 +119,7 @@ test('web server route bearer tokens are read from the environment and checked',
     await executeWebServerNode({ type: 'action_web_server_start', id: 'server' }, nodeRuntime({ port: 0, host: '127.0.0.1' }, startOutputs, projectDir));
     const serverId = startOutputs.get('web_server_id');
     const routeOutputs = new Map();
-    await executeWebServerNode({ type: 'action_web_server_route', id: 'secure-route', data: { auth_token: '{{env:WEB_SERVER_RUNTIME_TEST_TOKEN}}' } }, nodeRuntime({ web_server_id: serverId, method: 'GET', path: '/secure', content_type: 'text/html', auth_token: '{{env:WEB_SERVER_RUNTIME_TEST_TOKEN}}', response: '<p><%= query.name %></p>' }, routeOutputs, projectDir));
+    await executeWebServerNode({ type: 'action_web_server_route', id: 'secure-route', data: { auth_token: '{{env:WEB_SERVER_RUNTIME_TEST_TOKEN}}' } }, nodeRuntime({ web_server_id: serverId, method: 'GET', path: '/secure', content_type: 'text/html', auth_token: process.env.WEB_SERVER_RUNTIME_TEST_TOKEN, response: '<p><%= query.name %></p>' }, routeOutputs, projectDir));
     assert.equal(routeOutputs.get('registered'), true);
     const bodyRouteOutputs = new Map();
     await executeWebServerNode({ type: 'action_web_server_route', id: 'body-route' }, nodeRuntime({ web_server_id: serverId, method: 'POST', path: '/body', content_type: 'text/plain', response: '<%= body %>' }, bodyRouteOutputs, projectDir));
@@ -141,6 +141,77 @@ test('web server route bearer tokens are read from the environment and checked',
       body: 'x'.repeat(16 * 1024 + 1)
     });
     assert.equal(oversizedBody.status, 413);
+  } finally {
+    await closeProjectWebServers(projectDir);
+    if (previousToken === undefined) delete process.env.WEB_SERVER_RUNTIME_TEST_TOKEN;
+    else process.env.WEB_SERVER_RUNTIME_TEST_TOKEN = previousToken;
+    fs.rmSync(projectDir, { recursive: true, force: true });
+  }
+});
+
+test('bearer authentication resolves secret variables, text templates, and environment values', async () => {
+  const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-web-server-secret-variable-'));
+  const previousToken = process.env.WEB_SERVER_RUNTIME_TEST_TOKEN;
+  process.env.WEB_SERVER_RUNTIME_TEST_TOKEN = 'runtime-env-secret';
+  const graph = {
+    id: 'graph-web-server-secret-variable',
+    nodes: [
+      { id: 'boot', type: 'event_message_create' },
+      { id: 'server', type: 'action_web_server_start', data: { port: 0, host: '127.0.0.1' } },
+      { id: 'route', type: 'action_web_server_route', data: { method: 'GET', path: '/action', auth_token: 'prefix-{{apiKey}}' } },
+      { id: 'env-route', type: 'action_web_server_route', data: { method: 'GET', path: '/env', auth_token: '{{env:WEB_SERVER_RUNTIME_TEST_TOKEN}}' } },
+      { id: 'request', type: 'event_web_server_request', data: { method: 'GET', path: '/event', auth_token: '{{apiKey}}' } },
+      { id: 'response', type: 'action_web_server_response', data: { status: 200, content_type: 'text/plain', body: 'ok' } }
+    ],
+    connections: [
+      { sourceNodeId: 'boot', sourcePinId: 'exec', targetNodeId: 'server', targetPinId: 'exec' },
+      { sourceNodeId: 'server', sourcePinId: 'exec', targetNodeId: 'route', targetPinId: 'exec' },
+      { sourceNodeId: 'route', sourcePinId: 'exec', targetNodeId: 'env-route', targetPinId: 'exec' },
+      { sourceNodeId: 'server', sourcePinId: 'web_server_id', targetNodeId: 'route', targetPinId: 'web_server_id' },
+      { sourceNodeId: 'server', sourcePinId: 'web_server_id', targetNodeId: 'env-route', targetPinId: 'web_server_id' },
+      { sourceNodeId: 'server', sourcePinId: 'web_server_id', targetNodeId: 'request', targetPinId: 'web_server_id' },
+      { sourceNodeId: 'request', sourcePinId: 'exec', targetNodeId: 'response', targetPinId: 'exec' },
+      { sourceNodeId: 'request', sourcePinId: 'request_id', targetNodeId: 'response', targetPinId: 'request_id' }
+    ]
+  };
+  const logs = [];
+  const context = {
+    projectDir,
+    templateEnvironmentAccess: true,
+    projectVariables: [{ id: 'project-api-key', name: 'apiKey', type: 'string', valueType: 'string', secret: true, initialValue: '' }],
+    getSecretVariableValue: (variableId) => variableId === 'project-api-key' ? 'runtime-secret' : undefined,
+    log: (message) => logs.push(message)
+  };
+  context.dispatchGraphEvent = (eventName, payload, graphId) => {
+    assert.equal(graphId, graph.id);
+    return GraphRunner.execute(graph, eventName, payload, context);
+  };
+
+  try {
+    const result = await GraphRunner.execute(graph, 'MESSAGE_CREATE', { content: 'boot' }, context);
+    assert.equal(result.error, null);
+    const listening = logs.find((message) => message.includes('[Web Server] Listening on '));
+    const baseUrl = /https?:\/\/[^\s]+/.exec(listening)?.[0];
+    assert.ok(baseUrl, 'web server should report its active URL');
+    assert.ok(!logs.some((message) => message.includes('runtime-secret') || message.includes('runtime-env-secret')));
+
+    const actionUnauthorized = await fetch(new URL('/action', baseUrl));
+    assert.equal(actionUnauthorized.status, 401);
+    const actionAuthorized = await fetch(new URL('/action', baseUrl), { headers: { authorization: 'Bearer prefix-runtime-secret' } });
+    assert.equal(actionAuthorized.status, 200);
+    assert.equal(await actionAuthorized.text(), '');
+
+    const eventUnauthorized = await fetch(new URL('/event', baseUrl));
+    assert.equal(eventUnauthorized.status, 401);
+    const eventAuthorized = await fetch(new URL('/event', baseUrl), { headers: { authorization: 'Bearer runtime-secret' } });
+    assert.equal(eventAuthorized.status, 200);
+    assert.equal(await eventAuthorized.text(), 'ok');
+
+    const envUnauthorized = await fetch(new URL('/env', baseUrl));
+    assert.equal(envUnauthorized.status, 401);
+    const envAuthorized = await fetch(new URL('/env', baseUrl), { headers: { authorization: 'Bearer runtime-env-secret' } });
+    assert.equal(envAuthorized.status, 200);
+    assert.equal(await envAuthorized.text(), '');
   } finally {
     await closeProjectWebServers(projectDir);
     if (previousToken === undefined) delete process.env.WEB_SERVER_RUNTIME_TEST_TOKEN;
