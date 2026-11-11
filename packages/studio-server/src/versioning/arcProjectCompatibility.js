@@ -3,18 +3,20 @@ import studioPackage from '../../package.json' with { type: 'json' };
 export const currentArcStudioVersion = studioPackage.version;
 
 function parseArcVersion(value) {
-  const match = String(value || '').replace(/^v/i, '').match(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/);
+  const match = String(value || '').replace(/^v/i, '').match(/^((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*))?)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/);
   if (!match) return null;
-  const prerelease = match[4]?.split('.') || null;
+  const prerelease = match[2]?.split('.') || null;
   if (prerelease?.some((part) => !part || (/^\d+$/.test(part) && part.length > 1 && part.startsWith('0')))) return null;
-  return { core: match.slice(1, 4).map(Number), prerelease };
+  const core = match[1].split('.').map(Number);
+  if (core.length === 3) core.push(0);
+  return { core, prerelease };
 }
 
 export function compareArcStudioVersions(candidate, current) {
   const next = parseArcVersion(candidate);
   const installed = parseArcVersion(current);
   if (!next || !installed) return null;
-  for (let index = 0; index < 3; index += 1) {
+  for (let index = 0; index < 4; index += 1) {
     if (next.core[index] !== installed.core[index]) return next.core[index] > installed.core[index] ? 1 : -1;
   }
   if (!next.prerelease && installed.prerelease) return 1;
