@@ -91,6 +91,102 @@ test('data node runtime preserves value conversion, path, and regex behavior', (
   assert.equal(evaluateDataNode('data_regex', { text: 'aaa', pattern: '(a+)+$', flags: 'g' }, {}).valid, false);
 });
 
+test('regex node handles flags, capture groups, replacements, and Unicode zero-width matches', () => {
+  const matches = evaluateDataNode('data_regex', {
+    text: 'ARC-42 arc-7',
+    pattern: '(?<name>[a-z]+)-(?<id>\\d+)',
+    flags: 'g, i'
+  }, { mode: 'match' });
+  assert.equal(matches.valid, true);
+  assert.deepEqual(matches.matches, ['ARC-42', 'arc-7']);
+  assert.deepEqual(matches.captures, ['ARC', '42']);
+  assert.deepEqual(matches.named_captures, { name: 'ARC', id: '42' });
+
+  const replaced = evaluateDataNode('data_regex', {
+    text: 'a1 b2',
+    pattern: '([a-z])(\\d)',
+    flags: 'g',
+    replacement: '$2-$1'
+  }, { mode: 'replace' });
+  assert.equal(replaced.text, '1-a 2-b');
+  assert.deepEqual(replaced.matches, ['a1', 'b2']);
+
+  const missingNamedCapture = evaluateDataNode('data_regex', {
+    text: 'pre',
+    pattern: '(?<prefix>pre)(?<suffix>fix)?',
+    flags: ''
+  }, { mode: 'match' });
+  assert.deepEqual(missingNamedCapture.named_captures, { prefix: 'pre', suffix: '' });
+
+  const unicodeEmptyMatches = evaluateDataNode('data_regex', {
+    text: '😀x',
+    pattern: '(?=)',
+    flags: 'g, u'
+  }, { mode: 'match' });
+  assert.equal(unicodeEmptyMatches.valid, true);
+  assert.equal(unicodeEmptyMatches.matches.length, 3);
+  assert.equal(unicodeEmptyMatches.index, 0);
+
+  assert.equal(evaluateDataNode('data_regex', { text: 'a\nb', pattern: '^b', flags: 'm' }, { mode: 'test' }).matched, true);
+  assert.equal(evaluateDataNode('data_regex', { text: 'a\nb', pattern: 'a.b', flags: 's' }, { mode: 'test' }).matched, true);
+  assert.deepEqual(evaluateDataNode('data_regex', { text: '1a2', pattern: '\\d', flags: 'y' }, { mode: 'match' }).matches, ['1']);
+
+  const oversizedReplacement = evaluateDataNode('data_regex', {
+    text: 'a',
+    pattern: 'a',
+    replacement: 'x'.repeat(2001)
+  }, { mode: 'replace' });
+  assert.equal(oversizedReplacement.valid, false);
+  assert.match(oversizedReplacement.error, /2,000 characters/);
+});
+
+test('regex node reports malformed, duplicate, and unsupported flags without throwing', () => {
+  for (const inputs of [
+    { pattern: '(', flags: '' },
+    { pattern: 'a', flags: 'g, g' },
+    { pattern: 'a', flags: 'z' },
+    { pattern: '(?<=(a))b', flags: '' },
+    { pattern: '(a)\\1', flags: '' }
+  ]) {
+    const result = evaluateDataNode('data_regex', { text: 'abc', ...inputs }, { mode: 'test' });
+    assert.equal(result.valid, false);
+    assert.equal(result.matched, false);
+    assert.notEqual(result.error, '');
+    assert.deepEqual(result.named_captures, {});
+  }
+
+  const invalidMode = evaluateDataNode('data_regex', { text: 'abc', pattern: 'a' }, { mode: 'search' });
+  assert.equal(invalidMode.valid, false);
+  assert.match(invalidMode.error, /regex operation/);
+});
+
+test('regex node enforces bounded inputs and caps global match output', () => {
+  const oversizedText = evaluateDataNode('data_regex', { text: 'a'.repeat(8193), pattern: 'a' }, { mode: 'match' });
+  assert.equal(oversizedText.valid, false);
+  assert.match(oversizedText.error, /8,192 characters/);
+
+  const oversizedPattern = evaluateDataNode('data_regex', { text: 'a', pattern: 'a'.repeat(257) }, { mode: 'test' });
+  assert.equal(oversizedPattern.valid, false);
+  assert.match(oversizedPattern.error, /256 characters/);
+
+  const tooManyMatches = evaluateDataNode('data_regex', {
+    text: 'a'.repeat(1001),
+    pattern: 'a',
+    flags: 'g'
+  }, { mode: 'match' });
+  assert.equal(tooManyMatches.valid, true);
+  assert.equal(tooManyMatches.matches.length, 1000);
+
+  const oversizedOutput = evaluateDataNode('data_regex', {
+    text: 'a'.repeat(8192),
+    pattern: 'a',
+    flags: 'g',
+    replacement: 'aa'
+  }, { mode: 'replace' });
+  assert.equal(oversizedOutput.valid, false);
+  assert.match(oversizedOutput.error, /10,000 characters/);
+});
+
 test('content scan data node reads attachment, embed, and unfurled media flags', () => {
   const result = evaluateDataNode('data_check_content_scan', { message: {
     flags: 1 << 4,
