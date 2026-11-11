@@ -30,7 +30,7 @@ const TEMPLATE_FILTERS = [
 
 export { BUILTIN_TEMPLATE_FUNCTIONS, getTemplateStringContext };
 //
-export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'input', appEmojis = [], graphVariables = [], templateValuePaths = [], templateSuggestions = [], templateFunctions = [], discordAutocomplete = false, templateAutocomplete = false, onChange, value = '', className = '', onPointerDown, onKeyDown, ...props }, forwardedRef) {
+export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'input', appEmojis = [], graphVariables = [], templateValuePaths = [], templateSuggestions = [], templateFunctions = [], discordAutocomplete = false, templateAutocomplete = false, maskWhenInactive = false, onChange, value = '', className = '', onPointerDown, onKeyDown, ...props }, forwardedRef) {
   const inputRef = useRef(null);
   const pickerRef = useRef(null);
   const [match, setMatch] = useState(null);
@@ -356,7 +356,7 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
   const maxLen = props.maxLength ?? undefined;
   const showSuggestions = suggestions.length > 0 || (match?.kind !== 'template' && emojiEntries === null);
   return <>
-    <Component {...fieldProps} {...(maxLen !== undefined ? { maxLength: maxLen } : {})} data-template-autocomplete="native" data-soft-maxlength={props.maxLength ?? undefined} ref={inputRef} className={className} value={value} onFocus={handleFocus} onChange={onInputChange} onKeyDown={handleKeyDown} onPointerDown={onPointerDown} onContextMenu={handleContextMenu} />
+    <Component {...fieldProps} {...(maxLen !== undefined ? { maxLength: maxLen } : {})} data-template-autocomplete="native" data-soft-maxlength={props.maxLength ?? undefined} ref={inputRef} className={`${className}${maskWhenInactive ? ' is-masked-when-inactive' : ''}`.trim()} value={value} onFocus={handleFocus} onChange={onInputChange} onKeyDown={handleKeyDown} onPointerDown={onPointerDown} onContextMenu={handleContextMenu} />
     {textMenu && <div className="discord-text-context-menu" style={{ left: textMenu.x, top: textMenu.y }} role="menu"><button type="button" role="menuitem" onPointerDown={(event) => event.preventDefault()} onClick={(event) => { event.stopPropagation(); setTextMenu(null); onOpenTextEditor?.(); }}>Open in text editor</button></div>}
     {(discordAutocomplete || templateAutocomplete) && match && position && showSuggestions && createPortal(<div ref={pickerRef} className="discord-emoji-suggestions" style={{ left: position.left, top: position.top, bottom: position.bottom, width: position.width, maxHeight: position.maxHeight, overflowY: 'auto' }} role="listbox" aria-label={match.kind === 'template' ? 'Template suggestions' : 'Emoji suggestions'}>
       <div className="discord-emoji-suggestion-heading">{match.kind === 'template' ? (match.filterStage ? 'FILTER' : match.pathStage ? 'VALUE PATH' : 'TEMPLATE') : 'EMOJI'}{match.query ? ` · ${match.query}` : ''}</div>
