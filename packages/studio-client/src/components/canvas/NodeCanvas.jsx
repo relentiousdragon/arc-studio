@@ -850,8 +850,8 @@ export function NodeCanvas({
   useEffect(() => {
     if (!connectingWire || settings.progressiveSocketReveal === false) setAutoRevealInputNodeIds(EMPTY_PIN_SET);
   }, [connectingWire, settings.progressiveSocketReveal]);
-  canvasInteractionActiveRef.current = Boolean(isPanning || draggingNode || draggingNote || connectingWire || selectionBox);
-  const autoQualityInteractionActive = canvasQualityMode === 'auto' && Boolean(isPanning || isWheelPanning || isWheelZooming || draggingNode || draggingNote || connectingWire);
+  canvasInteractionActiveRef.current = Boolean(isPanning || draggingNode?.historyStarted || draggingNote || connectingWire || selectionBox);
+  const autoQualityInteractionActive = canvasQualityMode === 'auto' && Boolean(isPanning || isWheelPanning || isWheelZooming || draggingNode?.historyStarted || draggingNote || connectingWire);
   const autoQualityInteractionActiveRef = useRef(autoQualityInteractionActive);
   autoQualityInteractionActiveRef.current = autoQualityInteractionActive;
   const autoQualityModeWasActiveRef = useRef(canvasQualityMode === 'auto');
@@ -2688,9 +2688,7 @@ export function NodeCanvas({
         onHistoryGroupStart?.();
       }
       const cloneRequested = !draggingNode.cloned && !isLocked && Boolean(draggingNode.cloneRequested || draggingNode.altKey || altDownRef.current);
-      if (cloneRequested && startDragClone(draggingNode)) return;
       const activeDrag = draggingNodeRef.current?.id === draggingNode.id ? draggingNodeRef.current : draggingNode;
-      if (activeDrag.cloneOnly && !activeDrag.cloned) return;
       let x = activeDrag.initialX + deltaX / zoom;
       let y = activeDrag.initialY + deltaY / zoom;
       if (snapToGrid) {
@@ -2707,8 +2705,18 @@ export function NodeCanvas({
         shiftKey: event.shiftKey,
         cloneRequested: activeDrag.cloneRequested
       };
-      draggingNodeRef.current = nextDrag;
-      setDraggingNode(nextDrag);
+      if (cloneRequested && startDragClone(nextDrag)) return;
+      const currentDrag = draggingNodeRef.current?.id === nextDrag.id ? draggingNodeRef.current : nextDrag;
+      if (currentDrag.cloneOnly && !currentDrag.cloned) return;
+      const resolvedDrag = currentDrag === nextDrag ? nextDrag : {
+        ...currentDrag,
+        historyStarted: true,
+        deltaX: groupDeltaX,
+        deltaY: groupDeltaY,
+        shiftKey: event.shiftKey
+      };
+      draggingNodeRef.current = resolvedDrag;
+      setDraggingNode(resolvedDrag);
       return;
     }
     if (draggingNote) {
@@ -2771,7 +2779,7 @@ export function NodeCanvas({
       const activeDrag = draggingNodeRef.current;
       const pointer = pointerPositionRef.current;
       const container = containerRef.current;
-      if (activeDrag && pointer && container && document.visibilityState !== 'hidden') {
+      if (activeDrag?.historyStarted && pointer && container && document.visibilityState !== 'hidden') {
         const bounds = canvasGeometryRef.current.bounds;
         const edgeSize = 56;
         const speed = 760;
@@ -4538,7 +4546,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
     return closest;
   };
   const updateHoveredWire = (event) => {
-    if (connectingWire || draggingNode || draggingNote || isPanning || selectionBox) {
+    if (connectingWire || draggingNode?.historyStarted || draggingNote || isPanning || selectionBox) {
       setHoveredWireId((current) => current === null ? current : null);
       return;
     }
