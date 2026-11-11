@@ -213,7 +213,7 @@ export function SlashCommandStudioView({
         <button type="button" className="permission-studio-apply" onClick={apply} disabled={Boolean(issue)}><Check size={15} /> Apply</button>
       </div>
     </header>
-    <div className="slash-command-studio-toolbar"><span>{collaborators.length ? `Editing with ${collaborators.map((peer) => peer.username).join(', ')}` : 'Use arguments, subcommands, or groups. Discord supports one group level, with subcommands inside each group.'}</span></div>
+    {collaborators.length > 0 && <div className="slash-command-studio-toolbar"><span>Editing with {collaborators.map((peer) => peer.username).join(', ')}</span></div>}
     <div className="slash-command-root-tools">
       <div className="slash-option-root-actions">
         <button type="button" disabled={draft.length >= MAX_OPTIONS || rootHasCommands} title={rootHasCommands ? 'Discord does not allow root arguments alongside subcommands or groups.' : 'Add a command argument'} onClick={() => { addItem([], newParameter(draft.length)); if (!rootHasArguments) setActiveTabKey('root-arguments'); }}><Plus size={14} /> Add argument</button>
