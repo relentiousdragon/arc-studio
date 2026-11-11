@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { getArcReleaseChannel } from '../../../scripts/arc-version.mjs';
 //
 const command = process.platform === 'win32' ? 'tauri.cmd' : 'tauri';
 const target = process.env.ARC_DESKTOP_TARGET || (process.platform === 'darwin'
@@ -19,9 +20,11 @@ try {
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
   execFileSync(process.execPath, [path.join(repoRoot, 'scripts', 'sync-version.mjs')], { stdio: 'inherit' });
   const rootPackage = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
-  const releaseChannel = ['stable', 'nightly'].includes(process.env.ARC_RELEASE_CHANNEL)
-    ? process.env.ARC_RELEASE_CHANNEL
-    : rootPackage.version.includes('-') ? 'nightly' : 'stable';
+  const releaseChannel = getArcReleaseChannel(rootPackage.version);
+  if (!releaseChannel) throw new Error(`Invalid ARC Studio release version: ${rootPackage.version}.`);
+  if (process.env.ARC_RELEASE_CHANNEL && process.env.ARC_RELEASE_CHANNEL !== releaseChannel) {
+    throw new Error(`ARC_RELEASE_CHANNEL ${process.env.ARC_RELEASE_CHANNEL} does not match ARC Studio version ${rootPackage.version} (${releaseChannel}).`);
+  }
   const updateRepository = process.env.ARC_UPDATE_REPOSITORY || process.env.GITHUB_REPOSITORY || 'relentiousdragon/arc-studio';
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(updateRepository)) {
     throw new Error(`Invalid GitHub updater repository: ${updateRepository}.`);
