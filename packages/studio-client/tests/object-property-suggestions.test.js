@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { NodeDefinitions } from '../../studio-server/src/engine/NodeSchemaDefinitions.js';
-import { resolveInferredObjectProperties } from '../src/core/objectPropertySuggestions.js';
+import { getConnectedTemplateInputPaths, resolveInferredObjectProperties } from '../src/core/objectPropertySuggestions.js';
 //
 function infer(sourceNode, sourcePin, targetPin = 'value') {
   const nodes = new Map([[sourceNode.id, sourceNode]]);
@@ -63,4 +63,59 @@ test('uses the connected JSON parse source to suggest nested paths', () => {
   }, 'value');
   assert.ok(keys(properties).includes('server.flags'));
   assert.ok(keys(properties).includes('members[0].name'));
+});
+
+test('exposes connected object properties as template paths for dynamic arg sockets', () => {
+  const sourceNode = { id: 'channel-source', type: 'action_fetch_channel' };
+  const incoming = new Map([['arg_1', { sourceNodeId: sourceNode.id, sourcePinId: 'channel' }]]);
+  const nodes = new Map([[sourceNode.id, sourceNode]]);
+  const definitions = new Map([[sourceNode.id, { outputs: NodeDefinitions[sourceNode.type].outputs }]]);
+  const paths = getConnectedTemplateInputPaths(
+    [{ id: 'arg_1', label: 'arg1' }],
+    incoming,
+    nodes,
+    definitions
+  );
+  assert.ok(paths.some((item) => item.path === 'arg1.name'));
+  assert.ok(paths.some((item) => item.path === 'arg1.permission_overwrites'));
+});
+
+test('suggests slash command option fields beneath a connected arg socket', () => {
+  const sourceNode = {
+    id: 'slash-event',
+    type: 'event_slash_command',
+    data: { options: [{ name: 'target', type: 6 }, { name: 'reason', type: 3 }] }
+  };
+  const incoming = new Map([['arg_1', { sourceNodeId: sourceNode.id, sourcePinId: 'options' }]]);
+  const nodes = new Map([[sourceNode.id, sourceNode]]);
+  const definitions = new Map([[sourceNode.id, { outputs: NodeDefinitions[sourceNode.type].outputs }]]);
+  const paths = getConnectedTemplateInputPaths([{ id: 'arg_1' }], incoming, nodes, definitions);
+  assert.ok(paths.some((item) => item.path === 'arg1.target'));
+  assert.ok(paths.some((item) => item.path === 'arg1.reason'));
+});
+
+test('suggests keys from the initial value of a connected object variable', () => {
+  const sourceNode = { id: 'variable-source', type: 'variable_get', data: { variableId: 'settings' } };
+  const incoming = new Map([['arg_1', { sourceNodeId: sourceNode.id, sourcePinId: 'value' }]]);
+  const nodes = new Map([[sourceNode.id, sourceNode]]);
+  const definitions = new Map([[sourceNode.id, { outputs: [{ id: 'value', type: 'object' }] }]]);
+  const paths = getConnectedTemplateInputPaths(
+    [{ id: 'arg_1' }],
+    incoming,
+    nodes,
+    definitions,
+    [{ id: 'settings', initialValue: { channel: { name: 'general' }, enabled: true } }]
+  );
+  assert.ok(paths.some((item) => item.path === 'arg1.channel.name'));
+  assert.ok(paths.some((item) => item.path === 'arg1.enabled'));
+});
+
+test('exposes connected object properties for unresolved template variable sockets', () => {
+  const sourceNode = { id: 'message-source', type: 'event_message_create' };
+  const incoming = new Map([['slot_target', { sourceNodeId: sourceNode.id, sourcePinId: 'message' }]]);
+  const nodes = new Map([[sourceNode.id, sourceNode]]);
+  const definitions = new Map([[sourceNode.id, { outputs: NodeDefinitions[sourceNode.type].outputs }]]);
+  const paths = getConnectedTemplateInputPaths([], incoming, nodes, definitions);
+  assert.ok(paths.some((item) => item.path === 'target.content'));
+  assert.ok(paths.some((item) => item.path === 'target.author.username'));
 });
