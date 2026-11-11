@@ -5024,7 +5024,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
         {breadcrumbNode && <><span>/</span><span className="breadcrumb-node" title={breadcrumbNodeLabel} aria-label={`Selected node: ${breadcrumbNodeLabel}`}>{breadcrumbNodeLabel}</span></>}
       </nav>
 
-      {nodes.length === 0 && <div className="canvas-empty-hint"><span className="empty-hint-glyph"><Plus size={17} /></span><span>Build a graph</span><button onClick={() => onOpenPalette?.()}>Add first node <span className="context-shortcut" aria-label="Shift plus A"><kbd>Shift</kbd><kbd>A</kbd></span></button></div>}
+      {nodes.length === 0 && <div className="canvas-empty-hint"><span className="empty-hint-glyph"><Plus size={17} /></span><span>Build a graph</span><button disabled={isLocked} onClick={() => onOpenPalette?.()}>Add first node <span className="context-shortcut" aria-label="Shift plus A"><kbd>Shift</kbd><kbd>A</kbd></span></button></div>}
 
       <div className={`canvas-tools ${canvasFindOpen ? 'is-finding' : ''}`} aria-label={canvasFindOpen ? 'Find on canvas' : 'Canvas controls'}>
         <div className="canvas-toolset" aria-hidden={canvasFindOpen}>
@@ -5124,7 +5124,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
           <button role="menuitem" disabled={isLocked || isNodeBeingMovedByOther(contextMenu.nodeId)} onClick={() => { duplicateNode(contextMenu.nodeId); setContextMenu(null); }}>Duplicate node</button>
           <button role="menuitem" className="is-danger" disabled={isLocked || isNodeBeingMovedByOther(contextMenu.nodeId)} onClick={() => { deleteNode(contextMenu.nodeId); setContextMenu(null); }}>Delete node <span className="context-shortcut"><kbd>Delete</kbd></span></button>
         </> : <>
-          <button role="menuitem" onClick={() => { onOpenPalette?.(contextMenu.position); setContextMenu(null); }}>Add node <span className="context-shortcut" aria-label="Shift plus A"><kbd>Shift</kbd><kbd>A</kbd></span></button>
+          <button role="menuitem" disabled={isLocked} onClick={() => { onOpenPalette?.(contextMenu.position); setContextMenu(null); }}>Add node <span className="context-shortcut" aria-label="Shift plus A"><kbd>Shift</kbd><kbd>A</kbd></span></button>
           <button role="menuitem" disabled={isLocked} onClick={() => addNote(contextMenu.position)}>Add note <span className="context-shortcut"><kbd>{formatShortcut(settings.shortcuts?.addNote || DEFAULT_SHORTCUTS.addNote, shortcutPlatform)}</kbd></span></button>
           {nodes.length > 0 && <button role="menuitem" disabled={isLocked} onClick={() => { onRequestCreateTagGroup?.(contextMenu.nodeIds); setContextMenu(null); }}>Create color section… {contextMenu.nodeIds?.length > 0 && <span className="context-shortcut"><kbd>Shift</kbd><kbd>G</kbd></span>}</button>}
           {(() => {
