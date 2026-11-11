@@ -73,10 +73,11 @@ test('activity delivery uses a concise embed and a timestamp without exposing we
   assert.deepEqual(payload.allowed_mentions, { parse: [] });
   assert.equal(payload.avatar_url, 'https://raw.githubusercontent.com/relentiousdragon/arc-studio/main/packages/studio-client/public/arc.png');
   assert.equal(payload.embeds.length, 1);
+  assert.equal(payload.embeds[0].author.name, 'ARC Studio');
+  assert.equal(payload.embeds[0].author.icon_url, undefined);
   assert.equal(payload.embeds[0].description, 'Updated - graph “Welcome”, saved, ready');
-  assert.equal(payload.embeds[0].fields[0].value, 'ARC Studio');
-  assert.equal(payload.embeds[0].fields[1].value, 'Welcome · Community Bot');
-  assert.equal(payload.embeds[0].footer.text, 'ARC Studio');
+  assert.deepEqual(payload.embeds[0].fields, [{ name: 'Item', value: 'Welcome', inline: true }]);
+  assert.equal(payload.embeds[0].footer.text, 'ARC Studio • Community Bot');
   assert.equal(payload.embeds[0].timestamp, '2026-10-21T10:00:00.000Z');
   assert.equal(payload.embeds[0].thumbnail, undefined);
   for (let attempt = 0; attempt < 30 && deliveryStatuses.at(-1) !== 'success'; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
@@ -96,19 +97,42 @@ test('sign-in activity includes known client build details in the Discord embed'
     getDeliveryUrl: () => 'https://discord.com/api/webhooks/id/token'
   });
   dispatcher.enqueue({
-    actor: { username: 'Editor' },
+    actor: { id: 'editor-1', username: 'Editor', avatarUrl: 'https://studio.example.com/api/activity-avatars/editor-1.png?initial=E' },
     action: 'account.signed_in',
     summary: 'Signed in to the workspace',
-    details: { clientVersion: '2026.1.1-nightly.7', clientPlatform: 'macOS', clientArchitecture: 'arm64' }
+    details: { projectName: 'TEST PROJET', clientVersion: '2026.1.1-nightly.7', clientPlatform: 'macOS', clientArchitecture: 'arm64' }
   });
   for (let attempt = 0; attempt < 30 && !request; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
   assert.ok(request);
   const embed = JSON.parse(request.body).embeds[0];
-  assert.deepEqual(embed.fields.slice(2), [
-    { name: 'Version', value: '2026.1.1-nightly.7', inline: true },
-    { name: 'Platform', value: 'macOS', inline: true },
-    { name: 'Architecture', value: 'arm64', inline: true }
-  ]);
+  assert.deepEqual(embed.author, { name: 'Editor', icon_url: 'https://studio.example.com/api/activity-avatars/editor-1.png?initial=E' });
+  assert.equal(embed.color, 0x10b981);
+  assert.deepEqual(embed.fields, [{ name: 'Client', value: '2026.1.1-nightly.7 · macOS · arm64', inline: true }]);
+  assert.equal(embed.footer.text, 'ARC Studio • Waterfall');
+});
+
+test('activity embed uses a fixed color except for sign-in and sign-out', async (context) => {
+  const previousFetch = globalThis.fetch;
+  context.after(() => { globalThis.fetch = previousFetch; });
+  const requests = [];
+  globalThis.fetch = async (_url, options) => {
+    requests.push(JSON.parse(options.body).embeds[0]);
+    return { status: 204, ok: true };
+  };
+  const dispatcher = new ActivityWebhookDispatcher({
+    isEnabled: () => true,
+    getDeliveryUrl: () => 'https://discord.com/api/webhooks/id/token'
+  });
+  for (const action of ['graph.created', 'account.signed_out']) {
+    dispatcher.enqueue({ actor: { id: 'user-1', username: 'Editor' }, action, summary: action, timestamp: new Date().toISOString() });
+    for (let attempt = 0; attempt < 150 && requests.length < (action === 'graph.created' ? 1 : 2); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  assert.equal(requests[0].color, 0x3b82f6);
+  assert.equal(requests[1].color, 0xef4444);
+  assert.equal(requests[0].author.icon_url, undefined);
+  assert.equal(requests[1].author.icon_url, undefined);
 });
 
 test('terminal webhook delivery errors update status without logging a failure notification', async (context) => {
