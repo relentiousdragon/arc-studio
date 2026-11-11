@@ -9,14 +9,16 @@ export default {
       "id": "value",
       "label": "Value",
       "type": "number",
-      "defaultValue": 0
+      "defaultValue": 0,
+      description: "Number whose sign to check."
     }
   ],
   "outputs": [
     {
       "id": "result",
       "label": "Result",
-      "type": "number"
+      "type": "number",
+      description: "-1 for negative, 0 for zero, or 1 for positive input."
     }
   ]
 };
