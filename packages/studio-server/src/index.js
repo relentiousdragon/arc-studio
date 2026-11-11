@@ -22,6 +22,7 @@ import { getNodeRegistryCompatibility, getNodeRegistryRequiredFeatures, NODE_REG
 import { isKnownArcStudioClient, readClientAccessSettings } from './security/ClientAccessPolicy.js';
 import { getActiveCollaborators, getCollaboratorColor, MAX_REALTIME_COLLABORATORS } from './engine/CollaborationLimits.js';
 import { applyNodePositions, normalizeNodePositions, rebaseNodePositions } from './engine/LiveGraphPositions.js';
+import { applyGraphStatePatch, cloneCollaborationValue, mergeConcurrentGraphValue, sameCollaborationValue } from './engine/GraphStatePatch.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -174,42 +175,6 @@ const noteLockSnapshot = (roomKey) => [...(liveNoteEditLocks.get(roomKey)?.value
   .map(({ timer, socket, note, ...lock }) => lock);
 const nodeMoveLockSnapshot = (roomKey) => [...(liveNodeMoveLocks.get(roomKey)?.values() || [])]
   .map(({ timer, socket, ...lock }) => lock);
-const sameCollaborationValue = (left, right) => {
-  if (Object.is(left, right)) return true;
-  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
-  if (Array.isArray(left) || Array.isArray(right)) return Array.isArray(left) && Array.isArray(right)
-    && left.length === right.length && left.every((value, index) => sameCollaborationValue(value, right[index]));
-  const leftKeys = Object.keys(left);
-  const rightKeys = Object.keys(right);
-  return leftKeys.length === rightKeys.length && leftKeys.every((key) => Object.hasOwn(right, key) && sameCollaborationValue(left[key], right[key]));
-};
-const cloneCollaborationValue = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
-function mergeConcurrentGraphValue(base, current, incoming) {
-  if (sameCollaborationValue(incoming, base)) return cloneCollaborationValue(current);
-  if (sameCollaborationValue(current, base) || sameCollaborationValue(incoming, current)) return cloneCollaborationValue(incoming);
-  if (base && current && incoming && !Array.isArray(base) && !Array.isArray(current) && !Array.isArray(incoming)
-    && typeof base === 'object' && typeof current === 'object' && typeof incoming === 'object') {
-    const result = {};
-    for (const key of new Set([...Object.keys(base), ...Object.keys(current), ...Object.keys(incoming)])) {
-      const value = mergeConcurrentGraphValue(base[key], current[key], incoming[key]);
-      if (value !== undefined) result[key] = value;
-    }
-    return result;
-  }
-  if ([base, current, incoming].every((value) => Array.isArray(value) && value.every((item) => item && typeof item === 'object' && item.id != null))) {
-    const baseById = new Map(base.map((item) => [item.id, item]));
-    const currentById = new Map(current.map((item) => [item.id, item]));
-    const incomingById = new Map(incoming.map((item) => [item.id, item]));
-    const order = [...current.map((item) => item.id), ...incoming.map((item) => item.id)].filter((id, index, ids) => ids.indexOf(id) === index);
-    const result = [];
-    for (const id of order) {
-      const value = mergeConcurrentGraphValue(baseById.get(id), currentById.get(id), incomingById.get(id));
-      if (value !== undefined) result.push(value);
-    }
-    return result;
-  }
-  return cloneCollaborationValue(incoming);
-}
 const publishNoteEditLocks = (roomKey) => {
   const [projectId, ...graphParts] = roomKey.split(':');
   sendToCollaborationRoom(roomKey, {
@@ -718,14 +683,29 @@ wss.on('connection', (ws, request) => {
       if (active?.action?.selectedNodeIds?.length) {
         const selection = {
           ...active,
-          action: { kind: 'selection', mode: 'select', selectedNodeIds: active.action.selectedNodeIds, ...(active.action.cursor ? { cursor: active.action.cursor, cursorIdle: true } : {}) },
+          action: {
+            kind: 'selection',
+            mode: 'select',
+            selectedNodeIds: active.action.selectedNodeIds,
+            ...(active.action.cursor ? { cursor: active.action.cursor, cursorIdle: true } : {}),
+            ...(Array.isArray(active.action.socketReveals) ? { socketReveals: active.action.socketReveals } : {})
+          },
           updatedAt: Date.now(),
           revision: nextCollaborationActionRevision()
         };
         activeRoom.set(ws.arcUser.id, selection);
         sendToCollaborationRoom(roomKey, { type: 'COLLAB_ACTION_UPDATED', payload: selection }, ws);
       } else if (active?.action?.cursor) {
-        const idleCursor = { ...active, action: { kind: 'idle', cursor: active.action.cursor }, updatedAt: Date.now(), revision: nextCollaborationActionRevision() };
+        const idleCursor = {
+          ...active,
+          action: {
+            kind: 'idle',
+            cursor: active.action.cursor,
+            ...(Array.isArray(active.action.socketReveals) ? { socketReveals: active.action.socketReveals } : {})
+          },
+          updatedAt: Date.now(),
+          revision: nextCollaborationActionRevision()
+        };
         activeRoom.set(ws.arcUser.id, idleCursor);
         sendToCollaborationRoom(roomKey, { type: 'COLLAB_ACTION_UPDATED', payload: idleCursor }, ws);
       } else clearCollaborationAction(false, false);
@@ -1049,8 +1029,9 @@ wss.on('connection', (ws, request) => {
         if (liveState) {
           const payload = { ...liveState };
           delete payload.serializedGraph;
+          payload.patchSupported = true;
           ws.send(JSON.stringify({ type: 'GRAPH_STATE_SYNC', payload }));
-        } else if (ws.arcPresence) ws.send(JSON.stringify({ type: 'GRAPH_STATE_SYNC', payload: { projectId, graphId, ready: true, revision: 0 } }));
+        } else if (ws.arcPresence) ws.send(JSON.stringify({ type: 'GRAPH_STATE_SYNC', payload: { projectId, graphId, ready: true, revision: 0, patchSupported: true } }));
         publishPresence();
         if (lastSeenUpdated) broadcastProjectLastSeen();
       } else if (msg.type === 'NODE_MOVE_LOCK_REQUEST' || msg.type === 'NODE_MOVE_LOCK_RELEASE') {
@@ -1374,7 +1355,7 @@ wss.on('connection', (ws, request) => {
               history: [...(state.history || []), { revision, graph }].slice(-(serializedGraph.length <= 1_000_000 ? 8 : 2))
             };
             liveGraphStates.set(key, nextState);
-            const syncPayload = { ...nextState, sourceUserId: ws.arcUser.id };
+            const syncPayload = { ...nextState, sourceUserId: ws.arcUser.id, patchSupported: true };
             delete syncPayload.serializedGraph;
             delete syncPayload.history;
             sendToCollaborationRoom(roomKey, { type: 'GRAPH_STATE_SYNC', payload: syncPayload });
@@ -1392,7 +1373,7 @@ wss.on('connection', (ws, request) => {
             history: [...(state.history || []), { revision, graph }].slice(-(serializedGraph.length <= 1_000_000 ? 8 : 2))
           };
           liveGraphStates.set(key, nextState);
-          const syncPayload = { ...nextState, sourceUserId: ws.arcUser.id };
+          const syncPayload = { ...nextState, sourceUserId: ws.arcUser.id, patchSupported: true };
           delete syncPayload.serializedGraph;
           delete syncPayload.history;
           sendToCollaborationRoom(roomKey, { type: 'GRAPH_STATE_SYNC', payload: syncPayload });
@@ -1463,6 +1444,18 @@ wss.on('connection', (ws, request) => {
           const cursor = point(action.cursor);
           if (kind !== 'selection' && !cursor) return;
           cleanAction = { kind, ...(cursor ? { cursor } : {}), mode: typeof action.mode === 'string' ? action.mode.slice(0, 24) : kind };
+          const requestedSocketReveals = Array.isArray(action.socketReveals)
+            ? action.socketReveals
+            : action.socketReveal && typeof action.socketReveal === 'object' ? [action.socketReveal] : null;
+          if (requestedSocketReveals) {
+            const uniqueReveals = new Map();
+            for (const reveal of requestedSocketReveals) {
+              if (typeof reveal?.nodeId !== 'string' || !reveal.nodeId.length || reveal.nodeId.length > 100
+                || !['inputs', 'outputs'].includes(reveal.column)) continue;
+              uniqueReveals.set(`${reveal.nodeId}:${reveal.column}`, { nodeId: reveal.nodeId, column: reveal.column });
+            }
+            cleanAction.socketReveals = [...uniqueReveals.values()].slice(0, 2);
+          }
           if (Array.isArray(action.selectedNodeIds)) cleanAction.selectedNodeIds = action.selectedNodeIds.filter((id) => typeof id === 'string' && id.length <= 100).slice(0, 2000);
           if (Array.isArray(action.selectedNoteIds)) cleanAction.selectedNoteIds = action.selectedNoteIds.filter((id) => typeof id === 'string' && id.length <= 100).slice(0, 2000);
           if (Array.isArray(action.selectedArrowIds)) cleanAction.selectedArrowIds = action.selectedArrowIds.filter((id) => typeof id === 'string' && id.length <= 100).slice(0, 300);
@@ -1494,6 +1487,14 @@ wss.on('connection', (ws, request) => {
             if (!start) return;
             cleanAction.start = start;
             cleanAction.pinType = typeof action.pinType === 'string' ? action.pinType.slice(0, 32) : 'any';
+            if (typeof action.nodeId === 'string' && action.nodeId.length <= 100) cleanAction.nodeId = action.nodeId;
+            if (typeof action.pinId === 'string' && action.pinId.length <= 100) cleanAction.pinId = action.pinId;
+            if (['input', 'output'].includes(action.direction)) cleanAction.direction = action.direction;
+            if (action.snapTarget && typeof action.snapTarget === 'object'
+              && typeof action.snapTarget.nodeId === 'string' && action.snapTarget.nodeId.length <= 100
+              && typeof action.snapTarget.pinId === 'string' && action.snapTarget.pinId.length <= 100) {
+              cleanAction.snapTarget = { nodeId: action.snapTarget.nodeId, pinId: action.snapTarget.pinId };
+            }
           }
           if (kind === 'arrow-drag') {
             const start = point(action.start);
@@ -1522,6 +1523,9 @@ wss.on('connection', (ws, request) => {
         const priorAction = room.get(ws.arcUser.id)?.action;
         if (kind !== 'idle' && !cleanAction.cursor && priorAction?.cursor) cleanAction.cursor = priorAction.cursor;
         if (kind !== 'idle' && !Array.isArray(cleanAction.selectedNodeIds) && Array.isArray(priorAction?.selectedNodeIds)) cleanAction.selectedNodeIds = priorAction.selectedNodeIds;
+        if (!['cursor', 'idle'].includes(kind) && !Array.isArray(cleanAction.socketReveals) && Array.isArray(priorAction?.socketReveals)) {
+          cleanAction.socketReveals = priorAction.socketReveals;
+        }
         const envelope = { userId: ws.arcUser.id, username: ws.arcUser.username, color: ws.arcColor || collaboratorColor(ws.arcUser.id), projectId: ws.arcPresence.projectId, graphId: ws.arcPresence.graphId, action: cleanAction, updatedAt: now, revision: nextCollaborationActionRevision() };
         if (kind === 'studio-draft') {
           const drafts = liveCollaborationStudioDrafts.get(roomKey) || new Map();
@@ -1600,10 +1604,13 @@ wss.on('connection', (ws, request) => {
       } else if (msg.type === 'GRAPH_STATE') {
         const payload = msg.payload || msg;
         const projectId = typeof payload.projectId === 'string' ? payload.projectId : '';
+        const graphId = typeof payload.graphId === 'string' ? payload.graphId : '';
         const graph = payload.graph;
+        const graphPatch = payload.graphPatch;
+        const usesGraphPatch = graphPatch !== undefined;
         const permissions = ws.arcUser?.permissions || [];
         const rejectGraphState = (message) => {
-          if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'GRAPH_STATE_REJECTED', payload: { graphId: payload.graphId, message } }));
+          if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'GRAPH_STATE_REJECTED', payload: { graphId, message } }));
         };
         if (!permissions.includes('*') && !permissions.includes('graphs:write')) {
           rejectGraphState('Your account has read-only graph access. Ask a workspace admin for graph edit permission.');
@@ -1613,18 +1620,25 @@ wss.on('connection', (ws, request) => {
           rejectGraphState('Open the graph in this workspace before editing it collaboratively.');
           return;
         }
-        if (ws.arcManager?.deletedGraphIds?.has(payload.graphId)) {
+        if (ws.arcManager?.deletedGraphIds?.has(graphId)) {
           rejectGraphState('This graph was deleted. Close the stale tab and open a current graph.');
           return;
         }
-        if (!graph || graph.id !== payload.graphId || !Array.isArray(graph.nodes) || !Array.isArray(graph.connections)
-          || graph.nodes.length > 2000 || graph.connections.length > 10000) {
+        let patchSize = 0;
+        if (usesGraphPatch) {
+          try { patchSize = Buffer.byteLength(JSON.stringify(graphPatch)); } catch {}
+        }
+        const validGraphPatch = usesGraphPatch && !graph && graphPatch?.version === 1 && patchSize <= 30_000_000;
+        const validGraphSnapshot = !usesGraphPatch && graph && graph.id === graphId
+          && Array.isArray(graph.nodes) && Array.isArray(graph.connections)
+          && graph.nodes.length <= 2000 && graph.connections.length <= 10000;
+        if (!graphId || (!validGraphPatch && !validGraphSnapshot)) {
           rejectGraphState('This graph update is invalid or exceeds the collaboration limits.');
           return;
         }
-        const key = `${projectId}:${graph.id}`;
-        const graphExists = ws.arcOpenGraphIds?.has(graph.id)
-          || ws.arcManager.getGraphs().some((item) => item.id === graph.id)
+        const key = `${projectId}:${graphId}`;
+        const graphExists = ws.arcOpenGraphIds?.has(graphId)
+          || ws.arcManager.getGraphs().some((item) => item.id === graphId)
           || liveGraphStates.has(key);
         if (!graphExists) {
           rejectGraphState('This graph is no longer open in the workspace. Reopen it before editing.');
@@ -1635,16 +1649,34 @@ wss.on('connection', (ws, request) => {
         }
         let previous = liveGraphStates.get(key);
         if (!previous) {
-          const initialGraph = ws.arcManager.getGraphs().find((item) => item.id === graph.id);
+          const initialGraph = ws.arcManager.getGraphs().find((item) => item.id === graphId);
           if (initialGraph) {
             const initialSerialized = JSON.stringify(initialGraph);
-            previous = { projectId, graphId: graph.id, graph: initialGraph, revision: 0, updatedAt: Date.now(), user: null, serializedGraph: initialSerialized, history: [{ revision: 0, graph: initialGraph }], nodePositionRevisions: {} };
+            previous = { projectId, graphId, graph: initialGraph, revision: 0, updatedAt: Date.now(), user: null, serializedGraph: initialSerialized, history: [{ revision: 0, graph: initialGraph }], nodePositionRevisions: {} };
             liveGraphStates.set(key, previous);
           }
         }
-        let candidateGraph = ws.arcManager.protectGraphSecrets(graph);
         const baseRevision = Number(payload.baseRevision);
-        if (previous && Number.isInteger(baseRevision) && baseRevision !== previous.revision) {
+        if (usesGraphPatch && !previous) {
+          rejectGraphState('The current graph state is unavailable. Reopen the graph and try again.');
+          return;
+        }
+        let candidateGraph;
+        try {
+          candidateGraph = usesGraphPatch
+            ? applyGraphStatePatch(previous.graph, graphPatch)
+            : graph;
+          candidateGraph = ws.arcManager.protectGraphSecrets(candidateGraph);
+        } catch {
+          rejectGraphState('This graph update is invalid or exceeds the collaboration limits.');
+          return;
+        }
+        if (candidateGraph.id !== graphId || !Array.isArray(candidateGraph.nodes) || !Array.isArray(candidateGraph.connections)
+          || candidateGraph.nodes.length > 2000 || candidateGraph.connections.length > 10000) {
+          rejectGraphState('This graph update is invalid or exceeds the collaboration limits.');
+          return;
+        }
+        if (!usesGraphPatch && previous && Number.isInteger(baseRevision) && baseRevision !== previous.revision) {
           const baseState = previous.history?.find((entry) => entry.revision === baseRevision);
           if (baseState) {
             candidateGraph = mergeConcurrentGraphValue(baseState.graph, previous.graph, candidateGraph);
@@ -1652,14 +1684,14 @@ wss.on('connection', (ws, request) => {
             const fallbackBase = previous.history?.[0]?.graph || previous.graph;
             candidateGraph = mergeConcurrentGraphValue(fallbackBase, previous.graph, candidateGraph);
             const mergedNodeIds = new Set((candidateGraph.nodes || []).map((node) => node.id));
-            for (const node of (graph.nodes || [])) {
+            for (const node of (graph?.nodes || [])) {
               if (node && node.id && !mergedNodeIds.has(node.id)) {
                 candidateGraph.nodes.push(cloneCollaborationValue(node));
                 mergedNodeIds.add(node.id);
               }
             }
             const mergedConnIds = new Set((candidateGraph.connections || []).map((conn) => conn.id));
-            for (const conn of (graph.connections || [])) {
+            for (const conn of (graph?.connections || [])) {
               if (conn && conn.id && !mergedConnIds.has(conn.id)) {
                 candidateGraph.connections.push(cloneCollaborationValue(conn));
                 mergedConnIds.add(conn.id);
@@ -1668,7 +1700,7 @@ wss.on('connection', (ws, request) => {
           }
         }
         if (previous) candidateGraph = rebaseNodePositions(candidateGraph, previous.graph, previous.nodePositionRevisions, Number.isInteger(baseRevision) ? baseRevision : previous.revision);
-        const roomKey = collaborationRoomKey(projectId, graph.id);
+        const roomKey = collaborationRoomKey(projectId, graphId);
         const nodeLocks = liveNodeMoveLocks.get(roomKey);
         const protectedNodeIds = new Set();
         if (previous && nodeLocks) for (const [nodeId, lock] of nodeLocks) {
@@ -1736,7 +1768,7 @@ wss.on('connection', (ws, request) => {
           if (ownsLock && incomingNote) activeLock.note = JSON.parse(JSON.stringify(incomingNote));
           if (ownsLock && !incomingNote) removeNoteEditLock(roomKey, noteId);
         }
-        if (Array.isArray(graph.notes) || adjustedNotes || Array.isArray(previous?.graph?.notes)) candidateGraph.notes = incomingNotes;
+        if (Array.isArray(graph?.notes) || adjustedNotes || Array.isArray(previous?.graph?.notes)) candidateGraph.notes = incomingNotes;
         const previousArrows = (previous?.graph?.arrows || []).filter((arrow) => arrow?.locked === true);
         const incomingArrows = Array.isArray(candidateGraph.arrows) ? candidateGraph.arrows : previousArrows;
         const incomingArrowById = new Map(incomingArrows.filter((arrow) => typeof arrow?.id === 'string').map((arrow) => [arrow.id, arrow]));
@@ -1781,28 +1813,28 @@ wss.on('connection', (ws, request) => {
             createdByRole: ws.arcUser.role
           });
         }
-        if (Array.isArray(graph.arrows) || previousArrows.length) candidateGraph.arrows = nextArrows;
+        if (Array.isArray(graph?.arrows) || previousArrows.length) candidateGraph.arrows = nextArrows;
         const serializedGraph = JSON.stringify(candidateGraph);
         const reportRejectedNoteEdits = () => {
-          for (const rejected of rejectedNoteEdits) ws.send(JSON.stringify({ type: 'NOTE_EDIT_REJECTED', payload: { projectId, graphId: graph.id, ...rejected } }));
+          for (const rejected of rejectedNoteEdits) ws.send(JSON.stringify({ type: 'NOTE_EDIT_REJECTED', payload: { projectId, graphId, ...rejected } }));
           if (rejectedCanvasArrowIds.length) ws.send(JSON.stringify({
             type: 'CANVAS_ARROW_REJECTED',
-            payload: { projectId, graphId: graph.id, ids: rejectedCanvasArrowIds, message: 'Only the arrow creator or a project owner with higher permission can change a locked arrow.' }
+            payload: { projectId, graphId, ids: rejectedCanvasArrowIds, message: 'Only the arrow creator or a project owner with higher permission can change a locked arrow.' }
           }));
         };
         if (previous?.serializedGraph === serializedGraph) {
-          const syncPayload = { ...previous, clientId: payload.clientId, syncId: payload.syncId || null, sourceUserId: ws.arcUser.id };
+          const syncPayload = { ...previous, clientId: payload.clientId, syncId: payload.syncId || null, sourceUserId: ws.arcUser.id, patchSupported: true };
           delete syncPayload.serializedGraph;
           delete syncPayload.history;
           ws.send(JSON.stringify({ type: 'GRAPH_STATE_SYNC', payload: syncPayload }));
-          ws.send(JSON.stringify({ type: 'GRAPH_STATE_ACK', payload: { graphId: graph.id, revision: previous.revision, syncId: payload.syncId || null } }));
+          ws.send(JSON.stringify({ type: 'GRAPH_STATE_ACK', payload: { graphId, revision: previous.revision, syncId: payload.syncId || null } }));
           reportRejectedNoteEdits();
           return;
         }
         const revision = (previous?.revision || 0) + 1;
         const state = {
           projectId,
-          graphId: graph.id,
+          graphId,
           graph: candidateGraph,
           revision,
           updatedAt: Date.now(),
@@ -1812,17 +1844,17 @@ wss.on('connection', (ws, request) => {
           history: [...(previous?.history || (previous ? [{ revision: previous.revision, graph: previous.graph }] : [])), { revision, graph: candidateGraph }].slice(-120)
         };
         liveGraphStates.set(key, state);
-        scheduleLiveGraphAutosave(projectId, graph.id);
+        scheduleLiveGraphAutosave(projectId, graphId);
         reportRejectedNoteEdits();
-        const syncPayload = { ...state, clientId: payload.clientId, syncId: payload.syncId || null, sourceUserId: ws.arcUser.id };
+        const syncPayload = { ...state, clientId: payload.clientId, syncId: payload.syncId || null, sourceUserId: ws.arcUser.id, patchSupported: true };
         delete syncPayload.serializedGraph;
         delete syncPayload.history;
         const message = JSON.stringify({ type: 'GRAPH_STATE_SYNC', payload: syncPayload });
         for (const client of wss.clients) {
           if (client.arcAuthenticated && client.readyState === WebSocket.OPEN
-            && client.arcPresence?.projectId === projectId && client.arcPresence?.graphId === graph.id) client.send(message);
+            && client.arcPresence?.projectId === projectId && client.arcPresence?.graphId === graphId) client.send(message);
         }
-        ws.send(JSON.stringify({ type: 'GRAPH_STATE_ACK', payload: { graphId: graph.id, revision: state.revision, syncId: payload.syncId || null } }));
+        ws.send(JSON.stringify({ type: 'GRAPH_STATE_ACK', payload: { graphId, revision: state.revision, syncId: payload.syncId || null } }));
         publishProjectCollaboration(projectId);
         }
       }
