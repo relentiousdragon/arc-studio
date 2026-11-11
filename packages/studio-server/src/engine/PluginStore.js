@@ -40,7 +40,6 @@ const LOCAL_HOST_ADAPTERS = new Map([...localHostAdapters].map(([id, plugin]) =>
 const allowedNode = (type) => type === 'function_input'
   || type === 'function_return'
   || type === 'function_call'
-  || type === 'function_math'
   || type === 'format_text'
   || type === 'compare_text'
   || type.startsWith('math_')
