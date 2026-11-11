@@ -85,3 +85,14 @@ test('suggests only the next object level after a dot', () => {
   assert.deepEqual(templateFieldSuggestions('var.ch', context).map((item) => item.insert), ['var.child}}']);
   assert.deepEqual(templateFieldSuggestions('VAR.', context).map((item) => item.insert), ['var.child}}', 'var.other}}']);
 });
+
+test('suggests connected arg object properties after typing the arg prefix', () => {
+  const suggestions = templateFieldSuggestions('arg1.', {
+    paths: [
+      { path: 'arg1.name', label: 'Channel name' },
+      { path: 'arg1.permission_overwrites', label: 'Permission overwrites' },
+      { path: 'arg2.username', label: 'Username' }
+    ]
+  });
+  assert.deepEqual(suggestions.map((item) => item.insert), ['arg1.name}}', 'arg1.permission_overwrites}}']);
+});
