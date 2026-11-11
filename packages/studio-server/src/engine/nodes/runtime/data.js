@@ -81,6 +81,15 @@ function regexSafetyError(pattern) {
   return '';
 }
 
+function advanceRegexIndex(text, index, unicode) {
+  if (!unicode || index + 1 >= text.length) return index + 1;
+  const first = text.charCodeAt(index);
+  const second = text.charCodeAt(index + 1);
+  return first >= 0xD800 && first <= 0xDBFF && second >= 0xDC00 && second <= 0xDFFF
+    ? index + 2
+    : index + 1;
+}
+
 function readDataPath(source, path) {
   const text = String(path || '').trim();
   if (!text || text.length > 512) return { exists: false, value: undefined };
@@ -302,14 +311,19 @@ export function evaluateDataNode(type, inputs = {}, data = {}) {
   if (type === 'data_regex') {
     const text = String(inputs.text ?? '');
     const pattern = String(inputs.pattern ?? '');
-    const flags = String(inputs.flags ?? '');
-    const mode = ['test', 'match', 'replace'].includes(data.mode) ? data.mode : 'test';
-    const invalid = (error) => ({ text, matched: false, match: '', matches: [], captures: [], index: -1, valid: false, error });
+    const rawFlags = String(inputs.flags ?? '');
+    const flags = rawFlags.replace(/[\s,]/g, '');
+    const mode = data.mode ?? 'test';
+    const invalid = (error) => ({ text, matched: false, match: '', matches: [], captures: [], named_captures: {}, index: -1, valid: false, error });
+    if (!['test', 'match', 'replace'].includes(mode)) return invalid('Choose Test, Extract, or Replace as the regex operation.');
     if (text.length > 8192) return invalid('Regex input is limited to 8,192 characters.');
     if (pattern.length > 256) return invalid('Regex pattern is limited to 256 characters.');
-    if (flags.length > 6 || !/^[gimsuy]*$/.test(flags)) return invalid('Use the supported JavaScript regex flags: g, i, m, s, u, y.');
+    if (rawFlags.length > 32 || flags.length > 6 || !/^[gimsuy]*$/.test(flags)) return invalid('Use the supported JavaScript regex flags: g, i, m, s, u, y.');
+    if (new Set(flags).size !== flags.length) return invalid('Each regex flag can only be used once.');
     const safetyError = regexSafetyError(pattern);
     if (safetyError) return invalid(safetyError);
+    const replacement = mode === 'replace' ? String(inputs.replacement ?? '') : '';
+    if (replacement.length > 2000) return invalid('Regex replacement is limited to 2,000 characters.');
     try {
       const expression = new RegExp(pattern, flags);
       const results = [];
@@ -317,7 +331,7 @@ export function evaluateDataNode(type, inputs = {}, data = {}) {
         let result;
         while ((result = expression.exec(text)) && results.length < 1000) {
           results.push(result);
-          if (result[0] === '') expression.lastIndex += 1;
+          if (result[0] === '') expression.lastIndex = advanceRegexIndex(text, expression.lastIndex, expression.unicode);
         }
       } else {
         const result = expression.exec(text);
@@ -326,7 +340,6 @@ export function evaluateDataNode(type, inputs = {}, data = {}) {
       const first = results[0];
       let outputText = text;
       if (mode === 'replace') {
-        const replacement = String(inputs.replacement ?? '').slice(0, 2000);
         outputText = text.replace(expression, replacement);
         if (outputText.length > 10000) return invalid('Regex output is limited to 10,000 characters.');
       }
@@ -336,6 +349,9 @@ export function evaluateDataNode(type, inputs = {}, data = {}) {
         match: first?.[0] ?? '',
         matches: results.map((result) => result[0]).slice(0, 1000),
         captures: first ? first.slice(1).map((value) => value ?? '') : [],
+        named_captures: first?.groups
+          ? Object.fromEntries(Object.entries(first.groups).map(([name, value]) => [name, value ?? '']))
+          : {},
         index: first?.index ?? -1,
         valid: true,
         error: ''
