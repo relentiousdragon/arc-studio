@@ -8,36 +8,36 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Starts Show Popup Modal."},
     {
       "id": "interaction_id",
       "label": "Interaction ID",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "ID of the interaction to respond to."},
     {
       "id": "interaction_token",
       "label": "Interaction Token",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "Token used to respond to the interaction."},
     {
       "id": "modal",
       "label": "Modal",
-      "type": "object"
-    }
+      "type": "object",
+      description: "Modal definition to show to the user."}
   ],
   "outputs": [
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Continues after Show Popup Modal completes."},
     {
       "id": "success",
       "label": "Success",
-      "type": "boolean"
-    }
+      "type": "boolean",
+      description: "Whether the action completed successfully."}
   ]
 };
