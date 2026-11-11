@@ -70,6 +70,14 @@ const UNIVERSAL_PATHS = Object.freeze([
 ]);
 
 const EVENT_PATHS = Object.freeze({
+  event_web_server_request: [
+    { path: 'request.method', label: 'HTTP method' },
+    { path: 'request.path', label: 'URL path' },
+    { path: 'query', label: 'Query parameters' },
+    { path: 'params', label: 'Path parameters' },
+    { path: 'headers', label: 'Request headers' },
+    { path: 'body', label: 'Request body' }
+  ],
   event_message_create: [
     ...MESSAGE_PATHS,
     ...AUTHOR_PATHS,
@@ -548,7 +556,9 @@ export function buildEventTemplateValues(type, payload, directory = {}) {
     message: MESSAGE_EVENTS.has(type) ? safePayload : asObject(safePayload.message),
     thread: THREAD_EVENTS.has(type) ? safePayload : asObject(safePayload.thread),
     interaction: isInteraction ? interactionView(safePayload) : null,
-    role: ROLE_EVENTS.has(type) ? safePayload : asObject(safePayload.role),
+    role: ROLE_EVENTS.has(type)
+      ? asObject(safePayload.role) || (type === 'event_role_delete' ? { id: safePayload.role_id || '' } : safePayload)
+      : asObject(safePayload.role),
     emoji: asObject(safePayload.emoji) || (safePayload.emoji_id ? { id: String(safePayload.emoji_id), name: safePayload.emoji_name || '' } : null),
     invite: asObject(safePayload.invite) || (safePayload.code ? {
       ...safePayload,
