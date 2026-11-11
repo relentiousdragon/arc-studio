@@ -18,6 +18,7 @@ import { CustomEmoji } from '../ui/CustomEmoji.jsx';
 import { playUiSound, unlockUiSounds } from '../../core/uiSounds.js';
 //
 const GRID_SIZE = 24;
+const NODE_DRAG_THRESHOLD = 4;
 const NODE_WIDTH = 248;
 const EMPTY_PIN_SET = new Set();
 const EMPTY_TEMPLATE_PREVIEW_VALUES = Object.freeze({});
@@ -2262,8 +2263,20 @@ export function NodeCanvas({
     if (singleton) {
       shakeNode(singleton.id);
       arcEvents.emit('toast:notify', { title: 'Function node cannot be cloned', message: `${getNodeDefinition(singleton)?.label || singleton.type} is limited to one per function graph.`, type: 'warning' });
-      setDraggingNode((current) => current ? { ...current, altKey: false } : current);
+      const nextDrag = { ...drag, altKey: false, cloneRequested: false };
+      draggingNodeRef.current = nextDrag;
+      setDraggingNode(nextDrag);
       return false;
+    }
+    const lockRequest = drag.lockRequest;
+    if (lockRequest && !lockRequest.granted) {
+      lockRequest.cancelled = true;
+      if (pendingNodeMoveDragRef.current === lockRequest) {
+        pendingNodeMoveDragRef.current = null;
+        setNodeMovePending(false);
+      }
+    } else if (lockRequest?.granted) {
+      onReleaseNodeMoveLock?.(nodeMoveLockIds(drag), graphId, projectId);
     }
     const stamp = Date.now();
     const idMap = new Map(selected.map((node) => [node.id, `node_${stamp}_${Math.random().toString(36).slice(2, 8)}`]));
@@ -2288,10 +2301,16 @@ export function NodeCanvas({
       deltaX: 0,
       deltaY: 0,
       altKey: false,
+      cloneRequested: false,
+      lockNodeIds: cloneIds,
+      lockRequest: null,
+      lockGranted: false,
+      cloneOnly: false,
       cloned: true
     };
     draggingNodeRef.current = clonedDrag;
     setDraggingNode(clonedDrag);
+    onCollaborationAction?.({ kind: 'node-drag', cursor: collaborationCursorRef.current, nodeIds: cloneIds }, true);
     return true;
   }
 
@@ -2593,11 +2612,13 @@ export function NodeCanvas({
         const groupDeltaY = y - draggingNode.initialY;
         const ids = draggingNode.nodeIds || [draggingNode.id];
         const initialPositions = draggingNode.initialPositions || { [draggingNode.id]: { x: draggingNode.initialX, y: draggingNode.initialY } };
-        const nodePositions = collaborationMotionSupported && Math.hypot(deltaX * zoom, deltaY * zoom) >= 2 ? ids.map((id) => {
+        const cloneRequested = !draggingNode.cloned && !isLocked && Boolean(draggingNode.cloneRequested || draggingNode.altKey || altDownRef.current);
+        const movementStarted = draggingNode.historyStarted || Math.hypot(deltaX * zoom, deltaY * zoom) >= NODE_DRAG_THRESHOLD;
+        const nodePositions = collaborationMotionSupported && movementStarted && !cloneRequested ? ids.map((id) => {
           const initial = initialPositions[id] || nodes.find((node) => node.id === id) || { x: 0, y: 0 };
           return { id, x: Math.round(initial.x + groupDeltaX), y: Math.round(initial.y + groupDeltaY) };
         }) : undefined;
-        onCollaborationAction?.({ kind: 'node-drag', cursor, nodeIds: ids, nodePositions });
+        if (movementStarted && !cloneRequested) onCollaborationAction?.({ kind: 'node-drag', cursor, nodeIds: ids, nodePositions });
       }
       else if (draggingNote) {
         const deltaX = Math.round((event.clientX - draggingNote.startX) / displayScale / zoom);
@@ -2662,28 +2683,29 @@ export function NodeCanvas({
       const currentPan = viewportRef.current.pan;
       const deltaX = (event.clientX - draggingNode.startX) / displayScale - (currentPan.x - draggingNode.startPan.x);
       const deltaY = (event.clientY - draggingNode.startY) / displayScale - (currentPan.y - draggingNode.startPan.y);
-      if (!draggingNode.historyStarted && Math.hypot(deltaX, deltaY) < 2) return;
+      if (!draggingNode.historyStarted && Math.hypot(deltaX, deltaY) < NODE_DRAG_THRESHOLD) return;
       if (!draggingNode.historyStarted) {
         onHistoryGroupStart?.();
       }
       const cloneRequested = !draggingNode.cloned && !isLocked && Boolean(draggingNode.cloneRequested || draggingNode.altKey || altDownRef.current);
-      const waitingForLock = Boolean(draggingNode.lockRequest && !draggingNode.lockRequest.granted);
-      if (cloneRequested && !waitingForLock && startDragClone(draggingNode)) return;
-      let x = draggingNode.initialX + deltaX / zoom;
-      let y = draggingNode.initialY + deltaY / zoom;
+      if (cloneRequested && startDragClone(draggingNode)) return;
+      const activeDrag = draggingNodeRef.current?.id === draggingNode.id ? draggingNodeRef.current : draggingNode;
+      if (activeDrag.cloneOnly && !activeDrag.cloned) return;
+      let x = activeDrag.initialX + deltaX / zoom;
+      let y = activeDrag.initialY + deltaY / zoom;
       if (snapToGrid) {
         x = Math.round(x / GRID_SIZE) * GRID_SIZE;
         y = Math.round(y / GRID_SIZE) * GRID_SIZE;
       }
-      const groupDeltaX = x - draggingNode.initialX;
-      const groupDeltaY = y - draggingNode.initialY;
+      const groupDeltaX = x - activeDrag.initialX;
+      const groupDeltaY = y - activeDrag.initialY;
       const nextDrag = {
-        ...draggingNode,
+        ...activeDrag,
         historyStarted: true,
         deltaX: groupDeltaX,
         deltaY: groupDeltaY,
         shiftKey: event.shiftKey,
-        cloneRequested: draggingNode.cloneRequested || (cloneRequested && waitingForLock)
+        cloneRequested: activeDrag.cloneRequested
       };
       draggingNodeRef.current = nextDrag;
       setDraggingNode(nextDrag);
@@ -2914,7 +2936,7 @@ export function NodeCanvas({
     const finalNodeMoveX = finishedDraggingNode ? finalNodeX - finishedDraggingNode.initialX : 0;
     const finalNodeMoveY = finishedDraggingNode ? finalNodeY - finishedDraggingNode.initialY : 0;
     const nodeMoveAuthorized = !finishedDraggingNode?.lockRequest || finishedDraggingNode.lockRequest.granted;
-    const nodeMoveStarted = Boolean(finishedDraggingNode && nodeMoveAuthorized && (finishedDraggingNode.historyStarted || Math.hypot(finalNodeDelta.x * zoom, finalNodeDelta.y * zoom) >= 2));
+    const nodeMoveStarted = Boolean(finishedDraggingNode && nodeMoveAuthorized && (finishedDraggingNode.historyStarted || Math.hypot(finalNodeDelta.x * zoom, finalNodeDelta.y * zoom) >= NODE_DRAG_THRESHOLD));
     const finalNodePositions = nodeMoveStarted ? (finishedDraggingNode.nodeIds || [finishedDraggingNode.id]).map((id) => {
       const initial = finishedDraggingNode.initialPositions?.[id] || nodes.find((item) => item.id === id) || { x: 0, y: 0 };
       return { id, x: Math.round(initial.x + finalNodeMoveX), y: Math.round(initial.y + finalNodeMoveY) };
@@ -3062,21 +3084,29 @@ export function NodeCanvas({
     const pendingNodeDrag = pendingNodeMoveDragRef.current;
     if (pendingNodeDrag && pendingNodeDrag.pointerId === event.pointerId) {
       if (!pendingNodeDrag.granted) {
-        pendingNodeDrag.finalPointer = {
-          clientX: event.clientX,
-          clientY: event.clientY,
-          pointerId: event.pointerId,
-          pointerType: event.pointerType,
-          altKey: event.altKey,
-          shiftKey: event.shiftKey,
-          target: event.target
-        };
-        if (event.pointerType === 'touch' && touchNodeGestureRef.current?.pointerId === event.pointerId) {
-          window.clearTimeout(touchNodeGestureRef.current.timer);
-          touchNodeGestureRef.current = null;
-          touchPointersRef.current.delete(event.pointerId);
+        if (!draggingNodeRef.current?.historyStarted) {
+          pendingNodeDrag.cancelled = true;
+          pendingNodeMoveDragRef.current = null;
+          setNodeMovePending(false);
+          draggingNodeRef.current = null;
+          setDraggingNode(null);
+        } else {
+          pendingNodeDrag.finalPointer = {
+            clientX: event.clientX,
+            clientY: event.clientY,
+            pointerId: event.pointerId,
+            pointerType: event.pointerType,
+            altKey: event.altKey,
+            shiftKey: event.shiftKey,
+            target: event.target
+          };
+          if (event.pointerType === 'touch' && touchNodeGestureRef.current?.pointerId === event.pointerId) {
+            window.clearTimeout(touchNodeGestureRef.current.timer);
+            touchNodeGestureRef.current = null;
+            touchPointersRef.current.delete(event.pointerId);
+          }
+          return;
         }
-        return;
       }
       pendingNodeMoveDragRef.current = null;
       setNodeMovePending(false);
@@ -3393,13 +3423,13 @@ export function NodeCanvas({
     const startX = event.clientX;
     const startY = event.clientY;
     const startPan = viewportRef.current.pan;
-    const altKey = event.altKey;
+    const altKey = event.altKey || altDownRef.current;
     const shiftKey = event.shiftKey;
-    const startDrag = (lockRequest = null) => {
+    const startDrag = (lockRequest = null, lockGranted = !lockRequest, lockNodeIds = movingIds, cloneOnly = false) => {
       const drag = {
         id: node.id,
         nodeIds: movingIds,
-        lockNodeIds: movingIds,
+        lockNodeIds,
         initialPositions,
         startX,
         startY,
@@ -3410,11 +3440,11 @@ export function NodeCanvas({
         altKey,
         shiftKey,
         lockRequest,
-        lockGranted: !lockRequest
+        lockGranted,
+        cloneOnly
       };
       draggingNodeRef.current = drag;
       setDraggingNode(drag);
-      onCollaborationAction?.({ kind: 'node-drag', cursor: collaborationCursorRef.current, nodeIds: movingIds }, true);
     };
     if (!collaborationOnline) {
       startDrag();
@@ -3422,6 +3452,10 @@ export function NodeCanvas({
     }
     if (!collaborationReady || typeof onRequestNodeMoveLock !== 'function') {
       arcEvents.emit('toast:notify', { title: 'Node movement unavailable', message: 'Reconnect to the shared graph before moving nodes.', type: 'warning' });
+      return;
+    }
+    if (altKey) {
+      startDrag(null, false, [], true);
       return;
     }
     const pending = { pointerId: event.pointerId, granted: false, cancelled: false, finalPointer: null };
@@ -4696,7 +4730,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
   return (
     <div
       ref={containerRef}
-      className={`node-canvas ${isPanning ? 'is-panning' : ''} ${isWheelPanning ? 'is-wheel-panning' : ''} ${isWheelZooming ? 'is-wheel-zooming' : ''} ${isPanning || isWheelPanning || isWheelZooming ? 'is-navigating-camera' : ''} ${draggingNode ? 'is-dragging-node' : ''} ${nodeMovePending ? 'is-node-move-pending' : ''} ${connectingWire ? 'is-connecting-wire' : ''} ${connectingWire?.clickToConnect ? 'is-click-connecting' : ''} ${graphChatComposerOpen ? 'has-graph-chat-composer' : ''} ${(altHeld || altDownRef.current) && !isLocked && !isPanning && !connectingWire && !drawingArrow ? 'is-cutting-wires' : ''}`}
+      className={`node-canvas ${isPanning ? 'is-panning' : ''} ${isWheelPanning ? 'is-wheel-panning' : ''} ${isWheelZooming ? 'is-wheel-zooming' : ''} ${isPanning || isWheelPanning || isWheelZooming ? 'is-navigating-camera' : ''} ${draggingNode?.historyStarted ? 'is-dragging-node' : ''} ${nodeMovePending && draggingNode?.historyStarted ? 'is-node-move-pending' : ''} ${connectingWire ? 'is-connecting-wire' : ''} ${connectingWire?.clickToConnect ? 'is-click-connecting' : ''} ${graphChatComposerOpen ? 'has-graph-chat-composer' : ''} ${(altHeld || altDownRef.current) && !isLocked && !isPanning && !connectingWire && !drawingArrow ? 'is-cutting-wires' : ''}`}
       style={{ display: isActive ? undefined : 'none' }}
       data-performance={performanceReduced ? 'reduced' : 'normal'}
       data-canvas-quality={effectiveCanvasQuality}
