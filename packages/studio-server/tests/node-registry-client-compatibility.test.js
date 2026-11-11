@@ -39,6 +39,7 @@ test('each built-in schema is defined once in its own module and indexed', async
       assert.ok(Array.isArray(pins), `${type}.${direction} must be an array`);
       assert.equal(new Set(pins.map((pin) => pin.id)).size, pins.length, `${type}.${direction} has duplicate pin IDs`);
       for (const pin of pins) assert.ok(Object.values(PinTypes).includes(pin.type), `${type}.${direction}.${pin.id} has an unknown pin type`);
+      for (const pin of pins) assert.ok(pin.description?.trim(), `${category}.${type}.${direction}.${pin.id} needs a schema description`);
     }
   }
 });
