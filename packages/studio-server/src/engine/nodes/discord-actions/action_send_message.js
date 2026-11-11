@@ -14,82 +14,82 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Starts Send Message."},
     {
       "id": "channel_id",
       "label": "Channel ID",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "ID of the channel where the message will be sent."},
     {
       "id": "thread_id",
       "label": "Thread ID (Optional)",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "Optional thread ID where the message will be sent."},
     {
       "id": "content",
       "label": "Content",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "Message text to send or update."},
     {
       "id": "embed",
       "label": "Embed (Optional)",
-      "type": "embed"
-    },
+      "type": "embed",
+      description: "Embed to include with the message."},
     {
       "id": "components",
       "label": "Components (Optional)",
-      "type": "object"
-    },
+      "type": "object",
+      description: "Message components to send or update."},
     {
       "id": "files",
       "label": "Files (optional)",
       "type": "object",
-      "defaultValue": []
-    },
+      "defaultValue": [],
+      description: "Files to attach to the message."},
     {
       "id": "file_data",
       "label": "File Data URL / Base64",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "File contents as a data URL or base64 text."},
     {
       "id": "file_name",
       "label": "File Name",
       "type": "string",
-      "defaultValue": "image.png"
-    },
+      "defaultValue": "image.png",
+      description: "File name shown for the uploaded attachment."},
     {
       "id": "reply_to_message_id",
       "label": "Reply to Message ID",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "ID of the message to reply to."},
     {
       "id": "mention_replied_user",
       "label": "Mention Replied User",
       "type": "boolean",
-      "defaultValue": false
-    }
+      "defaultValue": false,
+      description: "Whether to mention the author of the replied message."}
   ],
   "outputs": [
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Continues after Send Message completes."},
     {
       "id": "message_id",
       "label": "Message ID",
-      "type": "string"
-    },
+      "type": "string",
+      description: "ID of the message created by the action."},
     {
       "id": "success",
       "label": "Success",
-      "type": "boolean"
-    }
+      "type": "boolean",
+      description: "Whether the action completed successfully."}
   ]
 };
