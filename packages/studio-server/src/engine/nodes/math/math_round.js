@@ -21,14 +21,16 @@ export default {
       "id": "value",
       "label": "Value",
       "type": "number",
-      "defaultValue": 0
+      "defaultValue": 0,
+      description: "Number to round to the selected decimal places."
     }
   ],
   "outputs": [
     {
       "id": "result",
       "label": "Result",
-      "type": "number"
+      "type": "number",
+      description: "Input rounded to the selected decimal places."
     }
   ]
 };
