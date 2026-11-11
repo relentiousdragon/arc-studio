@@ -4,6 +4,10 @@ export default {
   "category": "Logic & Flow",
   "label": "Compare Text",
   "color": "#8b5cf6",
+  "defaultData": {
+    "operator": "equals",
+    "ignore_case": false
+  },
   "inputs": [
     {
       "id": "text_a",
@@ -25,6 +29,13 @@ export default {
       "type": "string",
       "defaultValue": "equals",
       description: "Comparison to perform on the two text values."
+    },
+    {
+      "id": "ignore_case",
+      "label": "Ignore Case",
+      "type": "boolean",
+      "defaultValue": false,
+      description: "Compare text without distinguishing uppercase and lowercase letters."
     }
   ],
   "outputs": [
