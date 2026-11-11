@@ -5762,7 +5762,7 @@ export function App() {
   }, [availableVariables, failedWorkspaceNodeTypes, supportedWorkspaceNodeTypes]);
 
   const appendNodeToGraph = useCallback((graph, node) => {
-    if (!graph || !node) return;
+    if (!graph || !node || isLocked || !canWriteGraphs || graph.enabled === false) return;
     const additions = Array.isArray(node) ? node : [node];
     if (graph.id === activeTabId) {
       handleNodesChange([...activeNodes, ...additions]);
@@ -5774,9 +5774,10 @@ export function App() {
     setActiveConnections(graph.connections || []);
     setTabs((previous) => previous.map((tab) => tab.id === graph.id ? { ...tab, nodes: nextNodes, isDirty: true } : tab));
     setActiveTabId(graph.id);
-  }, [activeNodes, activeTabId, handleNodesChange, recordHistory]);
+  }, [activeNodes, activeTabId, canWriteGraphs, handleNodesChange, isLocked, recordHistory]);
 
   const handlePlaceNode = useCallback((type, position = null) => {
+    if (isLocked || !canWriteGraphs || activeGraph?.enabled === false) return;
     if (!isNodeTypeSupported(type, supportedWorkspaceNodeTypes, failedWorkspaceNodeTypes)
       || !isNodeTypeCreatable(type, BuiltInNodeDefinitions)) return;
     const targetGraph = activeGraph || handleAddBlankGraph();
@@ -5803,15 +5804,17 @@ export function App() {
     appendNodeToGraph(targetGraph, node);
     setPaletteNodePosition(null);
     recordLibraryItemUsage(activeProjectId, 'nodes', type);
-  }, [activeGraph, activeProjectId, appendNodeToGraph, failedWorkspaceNodeTypes, handleAddBlankGraph, makeNode, paletteNodePosition, supportedWorkspaceNodeTypes]);
+  }, [activeGraph, activeProjectId, appendNodeToGraph, canWriteGraphs, failedWorkspaceNodeTypes, handleAddBlankGraph, isLocked, makeNode, paletteNodePosition, supportedWorkspaceNodeTypes]);
 
   const openPaletteAt = useCallback((position = null) => {
+    if (isLocked || !canWriteGraphs || activeGraph?.enabled === false) return;
     const validPosition = Number.isFinite(position?.x) && Number.isFinite(position?.y) ? position : null;
     setPaletteNodePosition(validPosition || viewportCenterRef.current);
     setIsPaletteOpen(true);
-  }, []);
+  }, [activeGraph, canWriteGraphs, isLocked]);
 
   const handleDropNode = useCallback((payload, position) => {
+    if (isLocked || !canWriteGraphs || activeGraph?.enabled === false) return;
     const requestedTypes = payload?.type === 'multi-node'
       ? payload.nodeTypes || []
       : [payload?.type === 'graph-call' ? 'function_call' : payload?.type === 'prefab' ? nodePrefabs.find((item) => item.id === payload.prefabId)?.node?.type : payload?.type === 'embed-asset' ? 'build_embed' : payload?.type === 'variable-get' ? 'variable_get' : payload?.nodeType].filter(Boolean);
@@ -5877,7 +5880,7 @@ export function App() {
       const prefab = nodePrefabs.find((item) => item.id === payload.prefabId);
       if (prefab?.node?.type) recordLibraryItemUsage(activeProjectId, 'nodes', prefab.node.type);
     }
-  }, [activeGraph, activeProjectId, appendNodeToGraph, availableVariables, graphLookup, handleAddBlankGraph, makeNode, nodePrefabs, supportedWorkspaceNodeTypes]);
+  }, [activeGraph, activeProjectId, appendNodeToGraph, availableVariables, canWriteGraphs, graphLookup, handleAddBlankGraph, isLocked, makeNode, nodePrefabs, supportedWorkspaceNodeTypes]);
 
   const handleRequestSaveNodePrefab = useCallback((node) => {
     if (!node) return;
@@ -8470,7 +8473,7 @@ export function App() {
                   nodeDefinitions={availableNodeDefinitions}
                   nodeDefinitionsReady={supportedWorkspaceNodeTypes !== null || failedWorkspaceNodeTypes.size > 0}
                   settings={settings}
-                  isLocked={isLocked || !canWriteGraphs}
+                  isLocked={isLocked || !canWriteGraphs || tabGraph?.enabled === false}
                   canvasLocked={isLocked}
                   canWriteGraphs={canWriteGraphs}
                   desktopMode={desktopMode}
