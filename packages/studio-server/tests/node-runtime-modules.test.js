@@ -603,6 +603,41 @@ test('console log flow nodes emit their message at the matching level', async ()
   ]);
 });
 
+test('Compare Text can ignore case through its fallback or boolean input', async () => {
+  const executeComparison = async ({ fallback, input }) => {
+    const logs = [];
+    const nodes = [
+      { id: 'event', type: 'event_message_create' },
+      { id: 'left', type: 'value_text', data: { value: 'Arc Studio' } },
+      { id: 'right', type: 'value_text', data: { value: 'arc' } },
+      { id: 'ignore-case', type: 'value_boolean', data: { value: input } },
+      { id: 'compare', type: 'compare_text', data: { operator: 'contains', ignore_case: fallback } },
+      { id: 'log', type: 'action_console_log', data: { message: '' } }
+    ];
+    const connections = [
+      { sourceNodeId: 'event', sourcePinId: 'exec', targetNodeId: 'log', targetPinId: 'exec' },
+      { sourceNodeId: 'left', sourcePinId: 'value', targetNodeId: 'compare', targetPinId: 'text_a' },
+      { sourceNodeId: 'right', sourcePinId: 'value', targetNodeId: 'compare', targetPinId: 'text_b' },
+      { sourceNodeId: 'compare', sourcePinId: 'result', targetNodeId: 'log', targetPinId: 'message' }
+    ];
+    if (input !== undefined) connections.push({
+      sourceNodeId: 'ignore-case',
+      sourcePinId: 'value',
+      targetNodeId: 'compare',
+      targetPinId: 'ignore_case'
+    });
+    const result = await GraphRunner.execute({ id: 'compare-text-ignore-case', nodes, connections }, 'MESSAGE_CREATE', {}, {
+      log: (message, level) => logs.push({ message, level })
+    });
+    assert.equal(result.error, null);
+    return logs.find((entry) => entry.level === 'INFO')?.message;
+  };
+
+  assert.equal(await executeComparison({ fallback: false, input: true }), 'true');
+  assert.equal(await executeComparison({ fallback: true }), 'true');
+  assert.equal(await executeComparison({ fallback: false }), 'false');
+});
+
 test('function calls expose each named return value as a separate output', async () => {
   const functionGraph = {
     id: 'multi-return-function',
