@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { inflateSync } from 'node:zlib';
-import { activityAvatarUrl, renderActivityAvatarPng, verifyActivityAvatarSignature } from '../src/security/ActivityAvatar.js';
+import { activityAvatarPath, activityAvatarUrl, renderActivityAvatarPng, verifyActivityAvatarSignature } from '../src/security/ActivityAvatar.js';
 //
 test('generated ARC account avatars are cached PNG images', () => {
   const first = renderActivityAvatarPng('user_123', 'a');
@@ -30,9 +30,12 @@ test('activity avatar URLs use the HTTPS ARC workspace origin and generated init
     'host': 'internal:3000'
   };
   const req = { protocol: 'http', get: (name) => headers[name] || '' };
-  const avatarUrl = new URL(activityAvatarUrl(req, { id: 'user_123', username: 'editor' }, secret));
+  const actor = { id: 'user_123', username: 'editor' };
+  const avatarPath = activityAvatarPath(actor, secret);
+  const avatarUrl = new URL(activityAvatarUrl(req, actor, secret));
   assert.equal(avatarUrl.origin, 'https://studio.example.com');
   assert.equal(avatarUrl.pathname, '/api/activity-avatars/user_123.png');
+  assert.equal(avatarPath, `${avatarUrl.pathname}${avatarUrl.search}`);
   assert.equal(avatarUrl.searchParams.get('initial'), 'E');
   assert.equal(verifyActivityAvatarSignature('user_123', 'E', avatarUrl.searchParams.get('signature'), secret), true);
   assert.equal(verifyActivityAvatarSignature('user_123', 'F', avatarUrl.searchParams.get('signature'), secret), false);

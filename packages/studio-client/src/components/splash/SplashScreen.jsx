@@ -887,7 +887,7 @@ export function SplashScreen({
                   <div className="auth-remembered-user-card">
                     <div className="auth-remembered-user-avatar" style={{ '--collaborator-color': rememberedColor, '--collaborator-text-color': rememberedTextColor, color: rememberedTextColor }}>
                       {rememberedProfile.avatar ? (
-                        <img src={rememberedProfile.avatar} alt="" className="auth-remembered-avatar-img" />
+                        <img src={apiUrl(rememberedProfile.avatar)} alt="" className="auth-remembered-avatar-img" />
                       ) : (
                         <span className="auth-remembered-avatar-initial">{rememberedInitial}</span>
                       )}

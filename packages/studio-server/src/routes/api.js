@@ -15,7 +15,7 @@ import { downloadSafeHttpFile } from '../engine/SafeHttpRequest.js';
 import { EmbedStore } from '../engine/EmbedStore.js';
 import { ActivityStore } from '../security/ActivityStore.js';
 import { ActivityWebhookDispatcher, ActivityWebhookStore } from '../security/ActivityWebhook.js';
-import { activityAvatarUrl, renderActivityAvatarPng, verifyActivityAvatarSignature } from '../security/ActivityAvatar.js';
+import { activityAvatarPath, activityAvatarUrl, renderActivityAvatarPng, verifyActivityAvatarSignature } from '../security/ActivityAvatar.js';
 import { StarterProjects } from '../storage/StarterProjects.js';
 import { hasImportableTextContent } from '../storage/ImportContentReview.js';
 import { randomUUID, createHash } from 'node:crypto';
@@ -500,7 +500,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       username: user.username,
       role: user.role,
       isPrimaryAdmin: Boolean(user.isPrimaryAdmin),
-      avatar: user.avatar || null,
+      avatar: activityAvatarPath(user, serverConfig.sessionSecret),
       id: user.id
     });
   });
@@ -790,7 +790,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
   });
 
   router.get('/auth/me', (req, res) => {
-    res.json({ user: req.user });
+    res.json({ user: { ...req.user, avatar: activityAvatarPath(req.user, serverConfig.sessionSecret) } });
   });
 
   router.get('/client-access', (req, res) => {
@@ -1109,7 +1109,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
 
   if (!serverConfig.desktopMode) {
     router.get('/users', requirePermission('*'), (req, res) => {
-      res.json({ users: userStore.listUsers() });
+      res.json({ users: userStore.listUsers().map((user) => ({ ...user, avatar: activityAvatarPath(user, serverConfig.sessionSecret) })) });
     });
 
     router.post('/users', requirePermission('*'), (req, res) => {

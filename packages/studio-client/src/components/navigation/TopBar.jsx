@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { getArcUiScale } from '../../core/uiScale.js';
 import { onPageBlur } from '../../core/pageFocus.js';
 import { getContrastTextColor } from '../../core/colorContrast.js';
+import { apiUrl } from '../../core/api.js';
 import {
   AlertCircle, AlertTriangle, ArrowLeftRight, Check, BookmarkPlus, Calculator, CircleAlert, ChevronDown, CircleUserRound, Copy, Download, FilePlus2, LoaderCircle, LockKeyhole, LogOut, Pencil, Sparkles, Star,
   LockOpen, Play, Redo2, Save, Settings2, Square, Undo2, Users, WifiOff, X
@@ -199,7 +200,7 @@ export function TopBar({
 
         <div className="profile-menu">
           <button className="profile-trigger" title={`${currentUser?.username || 'Account'} · ${currentUser?.role || ''}`}>
-            <span className={`profile-avatar ${profileInitial && profileColor ? 'has-initial' : ''}`} style={profileInitial && profileColor ? { '--collaborator-color': profileColor, '--collaborator-text-color': getContrastTextColor(profileColor), color: getContrastTextColor(profileColor) } : undefined}>{profileInitial && profileColor ? profileInitial : <CircleUserRound size={17} />}</span>
+            <span className={`profile-avatar ${profileInitial && profileColor ? 'has-initial' : ''}`} style={profileInitial && profileColor ? { '--collaborator-color': profileColor, '--collaborator-text-color': getContrastTextColor(profileColor), color: getContrastTextColor(profileColor) } : undefined}>{currentUser?.avatar ? <img src={apiUrl(currentUser.avatar)} alt="" /> : profileInitial && profileColor ? profileInitial : <CircleUserRound size={17} />}</span>
             <span className="profile-name">{currentUser?.username || 'Account'}</span>
             <ChevronDown size={13} className="profile-chevron" />
           </button>

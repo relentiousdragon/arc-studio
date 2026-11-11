@@ -85,6 +85,15 @@ export function verifyActivityAvatarSignature(userId, initial, signature, secret
   return expected.length === supplied.length && crypto.timingSafeEqual(expected, supplied);
 }
 
+export function activityAvatarPath(actor, secret) {
+  const id = String(actor?.id || '');
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id) || typeof secret !== 'string' || !secret) return '';
+  const initial = Array.from(String(actor?.username || '').trim())[0]?.toLocaleUpperCase() || 'U';
+  const glyph = /^[A-Z0-9?]$/.test(initial) ? initial : '?';
+  const query = new URLSearchParams({ initial: glyph, signature: avatarSignature(id, glyph, secret) });
+  return `/api/activity-avatars/${encodeURIComponent(id)}.png?${query}`;
+}
+
 function makeAvatar(initial, rgb) {
   const pixels = Buffer.alloc(SIZE * SIZE * 4);
   const center = (SIZE - 1) / 2;
@@ -153,8 +162,8 @@ export function renderActivityAvatarPng(userId, initial = 'U') {
 }
 
 export function activityAvatarUrl(req, actor, secret) {
-  const id = String(actor?.id || '');
-  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id) || typeof secret !== 'string' || !secret) return '';
+  const avatarPath = activityAvatarPath(actor, secret);
+  if (!avatarPath) return '';
   const forwardedHost = String(req.get?.('x-forwarded-host') || '').split(',')[0].trim();
   const requestHost = String(req.get?.('host') || '').split(',')[0].trim();
   let origin;
@@ -165,10 +174,5 @@ export function activityAvatarUrl(req, actor, secret) {
       || ![forwardedHost, requestHost].some((host) => host && host.toLowerCase() === requestOrigin.host.toLowerCase())) return '';
     origin = requestOrigin.origin;
   } catch { return ''; }
-  const initial = Array.from(String(actor?.username || '').trim())[0]?.toLocaleUpperCase() || 'U';
-  const glyph = /^[A-Z0-9?]$/.test(initial) ? initial : '?';
-  const url = new URL(`/api/activity-avatars/${encodeURIComponent(id)}.png`, origin);
-  url.searchParams.set('initial', glyph);
-  url.searchParams.set('signature', avatarSignature(id, glyph, secret));
-  return url.href;
+  return new URL(avatarPath, origin).href;
 }
