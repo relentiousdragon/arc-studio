@@ -77,7 +77,7 @@ test('activity delivery uses a concise embed and a timestamp without exposing we
   assert.equal(payload.embeds[0].author.icon_url, undefined);
   assert.equal(payload.embeds[0].description, 'Updated - graph “Welcome”, saved, ready');
   assert.deepEqual(payload.embeds[0].fields, [{ name: 'Item', value: 'Welcome', inline: true }]);
-  assert.equal(payload.embeds[0].footer.text, 'ARC Studio • Community Bot');
+  assert.equal(payload.embeds[0].footer.text, 'ARC Studio  •  Community Bot');
   assert.equal(payload.embeds[0].timestamp, '2026-10-21T10:00:00.000Z');
   assert.equal(payload.embeds[0].thumbnail, undefined);
   for (let attempt = 0; attempt < 30 && deliveryStatuses.at(-1) !== 'success'; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
