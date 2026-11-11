@@ -256,7 +256,7 @@ export class ProjectStore {
     return value;
   }
 
-  exportProject(id, { includeSecrets = false, secretValueResolver = null } = {}) {
+  exportProject(id, { includeSecrets = false, secretValueResolver = null, pluginRequirements = [] } = {}) {
     const project = this.projects.find((item) => item.id === id);
     if (!project) throw new Error('That project no longer exists.');
     const files = {};
@@ -319,7 +319,7 @@ export class ProjectStore {
     if ((typeof botConfig === 'string' && botConfig.length > 0)
       || (botConfig && typeof botConfig === 'object' && Object.keys(botConfig).length > 0)) sensitiveCount += 1;
     exportedFiles['bot-config.json'] = {};
-    return withIntegrity({ format: 'arc-project', version: 1, project: { name: project.name, exportedAt: new Date().toISOString(), createdWithVersion: currentArcStudioVersion }, files: exportedFiles, sensitiveData: includeSecrets ? undefined : { omittedFields: sensitiveCount } });
+    return withIntegrity({ format: 'arc-project', version: 1, project: { name: project.name, exportedAt: new Date().toISOString(), createdWithVersion: currentArcStudioVersion }, files: exportedFiles, ...(pluginRequirements.length ? { plugins: pluginRequirements } : {}), sensitiveData: includeSecrets ? undefined : { omittedFields: sensitiveCount } });
   }
 
   exportEncryptedProject(id, password, options = {}) {
