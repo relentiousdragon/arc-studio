@@ -24,7 +24,8 @@ export default {
     {
       "id": "result",
       "label": "Result",
-      "type": "number"
+      "type": "number",
+      description: "Value of the selected mathematical constant."
     }
   ]
 };

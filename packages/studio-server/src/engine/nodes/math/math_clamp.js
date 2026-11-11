@@ -9,26 +9,30 @@ export default {
       "id": "value",
       "label": "Value",
       "type": "number",
-      "defaultValue": 0
+      "defaultValue": 0,
+      description: "Number to restrict to the selected range."
     },
     {
       "id": "min",
       "label": "Minimum",
       "type": "number",
-      "defaultValue": 0
+      "defaultValue": 0,
+      description: "Lowest allowed result."
     },
     {
       "id": "max",
       "label": "Maximum",
       "type": "number",
-      "defaultValue": 1
+      "defaultValue": 1,
+      description: "Highest allowed result."
     }
   ],
   "outputs": [
     {
       "id": "result",
       "label": "Result",
-      "type": "number"
+      "type": "number",
+      description: "Input limited to the minimum and maximum."
     }
   ]
 };

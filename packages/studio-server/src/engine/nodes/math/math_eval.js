@@ -9,19 +9,22 @@ export default {
       "id": "expression",
       "label": "Expression",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Arithmetic expression to evaluate."
     }
   ],
   "outputs": [
     {
       "id": "result",
       "label": "Result",
-      "type": "number"
+      "type": "number",
+      description: "Numeric result of the expression."
     },
     {
       "id": "valid",
       "label": "Valid",
-      "type": "boolean"
+      "type": "boolean",
+      description: "True when the expression is valid."
     }
   ]
 };

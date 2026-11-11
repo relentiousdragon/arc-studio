@@ -30,20 +30,23 @@ export default {
       "id": "a",
       "label": "A",
       "type": "number",
-      "defaultValue": 0
+      "defaultValue": 0,
+      description: "First number to compare."
     },
     {
       "id": "b",
       "label": "B",
       "type": "number",
-      "defaultValue": 0
+      "defaultValue": 0,
+      description: "Second number to compare."
     }
   ],
   "outputs": [
     {
       "id": "result",
       "label": "Result",
-      "type": "boolean"
+      "type": "boolean",
+      description: "True when A and B match the selected comparison."
     }
   ]
 };

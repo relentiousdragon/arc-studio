@@ -9,20 +9,23 @@ export default {
       "id": "a",
       "label": "A",
       "type": "number",
-      "defaultValue": 0
+      "defaultValue": 0,
+      description: "First number to add."
     },
     {
       "id": "b",
       "label": "B",
       "type": "number",
-      "defaultValue": 0
+      "defaultValue": 0,
+      description: "Second number to add."
     }
   ],
   "outputs": [
     {
       "id": "result",
       "label": "Result",
-      "type": "number"
+      "type": "number",
+      description: "Sum of A and B."
     }
   ]
 };

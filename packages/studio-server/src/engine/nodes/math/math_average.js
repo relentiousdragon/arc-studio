@@ -10,20 +10,23 @@ export default {
       "id": "a",
       "label": "A",
       "type": "number",
-      "defaultValue": 0
+      "defaultValue": 0,
+      description: "First number included in the average."
     },
     {
       "id": "b",
       "label": "B",
       "type": "number",
-      "defaultValue": 0
+      "defaultValue": 0,
+      description: "Second number included in the average."
     }
   ],
   "outputs": [
     {
       "id": "result",
       "label": "Result",
-      "type": "number"
+      "type": "number",
+      description: "Arithmetic mean of the connected numbers."
     }
   ]
 };
