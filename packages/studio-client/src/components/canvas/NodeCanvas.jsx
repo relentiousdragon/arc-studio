@@ -1210,6 +1210,7 @@ export function NodeCanvas({
   useEffect(() => {
     if (!isActive) return undefined;
     const onKeyDown = (event) => {
+      if (typeof event.key !== 'string') return;
       if (canvasFindOpen && event.key === 'Escape') return;
       const shortcutBlocked = isTextTarget(event.target) || (event.target instanceof HTMLElement && Boolean(event.target.closest('[role="dialog"]')));
       if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 'a' && !shortcutBlocked) {
@@ -3688,6 +3689,7 @@ export function NodeCanvas({
   useEffect(() => {
     if (!isActive) return undefined;
     const onKeyDown = (event) => {
+      if (typeof event.key !== 'string') return;
       if (event.defaultPrevented) return;
       const command = event.metaKey || event.ctrlKey;
       const target = event.target;
