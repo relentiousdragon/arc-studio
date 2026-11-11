@@ -54,14 +54,7 @@ function getSlashCommandProperties(sourceNode) {
   return [...properties.values()];
 }
 
-function getStaticJsonProperties(sourceNode) {
-  if (sourceNode.type !== 'data_parse_json' || typeof sourceNode.data?.json !== 'string') return [];
-  let value;
-  try {
-    value = JSON.parse(sourceNode.data.json);
-  } catch {
-    return [];
-  }
+function getStaticValueProperties(value, description = 'Property from the configured object value') {
   const properties = [];
   const append = (current, prefix = '', depth = 0) => {
     if (depth >= 4 || properties.length >= 100 || !current || typeof current !== 'object') return;
@@ -73,13 +66,26 @@ function getStaticJsonProperties(sourceNode) {
       if (properties.length >= 100) return;
       const part = /^[A-Za-z_$][A-Za-z0-9_$-]*$/.test(key) ? key : `[${JSON.stringify(key)}]`;
       const property = prefix ? (part.startsWith('[') ? `${prefix}${part}` : `${prefix}.${part}`) : part;
-      properties.push({ key: property, label: key, desc: 'Property from the configured JSON value' });
+      properties.push({ key: property, label: key, desc: description });
       const child = current[key];
       if (child && typeof child === 'object') append(child, property, depth + 1);
     }
   };
-  append(value);
+  append(value, '', 0);
   return properties;
+}
+
+function getStaticOutputValue(sourceNode, sourcePin, graphVariables) {
+  if (sourceNode.type === 'variable_get' && sourcePin === 'value') {
+    return graphVariables.find((variable) => variable.id === sourceNode.data?.variableId)?.initialValue;
+  }
+  if (sourceNode.type === 'data_parse_json' && typeof sourceNode.data?.json === 'string') {
+    try { return JSON.parse(sourceNode.data.json); } catch { return undefined; }
+  }
+  const value = sourceNode.data?.[sourcePin];
+  if (value !== undefined && typeof value !== 'string') return value;
+  if (sourcePin === 'value') return sourceNode.data?.value;
+  return undefined;
 }
 
 function objectPropertyGroup(sourceNode, sourcePin, sourcePinDefinition) {
@@ -105,7 +111,7 @@ function objectPropertyGroup(sourceNode, sourcePin, sourcePinDefinition) {
   return null;
 }
 
-export function resolveInferredObjectProperties(pinIds, incomingConnections, nodeById, nodeDefinitionsById) {
+export function resolveInferredObjectProperties(pinIds, incomingConnections, nodeById, nodeDefinitionsById, graphVariables = []) {
   const pinList = Array.isArray(pinIds) ? pinIds : [pinIds];
   let wire = null;
   for (const pinId of pinList) {
@@ -129,5 +135,27 @@ export function resolveInferredObjectProperties(pinIds, incomingConnections, nod
   const group = objectPropertyGroup(sourceNode, wire.sourcePinId, sourcePinDefinition);
   if (group && OBJECT_PROPERTY_GROUPS[group]) return OBJECT_PROPERTY_GROUPS[group];
   if (group && DISCORD_OBJECT_PROPERTIES[group]) return DISCORD_OBJECT_PROPERTIES[group];
-  return getStaticJsonProperties(sourceNode);
+  return getStaticValueProperties(getStaticOutputValue(sourceNode, wire.sourcePinId, graphVariables));
+}
+
+export function getConnectedTemplateInputPaths(inputs, incomingConnections, nodeById, nodeDefinitionsById, graphVariables = []) {
+  const paths = [];
+  const pinIds = new Set([
+    ...(inputs || []).map((pin) => pin?.id),
+    ...(incomingConnections?.keys?.() || [])
+  ]);
+  for (const pinId of pinIds) {
+    const argument = /^arg_(\d+)$/.exec(pinId || '');
+    const slot = /^slot_(.+)$/.exec(pinId || '');
+    if (!argument && !slot) continue;
+    const root = argument ? `arg${argument[1]}` : slot[1];
+    for (const property of resolveInferredObjectProperties(pinId, incomingConnections, nodeById, nodeDefinitionsById, graphVariables)) {
+      paths.push({
+        path: `${root}.${property.key}`,
+        label: `${root}.${property.key}`,
+        description: property.desc
+      });
+    }
+  }
+  return paths;
 }
