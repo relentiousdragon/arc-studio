@@ -9,14 +9,16 @@ export default {
       "id": "value",
       "label": "Value",
       "type": "number",
-      "defaultValue": 0
+      "defaultValue": 0,
+      description: "Non-negative number whose square root to calculate."
     }
   ],
   "outputs": [
     {
       "id": "result",
       "label": "Result",
-      "type": "number"
+      "type": "number",
+      description: "Non-negative square root, or zero for negative input."
     }
   ]
 };
