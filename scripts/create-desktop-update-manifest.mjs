@@ -1,19 +1,23 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import rootPackage from '../package.json' with { type: 'json' };
 import studioClient from '../packages/studio-client/package.json' with { type: 'json' };
 import studioServer from '../packages/studio-server/package.json' with { type: 'json' };
 import studioDesktop from '../packages/studio-desktop/package.json' with { type: 'json' };
 import tauriConfig from '../packages/studio-desktop/src-tauri/tauri.conf.json' with { type: 'json' };
+import { getArcReleaseChannel, getTauriVersion, parseArcVersion } from './arc-version.mjs';
 
 const [releaseTag = process.env.GITHUB_REF_NAME, repository = process.env.GITHUB_REPOSITORY, releaseDirectory = 'release-assets'] = process.argv.slice(2);
-if (!releaseTag || !/^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(releaseTag)) throw new Error('Pass the version tag, for example v2026.1.1-alpha.7.');
+const parsedTag = parseArcVersion(releaseTag);
+if (!parsedTag || parsedTag.version !== String(releaseTag).replace(/^v/i, '')) throw new Error('Pass the ARC Studio version tag, for example v2026.1.1.1 or v2026.1.1-nightly.11.');
 if (!repository || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) throw new Error('GITHUB_REPOSITORY is missing or invalid.');
 if (!fs.existsSync(releaseDirectory)) throw new Error(`Release artifact folder not found: ${releaseDirectory}`);
-if (releaseTag.replace(/^v/, '') !== rootPackage.version) throw new Error(`Release tag ${releaseTag} does not match root package version ${rootPackage.version}.`);
-const channel = rootPackage.version.includes('-') ? 'nightly' : 'stable';
-const expectedChannel = releaseTag.includes('-') ? 'nightly' : 'stable';
+if (parsedTag.version !== rootPackage.version) throw new Error(`Release tag ${releaseTag} does not match root package version ${rootPackage.version}.`);
+const channel = getArcReleaseChannel(rootPackage.version);
+const expectedChannel = getArcReleaseChannel(parsedTag.version);
 if (channel !== expectedChannel) throw new Error(`Release tag channel (${expectedChannel}) does not match root version channel (${channel}).`);
+execFileSync(process.execPath, ['scripts/check-version-consistency.mjs'], { stdio: 'inherit' });
 const expectedUpdaterEndpoint = channel === 'nightly'
   ? `https://github.com/${repository}/releases/download/nightly/latest.json`
   : `https://github.com/${repository}/releases/latest/download/latest.json`;
@@ -110,7 +114,7 @@ const platforms = {
 };
 const version = rootPackage.version;
 const manifest = {
-  version,
+  version: getTauriVersion(version),
   notes: `ARC Studio ${version}`,
   pub_date: new Date().toISOString(),
   platforms
