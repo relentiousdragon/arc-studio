@@ -261,15 +261,35 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
           && (file.webkitRelativePath || '').split('/')[1] === 'adapter.wasm')
         : null;
       if (pack?.kind === 'wasm-adapter' && !adapterFile) throw new Error('This adapter folder needs its compiled adapter.wasm beside arc-plugin.json.');
+      const hostRuntimeFile = pack?.kind === 'host-adapter'
+        ? files.find((file) => (file.webkitRelativePath || '').split('/').join('/') === `${folderName}/${pack.runtime?.module}`)
+        : null;
+      if (pack?.kind === 'host-adapter' && !hostRuntimeFile) throw new Error('This host adapter folder needs its declared runtime JavaScript file beside arc-plugin.json.');
+      const hostExportFiles = pack?.kind === 'host-adapter' && Array.isArray(pack.export?.files)
+        ? pack.export.files.map((relativePath) => ({
+          relativePath,
+          file: files.find((file) => (file.webkitRelativePath || '').split('/').slice(1).join('/') === relativePath)
+        }))
+        : [];
+      if (hostExportFiles.some(({ file }) => !file)) throw new Error('This host adapter folder is missing a file declared in export.files.');
+      const lockFile = pack?.kind === 'host-adapter' && Array.isArray(pack.npmDependencies) && pack.npmDependencies.length
+        ? files.find((file) => (file.webkitRelativePath || '').split('/').join('/') === `${folderName}/package-lock.json`)
+        : null;
+      if (pack?.kind === 'host-adapter' && pack.npmDependencies?.length && !lockFile) throw new Error('This host adapter needs its package-lock.json beside arc-plugin.json.');
       if (typeof pack?.minArcStudioVersion !== 'string' || !pack.minArcStudioVersion.trim()) throw new Error('This plugin must declare minArcStudioVersion in its manifest.');
       const minimumStudioVersion = pack.minArcStudioVersion.trim();
       const compatibility = compareArcVersions(studioVersion, minimumStudioVersion);
       if (compatibility === null) throw new Error('This plugin has an invalid minArcStudioVersion requirement.');
       if (compatibility < 0) throw new Error(`${pack.name || pack.id || 'This plugin'} requires ARC Studio ${minimumStudioVersion} or newer. This workspace is running ${studioVersion}.`);
       if (adapterFile && adapterFile.size > 8 * 1024 * 1024) throw new Error('The adapter.wasm file must be no larger than 8 MiB.');
+      if (hostRuntimeFile && hostRuntimeFile.size > 2 * 1024 * 1024) throw new Error('The host adapter runtime must be no larger than 2 MiB.');
+      if (hostExportFiles.some(({ file }) => file.size > 1024 * 1024) || hostExportFiles.reduce((sum, { file }) => sum + file.size, 0) > 4 * 1024 * 1024) throw new Error('Host adapter export files may be no larger than 1 MiB each or 4 MiB total.');
+      if (lockFile && lockFile.size > 2 * 1024 * 1024) throw new Error('The adapter package-lock.json must be no larger than 2 MiB.');
       setConfirmAutoUpdate(true);
       setConfirmTrust(false);
-      setConfirmAction({ kind: 'local', pack, adapterFile, name: pack.name || pack.id || 'Local plugin', version: pack.version || 'Unknown version' });
+      setHostRuntimeAcknowledged(false);
+      setPermissionSelection(pack?.kind === 'host-adapter' ? (pack.permissions || []).map((permission) => permission.id) : []);
+      setConfirmAction({ kind: 'local', pack, adapterFile, hostRuntimeFile, hostExportFiles, lockFile, name: pack.name || pack.id || 'Local plugin', version: pack.version || 'Unknown version' });
     } catch (importError) {
       setError(importError.message || 'Could not read this local plugin.');
     } finally {
@@ -279,7 +299,7 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
 
   const confirmInstall = async () => {
     if (!confirmAction || (!confirmAction.permissionReviewOnly && !confirmTrust)) return;
-    if (!confirmAction.permissionReviewOnly && confirmAction.plugin?.kind === 'host-adapter' && !hostRuntimeAcknowledged) return;
+    if (!confirmAction.permissionReviewOnly && (confirmAction.plugin?.kind === 'host-adapter' || confirmAction.pack?.kind === 'host-adapter') && !hostRuntimeAcknowledged) return;
     const pluginId = confirmAction.kind === 'store' ? confirmAction.plugin.id : confirmAction.pack.id;
     setBusyId(pluginId || 'local-import');
     setImportingLocal(confirmAction.kind === 'local');
@@ -304,10 +324,25 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
           hostCodeConfirmed: hostRuntimeAcknowledged
         };
       } else {
-        endpoint = confirmAction.pack?.kind === 'wasm-adapter' ? '/api/plugins/import-adapter' : '/api/plugins/import-local';
-        body = confirmAction.pack?.kind === 'wasm-adapter'
-          ? { manifest: confirmAction.pack, wasmBase64: await fileToBase64(confirmAction.adapterFile), autoUpdate: confirmAutoUpdate, trustConfirmed: true }
-          : { pack: confirmAction.pack, autoUpdate: confirmAutoUpdate, trustConfirmed: true };
+        endpoint = confirmAction.pack?.kind === 'host-adapter'
+          ? '/api/plugins/import-host-adapter'
+          : confirmAction.pack?.kind === 'wasm-adapter'
+            ? '/api/plugins/import-adapter'
+            : '/api/plugins/import-local';
+        body = confirmAction.pack?.kind === 'host-adapter'
+          ? {
+            manifest: confirmAction.pack,
+            runtimeBase64: await fileToBase64(confirmAction.hostRuntimeFile),
+            exportFiles: await Promise.all(confirmAction.hostExportFiles.map(async ({ relativePath, file }) => ({ relativePath, base64: await fileToBase64(file) }))),
+            packageLockBase64: confirmAction.lockFile ? await fileToBase64(confirmAction.lockFile) : '',
+            permissions: permissionSelection,
+            hostCodeConfirmed: hostRuntimeAcknowledged,
+            autoUpdate: false,
+            trustConfirmed: true
+          }
+          : confirmAction.pack?.kind === 'wasm-adapter'
+            ? { manifest: confirmAction.pack, wasmBase64: await fileToBase64(confirmAction.adapterFile), autoUpdate: confirmAutoUpdate, trustConfirmed: true }
+            : { pack: confirmAction.pack, autoUpdate: confirmAutoUpdate, trustConfirmed: true };
       }
       const response = await fetch(apiUrl(endpoint), {
         method,
@@ -358,12 +393,13 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
   const confirmationPlugin = confirmAction?.kind === 'store' ? confirmAction.plugin : null;
   const localImport = confirmAction?.kind === 'local' ? confirmAction : null;
   const confirmationSource = confirmationPlugin?.sourceUrl || (localImport ? 'Selected local folder' : '');
-  const confirmationPermissions = confirmationPlugin?.permissions || [];
-  const confirmationNpmDependencies = confirmationPlugin?.npmDependencies || [];
-  const confirmationRuntimeDependencies = confirmationPlugin?.runtimeDependencies || [];
+  const confirmationPermissions = confirmationPlugin?.permissions || (localImport?.pack?.kind === 'host-adapter' ? localImport.pack.permissions || [] : []);
+  const confirmationNpmDependencies = confirmationPlugin?.npmDependencies || (localImport?.pack?.kind === 'host-adapter' ? localImport.pack.npmDependencies || [] : []);
+  const confirmationRuntimeDependencies = confirmationPlugin?.runtimeDependencies || (localImport?.pack?.kind === 'host-adapter' ? localImport.pack.runtimeDependencies || [] : []);
   const isBundledPlugin = confirmationPlugin?.builtIn || confirmationPlugin?.sourceTrust === 'bundled';
   const isUntrustedSource = Boolean(localImport || confirmationPlugin?.sourceTrust === 'custom');
-  const hostRuntimeConfirmationRequired = confirmationPlugin?.kind === 'host-adapter' && !isBundledPlugin;
+  const hostRuntimeConfirmationRequired = (confirmationPlugin?.kind === 'host-adapter' && !isBundledPlugin)
+    || (localImport?.pack?.kind === 'host-adapter');
 
   return <>
     {isOpen && <aside className="plugin-store-sidebar" aria-label="Plugin store" style={{ '--arc-sidebar-width': `${sidebarWidth}px` }}>
@@ -524,7 +560,7 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
     <Modal isOpen={Boolean(confirmAction)} onClose={() => !busyId && setConfirmAction(null)} title={confirmAction?.permissionReviewOnly ? 'Plugin permissions' : 'Review plugin install'} subtitle={confirmAction?.permissionReviewOnly ? 'Choose the capabilities granted in this project' : 'Check the publisher before continuing'} icon={ShieldCheck} showScrollCue footer={<><Button variant="secondary" disabled={Boolean(busyId)} onClick={() => setConfirmAction(null)}>Cancel</Button><Button loading={Boolean(busyId)} disabled={(!confirmAction?.permissionReviewOnly && !confirmTrust) || (!confirmAction?.permissionReviewOnly && hostRuntimeConfirmationRequired && !hostRuntimeAcknowledged) || !canInstall} onClick={confirmInstall}>{confirmAction?.permissionReviewOnly ? 'Save permissions' : localImport ? 'Import plugin' : 'Install plugin'}</Button></>}>
       {error && <p className="plugin-store-error">{error}</p>}
       <div className="plugin-trust-summary"><strong>{confirmationPlugin?.name || localImport?.name}</strong><span>{confirmationPlugin?.id || localImport?.pack?.id} · v{confirmationPlugin?.version || localImport?.version}</span><span>Requires ARC Studio {confirmationPlugin?.minArcStudioVersion || localImport?.pack?.minArcStudioVersion} or newer</span>{(confirmationPlugin?.author || localImport?.pack?.author) && <span>Publisher: {confirmationPlugin?.author || localImport?.pack?.author}</span>}<span>{localImport ? 'Local folder import · source is unverified' : confirmationPlugin?.sourceTrust === 'local' ? 'Local development checkout' : confirmationPlugin?.sourceTrust === 'default' ? 'Default ARC plugin source' : confirmationPlugin?.sourceTrust === 'bundled' || confirmationPlugin?.builtIn ? 'Bundled with ARC Studio' : 'Outside the default plugin source'}</span><a href={confirmationSource?.startsWith('http') ? confirmationSource : undefined} target="_blank" rel="noreferrer">{confirmationSource}</a></div>
-      <div className="plugin-trust-warning"><AlertTriangle size={15} /><span>{hostRuntimeConfirmationRequired ? `${confirmationPlugin?.sourceTrust === 'default' ? `${defaultCatalogTrustText('host-adapter')} ` : ''}This adapter and its dependencies run as server code with the workspace server account’s OS access. ARC does not sandbox them. npm install scripts are disabled. Only install code from a publisher you trust.` : isBundledPlugin ? 'This integration runs in the ARC server. Its host permissions are enforced per project and per database operation.' : localImport ? 'This local plugin has no verified publisher or source. Its WebAssembly module is isolated, but review its manifest, source and digest before installing.' : isUntrustedSource ? 'This plugin is from a non-default source. ARC has not reviewed or verified the publisher. Its pack digest only confirms that the downloaded file matches this catalogue entry.' : defaultCatalogTrustText(confirmationPlugin?.kind || localImport?.pack?.kind)}</span></div>
+      <div className="plugin-trust-warning"><AlertTriangle size={15} /><span>{hostRuntimeConfirmationRequired ? `${confirmationPlugin?.sourceTrust === 'default' ? `${defaultCatalogTrustText('host-adapter')} ` : ''}This adapter and its dependencies run as server code with the workspace server account’s OS access. ARC does not sandbox them. npm install scripts are disabled. Only install code from a publisher you trust.` : isBundledPlugin ? 'This integration runs in the ARC server. Its host permissions are enforced per project and per database operation.' : localImport ? localImport.pack?.kind === 'host-adapter' ? 'This unverified local host adapter runs as server code with the workspace server account’s OS access. ARC does not sandbox it. Review its source and dependencies before installing.' : 'This local plugin has no verified publisher or source. Its WebAssembly module is isolated, but review its manifest, source and digest before installing.' : isUntrustedSource ? 'This plugin is from a non-default source. ARC has not reviewed or verified the publisher. Its pack digest only confirms that the downloaded file matches this catalogue entry.' : defaultCatalogTrustText(confirmationPlugin?.kind || localImport?.pack?.kind)}</span></div>
       {!confirmAction?.permissionReviewOnly && (confirmationNpmDependencies.length > 0 || confirmationRuntimeDependencies.length > 0) && <section className="plugin-dependency-review" aria-label="Plugin runtime dependencies">
         <strong>Runtime dependencies</strong>
         <p>Installed with this adapter. Package install scripts are disabled.</p>
