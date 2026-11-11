@@ -8,37 +8,37 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Starts Set Voice Channel Status."},
     {
       "id": "channel_id",
       "label": "Voice Channel ID",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "ID of the voice channel to update."},
     {
       "id": "status",
       "label": "Status (blank clears)",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "Status text to set, or blank to clear the current status."},
     {
       "id": "reason",
       "label": "Audit Log Reason",
       "type": "string",
-      "defaultValue": ""
-    }
+      "defaultValue": "",
+      description: "Reason recorded in the audit log."}
   ],
   "outputs": [
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Continues after Set Voice Channel Status completes."},
     {
       "id": "success",
       "label": "Success",
-      "type": "boolean"
-    }
+      "type": "boolean",
+      description: "Whether the action completed successfully."}
   ]
 };
