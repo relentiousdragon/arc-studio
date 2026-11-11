@@ -9,20 +9,23 @@ export default {
       "id": "a",
       "label": "A",
       "type": "number",
-      "defaultValue": 0
+      "defaultValue": 0,
+      description: "Number to subtract from."
     },
     {
       "id": "b",
       "label": "B",
       "type": "number",
-      "defaultValue": 0
+      "defaultValue": 0,
+      description: "Number to subtract."
     }
   ],
   "outputs": [
     {
       "id": "result",
       "label": "Result",
-      "type": "number"
+      "type": "number",
+      description: "A minus B."
     }
   ]
 };
