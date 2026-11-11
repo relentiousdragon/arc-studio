@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { deflateRawSync, inflateRawSync } from 'node:zlib';
 import { randomBytes, createHash } from 'node:crypto';
 import { NodeDefinitions } from '../engine/NodeRegistry.js';
+import { isTemplateEnvironmentNameAllowed } from '../engine/TemplateExpressions.js';
 
 const serverRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const repoRoot = path.resolve(serverRoot, '../..');
@@ -65,6 +66,7 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
     [['action_console_log', 'action_console_warn', 'action_console_error'], 'console_log.js'],
     [['action_http_download', 'action_web_fetch', 'action_web_retry'], 'network.js'],
     [['action_websocket_connect', 'action_websocket_send', 'action_websocket_close'], 'websocket.js'],
+    [['action_web_server_start', 'action_web_server_route', 'action_web_server_response', 'action_web_server_static_file', 'action_web_server_stop_one', 'action_web_server_stop'], 'web_server.js'],
     [['action_set_presence'], 'discord_presence.js'],
     [['action_send_message', 'action_edit_message', 'action_delete_message'], 'discord_messages.js'],
     [['action_bulk_delete_messages', 'action_upload_guild_emoji', 'action_upload_application_emoji', 'action_upload_guild_sticker'], 'discord_assets.js'],
@@ -108,6 +110,14 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
       pluginFiles.push(...plugin.files);
     }
   }
+  const referencedEnvironmentNames = new Set();
+  for (const match of JSON.stringify(enabledGraphs).matchAll(/\{\{\s*env:([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/gi)) {
+    if (isTemplateEnvironmentNameAllowed(match[1])) referencedEnvironmentNames.add(match[1]);
+  }
+  environment.push(...[...referencedEnvironmentNames].map((name) => ({
+    name,
+    description: 'Environment value referenced by an exported graph template or web route.'
+  })));
   const pluginStoreSource = createExportPluginStore(exports);
   const readme = `${baseReadme}\nSee THIRD-PARTY-LICENSES.md for third party component and plugin licenses.\n${exports.length ? `This export includes ${exports.map((plugin) => `${plugin.name} ${plugin.version}`).join(', ')} adapter${exports.length === 1 ? '' : 's'}. See PLUGIN-PERMISSIONS.md for declared capabilities.\n` : ''}`;
   const seenEnvironmentNames = new Set(['DISCORD_BOT_TOKEN', 'ARC_CRYPTO_SECRET', 'ARC_LOG_RETENTION_DAYS']);
@@ -153,6 +163,7 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
     { name: 'src/env.js', data: runtimeEnv },
     { name: 'src/index.js', data: runtimeIndex
       .replace('__ARC_WEBSOCKET_IMPORT__', requiredRuntimeModules.has('websocket.js') ? "import { GraphWebSocketManager } from './engine/nodes/runtime/websocket.js';" : '')
+      .replace('__ARC_WEB_SERVER_SHUTDOWN__', requiredRuntimeModules.has('web_server.js') ? "await import('./engine/nodes/runtime/web_server.js').then(({ closeAllWebServers }) => closeAllWebServers());" : '')
       .replace('__ARC_PROJECT_NAME__', JSON.stringify(projectName))
       .replace('__ARC_PROJECT_AUTHOR__', JSON.stringify(projectAuthor))
       .replace('__ARC_STATISTICS_SETTINGS__', JSON.stringify(statisticsSettings)) },
@@ -938,6 +949,7 @@ async function trackGraphRun(run) {
 function graphContext(graph, eventPayload = null, interactionState = null) {
   return {
     rest: client.rest, client, resolveFunctionGraph, resolveFunctionGraphByName, variablesState: variableState(graph), projectVariables, deploySlashCommands,
+    dispatchGraphEvent: (eventName, payload, graphId) => dispatchGraphs(eventName, payload, graphId),
     projectDir, templateEnvironmentAccess: true, templateMediaPathAccess: true,
     webSockets: graphWebSockets,
     ...(interactionState ? { interactionState } : {}),
@@ -977,6 +989,7 @@ async function shutdown(signal) {
       new Promise((resolve) => { timeout = setTimeout(resolve, 8000); })
     ]);
     if (timeout) clearTimeout(timeout);
+    __ARC_WEB_SERVER_SHUTDOWN__
     await PluginStore.closeProject().catch((error) => writeLog('WARN', 'Adapter shutdown warning: ' + formatError(error)));
     writeLog('INFO', 'Shutdown complete.');
     if (logStream) await new Promise((resolve) => logStream.end(resolve));
