@@ -1,4 +1,5 @@
 import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { AlertCircle, AppWindow, Bot, Braces, ChevronDown, CircleHelp, Database, Download, FileCode2, FileUp, Folder, FolderTree, LayoutGrid, LockKeyhole, MoreHorizontal, PackageOpen, Plus, Save, Search, ShieldCheck, SlidersHorizontal, Sparkles, Ticket, TrendingUp, Trash2, Users, X } from 'lucide-react';
 import { TopBar } from './components/navigation/TopBar.jsx';
 import { NodeCanvas } from './components/canvas/NodeCanvas.jsx';
@@ -156,12 +157,13 @@ import studioPackage from '../package.json';
 import { classifyArcUpdate, compareArcVersions } from './core/appUpdates.js';
 import { flattenSlashParameters, isValidSlashName, slashOptionPinId, validateSlashCommandOptions } from '../../studio-server/src/engine/SlashCommandOptions.js';
 import { DEFAULT_SHORTCUTS, formatShortcut, getDefaultShortcut, shortcutMatches } from './core/shortcuts.js';
+import { inspectWebServerResponsePaths } from './core/webServerResponsePaths.js';
 import { playUiSound, unlockUiSounds } from './core/uiSounds.js';
 import { notifyDesktopInBackground, requestDesktopNotificationPermission } from './core/desktopNotifications.js';
 import { createArcArchive, isArcArchive, readArcArchive } from '../../studio-server/src/storage/ArcArchive.js';
 import { isSafeImageMedia } from './components/ui/mediaTypes.js';
-import { BuiltInNodeDefinitions, BundledNodeTypes, NODE_SCHEMA_VERSION, CLIENT_PROTOCOL_VERSION, NODE_REGISTRY_PROTOCOL_VERSION, SUPPORTED_NODE_REGISTRY_FEATURES, getNodeRegistryCompatibility, createDefaultNodeData, getAvailableNodeDefinitions, getNodeArgumentPins, getNodeRegistryDefinitions, getNodeTemplateInputPins, getTextTemplateSlots, isNodeTypeSupported, registerPluginNodeDefinitions, renderTextTemplate, resolveDynamicNodePins, setWorkspaceNodeDefinitions, validateTemplateFunctionName } from './components/nodes/nodeDefinitions.js';
-import { isReservedTemplateRoot, isReservedTemplateVariableName, TEMPLATE_SYSTEM_PATHS, validateTemplateSyntax } from '../../studio-server/src/engine/TemplateExpressions.js';
+import { BuiltInNodeDefinitions, BundledNodeTypes, NODE_SCHEMA_VERSION, CLIENT_PROTOCOL_VERSION, NODE_REGISTRY_PROTOCOL_VERSION, SUPPORTED_NODE_REGISTRY_FEATURES, getNodeRegistryCompatibility, createDefaultNodeData, getAvailableNodeDefinitions, getNodeArgumentPins, getNodeRegistryDefinitions, getNodeTemplateInputPins, getTextTemplateSlots, isNodeTypeCreatable, isNodeTypeSupported, registerPluginNodeDefinitions, renderTextTemplate, resolveDynamicNodePins, setWorkspaceNodeDefinitions, validateTemplateFunctionName } from './components/nodes/nodeDefinitions.js';
+import { isReservedTemplateRoot, isReservedTemplateVariableName, isTemplateEnvironmentNameAllowed, TEMPLATE_SYSTEM_PATHS, validateTemplateSyntax } from '../../studio-server/src/engine/TemplateExpressions.js';
 import { createEmbedBlock, embedBlockPins, getEmbedBlocks } from './components/nodes/EmbedNodeBuilder.jsx';
 import { createDefaultModal } from './components/nodes/ModalNodeBuilder.jsx';
 import { evaluateMathNode } from '../../studio-server/src/engine/MathOperations.js';
@@ -181,6 +183,7 @@ const DEFAULT_SETTINGS = {
   canvasQuality: 'fast',
   wirePulse: true,
   wireStyle: 'bezier',
+  progressiveSocketReveal: true,
   doubleClickWireToCut: false,
   requireModifierToCutWires: false,
   magneticSnap: true,
@@ -918,6 +921,7 @@ export function App() {
   const [transientCanvasArrows, setTransientCanvasArrows] = useState([]);
   const [followCollaboratorRequest, setFollowCollaboratorRequest] = useState(null);
   const [noteEditLockState, setNoteEditLockState] = useState({ roomKey: '', locks: {} });
+  const [nodeMoveLockState, setNodeMoveLockState] = useState({ roomKey: '', locks: {} });
   const [collaborationSocketStatus, setCollaborationSocketStatus] = useState('connecting');
   const [minimumRequiredClientVersion, setMinimumRequiredClientVersion] = useState('');
   const [collaborationConnectionFlaky, setCollaborationConnectionFlaky] = useState(false);
@@ -1027,6 +1031,8 @@ export function App() {
   const [projectImportPassword, setProjectImportPassword] = useState('');
   const [projectImportSharingWarning, setProjectImportSharingWarning] = useState(null);
   const [projectImportSharingApproved, setProjectImportSharingApproved] = useState(false);
+  const [projectImportPlugins, setProjectImportPlugins] = useState([]);
+  const [projectImportPluginsApproved, setProjectImportPluginsApproved] = useState(false);
   const [projectImportError, setProjectImportError] = useState('');
   const [projectImportCompatibility, setProjectImportCompatibility] = useState(null);
   const [projectImportOldVersionApproved, setProjectImportOldVersionApproved] = useState(false);
@@ -1070,8 +1076,7 @@ export function App() {
       });
     });
   }, []);
-  const [isDraggingFileOver, setIsDraggingFileOver] = useState(false);
-  const dragCounterRef = useRef(0);
+  const [fileDropCanvasBounds, setFileDropCanvasBounds] = useState(null);
   const [projectTemplateDialog, setProjectTemplateDialog] = useState(false);
   const [newProjectTemplate, setNewProjectTemplate] = useState('ticket');
   const [projectNameManuallyEdited, setProjectNameManuallyEdited] = useState(false);
@@ -1133,7 +1138,6 @@ export function App() {
   const projectTabSafeRestoreProjectRef = useRef('');
   const remoteProjectTabGraphsRef = useRef(new Map());
   const unsharedProjectTabIdsRef = useRef(new Set());
-  const remoteTabCloseNoticeRef = useRef(new Set());
   const initialGraphStatesRef = useRef(new Map());
   const [savedGraphs, setSavedGraphs] = useState([]);
   useEffect(() => {
@@ -1162,6 +1166,7 @@ export function App() {
   const collaborationActionTimerRef = useRef(null);
   const collaborationMotionSendIntervalRef = useRef(16);
   const pendingCollaborationActionRef = useRef(new Map());
+  const pendingNodeMoveLockRequestsRef = useRef(new Map());
   const latestRemoteCollaborationRevisionRef = useRef(new Map());
   const pendingCanvasArrowActionsRef = useRef(new Map());
   const localCanvasMotionRoomRef = useRef('');
@@ -1223,6 +1228,53 @@ export function App() {
     setProjectImportOldVersionApproved(false);
   }, [desktopFileImportBusy, desktopMode, openedProjectFiles, projectImportFile]);
   useEffect(() => {
+    const getCanvasDropBounds = (event) => {
+      const eventTarget = event.target instanceof Element ? event.target : null;
+      if (eventTarget?.closest('[data-arc-media-drop-target]')) return null;
+      const pointTarget = Number.isFinite(event.clientX) && Number.isFinite(event.clientY)
+        ? document.elementFromPoint(event.clientX, event.clientY)
+        : null;
+      if (pointTarget?.closest('[data-arc-media-drop-target]')) return null;
+      const canvas = pointTarget
+        ? pointTarget.closest('.node-canvas')
+        : eventTarget?.closest('.node-canvas');
+      if (!canvas) return null;
+      const workspace = canvas.closest('.canvas-workspace');
+      if (!workspace) return null;
+      const canvasRect = canvas.getBoundingClientRect();
+      const workspaceRect = workspace.getBoundingClientRect();
+      let { left, top, right, bottom } = canvasRect;
+
+      const sidebar = workspace.querySelector('.project-sidebar, .graph-library-panel, .plugin-store-sidebar, .bot-settings-sidebar, .graph-variables-sidebar, .studio-lazy-skeleton-sidebar');
+      if (sidebar && getComputedStyle(sidebar).display !== 'none') {
+        const sidebarRect = sidebar.getBoundingClientRect();
+        if (sidebarRect.left <= left + 1 && sidebarRect.right > left && sidebarRect.top <= top && sidebarRect.bottom > top) {
+          left = Math.max(left, sidebarRect.right);
+        }
+      }
+
+      const dock = document.querySelector('.control-dock');
+      if (dock && getComputedStyle(dock).display !== 'none') {
+        const dockRect = dock.getBoundingClientRect();
+        if (dockRect.left < right && dockRect.right > left) bottom = Math.min(bottom, dockRect.top);
+      }
+
+      const width = right - left;
+      const height = bottom - top;
+      if (width <= 0 || height <= 0) return null;
+
+      const appRoot = workspace.closest('.app-root');
+      const appRootRect = appRoot?.getBoundingClientRect();
+      const scaleX = appRootRect?.width > 0 && appRoot.offsetWidth > 0 ? appRootRect.width / appRoot.offsetWidth : 1;
+      const scaleY = appRootRect?.height > 0 && appRoot.offsetHeight > 0 ? appRootRect.height / appRoot.offsetHeight : 1;
+      return {
+        left: (left - workspaceRect.left) / scaleX,
+        top: (top - workspaceRect.top) / scaleY,
+        width: width / scaleX,
+        height: height / scaleY
+      };
+    };
+
     const isExternalFileDrag = (event) => {
       if (window.__arcNodeDragPayload || window.__arcGraphDragPayload || window.__arcEmbedDragPayload || window.__arcComponentsV2DragPayload) {
         return false;
@@ -1233,33 +1285,51 @@ export function App() {
     };
 
     const handleDragEnter = (event) => {
-      if (!isExternalFileDrag(event)) return;
+      if (!isExternalFileDrag(event)) {
+        setFileDropCanvasBounds(null);
+        return;
+      }
+      const bounds = getCanvasDropBounds(event);
+      if (!bounds) {
+        setFileDropCanvasBounds(null);
+        return;
+      }
       event.preventDefault();
-      dragCounterRef.current += 1;
-      setIsDraggingFileOver(true);
+      setFileDropCanvasBounds(bounds);
     };
 
     const handleDragOver = (event) => {
-      if (!isExternalFileDrag(event)) return;
+      if (!isExternalFileDrag(event)) {
+        setFileDropCanvasBounds(null);
+        return;
+      }
+      const bounds = getCanvasDropBounds(event);
+      if (!bounds) {
+        setFileDropCanvasBounds(null);
+        return;
+      }
       event.preventDefault();
       if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+      setFileDropCanvasBounds(bounds);
     };
 
     const handleDragLeave = (event) => {
-      if (!isExternalFileDrag(event)) return;
-      event.preventDefault();
-      dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
-      if (dragCounterRef.current === 0) {
-        setIsDraggingFileOver(false);
-      }
+      if (!isExternalFileDrag(event) || getCanvasDropBounds(event)) return;
+      setFileDropCanvasBounds(null);
     };
 
     const handleDrop = async (event) => {
-      if (!isExternalFileDrag(event)) return;
+      if (!isExternalFileDrag(event)) {
+        setFileDropCanvasBounds(null);
+        return;
+      }
+      if (!getCanvasDropBounds(event)) {
+        setFileDropCanvasBounds(null);
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
-      dragCounterRef.current = 0;
-      setIsDraggingFileOver(false);
+      setFileDropCanvasBounds(null);
 
       const files = Array.from(event.dataTransfer?.files || []);
       if (!files.length) return;
@@ -1338,6 +1408,8 @@ export function App() {
     setProjectImportPassword('');
     setProjectImportSharingWarning(null);
     setProjectImportSharingApproved(false);
+    setProjectImportPlugins([]);
+    setProjectImportPluginsApproved(false);
     setProjectImportError('');
     if (!projectImportFile?.arrayBuffer) {
       setProjectImportAnalysisStatus('idle');
@@ -1982,11 +2054,63 @@ export function App() {
     if (!noteId || !activeProjectId || !activeTabId || !socket || socket.readyState !== WebSocket.OPEN) return;
     socket.send(JSON.stringify({ type: 'NOTE_EDIT_LOCK_RELEASE', projectId: activeProjectId, graphId: activeTabId, noteId, clientId: collaborationClientIdRef.current }));
   }, [activeProjectId, activeTabId]);
+  const requestNodeMoveLock = useCallback((nodeIds) => {
+    const socket = wsRef.current;
+    const projectId = activeProjectId;
+    const graphId = activeTabId;
+    if (!Array.isArray(nodeIds) || !nodeIds.length || !projectId || !graphId
+      || !liveGraphReadyRef.current.has(`${projectId}:${graphId}`)
+      || !socket || socket.readyState !== WebSocket.OPEN) return Promise.resolve(false);
+    const requestId = globalThis.crypto?.randomUUID?.() || `node-lock-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    return new Promise((resolve) => {
+      const timer = window.setTimeout(() => {
+        pendingNodeMoveLockRequestsRef.current.delete(requestId);
+        resolve(false);
+      }, 4000);
+      pendingNodeMoveLockRequestsRef.current.set(requestId, { resolve, timer, projectId, graphId });
+      try {
+        socket.send(JSON.stringify({
+          type: 'NODE_MOVE_LOCK_REQUEST',
+          projectId,
+          graphId,
+          requestId,
+          clientId: collaborationClientIdRef.current,
+          nodeIds
+        }));
+      } catch {
+        window.clearTimeout(timer);
+        pendingNodeMoveLockRequestsRef.current.delete(requestId);
+        resolve(false);
+      }
+    });
+  }, [activeProjectId, activeTabId]);
+  const releaseNodeMoveLock = useCallback((nodeIds, graphId = activeTabId, projectId = activeProjectId) => {
+    const socket = wsRef.current;
+    if (!Array.isArray(nodeIds) || !nodeIds.length || !projectId || !graphId
+      || !socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify({
+      type: 'NODE_MOVE_LOCK_RELEASE',
+      projectId,
+      graphId,
+      clientId: collaborationClientIdRef.current,
+      nodeIds
+    }));
+  }, [activeProjectId, activeTabId]);
   useEffect(() => {
     setRemoteCollaborationActions([]);
     setTransientCanvasArrows([]);
+    setNodeMoveLockState({ roomKey: '', locks: {} });
     return () => sendCollaborationAction({ kind: 'idle' }, true);
   }, [activeProjectId, activeTabId, sendCollaborationAction]);
+  useEffect(() => {
+    if (collaborationSocketStatus === 'connected') return;
+    setNodeMoveLockState({ roomKey: '', locks: {} });
+    for (const [requestId, request] of pendingNodeMoveLockRequestsRef.current) {
+      window.clearTimeout(request.timer);
+      request.resolve(false);
+      pendingNodeMoveLockRequestsRef.current.delete(requestId);
+    }
+  }, [collaborationSocketStatus]);
   const loadingBarTimerRef = useRef(null);
   const graphCheckToastAtRef = useRef(0);
   const graphsHydratedRef = useRef(false);
@@ -3402,6 +3526,7 @@ export function App() {
             localCanvasMotionRoomRef.current = '';
             setRemoteCollaborationActions([]);
             setNoteEditLockState({ roomKey: '', locks: {} });
+            setNodeMoveLockState({ roomKey: '', locks: {} });
             liveGraphRevisionRef.current.clear();
             liveGraphReadyRef.current.clear();
             lastLiveGraphSentRef.current.clear();
@@ -3540,6 +3665,26 @@ export function App() {
             if (payload.projectId !== activeProjectIdRef.current || payload.graphId !== activeTabIdRef.current) return;
             const locks = Object.fromEntries((Array.isArray(payload.locks) ? payload.locks : []).filter((lock) => lock && typeof lock.noteId === 'string').map((lock) => [lock.noteId, lock]));
             setNoteEditLockState({ roomKey: `${payload.projectId}:${payload.graphId}`, locks });
+          } else if (msg.type === 'NODE_MOVE_LOCKS_UPDATED') {
+            const payload = msg.payload || {};
+            if (payload.projectId !== activeProjectIdRef.current || payload.graphId !== activeTabIdRef.current) return;
+            const locks = Object.fromEntries((Array.isArray(payload.locks) ? payload.locks : []).filter((lock) => lock && typeof lock.nodeId === 'string').map((lock) => [lock.nodeId, lock]));
+            setNodeMoveLockState({ roomKey: `${payload.projectId}:${payload.graphId}`, locks });
+          } else if (msg.type === 'NODE_MOVE_LOCK_RESULT') {
+            const payload = msg.payload || {};
+            const pending = pendingNodeMoveLockRequestsRef.current.get(payload.requestId);
+            if (!pending) return;
+            window.clearTimeout(pending.timer);
+            pendingNodeMoveLockRequestsRef.current.delete(payload.requestId);
+            const granted = payload.granted === true
+              && payload.projectId === pending.projectId
+              && payload.graphId === pending.graphId;
+            pending.resolve(granted);
+          } else if (msg.type === 'GRAPH_NODE_MOVE_REJECTED') {
+            const payload = msg.payload || {};
+            if (payload.projectId === activeProjectIdRef.current && payload.graphId === activeTabIdRef.current) {
+              arcEvents.emit('toast:notify', { title: 'Node movement was not shared', message: payload.message || 'Another collaborator is moving this node.', type: 'warning' });
+            }
           } else if (msg.type === 'NOTE_EDIT_LOCK_REJECTED') {
             const payload = msg.payload || {};
             if (payload.projectId === activeProjectIdRef.current && payload.graphId === activeTabIdRef.current) {
@@ -3848,8 +3993,8 @@ export function App() {
               return;
             }
             const knownGraphs = new Map([...remoteProjectTabGraphsRef.current.values(), ...savedGraphsRef.current, ...tabsRef.current].map((graph) => [graph.id, graph]));
-            const dirtyTabsToPreserve = tabsRef.current.filter((tab) => tab.isDirty && !graphIds.includes(tab.id)
-              && !deletedGraphsRef.current.has(`${payload.projectId}:${tab.id}`));
+            const dirtyLocalTabsToPreserve = localDesktopWorkspace ? tabsRef.current.filter((tab) => tab.isDirty && !graphIds.includes(tab.id)
+              && !deletedGraphsRef.current.has(`${payload.projectId}:${tab.id}`)) : [];
             let effectiveGraphIds = graphIds;
             if (!localDesktopWorkspace) {
               const previousSharedIds = projectTabStartupBaselineRef.current;
@@ -3859,18 +4004,13 @@ export function App() {
               effectiveGraphIds = [...new Set([...stillOpenLocalIds, ...newlySharedIds])];
               projectTabStartupBaselineRef.current = new Set(graphIds);
             }
-            effectiveGraphIds = [...effectiveGraphIds, ...dirtyTabsToPreserve.map((tab) => tab.id)];
+            effectiveGraphIds = [...effectiveGraphIds, ...dirtyLocalTabsToPreserve.map((tab) => tab.id)];
             projectTabSyncRef.current = { projectId: payload.projectId, socketRevision: socketReadyRevisionRef.current, graphIds: effectiveGraphIds };
             const nextTabs = effectiveGraphIds.map((id) => knownGraphs.get(id)).filter(Boolean);
             const retainedGraphIds = new Set(effectiveGraphIds);
             const remoteGraphPrefix = `${payload.projectId}:`;
             for (const key of remoteProjectTabGraphsRef.current.keys()) {
               if (key.startsWith(remoteGraphPrefix) && !retainedGraphIds.has(key.slice(remoteGraphPrefix.length))) remoteProjectTabGraphsRef.current.delete(key);
-            }
-            for (const tab of dirtyTabsToPreserve) {
-              if (remoteTabCloseNoticeRef.current.has(tab.id)) continue;
-              remoteTabCloseNoticeRef.current.add(tab.id);
-              arcEvents.emit('toast:notify', { title: 'Unsaved graph kept open', message: `A collaborator closed “${tab.name || 'Untitled graph'}”, but your unsaved changes kept it open for everyone.`, type: 'warning' });
             }
             setTabs(nextTabs);
             if (!effectiveGraphIds.includes(activeTabIdRef.current)) setActiveTabId(nextTabs[0]?.id || null);
@@ -4128,6 +4268,7 @@ export function App() {
         setCollaborators([]);
         setProjectCollaboration({ projectId: '', graphIds: [], tabsInitialized: false, users: [] });
         setNoteEditLockState({ roomKey: '', locks: {} });
+        setNodeMoveLockState({ roomKey: '', locks: {} });
         setFollowCollaboratorRequest(null);
         if (active) setCollaborationSocketStatus('reconnecting');
         if (socket === currentSocket) socket = null;
@@ -4928,7 +5069,15 @@ export function App() {
     try {
       const exportData = await hydrateMediaReferences({ ...graph });
       delete exportData.isDirty;
-      const payload = { format: 'arc-graph', version: 1, graph: exportData };
+      const requirementsResponse = await fetch(apiUrl('/api/graphs/plugin-requirements'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
+        body: JSON.stringify({ graph: exportData })
+      });
+      let requirementsData = {};
+      try { requirementsData = await requirementsResponse.json(); } catch {}
+      if (!requirementsResponse.ok) throw new Error(requirementsData.error || 'Could not check graph plugin requirements.');
+      const payload = { format: 'arc-graph', version: 1, graph: exportData, ...(requirementsData.plugins?.length ? { plugins: requirementsData.plugins } : {}) };
       payload.integrity = { algorithm: 'sha256', digest: await sha256Hex(stableJson(payload)) };
       blob = new Blob([await createArcArchive(payload)], { type: 'application/vnd.arc-studio.graph+zip' });
     } catch (error) {
@@ -5198,12 +5347,25 @@ export function App() {
       } else if (/\.arcgraph$/i.test(file.name || '')) integrityWarning = 'This graph has no integrity record. It may be an older export.';
       const graph = parsed?.graph || parsed;
       if (!graph || !Array.isArray(graph.nodes) || !Array.isArray(graph.connections)) throw new Error('Choose a valid ARC Studio graph file.');
+      const graphPluginRequirements = Array.isArray(parsed?.plugins) ? parsed.plugins : Array.isArray(graph.pluginRequirements) ? graph.pluginRequirements : [];
       if (!graph.name) graph.name = file.name.replace(/\.arcgraph$|\.arc\.json$|\.json$/i, '').replace(/[_-]+/g, ' ') || 'Imported graph';
       const availableTypes = new Set(getAvailableNodeDefinitions().map((def) => def.type));
       const unknownNodeTypes = [...new Set((graph.nodes || []).map((node) => node.type).filter((type) => type && !availableTypes.has(type)))];
       let unknownNodesWarning = '';
       if (unknownNodeTypes.length > 0) {
         unknownNodesWarning = `This graph contains unknown node types (${unknownNodeTypes.join(', ')}). Update ARC Studio or install the required plugins so they can display and execute.`;
+      }
+      if (unknownNodeTypes.length > 0 && !graphPluginRequirements.length) {
+        const continueWithoutPlugins = await requestConfirmation({
+          title: 'Import graph with unsupported nodes?',
+          subtitle: graph.name,
+          message: `This graph uses node types that are not available in this workspace: ${unknownNodeTypes.slice(0, 8).join(', ')}. Some nodes may not work because their plugins are missing or unsupported.`,
+          confirmText: 'Import graph',
+          cancelText: 'Cancel',
+          variant: 'primary',
+          icon: AlertTriangle
+        });
+        if (!continueWithoutPlugins) return;
       }
       let confirmCollaborativeText = false;
       if (externalCollaborativeWorkspace && hasImportableTextContent(graph)) {
@@ -5223,12 +5385,29 @@ export function App() {
       if (hasAttachments) setGraphUploadProgress({ graphId: graph.id || 'import', graphName: graph.name || 'Graph', percent: 0 });
       let data;
       try {
-        const response = await xhrJson(apiUrl('/api/graphs/import'), {
+        const requestImport = (importPlugins) => xhrJson(apiUrl('/api/graphs/import'), {
           method: 'POST',
-          headers: { 'Content-Type': 'application/vnd.arc-studio.graph+zip', 'x-arc-token': authToken, 'x-arc-confirm-collaborative-text': String(confirmCollaborativeText) },
+          headers: { 'Content-Type': 'application/vnd.arc-studio.graph+zip', 'x-arc-token': authToken, 'x-arc-confirm-collaborative-text': String(confirmCollaborativeText), 'x-arc-import-plugins': String(importPlugins) },
           body,
           onUploadProgress: hasAttachments ? (percent) => setGraphUploadProgress({ graphId: graph.id || 'import', graphName: graph.name || 'Graph', percent }) : undefined
         });
+        let response = await requestImport(false);
+        if (response.status === 409 && response.data?.code === 'GRAPH_PLUGIN_IMPORT_CONFIRMATION_REQUIRED') {
+          const plugins = Array.isArray(response.data.plugins) ? response.data.plugins : [];
+          const pluginLines = plugins.map((plugin) => `${plugin.name} v${plugin.version || 'unknown'} · ${plugin.source}${plugin.available ? ' · already installed' : plugin.installable ? ' · can install' : ' · unavailable'}`);
+          const canInstallPlugins = plugins.some((plugin) => plugin.installable);
+          const confirmed = await requestConfirmation({
+            title: 'Import graph plugins?',
+            subtitle: graph.name,
+            message: `${pluginLines.join('\n')}\n\n${canInstallPlugins ? 'Only plugins from the default or an already trusted source can be installed. Local plugins are not included in graph files.' : 'Some nodes may not work because these plugins are local, unavailable, or unsupported.'}`,
+            confirmText: canInstallPlugins ? 'Install and import' : 'Import graph',
+            cancelText: 'Cancel',
+            variant: 'primary',
+            icon: ShieldCheck
+          });
+          if (!confirmed) return;
+          response = await requestImport(true);
+        }
         data = response.data;
         if (!response.ok) {
           const detailMessage = data?.error || data?.detail || (response.status === 413 ? 'This graph payload exceeds the server size limit. Try removing large embedded attachments or reducing the node count.' : 'Could not import this graph.');
@@ -5598,7 +5777,8 @@ export function App() {
   }, [activeNodes, activeTabId, handleNodesChange, recordHistory]);
 
   const handlePlaceNode = useCallback((type, position = null) => {
-    if (!isNodeTypeSupported(type, supportedWorkspaceNodeTypes, failedWorkspaceNodeTypes)) return;
+    if (!isNodeTypeSupported(type, supportedWorkspaceNodeTypes, failedWorkspaceNodeTypes)
+      || !isNodeTypeCreatable(type, BuiltInNodeDefinitions)) return;
     const targetGraph = activeGraph || handleAddBlankGraph();
     if (!targetGraph) return;
     const graphNodes = targetGraph.nodes || [];
@@ -6660,7 +6840,7 @@ export function App() {
   };
 
   const handleImportProject = async () => {
-    if (!projectImportFile || projectImportAnalysisStatus !== 'ready' || !projectImportTrusted || projectBusy || projectImportSharingWarning && !projectImportSharingApproved || projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && !projectImportOldVersionApproved) return;
+    if (!projectImportFile || projectImportAnalysisStatus !== 'ready' || !projectImportTrusted || projectBusy || projectImportSharingWarning && !projectImportSharingApproved || projectImportPlugins.length && !projectImportPluginsApproved || projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && !projectImportOldVersionApproved) return;
     setProjectBusy(true);
     setProjectImportError('');
     try {
@@ -6672,6 +6852,7 @@ export function App() {
           'x-arc-trusted': 'true',
           'x-arc-allow-old-version': String(projectImportOldVersionApproved),
           'x-arc-confirm-collaborative-text': String(projectImportSharingApproved),
+          'x-arc-import-plugins': String(projectImportPluginsApproved),
           'x-arc-project-password': encodeHeaderValue(projectImportPassword)
         },
         body: await arcFileToBytes(projectImportFile)
@@ -6681,6 +6862,12 @@ export function App() {
       if (response.status === 409 && data.code === 'IMPORT_SHARED_CONTENT_CONFIRMATION_REQUIRED') {
         setProjectImportSharingWarning({ workspaceName: String(data.workspaceName || externalWorkspaceName).trim() || externalWorkspaceName });
         setProjectImportSharingApproved(false);
+        setProjectImportError('');
+        return;
+      }
+      if (response.status === 409 && data.code === 'PROJECT_PLUGIN_IMPORT_CONFIRMATION_REQUIRED') {
+        setProjectImportPlugins(Array.isArray(data.plugins) ? data.plugins : []);
+        setProjectImportPluginsApproved(false);
         setProjectImportError('');
         return;
       }
@@ -6703,6 +6890,8 @@ export function App() {
       setProjectImportPassword('');
       setProjectImportSharingWarning(null);
       setProjectImportSharingApproved(false);
+      setProjectImportPlugins([]);
+      setProjectImportPluginsApproved(false);
       setProjectImportCompatibility(null);
       setProjectImportOldVersionApproved(false);
       arcEvents.emit('toast:notify', data.integrityWarning
@@ -6735,6 +6924,8 @@ export function App() {
     setProjectImportError('');
     setProjectImportCompatibility(null);
     setProjectImportOldVersionApproved(false);
+    setProjectImportPlugins([]);
+    setProjectImportPluginsApproved(false);
   };
 
   useEffect(() => {
@@ -7246,7 +7437,6 @@ export function App() {
     pendingLiveGraphRef.current.clear();
     remoteProjectTabGraphsRef.current.clear();
     unsharedProjectTabIdsRef.current.clear();
-    remoteTabCloseNoticeRef.current.clear();
     initialGraphStatesRef.current.clear();
     projectTabSyncRef.current = { projectId: '', socketRevision: -1, graphIds: [] };
     projectTabStartupBaselineRef.current = new Set();
@@ -7653,7 +7843,9 @@ export function App() {
         else handleAddTab();
         return;
       }
-      const renameShortcut = !isTextEditingTarget && !isLocked && selectedCanvasNodeCount === 1 && selectedCanvasNodeId
+      const selectedNodeMoveLocked = nodeMoveLockState.roomKey === `${activeProjectId}:${activeTabId}`
+        && Boolean(nodeMoveLockState.locks[selectedCanvasNodeId]);
+      const renameShortcut = !isTextEditingTarget && !isLocked && !selectedNodeMoveLocked && selectedCanvasNodeCount === 1 && selectedCanvasNodeId
         && shortcutMatches(event, shortcuts.renameNode);
       if (renameShortcut) {
         const selectedNode = activeNodes.find((node) => node.id === selectedCanvasNodeId);
@@ -7722,7 +7914,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [activeNodes, activeTabId, botStatus, closeGraphDialog, desktopMode, discordTextStudioOpenForActiveGraph, embedStudio, embedStudioOpenForActiveGraph, handleAddBlankGraph, handleAddTab, handleAutoLayout, handleCloseTab, handleExportBot, handleSaveEmbedShortcut, handleSaveGraph, handleSaveTextStudio, handleRedo, handleStartBot, handleStopBot, handleUndo, isBotSidebarOpen, isLibraryOpen, isPluginStoreOpen, isProjectsOpen, isVariablesOpen, isLocked, localDesktopWorkspace, openNodeRename, openPaletteAt, rememberUserGraph, remoteWorkspaceBlocked, savedGraphs, selectedCanvasNodeCount, selectedCanvasNodeId, settings.shortcuts, shortcutPlatform, tabs]);
+  }, [activeNodes, activeProjectId, activeTabId, botStatus, closeGraphDialog, desktopMode, discordTextStudioOpenForActiveGraph, embedStudio, embedStudioOpenForActiveGraph, handleAddBlankGraph, handleAddTab, handleAutoLayout, handleCloseTab, handleExportBot, handleSaveEmbedShortcut, handleSaveGraph, handleSaveTextStudio, handleRedo, handleStartBot, handleStopBot, handleUndo, isBotSidebarOpen, isLibraryOpen, isPluginStoreOpen, isProjectsOpen, isVariablesOpen, isLocked, localDesktopWorkspace, nodeMoveLockState, openNodeRename, openPaletteAt, rememberUserGraph, remoteWorkspaceBlocked, savedGraphs, selectedCanvasNodeCount, selectedCanvasNodeId, settings.shortcuts, shortcutPlatform, tabs]);
 
   const handleToggleLock = () => {
     setIsLocked((locked) => {
@@ -8300,6 +8492,9 @@ export function App() {
                   collaborationClientId={collaborationClientIdRef.current}
                   onRequestNoteEditLock={isTabActive ? requestNoteEditLock : () => {}}
                   onReleaseNoteEditLock={isTabActive ? releaseNoteEditLock : () => {}}
+                  nodeMoveLocks={isTabActive && nodeMoveLockState.roomKey === `${activeProjectId}:${tabId}` ? nodeMoveLockState.locks : {}}
+                  onRequestNodeMoveLock={isTabActive ? requestNodeMoveLock : () => Promise.resolve(false)}
+                  onReleaseNodeMoveLock={isTabActive ? releaseNodeMoveLock : () => {}}
                   onTagGroupsChange={isTabActive ? handleTagGroupsChange : () => {}}
                   onRequestCreateTagGroup={isTabActive ? ((nodeIds, noteIds) => openTagGroupDialog(nodeIds, null, noteIds)) : () => {}}
                   onRequestEditTagGroup={isTabActive ? ((group) => openTagGroupDialog(null, group)) : () => {}}
@@ -8492,6 +8687,7 @@ export function App() {
         onOpenGraph={handleOpenGraph}
         onTraceLog={traceGraphNode}
         onTraceIssue={traceGraphNode}
+        onOpenTextStudio={(label, value, maxLength, applyValue) => openDiscordTextStudio(null, null, label, value, maxLength, applyValue)}
       />
 
       <LazyMountedFeature Component={NodePalette} isOpen={isPaletteOpen} loadingLabel="Opening node palette…" isDesktop={desktopMode} newNodesUserKey={newNodesUserKey} onClose={() => { setIsPaletteOpen(false); setPaletteNodePosition(null); }} onSelectNode={handlePlaceNode} pluginDefinitionsRevision={pluginDefinitionsRevision} definitions={availableNodeDefinitions} />
@@ -8538,7 +8734,7 @@ export function App() {
         canManageIdleDisconnect={Boolean(currentUser?.permissions?.includes('*') || projects.find((project) => project.id === activeProjectId)?.ownerId === currentUser?.id)}
         onSetIdleDisconnectMinutes={handleSetIdleDisconnectMinutes}
       />
-      <Modal isOpen={isShortcutsOpen} onClose={() => setIsShortcutsOpen(false)} title="Keyboard shortcuts" subtitle="ARC Studio editor" icon={CircleHelp}>
+      {isShortcutsOpen && <Modal isOpen onClose={() => setIsShortcutsOpen(false)} title="Keyboard shortcuts" subtitle="ARC Studio editor" icon={CircleHelp}>
         <div className="keyboard-shortcut-list">
           {[
             ['New graph', formatShortcut((desktopMode ? settings.shortcuts?.newGraph : null) || DEFAULT_SHORTCUTS.newGraph, shortcutPlatform)],
@@ -8575,7 +8771,7 @@ export function App() {
             return <kbd className={`${isModifier ? 'is-modifier ' : ''}${isSymbol ? 'is-symbol' : ''}`.trim()} key={`${key}-${index}`} aria-hidden="true">{key}</kbd>;
           })}</span></div>)}
         </div>
-      </Modal>
+      </Modal>}
       <LazyMountedFeature Component={BotSettingsModal} isOpen={isBotSettingsOpen} loadingLabel="Opening app settings…" isDesktop={desktopMode} onClose={() => setIsBotSettingsOpen(false)} authToken={authToken} profile={botProfile} onProfileChange={setBotProfile} />
       <Modal
         isOpen={Boolean(exportReview)}
@@ -8700,7 +8896,7 @@ export function App() {
         title="Import project file?"
         subtitle={projectImportFile?.name || ''}
         icon={ShieldCheck}
-        footer={<><Button variant="secondary" disabled={projectBusy} onClick={cancelProjectImport}>Cancel</Button><Button icon={FileUp} loading={projectBusy} disabled={projectImportAnalysisStatus !== 'ready' || !projectImportTrusted || projectBusy || projectImportSharingWarning && !projectImportSharingApproved || !projectImportCompatibility && projectImportEncrypted && projectImportPassword.length < 12 || projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' || projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && !projectImportOldVersionApproved} onClick={handleImportProject}>{projectImportAnalysisStatus === 'checking' ? 'Checking file…' : projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' ? 'Newer ARC Studio required' : projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' ? 'Import older project' : projectImportSharingWarning ? 'Import project' : projectImportTrusted ? 'Trust and import' : 'Review and trust'}</Button></>}
+        footer={<><Button variant="secondary" disabled={projectBusy} onClick={cancelProjectImport}>Cancel</Button><Button icon={FileUp} loading={projectBusy} disabled={projectImportAnalysisStatus !== 'ready' || !projectImportTrusted || projectBusy || projectImportSharingWarning && !projectImportSharingApproved || projectImportPlugins.length > 0 && !projectImportPluginsApproved || !projectImportCompatibility && projectImportEncrypted && projectImportPassword.length < 12 || projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' || projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && !projectImportOldVersionApproved} onClick={handleImportProject}>{projectImportAnalysisStatus === 'checking' ? 'Checking file…' : projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' ? 'Newer ARC Studio required' : projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' ? 'Import older project' : projectImportPlugins.length > 0 && projectImportPluginsApproved ? 'Import with plugins' : projectImportPlugins.length > 0 ? 'Review plugin requirements' : projectImportSharingWarning ? 'Import project' : projectImportTrusted ? 'Trust and import' : 'Review and trust'}</Button></>}
       >
         <div className="project-import-warning">
           <strong>Only import a project from someone you trust.</strong>
@@ -8712,6 +8908,11 @@ export function App() {
             <strong>Workspace members may access imported text</strong>
             <p>This project contains text or request fields. Importing it into “{projectImportSharingWarning.workspaceName}” makes that content visible to members with graph read permission and editable by members with graph write permission.</p>
             <label><input type="checkbox" checked={projectImportSharingApproved} onChange={(event) => setProjectImportSharingApproved(event.target.checked)} /><span>I understand who can access this content.</span></label>
+          </div>}
+          {projectImportTrusted && projectImportPlugins.length > 0 && <div className="project-import-compatibility-warning" role="group" aria-label="Project plugin requirements">
+            <strong>Plugins required by this project</strong>
+            <ul>{projectImportPlugins.map((plugin) => <li key={`${plugin.id}-${plugin.version}`}><strong>{plugin.name}</strong> v{plugin.version || 'unknown'} · {plugin.source} · {plugin.available ? 'already installed' : plugin.installable ? 'available to install' : 'not available from a trusted source'}</li>)}</ul>
+            <label><input type="checkbox" checked={projectImportPluginsApproved} onChange={(event) => setProjectImportPluginsApproved(event.target.checked)} /><span>Import local plugin files and install eligible plugins from these sources.</span></label>
           </div>}
           {projectImportTrusted && !projectImportCompatibility && (
             <>
@@ -8976,16 +9177,11 @@ export function App() {
         )}
       </Modal>
       <LazyMountedFeature Component={UserManagementModal} isOpen={!desktopMode && isUserMgmtOpen} loadingLabel="Opening Team access…" isDesktop={desktopMode} onClose={() => setIsUserMgmtOpen(false)} authToken={authToken} currentUsername={currentUser?.username} currentUserId={currentUser?.id} onCurrentUserChange={setCurrentUser} />
-      {isDraggingFileOver && (
-        <div className="global-file-drop-overlay" aria-label="Drop file to import">
-          <div className="global-file-drop-card">
-            <div className="global-file-drop-icon">
-              <FileUp size={44} />
-            </div>
-            <h2>Import project or graph</h2>
-            <p>Drop <code>.arcproject</code> or <code>.arcgraph</code> to import into ARC Studio</p>
-          </div>
-        </div>
+      {fileDropCanvasBounds && document.querySelector('.canvas-workspace') && createPortal(
+        <div className="global-file-drop-overlay" style={fileDropCanvasBounds} aria-label="Drop .arcproject or .arcgraph file to import">
+          Drop .arcproject or .arcgraph here to import
+        </div>,
+        document.querySelector('.canvas-workspace')
       )}
       </div>
       <ToastContainer />
@@ -9151,6 +9347,22 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
     warnings.push(message);
     issueItems.push({ kind: 'warning', message, nodeId, graphId: graph.id });
   };
+  const checkWebResponseHeaders = (value, label, node) => {
+    let headers;
+    try { headers = JSON.parse(String(value || '{}')); }
+    catch { addError(`${label}: response headers must contain valid JSON.`, node.id); return; }
+    if (!headers || typeof headers !== 'object' || Array.isArray(headers)) {
+      addError(`${label}: response headers must be a JSON object.`, node.id);
+      return;
+    }
+    const restricted = new Set(['connection', 'content-length', 'content-type', 'host', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'x-content-type-options']);
+    for (const [name, headerValue] of Object.entries(headers)) {
+      const lower = name.toLowerCase();
+      if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) || restricted.has(lower) || lower.startsWith('proxy-') || /[\r\n]/.test(String(headerValue))) {
+        addError(`${label}: response header ${name} is restricted or invalid.`, node.id);
+      }
+    }
+  };
   const nodes = Array.isArray(graph.nodes) ? graph.nodes.filter((node) => node && typeof node === 'object') : [];
   const connections = Array.isArray(graph.connections) ? graph.connections.filter((connection) => connection && typeof connection === 'object') : [];
   const nodeIds = new Set(nodes.map((node) => node.id));
@@ -9179,6 +9391,21 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
   }
   const initialVariableValue = (variable) => variable?.initialValue ?? (variable?.valueType === 'number' || variable?.type === 'number' ? 0 : variable?.valueType === 'boolean' || variable?.type === 'boolean' ? false : variable?.type === 'array' ? [] : variable?.type === 'object' ? {} : '');
   const findInputWire = (nodeId, pinId) => connections.find((wire) => wire.targetNodeId === nodeId && wire.targetPinId === pinId);
+  const hasUpstreamExecPath = (targetId, sourceId) => {
+    const pending = [targetId];
+    const visited = new Set();
+    while (pending.length) {
+      const currentId = pending.pop();
+      if (visited.has(currentId)) continue;
+      visited.add(currentId);
+      for (const wire of connections) {
+        if (wire.targetNodeId !== currentId || wire.targetPinId !== 'exec' || wire.sourcePinId !== 'exec') continue;
+        if (wire.sourceNodeId === sourceId) return true;
+        pending.push(wire.sourceNodeId);
+      }
+    }
+    return false;
+  };
   const findUpstreamDeferNode = (targetNodeId) => {
     const pending = [targetNodeId];
     const visited = new Set();
@@ -9312,6 +9539,7 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
   if (!isFunction) {
     const eventNodes = nodes.filter((node) => String(node.type).startsWith('event_'));
     const reachableFromEvents = walkExec(eventNodes.map((node) => node.id));
+    for (const finding of inspectWebServerResponsePaths(graph, definitions)) addWarning(finding.message, finding.nodeId);
     for (const node of nodes) {
       const definition = definitions.get(node.type);
       if (definition?.inputs?.some((pin) => pin.type === 'exec') && !isEventTrigger(node) && !reachableFromEvents.has(node.id)) {
@@ -9472,6 +9700,16 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
 
   const slashCommandNames = new Set();
   const contextCommandKeys = new Set();
+  const webServerPorts = new Map();
+  const webServerRouteKeys = new Map();
+  const webServerRoutePaths = [];
+  const webServerFilePaths = [];
+  const canonicalWebRoutePath = (routePath) => routePath.split('/').map((segment) => segment.startsWith(':') ? ':' : segment).join('/');
+  const webRouteMatchesPath = (routePattern, concretePath) => {
+    const patternSegments = routePattern.split('/');
+    const pathSegments = concretePath.split('/');
+    return patternSegments.length === pathSegments.length && patternSegments.every((segment, index) => segment.startsWith(':') || segment === pathSegments[index]);
+  };
   for (const node of nodes) {
     if (node.data && typeof node.data === 'object') {
       for (const [key, value] of Object.entries(node.data)) {
@@ -9480,10 +9718,193 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
           if (syntaxError) {
             addWarning(`${node.label || definitions.get(node.type)?.label || node.type}: ${syntaxError}`, node.id);
           }
+          for (const match of value.matchAll(/\{\{\s*env:([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/gi)) {
+            if (!isTemplateEnvironmentNameAllowed(match[1])) addWarning(`${node.label || definitions.get(node.type)?.label || node.type}: ${match[1]} is a reserved workspace variable and is not available to templates.`, node.id);
+          }
         }
       }
     }
     if (!definitions.has(node.type)) addError(`${node.label || node.type}: node type is unavailable.`, node.id);
+    if (node.type === 'action_web_server_start') {
+      const port = Number(node.data?.port ?? 3001);
+      const host = String(node.data?.host ?? '127.0.0.1').trim() || '127.0.0.1';
+      const routePath = String(node.data?.path ?? '/');
+      const method = String(node.data?.method ?? 'GET').toUpperCase();
+      const status = Number(node.data?.status ?? 200);
+      const contentType = String(node.data?.content_type ?? 'text/html; charset=utf-8');
+      if (!Number.isInteger(port) || port < 0 || port > 65535) addError('Start Web Server: port must be an integer from 0 to 65535.', node.id);
+      else if (port === 0) addWarning('Start Web Server: port 0 selects an automatic port. Use the Active Port output when sharing the address.', node.id);
+      else if (port < 1024) addWarning('Start Web Server: ports below 1024 may require elevated permissions.', node.id);
+      if (!routePath.startsWith('/') || routePath.includes('?') || routePath.includes('#') || routePath.length > 512) addError('Start Web Server: route path must start with / and cannot include a query or fragment.', node.id);
+      if (!['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].includes(method)) addError('Start Web Server: choose GET, HEAD, POST, PUT, PATCH, DELETE, or OPTIONS.', node.id);
+      if (!Number.isInteger(status) || status < 200 || status > 599) addError('Start Web Server: response status must be an integer from 200 to 599.', node.id);
+      if (!contentType || contentType.length > 128 || /[\r\n]/.test(contentType)) addError('Start Web Server: content type is invalid.', node.id);
+      const serverHostIsLoopback = /^(?:localhost|127(?:\.\d{1,3}){3}|::1)$/i.test(host.trim());
+      if (!serverHostIsLoopback) addWarning('Start Web Server: this non-loopback host may accept connections from other devices reachable on the network.', node.id);
+      if (port > 0 && Number.isInteger(port)) {
+        const key = `${host}:${port}`;
+        if (webServerPorts.has(key)) addWarning(`Start Web Server: another server node in this graph also uses ${key}; only one can claim the port.`, node.id);
+        else webServerPorts.set(key, node.id);
+      }
+      const template = String(node.data?.template ?? '');
+      const checkEjs = (source, location) => {
+        if (/<%(?![=#-]|%)/.test(source)) addError(`Start Web Server: ${location} contains an executable EJS tag. Use <%= value %> for data lookups.`, node.id);
+        if (/<%-/.test(source)) addError(`Start Web Server: ${location} uses unescaped EJS output, which is disabled. Use <%= value %> for escaped output.`, node.id);
+        if (/<%[=-]\s*(?:process|global|globalThis|require|module|constructor|prototype|__proto__|env)(?:\b|\s*\.)/i.test(source)) addError(`Start Web Server: ${location} refers to a blocked runtime property.`, node.id);
+      };
+      checkEjs(template, 'the response template');
+      try {
+        const routes = JSON.parse(String(node.data?.routes_json || '[]'));
+        if (!Array.isArray(routes) || routes.length > 100) addError('Start Web Server: Routes must be a JSON array with no more than 100 entries.', node.id);
+        else {
+          const routeKeys = new Set();
+          for (const [index, route] of routes.entries()) {
+          if (!route || typeof route !== 'object' || Array.isArray(route)) addError(`Start Web Server: route ${index + 1} must be a JSON object.`, node.id);
+          else {
+            if (!['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].includes(String(route.method || 'GET').toUpperCase())) addError(`Start Web Server: route ${index + 1} uses an unsupported method.`, node.id);
+            const routePath = String(route.path || '/');
+            if (!routePath.startsWith('/') || routePath.length > 512 || routePath.includes('?') || routePath.includes('#') || routePath.includes('\\') || /[\u0000-\u0020\u007f]/.test(routePath) || routePath.split('/').some((part) => part === '.' || part === '..')) addError(`Start Web Server: route ${index + 1} has an invalid path.`, node.id);
+            const routeMethod = String(route.method || 'GET').toUpperCase();
+            const key = `${routeMethod}:${canonicalWebRoutePath(routePath)}`;
+            if (routeKeys.has(key)) addError(`Start Web Server: route ${key} is defined more than once.`, node.id);
+            routeKeys.add(key);
+            webServerRoutePaths.push({ serverId: node.id, method: routeMethod, path: routePath, nodeId: node.id });
+            const routeStatus = Number(route.status ?? 200);
+            if (!Number.isInteger(routeStatus) || routeStatus < 200 || routeStatus > 599) addError(`Start Web Server: route ${index + 1} has an invalid response status.`, node.id);
+            if (route.ejs === true || route.template === true || routePath.toLowerCase().endsWith('.ejs') || /<%/.test(JSON.stringify(route.body ?? ''))) checkEjs(JSON.stringify(route.body ?? ''), `route ${index + 1}`);
+          }
+          }
+        }
+      } catch { addError('Start Web Server: Routes must contain valid JSON.', node.id); }
+      try {
+        const files = JSON.parse(String(node.data?.files_json || '{}'));
+        if (!files || typeof files !== 'object' || Array.isArray(files) || Object.keys(files).length > 100) addError('Start Web Server: Static Files must be a JSON object with no more than 100 entries.', node.id);
+        else for (const [filePath, file] of Object.entries(files)) {
+          if (!filePath.startsWith('/') || filePath.length > 512 || filePath.includes('?') || filePath.includes('#') || filePath.includes('\\') || /[\u0000-\u0020\u007f]/.test(filePath) || filePath.split('/').some((part) => part === '.' || part === '..')) addError(`Start Web Server: static file path ${filePath} is invalid.`, node.id);
+          if (webServerRoutePaths.some((route) => route.serverId === node.id && ['GET', 'HEAD'].includes(route.method) && webRouteMatchesPath(route.path, filePath))) addError(`Start Web Server: static file path ${filePath} is shadowed by a route.`, node.id);
+          webServerFilePaths.push({ serverId: node.id, path: filePath, nodeId: node.id });
+          const descriptor = typeof file === 'string' ? { body: file } : file;
+          if (!descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor)) addError(`Start Web Server: static file ${filePath} must be text or a JSON object.`, node.id);
+          else {
+            if (descriptor.asset !== undefined && (typeof descriptor.asset !== 'string' || !descriptor.asset.trim())) addError(`Start Web Server: static file ${filePath} needs a project media filename in asset.`, node.id);
+            if (descriptor.asset && (descriptor.body !== undefined || descriptor.content !== undefined)) addError(`Start Web Server: static file ${filePath} cannot set both asset and body content.`, node.id);
+            const fileStatus = Number(descriptor.status ?? 200);
+            if (!Number.isInteger(fileStatus) || fileStatus < 200 || fileStatus > 599) addError(`Start Web Server: static file ${filePath} has an invalid response status.`, node.id);
+            if (descriptor.ejs === true || filePath.toLowerCase().endsWith('.ejs')) checkEjs(JSON.stringify(descriptor.body ?? descriptor.content ?? ''), `static file ${filePath}`);
+          }
+        }
+      } catch { addError('Start Web Server: Static Files must contain valid JSON.', node.id); }
+    }
+    if (['action_web_server_route', 'action_web_server_response', 'action_web_server_static_file', 'action_web_server_stop_one', 'event_web_server_request'].includes(node.type)) {
+      const requestIdWire = node.type === 'action_web_server_response'
+        ? connections.find((connection) => connection.targetNodeId === node.id && connection.targetPinId === 'request_id')
+        : null;
+      const requestEventNode = requestIdWire && nodes.find((item) => item.id === requestIdWire.sourceNodeId && item.type === 'event_web_server_request');
+      const serverWire = requestEventNode
+        ? connections.find((connection) => connection.targetNodeId === requestEventNode.id && connection.targetPinId === 'web_server_id')
+        : connections.find((connection) => connection.targetNodeId === node.id && connection.targetPinId === 'web_server_id');
+      const serverSource = serverWire && nodes.find((item) => item.id === serverWire.sourceNodeId);
+      const serverId = serverWire && serverSource?.type === 'action_web_server_start' && serverWire.sourcePinId === 'web_server_id'
+        ? serverSource.id
+        : String(node.data?.web_server_id || '').trim();
+      const serverNode = nodes.find((item) => item.id === serverId && item.type === 'action_web_server_start');
+      const serverHostValue = String(serverNode?.data?.host || '127.0.0.1');
+      const serverHostIsDynamic = serverNode && (connections.some((connection) => connection.targetNodeId === serverNode.id && connection.targetPinId === 'host') || serverHostValue.includes('{{'));
+      const serverMayBePublic = serverHostIsDynamic || !/^(?:localhost|127(?:\.\d{1,3}){3}|::1)$/i.test(serverHostValue.trim());
+      if (!serverId) addError(`${definitions.get(node.type)?.label || 'Web Server'}: connect or select a Start Web Server node.`, node.id);
+      else if (!serverNode) addWarning(`${definitions.get(node.type)?.label || 'Web Server'}: the selected server is not in this graph.`, node.id);
+      if (serverWire && (!serverSource || serverSource.type !== 'action_web_server_start' || serverWire.sourcePinId !== 'web_server_id')) {
+        addError(`${definitions.get(node.type)?.label || 'Web Server'}: Server ID must come from a Start Web Server node.`, node.id);
+      }
+      if (serverNode && ['action_web_server_route', 'action_web_server_static_file'].includes(node.type) && !hasUpstreamExecPath(node.id, serverNode.id)) {
+        addWarning(`${definitions.get(node.type)?.label || 'Web Server'}: connect Exec after the selected Start Web Server so this route is registered when it starts.`, node.id);
+      }
+      if (node.type === 'action_web_server_route') {
+        const method = String(node.data?.method || 'GET').toUpperCase();
+        const routePath = String(node.data?.path || '/');
+        const status = Number(node.data?.status ?? 200);
+        const contentType = String(node.data?.content_type || 'application/json; charset=utf-8');
+        const authToken = String(node.data?.auth_token || '').trim();
+        const hasAuthTokenConnection = connections.some((connection) => connection.targetNodeId === node.id && connection.targetPinId === 'auth_token');
+        if (!['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].includes(method)) addError('Add Web Route: choose GET, HEAD, POST, PUT, PATCH, DELETE, or OPTIONS.', node.id);
+        if (!routePath.startsWith('/') || routePath.length > 512 || routePath.includes('?') || routePath.includes('#') || routePath.includes('\\') || /[\u0000-\u0020\u007f]/.test(routePath) || routePath.split('/').some((part) => part === '.' || part === '..' || part.includes(':') && !/^:[A-Za-z_][A-Za-z0-9_]*$/.test(part))) addError('Add Web Route: path must start with / and use valid named parameters such as /users/:userId.', node.id);
+        if (!Number.isInteger(status) || status < 200 || status > 599) addError('Add Web Route: response status must be an integer from 200 to 599.', node.id);
+        if (!contentType || contentType.length > 128 || /[\r\n]/.test(contentType)) addError('Add Web Route: response content type is invalid.', node.id);
+        checkWebResponseHeaders(node.data?.headers_json, 'Add Web Route', node);
+        const responseTemplate = String(node.data?.response || '');
+        if (/<%(?![=#-]|%)/.test(responseTemplate)) addError('Add Web Route: executable EJS is disabled. Use <%= value %> for data lookups.', node.id);
+        if (/<%-/.test(responseTemplate)) addError('Add Web Route: unescaped EJS output is disabled. Use <%= value %> for escaped output.', node.id);
+        if (new TextEncoder().encode(responseTemplate).length > 256 * 1024) addError('Add Web Route: response template exceeds 256 KB.', node.id);
+        if (!authToken && !hasAuthTokenConnection && serverMayBePublic) addWarning('Add Web Route: this unauthenticated route may be reachable from the network. Add a Bearer Token or bind to 127.0.0.1.', node.id);
+        if (serverId && routePath.startsWith('/')) {
+          const key = `${serverId}:${method}:${canonicalWebRoutePath(routePath)}`;
+          const shadowsFile = ['GET', 'HEAD'].includes(method) && webServerFilePaths.some((file) => file.serverId === serverId && webRouteMatchesPath(routePath, file.path));
+          const duplicatePattern = webServerRoutePaths.some((route) => route.serverId === serverId && route.method === method && canonicalWebRoutePath(route.path) === canonicalWebRoutePath(routePath));
+          if (shadowsFile) addError(`Add Web Route: ${method} ${routePath} shadows a static file on this server.`, node.id);
+          else if (webServerRouteKeys.has(key) || duplicatePattern) addError(`Add Web Route: ${method} ${routePath} is already registered on this server.`, node.id);
+          else {
+            webServerRouteKeys.set(key, node.id);
+            webServerRoutePaths.push({ serverId, method, path: routePath, nodeId: node.id });
+          }
+        }
+      } else if (node.type === 'event_web_server_request') {
+        const method = String(node.data?.method || 'GET').toUpperCase();
+        const routePath = String(node.data?.path || '/');
+        const authToken = String(node.data?.auth_token || '').trim();
+        if (!['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].includes(method)) addError('On Web Request: choose GET, HEAD, POST, PUT, PATCH, DELETE, or OPTIONS.', node.id);
+        if (!routePath.startsWith('/') || routePath.length > 512 || routePath.includes('?') || routePath.includes('#') || routePath.includes('\\') || /[\u0000-\u0020\u007f]/.test(routePath) || routePath.split('/').some((part) => part === '.' || part === '..' || part.includes(':') && !/^:[A-Za-z_][A-Za-z0-9_]*$/.test(part))) addError('On Web Request: path must start with / and use valid named parameters such as /items/:itemId.', node.id);
+        const parameterNames = routePath.split('/').filter((part) => part.startsWith(':'));
+        if (new Set(parameterNames).size !== parameterNames.length) addError('On Web Request: parameter names must be unique within the path.', node.id);
+        const hasAuthTokenConnection = connections.some((connection) => connection.targetNodeId === node.id && connection.targetPinId === 'auth_token');
+        if (!authToken && !hasAuthTokenConnection && serverMayBePublic) addWarning('On Web Request: this unauthenticated route may be reachable from the network. Add a Bearer Token or bind to 127.0.0.1.', node.id);
+        if (serverId && routePath.startsWith('/')) {
+          const key = `${serverId}:${method}:${canonicalWebRoutePath(routePath)}`;
+          const shadowsFile = ['GET', 'HEAD'].includes(method) && webServerFilePaths.some((file) => file.serverId === serverId && webRouteMatchesPath(routePath, file.path));
+          const duplicatePattern = webServerRoutePaths.some((route) => route.serverId === serverId && route.method === method && canonicalWebRoutePath(route.path) === canonicalWebRoutePath(routePath));
+          if (shadowsFile) addError(`On Web Request: ${method} ${routePath} shadows a static file on this server.`, node.id);
+          else if (webServerRouteKeys.has(key) || duplicatePattern) addError(`On Web Request: ${method} ${routePath} is already registered on this server.`, node.id);
+          else {
+            webServerRouteKeys.set(key, node.id);
+            webServerRoutePaths.push({ serverId, method, path: routePath, nodeId: node.id });
+          }
+        }
+      } else if (node.type === 'action_web_server_response') {
+        const requestWire = connections.find((connection) => connection.targetNodeId === node.id && connection.targetPinId === 'request_id');
+        const requestSource = requestWire && nodes.find((item) => item.id === requestWire.sourceNodeId);
+        if (!requestSource || requestSource.type !== 'event_web_server_request' || requestWire.sourcePinId !== 'request_id') addError('Respond to Web Request: connect Request ID from On Web Request.', node.id);
+        const status = Number(node.data?.status ?? 200);
+        const contentType = String(node.data?.content_type || 'application/json; charset=utf-8');
+        if (!Number.isInteger(status) || status < 200 || status > 599) addError('Respond to Web Request: status must be an integer from 200 to 599.', node.id);
+        if (!contentType || contentType.length > 128 || /[\r\n]/.test(contentType)) addError('Respond to Web Request: content type is invalid.', node.id);
+        if (node.data?.body && typeof node.data.body === 'object' && !/^application\/(?:[a-z0-9.+-]+\+)?json(?:\s*;|$)/i.test(contentType.trim())) addError('Respond to Web Request: object bodies must use an application/json content type.', node.id);
+        checkWebResponseHeaders(node.data?.headers_json, 'Respond to Web Request', node);
+        if (typeof node.data?.body === 'string' && new TextEncoder().encode(node.data.body).length > 20 * 1024 * 1024) addError('Respond to Web Request: body exceeds 20 MB.', node.id);
+      } else if (node.type === 'action_web_server_static_file') {
+        const routePath = String(node.data?.path || '/');
+        const asset = String(node.data?.asset || '').trim();
+        const hasAssetConnection = connections.some((connection) => connection.targetNodeId === node.id && connection.targetPinId === 'asset');
+        const authToken = String(node.data?.auth_token || '').trim();
+        const hasAuthTokenConnection = connections.some((connection) => connection.targetNodeId === node.id && connection.targetPinId === 'auth_token');
+        const status = Number(node.data?.status ?? 200);
+        if (!routePath.startsWith('/') || routePath.length > 512 || routePath.includes('?') || routePath.includes('#') || routePath.includes('\\') || /[\u0000-\u0020\u007f]/.test(routePath) || routePath.split('/').some((part) => part === '.' || part === '..')) addError('Serve Web File: URL path is invalid.', node.id);
+        if (!asset && !hasAssetConnection) addError('Serve Web File: choose an uploaded project media file.', node.id);
+        if (!Number.isInteger(status) || status < 200 || status > 599) addError('Serve Web File: response status must be an integer from 200 to 599.', node.id);
+        const contentType = String(node.data?.content_type || '').trim();
+        if (contentType.length > 128 || /[\r\n]/.test(contentType)) addError('Serve Web File: content type override is invalid.', node.id);
+        checkWebResponseHeaders(node.data?.headers_json, 'Serve Web File', node);
+        if (!authToken && !hasAuthTokenConnection && serverMayBePublic) addWarning('Serve Web File: this unauthenticated file may be reachable from the network. Add a Bearer Token or bind to 127.0.0.1.', node.id);
+        if (serverId && routePath.startsWith('/')) {
+          const shadowsRoute = webServerRoutePaths.some((route) => route.serverId === serverId && ['GET', 'HEAD'].includes(route.method) && webRouteMatchesPath(route.path, routePath));
+          if (shadowsRoute) addError(`Serve Web File: ${routePath} is shadowed by a route on this server.`, node.id);
+          else webServerFilePaths.push({ serverId, path: routePath, nodeId: node.id });
+          for (const method of ['GET', 'HEAD']) {
+            const key = `${serverId}:${method}:${routePath}`;
+            if (webServerRouteKeys.has(key)) addError(`Serve Web File: ${routePath} conflicts with another route on this server.`, node.id);
+            else webServerRouteKeys.set(key, node.id);
+          }
+        }
+      }
+    }
     if (node.type === 'parallel') {
       const branchPins = (definitions.get(node.type)?.outputs || []).filter((pin) => pin.id.startsWith('branch_'));
       const activeBranchPins = new Set(branchPins.map((p) => p.id));
