@@ -15997,6 +15997,13 @@ body[data-compact-context="true"] .context-menu-heading {
   cursor: url('/scissors.svg') 5 5, crosshair !important;
 }
 
+.node-canvas.is-dragging-node,
+.node-canvas.is-dragging-node .canvas-world,
+.node-canvas.is-dragging-node .canvas-node,
+.node-canvas.is-dragging-node .wire-hit-area {
+  cursor: grabbing !important;
+}
+
 .node-canvas[data-cut-require-modifier="true"]:not(.is-cutting-wires) .wire-hit-area {
   cursor: pointer;
 }
