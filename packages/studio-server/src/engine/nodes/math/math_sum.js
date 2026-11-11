@@ -10,20 +10,23 @@ export default {
       "id": "a",
       "label": "A",
       "type": "number",
-      "defaultValue": 0
+      "defaultValue": 0,
+      description: "First number included in the sum."
     },
     {
       "id": "b",
       "label": "B",
       "type": "number",
-      "defaultValue": 0
+      "defaultValue": 0,
+      description: "Second number included in the sum."
     }
   ],
   "outputs": [
     {
       "id": "result",
       "label": "Result",
-      "type": "number"
+      "type": "number",
+      description: "Sum of the connected numbers."
     }
   ]
 };
