@@ -14,65 +14,65 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Starts Start Thread from Message."},
     {
       "id": "channel_id",
       "label": "Parent Channel ID",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "ID of the channel containing the message."},
     {
       "id": "message_id",
       "label": "Message ID",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "ID of the message to start a thread from."},
     {
       "id": "name",
       "label": "Thread Name",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "Name to assign."},
     {
       "id": "auto_archive_duration",
       "label": "Auto Archive (minutes)",
       "type": "number",
-      "defaultValue": 1440
-    },
+      "defaultValue": 1440,
+      description: "Thread auto archive time in minutes."},
     {
       "id": "rate_limit_per_user",
       "label": "Slowmode (seconds)",
       "type": "number",
-      "defaultValue": 0
-    },
+      "defaultValue": 0,
+      description: "Slowmode delay in seconds."},
     {
       "id": "reason",
       "label": "Audit Log Reason",
       "type": "string",
-      "defaultValue": ""
-    }
+      "defaultValue": "",
+      description: "Reason recorded in the audit log."}
   ],
   "outputs": [
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Continues after Start Thread from Message completes."},
     {
       "id": "thread_id",
       "label": "Thread ID",
-      "type": "string"
-    },
+      "type": "string",
+      description: "ID of the thread created by the action."},
     {
       "id": "parent_channel_id",
       "label": "Parent Channel ID",
-      "type": "string"
-    },
+      "type": "string",
+      description: "ID of the thread parent channel."},
     {
       "id": "success",
       "label": "Success",
-      "type": "boolean"
-    }
+      "type": "boolean",
+      description: "Whether the action completed successfully."}
   ]
 };
