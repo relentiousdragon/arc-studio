@@ -2047,6 +2047,8 @@ export function NodeCanvas({
 
   function deleteSelectedItems(nodeIds = selectedNodeIds, noteIds = selectedNoteIds, confirmed = false, arrowIds = selectedArrowIds) {
     const uniqueNodeIds = [...new Set(nodeIds)].filter((id) => !isNodeBeingMovedByOther(id));
+    const selectedNodeIdSet = new Set(uniqueNodeIds);
+    const connectedWireCount = connections.filter((connection) => selectedNodeIdSet.has(connection.sourceNodeId) || selectedNodeIdSet.has(connection.targetNodeId)).length;
     const removableNoteIds = [...new Set(noteIds)].filter((id) => {
       const note = notes.find((item) => item.id === id);
       return note && !isNoteBeingEditedByOther(id) && (!note.locked || mayEditNote(note));
@@ -2055,7 +2057,7 @@ export function NodeCanvas({
       const arrow = canvasArrows.find((item) => item.id === id);
       return arrow && (!arrow.locked || mayManageArrow(arrow));
     });
-    if (uniqueNodeIds.length > 1 && !confirmed) {
+    if (uniqueNodeIds.length > 10 && connectedWireCount > 10 && !confirmed) {
       setDeleteConfirmationIds(uniqueNodeIds);
       setDeleteConfirmationNoteIds(removableNoteIds);
       setDeleteConfirmationArrowIds(removableArrowIds);
