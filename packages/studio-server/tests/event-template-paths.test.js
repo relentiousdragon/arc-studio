@@ -32,6 +32,21 @@ test('common event shortcuts are offered for messages and interactions', () => {
   assert.ok(threadPaths.includes('thread.name'));
 });
 
+test('role event shortcuts match Discord role payloads', () => {
+  const created = buildEventTemplateValues('event_role_create', {
+    guild_id: 'guild-1',
+    role: { id: 'role-1', name: 'Helper', permissions: '8' }
+  });
+  assert.equal(created.role.id, 'role-1');
+  assert.equal(created.role.name, 'Helper');
+  const deleted = buildEventTemplateValues('event_role_delete', {
+    guild_id: 'guild-1',
+    role_id: 'role-1'
+  });
+  assert.equal(deleted.role.id, 'role-1');
+  assert.equal(eventTemplatePaths('event_role_delete').some((item) => item.path === 'role.id'), true);
+});
+
 test('event template values resolve users, servers, channels, and interactions', () => {
   const values = buildEventTemplateValues('event_message_create', {
     id: 'message-1', content: 'hi', channel_id: '55', guild_id: '88',
