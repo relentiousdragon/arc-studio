@@ -76,6 +76,15 @@ export const BundledNodeTypes = new Set(bundledNodeDefinitions.map((definition) 
 export const BuiltInNodeDefinitions = [...bundledNodeDefinitions];
 NodeCategories = Object.freeze({ ...BundledNodeCategories });
 
+export function isNodeDefinitionHidden(definition) {
+  return definition?.hidden === true;
+}
+
+export function isNodeTypeCreatable(type, definitions = BuiltInNodeDefinitions) {
+  const definition = definitions.find((item) => item.type === type);
+  return Boolean(definition && !isNodeDefinitionHidden(definition));
+}
+
 export function setWorkspaceNodeDefinitions(definitions, categories = {}) {
   if (definitions === null) {
     adapterNodeTypes.clear();
@@ -149,6 +158,7 @@ function nodeSeenId(definition) { return `${definition?.type || ''}@${definition
 export function getVisibleNewNodeDefinitions(definitions = [], userKey = 'anonymous', now = Date.now()) {
   const seen = readNodeNewSeen(userKey);
   return definitions.filter((definition) => {
+    if (isNodeDefinitionHidden(definition)) return false;
     const createdAt = nodeDefinitionCreatedAt(definition); const age = now - createdAt;
     if (!Number.isFinite(createdAt) || age < 0 || age >= NODE_NEW_MAX_AGE) return false;
     const firstSeenAt = Number(seen[nodeSeenId(definition)]);
