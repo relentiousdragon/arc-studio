@@ -41,17 +41,18 @@ function renderInline(source, keyPrefix) {
   return result;
 }
 
-export function ReleaseNotes({ children }) {
-  const lines = String(children || '').replace(/\r\n?/g, '\n').split('\n');
-  const blocks = [];
+export const ReleaseNotes = React.memo(function ReleaseNotes({ children }) {
+  const blocks = React.useMemo(() => {
+    const lines = String(children || '').replace(/\r\n?/g, '\n').split('\n');
+    const parsedBlocks = [];
 
-  for (let i = 0; i < lines.length;) {
+    for (let i = 0; i < lines.length;) {
     const line = lines[i].trim();
     if (!line) { i += 1; continue; }
 
     const heading = /^(#{1,3})\s+(.+)$/.exec(line);
     if (heading) {
-      blocks.push(<h3 key={`heading-${i}`}>{renderInline(heading[2], `heading-${i}`)}</h3>);
+      parsedBlocks.push(<h3 key={`heading-${i}`}>{renderInline(heading[2], `heading-${i}`)}</h3>);
       i += 1;
       continue;
     }
@@ -65,7 +66,7 @@ export function ReleaseNotes({ children }) {
         items.push(<li key={`list-${i}`}>{renderInline(item[1], `list-${i}`)}</li>);
         i += 1;
       }
-      blocks.push(<ul key={`list-${i}`}>{items}</ul>);
+      parsedBlocks.push(<ul key={`list-${i}`}>{items}</ul>);
       continue;
     }
 
@@ -78,7 +79,7 @@ export function ReleaseNotes({ children }) {
         quoteLines.push(item[1]);
         i += 1;
       }
-      blocks.push(<blockquote key={`quote-${i}`}>{quoteLines.map((text, index) => <React.Fragment key={index}>{index > 0 && <br />}{renderInline(text, `quote-${i}-${index}`)}</React.Fragment>)}</blockquote>);
+      parsedBlocks.push(<blockquote key={`quote-${i}`}>{quoteLines.map((text, index) => <React.Fragment key={index}>{index > 0 && <br />}{renderInline(text, `quote-${i}-${index}`)}</React.Fragment>)}</blockquote>);
       continue;
     }
 
@@ -87,8 +88,11 @@ export function ReleaseNotes({ children }) {
       paragraphLines.push(lines[i].trim());
       i += 1;
     }
-    blocks.push(<p key={`paragraph-${i}`}>{paragraphLines.map((text, index) => <React.Fragment key={index}>{index > 0 && <br />}{renderInline(text, `paragraph-${i}-${index}`)}</React.Fragment>)}</p>);
-  }
+      parsedBlocks.push(<p key={`paragraph-${i}`}>{paragraphLines.map((text, index) => <React.Fragment key={index}>{index > 0 && <br />}{renderInline(text, `paragraph-${i}-${index}`)}</React.Fragment>)}</p>);
+    }
+
+    return parsedBlocks;
+  }, [children]);
 
   return <div className="release-notes-content">{blocks}</div>;
-}
+});
