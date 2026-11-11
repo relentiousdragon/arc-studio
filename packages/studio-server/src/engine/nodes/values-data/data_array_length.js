@@ -9,19 +9,22 @@ export default {
       "id": "array",
       "label": "Array",
       "type": "object",
-      "defaultValue": []
+      "defaultValue": [],
+      description: "Array whose length and empty state to check."
     }
   ],
   "outputs": [
     {
       "id": "length",
       "label": "Length",
-      "type": "number"
+      "type": "number",
+      description: "Number of items in the array."
     },
     {
       "id": "empty",
       "label": "Is Empty",
-      "type": "boolean"
+      "type": "boolean",
+      description: "True when the array has no items."
     }
   ]
 };

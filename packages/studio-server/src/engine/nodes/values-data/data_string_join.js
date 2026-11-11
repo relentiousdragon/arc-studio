@@ -9,20 +9,23 @@ export default {
       "id": "array",
       "label": "Items",
       "type": "object",
-      "defaultValue": []
+      "defaultValue": [],
+      description: "Array values to join into text."
     },
     {
       "id": "separator",
       "label": "Separator",
       "type": "string",
-      "defaultValue": ", "
+      "defaultValue": ", ",
+      description: "Text placed between each array value."
     }
   ],
   "outputs": [
     {
       "id": "text",
       "label": "Text",
-      "type": "string"
+      "type": "string",
+      description: "Array values joined into one text string."
     }
   ]
 };

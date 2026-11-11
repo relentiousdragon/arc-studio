@@ -9,14 +9,16 @@ export default {
       "id": "text",
       "label": "Text",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Text whose words to capitalize."
     }
   ],
   "outputs": [
     {
       "id": "text",
       "label": "Text",
-      "type": "string"
+      "type": "string",
+      description: "Text with the first letter of each word capitalized."
     }
   ]
 };

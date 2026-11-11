@@ -6,11 +6,11 @@ export default {
   color: '#06b6d4',
   defaultData: { target_id: 'all', property: 'spoiler', item_index: -1, value: false },
   inputs: [
-    { id: 'components', label: 'Components V2', type: 'object' },
-    { id: 'target_id', label: 'Block ID (all for matching blocks)', type: 'string', defaultValue: 'all' },
-    { id: 'property', label: 'Property', type: 'string', defaultValue: 'spoiler' },
-    { id: 'item_index', label: 'Media Item Index (-1 for all)', type: 'number', defaultValue: -1 },
-    { id: 'value', label: 'Value', type: 'any', defaultValue: false }
+    { id: 'components', label: 'Components V2', type: 'object', description: "Components V2 layout to copy and update." },
+    { id: 'target_id', label: 'Block ID (all for matching blocks)', type: 'string', defaultValue: 'all', description: "ID of the block to update, or all to update matching blocks." },
+    { id: 'property', label: 'Property', type: 'string', defaultValue: 'spoiler', description: "Block property to change." },
+    { id: 'item_index', label: 'Media Item Index (-1 for all)', type: 'number', defaultValue: -1, description: "Zero-based media item index, or -1 to update all media items." },
+    { id: 'value', label: 'Value', type: 'any', defaultValue: false, description: "New value for the selected property." }
   ],
-  outputs: [{ id: 'components', label: 'Components V2', type: 'object' }]
+  outputs: [{ id: 'components', label: 'Components V2', type: 'object', description: "Updated Components V2 layout." }]
 };

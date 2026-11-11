@@ -20,19 +20,22 @@ export default {
       "id": "text",
       "label": "Text",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Text containing a decimal number to parse."
     }
   ],
   "outputs": [
     {
       "id": "number",
       "label": "Number",
-      "type": "number"
+      "type": "number",
+      description: "Parsed finite number, or zero when parsing fails."
     },
     {
       "id": "valid",
       "label": "Valid",
-      "type": "boolean"
+      "type": "boolean",
+      description: "True when the input is a valid finite number."
     }
   ]
 };

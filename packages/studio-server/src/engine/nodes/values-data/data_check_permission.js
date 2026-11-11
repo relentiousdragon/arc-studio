@@ -17,11 +17,11 @@ export default {
     }
   ],
   inputs: [
-    { id: 'permissions', label: 'Permissions Bitfield', type: 'string', defaultValue: '' },
-    { id: 'permission', label: 'Permissions', type: 'arg', defaultValue: ['VIEW_CHANNEL'] }
+    { id: 'permissions', label: 'Permissions Bitfield', type: 'string', defaultValue: '', description: "Permission bitfield to check." },
+    { id: 'permission', label: 'Permissions', type: 'arg', defaultValue: ['VIEW_CHANNEL'], description: "Permission or permissions that must all be present." }
   ],
   outputs: [
-    { id: 'has_permission', label: 'Has Permission', type: 'boolean' },
-    { id: 'valid', label: 'Valid Bitfield', type: 'boolean' }
+    { id: 'has_permission', label: 'Has Permission', type: 'boolean', description: "True when the bitfield includes every selected permission." },
+    { id: 'valid', label: 'Valid Bitfield', type: 'boolean', description: "True when the input is a valid permission bitfield." }
   ]
 };

@@ -9,19 +9,22 @@ export default {
       "id": "value",
       "label": "Date / timestamp",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "ISO date or Unix timestamp in milliseconds to convert."
     }
   ],
   "outputs": [
     {
       "id": "text",
       "label": "ISO date",
-      "type": "string"
+      "type": "string",
+      description: "Date and time converted to UTC ISO 8601 text."
     },
     {
       "id": "valid",
       "label": "Valid",
-      "type": "boolean"
+      "type": "boolean",
+      description: "True when the input is a valid date or timestamp."
     }
   ]
 };

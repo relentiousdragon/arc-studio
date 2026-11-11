@@ -9,7 +9,8 @@ export default {
     {
       "id": "text",
       "label": "Text",
-      "type": "string"
+      "type": "string",
+      description: "Text after graph variable slots are resolved."
     }
   ]
 };

@@ -9,14 +9,16 @@ export default {
       "id": "value",
       "label": "Value",
       "type": "boolean",
-      "defaultValue": true
+      "defaultValue": true,
+      description: "Boolean value provided by this node."
     }
   ],
   "outputs": [
     {
       "id": "value",
       "label": "Boolean",
-      "type": "boolean"
+      "type": "boolean",
+      description: "Configured boolean value."
     }
   ]
 };

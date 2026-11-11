@@ -13,45 +13,53 @@ export default {
       "id": "value",
       "label": "Value",
       "type": "arg",
-      "defaultValue": undefined
+      "defaultValue": undefined,
+      description: "Value to check for missing, null, empty, or present state."
     },
     {
       "id": "fallback",
       "label": "Fallback",
       "type": "arg",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Value to return when the input is missing, null, or empty."
     }
   ],
   "outputs": [
     {
       "id": "value",
       "label": "Value or fallback",
-      "type": "arg"
+      "type": "arg",
+      description: "Original value when present, otherwise the fallback."
     },
     {
       "id": "state",
       "label": "State",
-      "type": "string"
+      "type": "string",
+      description: "State detected for the input value."
     },
     {
       "id": "is_missing",
       "label": "Missing",
-      "type": "boolean"
+      "type": "boolean",
+      description: "True when the input value is missing."
     },
     {
       "id": "is_null",
       "label": "Null",
-      "type": "boolean"
+      "type": "boolean",
+      description: "True when the input value is null."
     },
     {
       "id": "is_empty",
       "label": "Empty text",
-      "type": "boolean"
+      "type": "boolean",
+      description: "True when the input is empty text."
     },
     {
       "id": "has_value",
       "label": "Has value",
-      "type": "boolean"
+      "type": "boolean",
+      description: "True when the input contains a usable value."
     }
   ]
 };

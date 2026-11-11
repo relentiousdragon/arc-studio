@@ -20,37 +20,43 @@ export default {
       id: 'text',
       label: 'Text',
       type: 'string',
-      defaultValue: ''
+      defaultValue: '',
+      description: "Text to search and update."
     },
     {
       id: 'search',
       label: 'Find',
       type: 'string',
-      defaultValue: ''
+      defaultValue: '',
+      description: "Exact text to find."
     },
     {
       id: 'replacement',
       label: 'Replace with',
       type: 'string',
-      defaultValue: ''
+      defaultValue: '',
+      description: "Text to put in place of each match."
     },
     {
       id: 'all',
       label: 'Find All / Replace All',
       type: 'boolean',
-      defaultValue: true
+      defaultValue: true,
+      description: "Replace every match instead of only the first."
     }
   ],
   outputs: [
     {
       id: 'text',
       label: 'Text',
-      type: 'string'
+      type: 'string',
+      description: "Text after the matching content is replaced."
     },
     {
       id: 'replacements',
       label: 'Replacements',
-      type: 'number'
+      type: 'number',
+      description: "Number of replacements made."
     }
   ]
 };

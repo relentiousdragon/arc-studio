@@ -14,31 +14,36 @@ export default {
       "id": "value",
       "label": "Object / Array",
       "type": "object",
-      "defaultValue": {}
+      "defaultValue": {},
+      description: "Object or array to read from."
     },
     {
       "id": "path",
       "label": "Path",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Property path to read, such as user.name or items[0].id."
     },
     {
       "id": "fallback",
       "label": "Fallback",
       "type": "arg",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Value to return when the path does not exist."
     }
   ],
   "outputs": [
     {
       "id": "value",
       "label": "Value or fallback",
-      "type": "arg"
+      "type": "arg",
+      description: "Value at the path, or the fallback when the path is missing."
     },
     {
       "id": "exists",
       "label": "Exists",
-      "type": "boolean"
+      "type": "boolean",
+      description: "True when the path exists."
     }
   ]
 };

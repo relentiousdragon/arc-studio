@@ -9,14 +9,16 @@ export default {
       "id": "value",
       "label": "Value",
       "type": "number",
-      "defaultValue": 0
+      "defaultValue": 0,
+      description: "Number provided by this node."
     }
   ],
   "outputs": [
     {
       "id": "value",
       "label": "Number",
-      "type": "number"
+      "type": "number",
+      description: "Configured number value."
     }
   ]
 };

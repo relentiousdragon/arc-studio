@@ -15,37 +15,43 @@ export default {
       "id": "array",
       "label": "Array",
       "type": "object",
-      "defaultValue": []
+      "defaultValue": [],
+      description: "Array whose items to test."
     },
     {
       "id": "path",
       "label": "Property path",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Optional property path to read from each item."
     },
     {
       "id": "operator",
       "label": "Comparison",
       "type": "string",
-      "defaultValue": "equals"
+      "defaultValue": "equals",
+      description: "Comparison to apply to each item or property."
     },
     {
       "id": "value",
       "label": "Match value",
       "type": "arg",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Value used for the selected comparison."
     }
   ],
   "outputs": [
     {
       "id": "array",
       "label": "Filtered items",
-      "type": "object"
+      "type": "object",
+      description: "Items that match the selected comparison."
     },
     {
       "id": "count",
       "label": "Count",
-      "type": "number"
+      "type": "number",
+      description: "Number of items that matched."
     }
   ]
 };

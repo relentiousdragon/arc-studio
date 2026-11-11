@@ -17,26 +17,30 @@ export default {
       "id": "object",
       "label": "Object",
       "type": "object",
-      "defaultValue": {}
+      "defaultValue": {},
+      description: "Object to copy and update."
     },
     {
       "id": "key",
       "label": "Property",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Property name to add or replace."
     },
     {
       "id": "value",
       "label": "Value",
       "type": "arg",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Value to assign to the property."
     }
   ],
   "outputs": [
     {
       "id": "object",
       "label": "Object",
-      "type": "object"
+      "type": "object",
+      description: "Copy of the object with the selected property set."
     }
   ]
 };

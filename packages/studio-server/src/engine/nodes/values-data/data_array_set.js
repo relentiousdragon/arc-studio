@@ -9,31 +9,36 @@ export default {
       "id": "array",
       "label": "Array",
       "type": "object",
-      "defaultValue": []
+      "defaultValue": [],
+      description: "Array to copy and update."
     },
     {
       "id": "index",
       "label": "Index",
       "type": "number",
-      "defaultValue": 0
+      "defaultValue": 0,
+      description: "Zero-based position of the item to replace."
     },
     {
       "id": "value",
       "label": "New Item",
       "type": "arg",
-      "defaultValue": null
+      "defaultValue": null,
+      description: "Value to place at the selected index."
     }
   ],
   "outputs": [
     {
       "id": "array",
       "label": "Array",
-      "type": "object"
+      "type": "object",
+      description: "Copy of the array with the selected item replaced."
     },
     {
       "id": "updated",
       "label": "Updated",
-      "type": "boolean"
+      "type": "boolean",
+      description: "True when an existing array item was replaced."
     }
   ]
 };

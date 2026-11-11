@@ -26,7 +26,8 @@ export default {
     {
       "id": "modal",
       "label": "Modal",
-      "type": "object"
+      "type": "object",
+      description: "Modal payload built from the configured fields."
     }
   ]
 };

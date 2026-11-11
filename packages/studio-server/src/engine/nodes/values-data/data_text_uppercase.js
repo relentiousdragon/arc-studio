@@ -9,14 +9,16 @@ export default {
       "id": "text",
       "label": "Text",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Text to convert to uppercase."
     }
   ],
   "outputs": [
     {
       "id": "text",
       "label": "Text",
-      "type": "string"
+      "type": "string",
+      description: "Input text converted to uppercase."
     }
   ]
 };

@@ -9,37 +9,43 @@ export default {
       "id": "value",
       "label": "Date / Timestamp",
       "type": "arg",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "ISO date or Unix timestamp in milliseconds to format."
     },
     {
       "id": "timezone",
       "label": "Time zone",
       "type": "string",
-      "defaultValue": "UTC"
+      "defaultValue": "UTC",
+      description: "Time zone used to format the date."
     },
     {
       "id": "style",
       "label": "Date Format",
       "type": "string",
-      "defaultValue": "DD/MM/YYYY - HH:mm:ss"
+      "defaultValue": "DD/MM/YYYY - HH:mm:ss",
+      description: "Date or time display style."
     },
     {
       "id": "duration",
       "label": "Is Duration",
       "type": "boolean",
-      "defaultValue": false
+      "defaultValue": false,
+      description: "Treat the input as a duration instead of a date."
     }
   ],
   "outputs": [
     {
       "id": "text",
       "label": "Formatted time",
-      "type": "string"
+      "type": "string",
+      description: "Formatted date, time, or duration text."
     },
     {
       "id": "valid",
       "label": "Valid",
-      "type": "boolean"
+      "type": "boolean",
+      description: "True when the input and formatting options are valid."
     }
   ]
 };

@@ -9,14 +9,16 @@ export default {
       "id": "text",
       "label": "Text",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Text to trim."
     }
   ],
   "outputs": [
     {
       "id": "text",
       "label": "Text",
-      "type": "string"
+      "type": "string",
+      description: "Input text without whitespace at the start or end."
     }
   ]
 };

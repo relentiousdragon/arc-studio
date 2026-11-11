@@ -16,67 +16,79 @@ export default {
       "id": "text",
       "label": "Text",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Text to test, extract from, or replace."
     },
     {
       "id": "pattern",
       "label": "Pattern",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "JavaScript regular expression pattern."
     },
     {
       "id": "flags",
       "label": "Flags",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Regular expression flags, such as i or g."
     },
     {
       "id": "replacement",
       "label": "Replacement",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Text placed in place of each match."
     }
   ],
   "outputs": [
     {
       "id": "text",
       "label": "Text",
-      "type": "string"
+      "type": "string",
+      description: "Resulting text after a test or replacement."
     },
     {
       "id": "matched",
       "label": "Matched",
-      "type": "boolean"
+      "type": "boolean",
+      description: "True when the pattern matches the input."
     },
     {
       "id": "match",
       "label": "First Match",
-      "type": "string"
+      "type": "string",
+      description: "Text of the first match."
     },
     {
       "id": "matches",
       "label": "All Matches",
-      "type": "object"
+      "type": "object",
+      description: "All matched text values."
     },
     {
       "id": "captures",
       "label": "Capture Groups",
-      "type": "object"
+      "type": "object",
+      description: "Capture groups from the first match."
     },
     {
       "id": "index",
       "label": "Index",
-      "type": "number"
+      "type": "number",
+      description: "Zero-based position of the first match."
     },
     {
       "id": "valid",
       "label": "Valid",
-      "type": "boolean"
+      "type": "boolean",
+      description: "True when the pattern and flags are valid."
     },
     {
       "id": "error",
       "label": "Error",
-      "type": "string"
+      "type": "string",
+      description: "Error details when the pattern is invalid or rejected."
     }
   ]
 };

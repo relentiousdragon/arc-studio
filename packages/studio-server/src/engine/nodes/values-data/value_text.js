@@ -10,14 +10,16 @@ export default {
       "id": "value",
       "label": "Value",
       "type": "string",
-      "defaultValue": "Hello World"
+      "defaultValue": "Hello World",
+      description: "Text provided by this node."
     }
   ],
   "outputs": [
     {
       "id": "value",
       "label": "Text",
-      "type": "string"
+      "type": "string",
+      description: "Configured text value."
     }
   ]
 };

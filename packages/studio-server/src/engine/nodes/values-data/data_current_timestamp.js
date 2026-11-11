@@ -9,12 +9,14 @@ export default {
     {
       "id": "timestamp_ms",
       "label": "Unix timestamp (ms)",
-      "type": "number"
+      "type": "number",
+      description: "Current Unix timestamp in milliseconds."
     },
     {
       "id": "iso",
       "label": "ISO date",
-      "type": "string"
+      "type": "string",
+      description: "Current date and time in UTC ISO 8601 format."
     }
   ]
 };

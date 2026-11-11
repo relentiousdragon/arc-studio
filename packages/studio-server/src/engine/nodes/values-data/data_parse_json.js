@@ -9,19 +9,22 @@ export default {
       "id": "json",
       "label": "JSON",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "JSON text to parse."
     }
   ],
   "outputs": [
     {
       "id": "value",
       "label": "Value",
-      "type": "object"
+      "type": "object",
+      description: "Parsed value when the JSON text is valid."
     },
     {
       "id": "valid",
       "label": "Valid",
-      "type": "boolean"
+      "type": "boolean",
+      description: "True when the input contains valid JSON."
     }
   ]
 };

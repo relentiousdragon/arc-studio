@@ -10,35 +10,41 @@ export default {
       "id": "content",
       "label": "Message Content",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Message text to check and parse."
     },
     {
       "id": "prefix",
       "label": "Prefix",
       "type": "string",
-      "defaultValue": "!"
+      "defaultValue": "!",
+      description: "Prefix that marks the start of a command."
     }
   ],
   "outputs": [
     {
       "id": "recognized",
       "label": "Recognized",
-      "type": "boolean"
+      "type": "boolean",
+      description: "True when the message starts with the prefix and contains a command."
     },
     {
       "id": "command",
       "label": "Command",
-      "type": "string"
+      "type": "string",
+      description: "Command name after the prefix."
     },
     {
       "id": "arguments",
       "label": "Arguments",
-      "type": "object"
+      "type": "object",
+      description: "Whitespace-separated command arguments."
     },
     {
       "id": "argument_count",
       "label": "Argument Count",
-      "type": "number"
+      "type": "number",
+      description: "Number of parsed arguments."
     }
   ]
 };

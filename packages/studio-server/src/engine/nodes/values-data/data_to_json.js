@@ -9,19 +9,22 @@ export default {
       "id": "value",
       "label": "Value",
       "type": "object",
-      "defaultValue": null
+      "defaultValue": null,
+      description: "Value to serialize as JSON."
     }
   ],
   "outputs": [
     {
       "id": "json",
       "label": "JSON",
-      "type": "string"
+      "type": "string",
+      description: "Compact JSON text for the input value."
     },
     {
       "id": "valid",
       "label": "Valid",
-      "type": "boolean"
+      "type": "boolean",
+      description: "True when the value can be serialized."
     }
   ]
 };

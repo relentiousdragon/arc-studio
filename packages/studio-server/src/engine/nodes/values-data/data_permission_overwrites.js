@@ -17,14 +17,16 @@ export default {
       "id": "target_id_1",
       "label": "Target ID 1",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "First role or member ID to configure an access rule."
     }
   ],
   "outputs": [
     {
       "id": "overwrites",
       "label": "Overwrites",
-      "type": "object"
+      "type": "object",
+      description: "Structured channel permission overwrite rules."
     }
   ]
 };

@@ -24,19 +24,22 @@ export default {
       "id": "value",
       "label": "Value",
       "type": "arg",
-      "defaultValue": false
+      "defaultValue": false,
+      description: "Boolean, number, or text value to convert."
     }
   ],
   "outputs": [
     {
       "id": "boolean",
       "label": "Boolean",
-      "type": "boolean"
+      "type": "boolean",
+      description: "Converted boolean value."
     },
     {
       "id": "valid",
       "label": "Valid",
-      "type": "boolean"
+      "type": "boolean",
+      description: "True when the input contains a recognized boolean value."
     }
   ]
 };

@@ -6,5 +6,5 @@ export default {
   color: '#5865f2',
   defaultData: { componentsV2: [] },
   inputs: [],
-  outputs: [{ id: 'components', label: 'Components', type: 'object' }]
+  outputs: [{ id: 'components', label: 'Components', type: 'object', description: "Components V2 layout built from the configured components." }]
 };

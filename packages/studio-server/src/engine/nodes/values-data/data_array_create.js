@@ -10,19 +10,22 @@ export default {
       "id": "item_1",
       "label": "Item 1",
       "type": "arg",
-      "defaultValue": null
+      "defaultValue": null,
+      description: "First value to include in the new array."
     }
   ],
   "outputs": [
     {
       "id": "array",
       "label": "Array",
-      "type": "object"
+      "type": "object",
+      description: "New array containing the connected values in order."
     },
     {
       "id": "length",
       "label": "Length",
-      "type": "number"
+      "type": "number",
+      description: "Number of values in the new array."
     }
   ]
 };

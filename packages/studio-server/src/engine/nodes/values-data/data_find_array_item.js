@@ -14,36 +14,42 @@ export default {
       "id": "array",
       "label": "Array",
       "type": "object",
-      "defaultValue": []
+      "defaultValue": [],
+      description: "Array to search."
     },
     {
       "id": "path",
       "label": "Property path",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Optional property path to compare on each item."
     },
     {
       "id": "value",
       "label": "Match value",
       "type": "arg",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Value to find in the array or selected property."
     }
   ],
   "outputs": [
     {
       "id": "item",
       "label": "Item",
-      "type": "arg"
+      "type": "arg",
+      description: "First matching item, when found."
     },
     {
       "id": "index",
       "label": "Index",
-      "type": "number"
+      "type": "number",
+      description: "Zero-based position of the first matching item."
     },
     {
       "id": "found",
       "label": "Found",
-      "type": "boolean"
+      "type": "boolean",
+      description: "True when a matching item exists."
     }
   ]
 };

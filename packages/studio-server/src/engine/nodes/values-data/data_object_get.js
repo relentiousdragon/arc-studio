@@ -15,25 +15,29 @@ export default {
       "id": "object",
       "label": "Object",
       "type": "object",
-      "defaultValue": {}
+      "defaultValue": {},
+      description: "Object to read a property from."
     },
     {
       "id": "key",
       "label": "Property",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Property name or nested path to read."
     }
   ],
   "outputs": [
     {
       "id": "value",
       "label": "Value",
-      "type": "arg"
+      "type": "arg",
+      description: "Value of the selected property, when it exists."
     },
     {
       "id": "exists",
       "label": "Exists",
-      "type": "boolean"
+      "type": "boolean",
+      description: "True when the property exists."
     }
   ]
 };

@@ -10,25 +10,29 @@ export default {
       "id": "array",
       "label": "Array",
       "type": "object",
-      "defaultValue": []
+      "defaultValue": [],
+      description: "Array to copy and append an item to."
     },
     {
       "id": "item_1",
       "label": "Item 1",
       "type": "arg",
-      "defaultValue": undefined
+      "defaultValue": undefined,
+      description: "First value to append to the array."
     }
   ],
   "outputs": [
     {
       "id": "array",
       "label": "Array",
-      "type": "object"
+      "type": "object",
+      description: "Copy of the input array with connected items appended."
     },
     {
       "id": "length",
       "label": "Length",
-      "type": "number"
+      "type": "number",
+      description: "Number of items in the resulting array."
     }
   ]
 };

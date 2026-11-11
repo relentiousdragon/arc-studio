@@ -12,25 +12,29 @@ export default {
       "id": "array",
       "label": "Array",
       "type": "object",
-      "defaultValue": []
+      "defaultValue": [],
+      description: "Array to read an item from."
     },
     {
       "id": "index",
       "label": "Index",
       "type": "number",
-      "defaultValue": 0
+      "defaultValue": 0,
+      description: "Zero-based position of the item to read."
     }
   ],
   "outputs": [
     {
       "id": "value",
       "label": "Item",
-      "type": "arg"
+      "type": "arg",
+      description: "Item at the selected index, when found."
     },
     {
       "id": "found",
       "label": "Found",
-      "type": "boolean"
+      "type": "boolean",
+      description: "True when the selected index exists in the array."
     }
   ]
 };

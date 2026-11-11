@@ -9,19 +9,22 @@ export default {
       "id": "object",
       "label": "Object",
       "type": "object",
-      "defaultValue": {}
+      "defaultValue": {},
+      description: "Object whose property names to list."
     }
   ],
   "outputs": [
     {
       "id": "keys",
       "label": "Keys",
-      "type": "object"
+      "type": "object",
+      description: "Enumerable property names from the object."
     },
     {
       "id": "length",
       "label": "Length",
-      "type": "number"
+      "type": "number",
+      description: "Number of property names in the result."
     }
   ]
 };

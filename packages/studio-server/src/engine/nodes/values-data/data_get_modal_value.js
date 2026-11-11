@@ -9,25 +9,29 @@ export default {
       "id": "submitted_values",
       "label": "Submitted Values",
       "type": "object",
-      "defaultValue": []
+      "defaultValue": [],
+      description: "Submitted values from the modal interaction."
     },
     {
       "id": "custom_id",
       "label": "Field Custom ID",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Custom ID of the submitted modal field."
     }
   ],
   "outputs": [
     {
       "id": "value",
       "label": "Value",
-      "type": "object"
+      "type": "object",
+      description: "Value submitted for the matching field."
     },
     {
       "id": "found",
       "label": "Found",
-      "type": "boolean"
+      "type": "boolean",
+      description: "True when a field with this custom ID was submitted."
     }
   ]
 };

@@ -10,25 +10,29 @@ export default {
       "id": "text",
       "label": "Text",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Text to split."
     },
     {
       "id": "separator",
       "label": "Separator",
       "type": "string",
-      "defaultValue": ","
+      "defaultValue": ",",
+      description: "Exact text separator to split at."
     }
   ],
   "outputs": [
     {
       "id": "array",
       "label": "Parts",
-      "type": "object"
+      "type": "object",
+      description: "Parts of the input text in order."
     },
     {
       "id": "length",
       "label": "Count",
-      "type": "number"
+      "type": "number",
+      description: "Number of parts created."
     }
   ]
 };

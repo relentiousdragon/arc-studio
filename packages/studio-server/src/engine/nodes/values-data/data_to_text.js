@@ -20,19 +20,22 @@ export default {
       "id": "value",
       "label": "Value",
       "type": "arg",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Value to convert to text."
     }
   ],
   "outputs": [
     {
       "id": "text",
       "label": "Text",
-      "type": "string"
+      "type": "string",
+      description: "Text representation of the input value."
     },
     {
       "id": "valid",
       "label": "Valid",
-      "type": "boolean"
+      "type": "boolean",
+      description: "True when the input can be converted to text."
     }
   ]
 };

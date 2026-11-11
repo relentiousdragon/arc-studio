@@ -10,25 +10,29 @@ export default {
       "id": "array_1",
       "label": "Array 1",
       "type": "object",
-      "defaultValue": []
+      "defaultValue": [],
+      description: "First array to combine."
     },
     {
       "id": "array_2",
       "label": "Array 2",
       "type": "object",
-      "defaultValue": []
+      "defaultValue": [],
+      description: "Second array to append after the first."
     }
   ],
   "outputs": [
     {
       "id": "array",
       "label": "Array",
-      "type": "object"
+      "type": "object",
+      description: "New array containing the items from both inputs in order."
     },
     {
       "id": "length",
       "label": "Length",
-      "type": "number"
+      "type": "number",
+      description: "Number of items in the combined array."
     }
   ]
 };
