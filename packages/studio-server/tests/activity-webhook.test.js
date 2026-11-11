@@ -108,7 +108,7 @@ test('sign-in activity includes known client build details in the Discord embed'
   assert.deepEqual(embed.author, { name: 'Editor', icon_url: 'https://studio.example.com/api/activity-avatars/editor-1.png?initial=E' });
   assert.equal(embed.color, 0x10b981);
   assert.deepEqual(embed.fields, [{ name: 'Client', value: '2026.1.1-nightly.7 · macOS · arm64', inline: true }]);
-  assert.equal(embed.footer.text, 'ARC Studio • Waterfall');
+  assert.equal(embed.footer.text, 'ARC Studio  •  TEST PROJET');
 });
 
 test('activity embed uses a fixed color except for sign-in and sign-out', async (context) => {
