@@ -23,76 +23,21 @@ function botBanner(profile) {
     || cdnImage('banners', profile?.application?.id, profile?.application?.banner, 1024);
 }
 
-export function BotSettingsModal({ isOpen, onClose, authToken, profile, onProfileChange, onViewCommands, presentation = 'modal', sidebarWidth = 340, onSidebarResize }) {
+function openDeveloperPortal(event) {
+  const invoke = window.__TAURI_INTERNALS__?.invoke;
+  if (typeof invoke !== 'function') return;
+  event.preventDefault();
+  invoke('open_external_url', { url: event.currentTarget.href }).catch(() => {});
+}
+
+const BotTokenForm = React.memo(function BotTokenForm({ isOpen, authToken, onProfileChange }) {
   const [token, setToken] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const [statistics, setStatistics] = useState({ enabled: true, retentionDays: 30, commandUsage: true, uniqueUsers: true, returningUsers: true });
-  const [statisticsLoading, setStatisticsLoading] = useState(false);
-  const [statisticsSaving, setStatisticsSaving] = useState(false);
-  const [statisticsError, setStatisticsError] = useState('');
-  const [statisticsSummary, setStatisticsSummary] = useState(null);
-
-  const openDeveloperPortal = (event) => {
-    const invoke = window.__TAURI_INTERNALS__?.invoke;
-    if (typeof invoke !== 'function') return;
-    event.preventDefault();
-    invoke('open_external_url', { url: event.currentTarget.href }).catch(() => {});
-  };
 
   useEffect(() => {
     if (isOpen) { setToken(''); setError(''); }
   }, [isOpen]);
-
-  useEffect(() => {
-    if (!isOpen || !authToken) return undefined;
-    let current = true;
-    setStatisticsLoading(true);
-    setStatisticsError('');
-    fetch(apiUrl('/api/bot/statistics/settings'), { headers: { 'x-arc-token': authToken } })
-      .then(async (response) => {
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || 'Could not load statistics settings.');
-        if (current) setStatistics({ enabled: true, retentionDays: 30, commandUsage: true, uniqueUsers: true, returningUsers: true, ...data.settings });
-      })
-      .catch((requestError) => { if (current) setStatisticsError(requestError.message); })
-      .finally(() => { if (current) setStatisticsLoading(false); });
-    return () => { current = false; };
-  }, [isOpen, authToken]);
-
-  useEffect(() => {
-    if (!isOpen || !authToken) return undefined;
-    let current = true;
-    const query = new URLSearchParams({ days: String(statistics.retentionDays) });
-    fetch(apiUrl(`/api/bot/statistics?${query}`), { headers: { 'x-arc-token': authToken } })
-      .then(async (response) => {
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || 'Could not load command statistics.');
-        if (current) setStatisticsSummary(data.statistics);
-      })
-      .catch(() => { if (current) setStatisticsSummary(null); });
-    return () => { current = false; };
-  }, [isOpen, authToken, statistics.enabled, statistics.retentionDays, statistics.commandUsage, statistics.uniqueUsers, statistics.returningUsers]);
-
-  const updateStatistics = async (patch) => {
-    if (!authToken || statisticsSaving) return;
-    setStatisticsSaving(true);
-    setStatisticsError('');
-    try {
-      const response = await fetch(apiUrl('/api/bot/statistics/settings'), {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
-        body: JSON.stringify(patch)
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Could not save statistics settings.');
-      setStatistics(data.settings);
-    } catch (requestError) {
-      setStatisticsError(requestError.message);
-    } finally {
-      setStatisticsSaving(false);
-    }
-  };
 
   const verifyToken = async (event) => {
     event.preventDefault();
@@ -122,6 +67,71 @@ export function BotSettingsModal({ isOpen, onClose, authToken, profile, onProfil
     }
   };
 
+  return <form className="bot-token-form" onSubmit={verifyToken}>
+    <div className="bot-settings-heading"><span><KeyRound size={15} /></span><div><strong>Discord App Token</strong><small>Get your token from the <a href="https://discord.com/developers/applications" target="_blank" rel="noreferrer" onClick={openDeveloperPortal}>Discord Developer Portal</a>.</small></div></div>
+    <SecretKeyInput label="Token" value={token} onChange={(event) => setToken(event.target.value)} placeholder="Paste token" conceal />
+    {error && <p className="form-error">{error}</p>}
+    <Button type="submit" icon={ShieldCheck} loading={saving} disabled={!token.trim()}>Verify and save</Button>
+  </form>;
+});
+
+export function BotSettingsModal({ isOpen, onClose, authToken, profile, onProfileChange, onViewCommands, presentation = 'modal', sidebarWidth = 340, onSidebarResize }) {
+  const [statistics, setStatistics] = useState({ enabled: true, retentionDays: 30, commandUsage: true, uniqueUsers: true, returningUsers: true });
+  const [statisticsLoading, setStatisticsLoading] = useState(false);
+  const [statisticsSaving, setStatisticsSaving] = useState(false);
+  const [statisticsError, setStatisticsError] = useState('');
+  const [statisticsSummary, setStatisticsSummary] = useState(null);
+
+  useEffect(() => {
+    if (!isOpen || !authToken) return undefined;
+    let current = true;
+    setStatisticsLoading(true);
+    setStatisticsError('');
+    fetch(apiUrl('/api/bot/statistics/settings'), { headers: { 'x-arc-token': authToken } })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Could not load statistics settings.');
+        if (current) setStatistics({ enabled: true, retentionDays: 30, commandUsage: true, uniqueUsers: true, returningUsers: true, ...data.settings });
+      })
+      .catch((requestError) => { if (current) setStatisticsError(requestError.message); })
+      .finally(() => { if (current) setStatisticsLoading(false); });
+    return () => { current = false; };
+  }, [isOpen, authToken]);
+
+  useEffect(() => {
+    if (!isOpen || !authToken) return undefined;
+    let current = true;
+    const query = new URLSearchParams({ days: String(statistics.retentionDays) });
+    fetch(apiUrl(`/api/bot/statistics?${query}`), { headers: { 'x-arc-token': authToken } })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Could not load command statistics.');
+        if (current) setStatisticsSummary(data.statistics);
+      })
+      .catch(() => { if (current) setStatisticsSummary(null); });
+    return () => { current = false; };
+  }, [isOpen, authToken, statistics.retentionDays]);
+
+  const updateStatistics = async (patch) => {
+    if (!authToken || statisticsSaving) return;
+    setStatisticsSaving(true);
+    setStatisticsError('');
+    try {
+      const response = await fetch(apiUrl('/api/bot/statistics/settings'), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
+        body: JSON.stringify(patch)
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not save statistics settings.');
+      setStatistics(data.settings);
+    } catch (requestError) {
+      setStatisticsError(requestError.message);
+    } finally {
+      setStatisticsSaving(false);
+    }
+  };
+
   const avatar = botAvatar(profile);
   const banner = botBanner(profile);
   const username = profile?.username;
@@ -131,12 +141,7 @@ export function BotSettingsModal({ isOpen, onClose, authToken, profile, onProfil
 
   const content = <>
     <div className="bot-settings-layout">
-      <form className="bot-token-form" onSubmit={verifyToken}>
-        <div className="bot-settings-heading"><span><KeyRound size={15} /></span><div><strong>Discord App Token</strong><small>Get your token from the <a href="https://discord.com/developers/applications" target="_blank" rel="noreferrer" onClick={openDeveloperPortal}>Discord Developer Portal</a>.</small></div></div>
-        <SecretKeyInput label="Token" value={token} onChange={(event) => setToken(event.target.value)} placeholder="Paste token" conceal />
-        {error && <p className="form-error">{error}</p>}
-        <Button type="submit" icon={ShieldCheck} loading={saving} disabled={!token.trim()}>Verify and save</Button>
-      </form>
+      <BotTokenForm isOpen={isOpen} authToken={authToken} onProfileChange={onProfileChange} />
 
       <section className="bot-profile-card" aria-label="Discord app profile">
         <div className="bot-profile-banner" style={banner ? { backgroundImage: `url("${banner}")` } : undefined}>
@@ -163,7 +168,7 @@ export function BotSettingsModal({ isOpen, onClose, authToken, profile, onProfil
         <Toggle label="Returning users" description="Count users who use commands repeatedly" checked={statistics.returningUsers} disabled={!statistics.enabled || statisticsLoading || statisticsSaving} onChange={(returningUsers) => updateStatistics({ returningUsers })} />
       </div>
       <SelectInput label="Data retention" value={String(statistics.retentionDays)} options={[{ value: '30', label: '30 days' }, { value: '90', label: '90 days' }, { value: '180', label: '180 days' }, { value: '365', label: '365 days' }, { value: 'forever', label: 'Forever' }]} onChange={(value) => updateStatistics({ retentionDays: value === 'forever' ? value : Number(value) })} />
-      <div className="bot-statistics-summary"><div className="settings-section-heading"><span>Overview</span><small>{statisticsSummary?.rangeDays === 'forever' ? 'All time' : `Last ${statisticsSummary?.rangeDays || statistics.retentionDays} days`}</small></div><div className="bot-statistics-overview"><span><strong>{statisticsSummary?.tracking?.commandUsage ? Number(statisticsSummary.totalUses || 0).toLocaleString() : 'Off'}</strong><small>Uses</small></span><span><strong>{statisticsSummary?.tracking?.uniqueUsers ? Number(statisticsSummary.uniqueUsers || 0).toLocaleString() : 'Off'}</strong><small>Unique users</small></span><span><strong>{statisticsSummary?.tracking?.returningUsers ? Number(statisticsSummary.returningUsers || 0).toLocaleString() : 'Off'}</strong><small>Returning</small></span></div><div className="bot-statistics-popular"><strong>Most used</strong>{statisticsSummary?.commands?.filter((command) => command.uses !== null).slice(0, 3).map((command, index) => <div key={command.name}><span>{index + 1}. /{command.name}</span><b>{Number(command.uses).toLocaleString()}</b></div>)}{statisticsSummary?.tracking?.commandUsage && !statisticsSummary.commands?.length && <small>No command usage yet</small>}</div></div>
+      <div className="bot-statistics-summary"><div className="settings-section-heading"><span>Overview</span><small>{statisticsSummary?.rangeDays === 'forever' ? 'All time' : `Last ${statisticsSummary?.rangeDays || statistics.retentionDays} days`}</small></div><div className="bot-statistics-overview"><span><strong>{statistics.enabled && statistics.commandUsage ? Number(statisticsSummary?.totalUses || 0).toLocaleString() : 'Off'}</strong><small>Uses</small></span><span><strong>{statistics.enabled && statistics.uniqueUsers ? Number(statisticsSummary?.uniqueUsers || 0).toLocaleString() : 'Off'}</strong><small>Unique users</small></span><span><strong>{statistics.enabled && statistics.returningUsers ? Number(statisticsSummary?.returningUsers || 0).toLocaleString() : 'Off'}</strong><small>Returning</small></span></div><div className="bot-statistics-popular"><strong>Most used</strong>{statisticsSummary?.commands?.filter((command) => command.uses !== null).slice(0, 3).map((command, index) => <div key={command.name}><span>{index + 1}. /{command.name}</span><b>{Number(command.uses).toLocaleString()}</b></div>)}{statistics.enabled && statistics.commandUsage && !statisticsSummary?.commands?.length && <small>No command usage yet</small>}</div></div>
       {statisticsError && <p className="bot-statistics-error" role="alert">{statisticsError}</p>}
     </section>
   </>;
