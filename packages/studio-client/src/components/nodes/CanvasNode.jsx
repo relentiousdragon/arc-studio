@@ -58,7 +58,7 @@ const eventSocketHints = {
   user_id: 'Discord user ID of the person who triggered this event or interaction',
   username: 'Discord username of the person who invoked this command'
 };
-function NodePinColumn({ pins, direction, connectedPinIds, pinRevealEnabled, forceExpanded = false, expanded = false, onExpand, renderPin }) {
+function NodePinColumn({ pins, direction, connectedPinIds, pinRevealEnabled, forceExpanded = false, expanded = false, onExpand, onHover, renderPin }) {
   const [dragging, setDragging] = React.useState(false);
   const isExpanded = pinRevealEnabled && (expanded || dragging || forceExpanded);
   const { entries, hiddenCount } = getVisibleNodeSockets(pins, connectedPinIds, isExpanded, pinRevealEnabled);
@@ -77,6 +77,7 @@ function NodePinColumn({ pins, direction, connectedPinIds, pinRevealEnabled, for
 
   return <div
     className={`node-pin-column node-pin-${direction}s ${isExpanded ? 'is-expanded' : ''}`}
+    data-pin-column={direction === 'input' ? 'inputs' : 'outputs'}
     onPointerDownCapture={(event) => {
       if (event.target.closest('.node-pin-row')) setDragging(true);
     }}
@@ -85,7 +86,7 @@ function NodePinColumn({ pins, direction, connectedPinIds, pinRevealEnabled, for
     {showControl && <div
       className="node-pin-more"
       aria-hidden="true"
-      onPointerEnter={onExpand}
+      onPointerEnter={() => { onHover?.(); onExpand?.(); }}
     >
       <span>Show {hiddenCount} more</span><ChevronDown size={11} />
     </div>}
@@ -304,8 +305,8 @@ function PropertySuggestInput({ value, onChange, placeholder, ariaLabel, suggest
 }
 
 function CanvasNodeView({
-  node, definition, loadFailed = false, loadFailureReason = 'This node type is unavailable.', authToken = '', connectedInputIds = new Set(), connectedOutputIds = new Set(), pinRevealEnabled = true, isConnectingWire = false, autoRevealInputs = false, incomingConnections, nodeById, nodeDefinitionsById, graphVariables = [], eventTemplatePaths = [], templatePreviewValues = {}, callableGraphs = [], selected = false, illuminated = false, simulationMetric = null, simulationActive = false, isLocked = false, findOptions = null, isFindCurrent = false,
-  snappedPin = null, appEmojis = [], mediaAssets = [], onUploadMedia, onLoadMediaContent, modalFieldOptions = [], componentsV2SourceConnected = false, onSelect, onDelete, onNodeDataChange, onPinStartConnect, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph
+  node, definition, loadFailed = false, loadFailureReason = 'This node type is unavailable.', authToken = '', connectedInputIds = new Set(), connectedOutputIds = new Set(), pinRevealEnabled = true, isConnectingWire = false, autoRevealInputs = false, autoRevealOutputs = false, incomingConnections, nodeById, nodeDefinitionsById, graphVariables = [], eventTemplatePaths = [], templatePreviewValues = {}, callableGraphs = [], selected = false, illuminated = false, simulationMetric = null, simulationActive = false, isLocked = false, findOptions = null, isFindCurrent = false,
+  snappedPin = null, appEmojis = [], mediaAssets = [], onUploadMedia, onLoadMediaContent, modalFieldOptions = [], componentsV2SourceConnected = false, onSelect, onDelete, onNodeDataChange, onPinStartConnect, onSocketRevealHover, onSocketRevealLeave, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph
 }) {
   const nodeDef = definition || { label: node.label || node.type, color: '#778196', category: 'Node', inputs: [], outputs: [] };
   const isDeprecated = Boolean(nodeDef.deprecationMessage);
@@ -461,6 +462,7 @@ function CanvasNodeView({
         const pointerInside = event.clientX >= bounds.left && event.clientX <= bounds.right
           && event.clientY >= bounds.top && event.clientY <= bounds.bottom;
         if (pointerInside) return;
+        onSocketRevealLeave?.(node.id);
         if (!isConnectingWire) setExpandedSocketColumns({ inputs: false, outputs: false });
       }}
     >
@@ -473,8 +475,8 @@ function CanvasNodeView({
       </header>
       <div className="node-title" data-tooltip={node.label && node.label !== nodeDef.label ? `Node type: ${nodeDef.label}` : undefined}>{renderCanvasFindText(node.label || nodeDef.label, findOptions, isFindCurrent)}</div>
       <div className="node-pins">
-        <NodePinColumn pins={inputs} direction="input" connectedPinIds={connectedInputIds} pinRevealEnabled={pinRevealEnabled} forceExpanded={autoRevealInputs} expanded={expandedSocketColumns.inputs} onExpand={() => setExpandedSocketColumns((current) => ({ ...current, inputs: true }))} renderPin={renderPin} />
-        <NodePinColumn pins={outputs} direction="output" connectedPinIds={connectedOutputIds} pinRevealEnabled={pinRevealEnabled} expanded={expandedSocketColumns.outputs} onExpand={() => setExpandedSocketColumns((current) => ({ ...current, outputs: true }))} renderPin={renderPin} />
+        <NodePinColumn pins={inputs} direction="input" connectedPinIds={connectedInputIds} pinRevealEnabled={pinRevealEnabled} forceExpanded={autoRevealInputs} expanded={expandedSocketColumns.inputs} onExpand={() => setExpandedSocketColumns((current) => ({ ...current, inputs: true }))} onHover={() => onSocketRevealHover?.(node.id, 'inputs')} renderPin={renderPin} />
+        <NodePinColumn pins={outputs} direction="output" connectedPinIds={connectedOutputIds} pinRevealEnabled={pinRevealEnabled} forceExpanded={autoRevealOutputs} expanded={expandedSocketColumns.outputs} onExpand={() => setExpandedSocketColumns((current) => ({ ...current, outputs: true }))} onHover={() => onSocketRevealHover?.(node.id, 'outputs')} renderPin={renderPin} />
       </div>
       {loadFailed && <div className="node-config node-disabled-target-message" role="status"><AlertTriangle size={13} /><span>{loadFailureReason}</span></div>}
       {!loadFailed && isDeprecated && <div className="node-config node-deprecated-message" role="note"><AlertTriangle size={13} /><span>{nodeDef.deprecationMessage}</span></div>}
@@ -1586,6 +1588,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       {!isConnected('text_a') && <label className="node-config-fallback"><span>Text A</span>{comparisonInput('text_a', 'Text A')}</label>}
       {!isConnected('text_b') && <label className="node-config-fallback"><span>Text B</span>{comparisonInput('text_b', 'Text B')}</label>}
       {!isConnected('operator') && <AnimatedDropdown value={node.data?.operator ?? 'equals'} onChange={(value) => update('operator', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Text comparison operator" options={[{ value: 'equals', label: 'Equals' }, { value: 'contains', label: 'Contains' }, { value: 'startsWith', label: 'Starts with' }, { value: 'endsWith', label: 'Ends with' }]} className="node-select" />}
+      {!isConnected('ignore_case') && <FallbackCheckbox label="Ignore case" checked={node.data?.ignore_case ?? false} onChange={(value) => update('ignore_case', value)} />}
     </div>;
   }
   if (node.type === 'loop_count') {
