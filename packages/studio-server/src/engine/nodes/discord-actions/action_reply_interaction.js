@@ -8,90 +8,90 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Starts Reply to Interaction."},
     {
       "id": "application_id",
       "label": "Application ID",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "ID of the application that owns the interaction."},
     {
       "id": "interaction_id",
       "label": "Interaction ID",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "ID of the interaction to respond to."},
     {
       "id": "interaction_token",
       "label": "Interaction Token",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "Token used to respond to the interaction."},
     {
       "id": "content",
       "label": "Reply Content",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "Text to include in the interaction reply."},
     {
       "id": "embed",
       "label": "Embed (Optional)",
-      "type": "embed"
-    },
+      "type": "embed",
+      description: "Embed to include with the message."},
     {
       "id": "components",
       "label": "Components (Optional)",
-      "type": "object"
-    },
+      "type": "object",
+      description: "Message components to send or update."},
     {
       "id": "files",
       "label": "Files (optional)",
       "type": "object",
-      "defaultValue": []
-    },
+      "defaultValue": [],
+      description: "Files to attach to the message."},
     {
       "id": "ephemeral",
       "label": "Ephemeral (Hidden)",
       "type": "boolean",
-      "defaultValue": false
-    }
+      "defaultValue": false,
+      description: "Whether to hide the interaction response from other users."}
   ],
   "outputs": [
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Continues after Reply to Interaction completes."},
     {
       "id": "interaction_id",
       "label": "Interaction ID",
-      "type": "string"
-    },
+      "type": "string",
+      description: "ID of the interaction that was handled."},
     {
       "id": "application_id",
       "label": "Application ID",
-      "type": "string"
-    },
+      "type": "string",
+      description: "ID of the application that owns the interaction."},
     {
       "id": "interaction_token",
       "label": "Interaction Token",
-      "type": "string"
-    },
+      "type": "string",
+      description: "Token used to continue responding to the interaction."},
     {
       "id": "message_id",
       "label": "Message ID",
-      "type": "string"
-    },
+      "type": "string",
+      description: "ID of the message created by the action."},
     {
       "id": "message",
       "label": "Response Message",
-      "type": "object"
-    },
+      "type": "object",
+      description: "Message created as the interaction reply."},
     {
       "id": "success",
       "label": "Success",
-      "type": "boolean"
-    }
+      "type": "boolean",
+      description: "Whether the action completed successfully."}
   ]
 };

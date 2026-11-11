@@ -13,58 +13,58 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Starts Edit Message."},
     {
       "id": "channel_id",
       "label": "Channel ID",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "ID of the channel containing the message."},
     {
       "id": "message_id",
       "label": "Message ID",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "ID of the message to edit."},
     {
       "id": "content",
       "label": "Content",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "Message text to send or update."},
     {
       "id": "embed",
       "label": "Embed (Optional)",
-      "type": "embed"
-    },
+      "type": "embed",
+      description: "Embed to include with the message."},
     {
       "id": "components",
       "label": "Components (Optional)",
-      "type": "object"
-    },
+      "type": "object",
+      description: "Message components to send or update."},
     {
       "id": "files",
       "label": "Files (optional)",
       "type": "object",
-      "defaultValue": []
-    }
+      "defaultValue": [],
+      description: "Files to attach to the message."}
   ],
   "outputs": [
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Continues after Edit Message completes."},
     {
       "id": "message_id",
       "label": "Message ID",
-      "type": "string"
-    },
+      "type": "string",
+      description: "ID of the message created by the action."},
     {
       "id": "success",
       "label": "Success",
-      "type": "boolean"
-    }
+      "type": "boolean",
+      description: "Whether the action completed successfully."}
   ]
 };

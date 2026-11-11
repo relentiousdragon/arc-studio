@@ -8,29 +8,29 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    }
+      "type": "exec",
+      description: "Starts Deploy Slash Commands."}
   ],
   "outputs": [
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Continues after Deploy Slash Commands completes."},
     {
       "id": "deployed_count",
       "label": "Commands Deployed",
-      "type": "number"
-    },
+      "type": "number",
+      description: "Number of slash commands deployed."},
     {
       "id": "success",
       "label": "Succeeded",
-      "type": "boolean"
-    },
+      "type": "boolean",
+      description: "Whether the action completed successfully."},
     {
       "id": "error",
       "label": "Error",
-      "type": "string"
-    }
+      "type": "string",
+      description: "Error message returned when the action fails."}
   ]
 };

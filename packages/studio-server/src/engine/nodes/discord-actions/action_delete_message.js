@@ -11,38 +11,37 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Starts Delete Message."},
     {
       "id": "channel_id",
       "label": "Channel ID",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "ID of the channel containing the message."},
     {
       "id": "message_id",
       "label": "Message ID",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "ID of the message to delete."},
     {
       "id": "reason",
       "label": "Audit Log Reason",
       "type": "string",
-      "defaultValue": ""
-    }
+      "defaultValue": "",
+      description: "Reason recorded in the audit log."}
   ],
   "outputs": [
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Continues after Delete Message completes."},
     {
       "id": "success",
       "label": "Success",
-      "type": "boolean"
-    }
+      "type": "boolean",
+      description: "Whether the action completed successfully."}
   ]
 };
-

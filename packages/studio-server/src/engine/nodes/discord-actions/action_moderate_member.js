@@ -13,65 +13,65 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Starts Moderate Member."},
     {
       "id": "guild_id",
       "label": "Server ID",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "ID of the server containing the member to moderate."},
     {
       "id": "user_id",
       "label": "User ID",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "ID of the member to moderate."},
     {
       "id": "operation",
       "label": "Action",
       "type": "string",
-      "defaultValue": "timeout"
-    },
+      "defaultValue": "timeout",
+      description: "Change to apply."},
     {
       "id": "duration_minutes",
       "label": "Timeout (minutes)",
       "type": "number",
-      "defaultValue": 10
-    },
+      "defaultValue": 10,
+      description: "Timeout length in minutes."},
     {
       "id": "delete_message_seconds",
       "label": "Ban message deletion (seconds)",
       "type": "number",
-      "defaultValue": 0
-    },
+      "defaultValue": 0,
+      description: "Recent message history to delete, in seconds."},
     {
       "id": "reason",
       "label": "Reason",
       "type": "string",
-      "defaultValue": ""
-    }
+      "defaultValue": "",
+      description: "Reason recorded in the audit log."}
   ],
   "outputs": [
     {
       "id": "exec",
       "label": "Succeeded",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Continues after Moderate Member completes."},
     {
       "id": "failure_exec",
       "label": "Failed",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Runs when Discord rejects the moderation action."},
     {
       "id": "success",
       "label": "Success",
-      "type": "boolean"
-    },
+      "type": "boolean",
+      description: "Whether the action completed successfully."},
     {
       "id": "error",
       "label": "Error",
-      "type": "string"
-    }
+      "type": "string",
+      description: "Error message returned when the action fails."}
   ]
 };

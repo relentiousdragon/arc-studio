@@ -11,47 +11,47 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Starts Defer Reply."},
     {
       "id": "interaction_id",
       "label": "Interaction ID",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "ID of the interaction to respond to."},
     {
       "id": "interaction_token",
       "label": "Interaction Token",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "Token used to respond to the interaction."},
     {
       "id": "ephemeral",
       "label": "Ephemeral (Hidden)",
       "type": "boolean",
-      "defaultValue": false
-    }
+      "defaultValue": false,
+      description: "Whether to hide the interaction response from other users."}
   ],
   "outputs": [
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Continues after Defer Reply completes."},
     {
       "id": "interaction_token",
       "label": "Interaction Token",
-      "type": "string"
-    },
+      "type": "string",
+      description: "Token used to continue responding to the interaction."},
     {
       "id": "interaction_id",
       "label": "Interaction ID",
-      "type": "string"
-    },
+      "type": "string",
+      description: "ID of the interaction that was handled."},
     {
       "id": "success",
       "label": "Success",
-      "type": "boolean"
-    }
+      "type": "boolean",
+      description: "Whether the action completed successfully."}
   ]
 };

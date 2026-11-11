@@ -11,41 +11,41 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Starts Defer Update."},
     {
       "id": "interaction_id",
       "label": "Interaction ID",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "ID of the interaction to respond to."},
     {
       "id": "interaction_token",
       "label": "Interaction Token",
       "type": "string",
-      "defaultValue": ""
-    }
+      "defaultValue": "",
+      description: "Token used to respond to the interaction."}
   ],
   "outputs": [
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Continues after Defer Update completes."},
     {
       "id": "interaction_token",
       "label": "Interaction Token",
-      "type": "string"
-    },
+      "type": "string",
+      description: "Token used to continue responding to the interaction."},
     {
       "id": "interaction_id",
       "label": "Interaction ID",
-      "type": "string"
-    },
+      "type": "string",
+      description: "ID of the interaction that was handled."},
     {
       "id": "success",
       "label": "Success",
-      "type": "boolean"
-    }
+      "type": "boolean",
+      description: "Whether the action completed successfully."}
   ]
 };

@@ -8,49 +8,49 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Starts Set Member Role."},
     {
       "id": "guild_id",
       "label": "Server ID",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "ID of the server containing the member."},
     {
       "id": "user_id",
       "label": "User ID",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "ID of the member whose role will change."},
     {
       "id": "role_id",
       "label": "Role ID",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "ID of the role to assign or remove."},
     {
       "id": "operation",
       "label": "Operation",
       "type": "string",
-      "defaultValue": "add"
-    },
+      "defaultValue": "add",
+      description: "Change to apply."},
     {
       "id": "reason",
       "label": "Audit Log Reason",
       "type": "string",
-      "defaultValue": ""
-    }
+      "defaultValue": "",
+      description: "Reason recorded in the audit log."}
   ],
   "outputs": [
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Continues after Set Member Role completes."},
     {
       "id": "success",
       "label": "Success",
-      "type": "boolean"
-    }
+      "type": "boolean",
+      description: "Whether the action completed successfully."}
   ]
 };

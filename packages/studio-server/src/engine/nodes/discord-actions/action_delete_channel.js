@@ -8,36 +8,36 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Starts Delete Channel."},
     {
       "id": "channel_id",
       "label": "Channel ID",
       "type": "string",
-      "defaultValue": ""
-    },
+      "defaultValue": "",
+      description: "ID of the channel to delete."},
     {
       "id": "reason",
       "label": "Audit Log Reason",
       "type": "string",
-      "defaultValue": ""
-    }
+      "defaultValue": "",
+      description: "Reason recorded in the audit log."}
   ],
   "outputs": [
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Continues after Delete Channel completes."},
     {
       "id": "deleted_channel_id",
       "label": "Deleted Channel ID",
-      "type": "string"
-    },
+      "type": "string",
+      description: "ID of the channel deleted by the action."},
     {
       "id": "success",
       "label": "Success",
-      "type": "boolean"
-    }
+      "type": "boolean",
+      description: "Whether the action completed successfully."}
   ]
 };
