@@ -12,13 +12,15 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
+      "type": "exec",
+      description: "Returns values from this function graph."
     },
     {
       "id": "value",
       "label": "Value",
       "type": "number",
-      "defaultValue": 0
+      "defaultValue": 0,
+      description: "Value returned to the calling function node."
     }
   ],
   "outputs": []

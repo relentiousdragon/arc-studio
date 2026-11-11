@@ -8,19 +8,22 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
+      "type": "exec",
+      description: "Starts the function graph."
     }
   ],
   "outputs": [
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
+      "type": "exec",
+      description: "Continues after the function returns."
     },
     {
       "id": "result",
       "label": "Result",
-      "type": "number"
+      "type": "number",
+      description: "Value returned by the called function."
     }
   ]
 };

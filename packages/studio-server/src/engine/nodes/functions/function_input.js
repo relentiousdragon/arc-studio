@@ -13,12 +13,14 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
+      "type": "exec",
+      description: "Function graph execution starts here."
     },
     {
       "id": "value",
       "label": "Value",
-      "type": "number"
+      "type": "number",
+      description: "Argument value exposed by this function input."
     }
   ]
 };
