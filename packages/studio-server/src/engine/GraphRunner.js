@@ -41,6 +41,21 @@ function resolveFunctionReturnResult(returnNode, resolveInput) {
     resolveInput(returnNode, functionReturnInputPinId(value), value.defaultValue)
   ]));
 }
+
+function evaluateTextComparison(node, resolveInput) {
+  let left = String(resolveInput('text_a', node.data?.text_a ?? ''));
+  let right = String(resolveInput('text_b', node.data?.text_b ?? ''));
+  if (Boolean(resolveInput('ignore_case', node.data?.ignore_case ?? false))) {
+    left = left.toLowerCase();
+    right = right.toLowerCase();
+  }
+  const operator = node.data?.operator || 'equals';
+  if (operator === 'contains') return left.includes(right);
+  if (operator === 'startsWith') return left.startsWith(right);
+  if (operator === 'endsWith') return left.endsWith(right);
+  return operator === 'equals' && left === right;
+}
+
 const DISCORD_INTERACTION_NODE_TYPES = new Set([
   'action_reply_interaction', 'action_defer_reply', 'action_defer_update',
   'action_edit_interaction_reply', 'action_show_modal', 'action_respond_autocomplete'
@@ -666,16 +681,7 @@ export class GraphRunner {
         return value;
       }
       if (sourceNode.type === 'compare_text') {
-        const textA = String(resolveDataInput(sourceNode, 'text_a', sourceNode.data?.text_a || '', seen));
-        const textB = String(resolveDataInput(sourceNode, 'text_b', sourceNode.data?.text_b || '', seen));
-        const operator = sourceNode.data?.operator || 'equals';
-        const comparisons = {
-          equals: () => textA === textB,
-          contains: () => textA.includes(textB),
-          startsWith: () => textA.startsWith(textB),
-          endsWith: () => textA.endsWith(textB)
-        };
-        const result = comparisons[operator]?.() || false;
+        const result = evaluateTextComparison(sourceNode, (pinId, fallback) => resolveDataInput(sourceNode, pinId, fallback, seen));
         dataCache.set(cacheKey, result);
         return result;
       }
@@ -1452,18 +1458,9 @@ export class GraphRunner {
           log(decision.logMessage);
           currentExecWires.push(...findExecOutputs(targetNode.id, decision.branchPin));
         } else if (targetNode.type === 'compare_text') {
-          const textA = String(resolveDataInput(targetNode, 'text_a', targetNode.data?.text_a || ''));
-          const textB = String(resolveDataInput(targetNode, 'text_b', targetNode.data?.text_b || ''));
-          const op = targetNode.data?.operator || 'equals';
-
-            let result = false;
-            if (op === 'equals') result = textA === textB;
-            else if (op === 'contains') result = textA.includes(textB);
-            else if (op === 'startsWith') result = textA.startsWith(textB);
-            else if (op === 'endsWith') result = textA.endsWith(textB);
-
+          const result = evaluateTextComparison(targetNode, (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback));
           dataCache.set(`${targetNode.id}:result`, result);
-          log(`[Compare Text] Compared text values using ${op}; result: ${result}.`);
+          log(`[Compare Text] Compared text values using ${targetNode.data?.operator || 'equals'}; result: ${result}.`);
         } else if (targetNode.type === 'delay') {
           const ms = validateDelayDuration(resolveDataInput(targetNode, 'ms', targetNode.data?.ms ?? 1000));
           log(`[Delay] Sleeping for ${ms}ms...`);
@@ -1977,12 +1974,7 @@ function evaluateFunctionGraph(graph, argumentValues, context, callStack) {
       const inputs = Object.fromEntries((NodeDefinitions[node.type]?.inputs || []).map((pin) => [pin.id, Boolean(resolveInput(node, pin.id, pin.defaultValue))]));
       result = evaluateLogicNode(node.type, inputs);
     } else if (node.type === 'compare_text') {
-      const left = String(resolveInput(node, 'text_a', node.data?.text_a || ''));
-      const right = String(resolveInput(node, 'text_b', node.data?.text_b || ''));
-      const operation = node.data?.operator || 'equals';
-      result = operation === 'contains' ? left.includes(right)
-        : operation === 'startsWith' ? left.startsWith(right)
-          : operation === 'endsWith' ? left.endsWith(right) : left === right;
+      result = evaluateTextComparison(node, (inputId, fallback) => resolveInput(node, inputId, fallback));
     } else if (node.type === 'format_text') {
       result = renderTextTemplate(node.data?.template, (name) => {
         const argumentMatch = /^arg(\d+)$/i.exec(name);
