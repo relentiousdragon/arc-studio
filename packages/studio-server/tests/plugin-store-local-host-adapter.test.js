@@ -59,6 +59,17 @@ test('local host adapter folders install declared files and register their nodes
       }]
     };
 
+    await assert.rejects(PluginStore.importLocalHostAdapter({
+      ...manifest,
+      minArcStudioVersion: '2026.1.1.1'
+    }, runtime, [{ relativePath: 'LICENSE', bytes: license }], '', {
+      projectDir,
+      permissions: ['fixture.read'],
+      installedBy: 'owner',
+      hostCodeConfirmed: true,
+      ownerApprovedHostCode: true
+    }), /requires ARC Studio 2026\.1\.1\.1 or newer/);
+
     await assert.rejects(PluginStore.importLocalHostAdapter(manifest, runtime, [], '', {
       projectDir,
       permissions: ['fixture.read'],
