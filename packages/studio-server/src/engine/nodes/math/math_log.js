@@ -9,14 +9,16 @@ export default {
       "id": "value",
       "label": "Value",
       "type": "number",
-      "defaultValue": 0
+      "defaultValue": 0,
+      description: "Positive number whose natural logarithm to calculate."
     }
   ],
   "outputs": [
     {
       "id": "result",
       "label": "Result",
-      "type": "number"
+      "type": "number",
+      description: "Natural logarithm of the input, or zero for non-positive input."
     }
   ]
 };
