@@ -1,13 +1,14 @@
 import { execFileSync } from 'node:child_process';
 import rootPackage from '../package.json' with { type: 'json' };
 import tauriConfig from '../packages/studio-desktop/src-tauri/tauri.conf.json' with { type: 'json' };
+import { getArcReleaseChannel, parseArcVersion } from './arc-version.mjs';
 
 const tag = String(process.argv[2] || process.env.GITHUB_REF_NAME || '');
-const match = tag.match(/^v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/);
-if (!match) throw new Error(`Invalid desktop release tag "${tag}". Use v<root-version>, for example v${rootPackage.version}.`);
-if (match[1] !== rootPackage.version) throw new Error(`Release tag ${tag} does not match root package version ${rootPackage.version}.`);
+const tagVersion = parseArcVersion(tag);
+if (!tagVersion || tagVersion.version !== tag.replace(/^v/i, '')) throw new Error(`Invalid desktop release tag "${tag}". Use v<root-version>, for example v${rootPackage.version}.`);
+if (tagVersion.version !== rootPackage.version) throw new Error(`Release tag ${tag} does not match root package version ${rootPackage.version}.`);
 
-const channel = match[1].includes('-') ? 'nightly' : 'stable';
+const channel = getArcReleaseChannel(tagVersion.version);
 const prerelease = channel === 'nightly';
 if (tauriConfig.plugins?.updater?.requireSignedVersion !== true || !tauriConfig.plugins?.updater?.pubkey) {
   throw new Error('Tauri updater releases require signed versions and a configured public key.');
