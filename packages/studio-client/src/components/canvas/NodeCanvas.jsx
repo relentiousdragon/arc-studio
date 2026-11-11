@@ -252,7 +252,7 @@ function RemoteCollaborationCursor({ peer }) {
     const from = displayedRef.current;
     const serverUpdatedAt = Number(peer.updatedAt) || Date.now();
     const gap = lastUpdateRef.current ? Math.max(0, serverUpdatedAt - lastUpdateRef.current) : 70;
-    const duration = Math.min(150, Math.max(55, gap * 1.15));
+    const duration = Math.min(70, Math.max(20, gap * 0.8));
     lastUpdateRef.current = serverUpdatedAt;
     let frame = 0;
     const startedAt = performance.now();
@@ -1381,8 +1381,12 @@ export function NodeCanvas({
         event.preventDefault();
         return;
       }
-      event.preventDefault();
       const zoomWithWheel = settings.zoomCanvasWithScroll && !event.shiftKey;
+      if (selectionStartRef.current && (event.ctrlKey || event.metaKey || zoomWithWheel)) {
+        event.preventDefault();
+        return;
+      }
+      event.preventDefault();
       if (event.ctrlKey || event.metaKey || zoomWithWheel) {
         flushPendingWheelPan();
         scheduleWheelZoomPreview(event);
@@ -2374,6 +2378,10 @@ export function NodeCanvas({
     const isCanvasTarget = isCanvasBackgroundTarget(event.target);
     const textPopupOpen = textInputPopupOpen();
     if (textPopupOpen && event.pointerType === 'touch' && isCanvasTarget) return;
+    if (selectionStartRef.current && event.pointerType === 'touch') {
+      event.preventDefault();
+      return;
+    }
     if (event.pointerType === 'touch' && isCanvasTarget && !textPopupOpen) {
       touchPointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
       if (touchPointersRef.current.size >= 2) {
@@ -2449,6 +2457,7 @@ export function NodeCanvas({
     if (isPanning) setPan(viewportRef.current.pan);
     setIsPanning(false);
     rightPanOriginRef.current = null;
+    commitWheelZoomPreview();
     selectionStartRef.current = { x: event.clientX, y: event.clientY, additive: event.metaKey || event.ctrlKey };
     setSelectionBox({ x1: event.clientX, y1: event.clientY, x2: event.clientX, y2: event.clientY });
     if (Number.isInteger(event.pointerId)) containerRef.current?.setPointerCapture?.(event.pointerId);
@@ -5132,7 +5141,14 @@ const previewOutput = (node, outputId, seen = new Set()) => {
           onSubmit={(event) => {
             event.preventDefault();
             const content = graphChatDraft.trim();
-            if (!content || !graphChatAnchor) return;
+            if (!content) {
+              clearGraphChatTyping();
+              setGraphChatComposerOpen(false);
+              setGraphChatDraft('');
+              setGraphChatAnchor(null);
+              return;
+            }
+            if (!graphChatAnchor) return;
             if (onSendGraphChat?.(content, graphChatAnchor) === false) return;
             clearGraphChatTyping();
             setGraphChatComposerOpen(false);

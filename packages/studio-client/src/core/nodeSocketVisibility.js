@@ -1,4 +1,4 @@
-export const MAX_VISIBLE_DATA_SOCKETS = 10;
+export const MAX_VISIBLE_DATA_SOCKETS = 11;
 //
 export function getNodesNearInputSockets(point, nodeRects, sourceNodeId, maxDistance = 56) {
   const nearby = [];

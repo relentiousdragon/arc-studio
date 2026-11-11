@@ -226,7 +226,6 @@ export function GraphVariablesModal({ isOpen, requestedView = 'variables', onClo
       <button type="button" role="tab" aria-selected={activeView === 'variables' && activeScope === 'graph'} className={activeView === 'variables' && activeScope === 'graph' ? 'is-active' : ''} onClick={() => { setActiveView('variables'); selectScope('graph'); }}>Graph <span>{variables.length}</span></button>
       <button type="button" role="tab" aria-selected={activeView === 'media'} className={activeView === 'media' ? 'is-active' : ''} onClick={() => setActiveView('media')}><Image size={12} /> Media <span>{mediaAssets.length}</span></button>
     </div>
-    {activeView === 'variables' && <small className="graph-variable-scope-hint">{activeScope === 'project' ? 'Project variables are shared across graphs and always persist.' : 'Graph variables persist by default. Turn off Persist to reset a value after each run.'}</small>}
   </>;
 
   const systemVariablesControl = <div className={`system-variables-menu-container ${presentation === 'sidebar' ? 'is-sidebar' : ''}`} ref={systemMenuRef}>
@@ -299,7 +298,6 @@ export function GraphVariablesModal({ isOpen, requestedView = 'variables', onClo
     </div>
     <div className={`graph-variables-sidebar-content ${isSaving ? 'is-saving' : ''}`}>
       {isSaving && <div className="variable-save-progress" role="status" aria-label="Saving variables"><i /></div>}
-      <small className="graph-variable-scope-hint">{activeScope === 'project' ? 'Project variables are shared across graphs and always persist.' : 'Graph variables persist by default. Turn off Persist to reset a value after each run.'}</small>
       {activeView === 'media' ? <ProjectMediaPanel assets={mediaAssets} canEdit={canEditProject} onUpload={onUploadMedia} onDownload={onDownloadMedia} onDelete={onDeleteMedia} onLoadContent={onLoadMediaContent} onOpenText={onOpenTextAsset} /> : content}
     </div>
   </aside> : null}{secretConversionModal}</>;

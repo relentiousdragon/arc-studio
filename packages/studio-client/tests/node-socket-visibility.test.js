@@ -7,21 +7,21 @@ const makePins = (count) => [
   ...Array.from({ length: count }, (_value, index) => ({ id: `pin-${index + 1}`, type: 'string' }))
 ];
 //
-test('shows ten data sockets and keeps execution sockets outside the limit', () => {
+test('shows eleven data sockets and keeps execution sockets outside the limit', () => {
   const { entries, hiddenCount } = getVisibleNodeSockets(makePins(12), new Set());
 
   assert.deepEqual(entries.map(({ pin }) => pin.id), [
-    'exec', 'pin-1', 'pin-2', 'pin-3', 'pin-4', 'pin-5', 'pin-6', 'pin-7', 'pin-8', 'pin-9', 'pin-10'
+    'exec', 'pin-1', 'pin-2', 'pin-3', 'pin-4', 'pin-5', 'pin-6', 'pin-7', 'pin-8', 'pin-9', 'pin-10', 'pin-11'
   ]);
-  assert.equal(hiddenCount, 2);
+  assert.equal(hiddenCount, 1);
 });
 
-test('keeps socket order when showing a connected socket beyond the initial ten', () => {
-  const { entries, hiddenCount } = getVisibleNodeSockets(makePins(13), new Set(['pin-12']));
+test('keeps socket order when showing a connected socket beyond the initial eleven', () => {
+  const { entries, hiddenCount } = getVisibleNodeSockets(makePins(14), new Set(['pin-13']));
 
   assert.deepEqual(entries.map(({ pin }) => pin.id), [
     'exec', 'pin-1', 'pin-2', 'pin-3', 'pin-4', 'pin-5', 'pin-6',
-    'pin-7', 'pin-8', 'pin-9', 'pin-10', 'pin-11', 'pin-12'
+    'pin-7', 'pin-8', 'pin-9', 'pin-10', 'pin-11', 'pin-12', 'pin-13'
   ]);
   assert.equal(hiddenCount, 1);
 });

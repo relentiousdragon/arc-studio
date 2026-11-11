@@ -5,7 +5,9 @@ import { TopBar } from './components/navigation/TopBar.jsx';
 import { NodeCanvas } from './components/canvas/NodeCanvas.jsx';
 import { ControlDock } from './components/dock/ControlDock.jsx';
 import { onPageBlur } from './core/pageFocus.js';
+import { mergeRemoteCollaborationActions } from './core/collaborationActions.js';
 import { RenderErrorBoundary } from './components/ui/RenderErrorBoundary.jsx';
+const COLLABORATION_ACTION_BATCH_MS = 32;
 const lazyNamed = (loader, name) => {
   let modulePromise;
   const load = () => modulePromise ||= loader().then((module) => ({ default: module[name] }));
@@ -1164,10 +1166,12 @@ export function App() {
   const collaborationClientIdRef = useRef(globalThis.crypto?.randomUUID?.() || `arc-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   const graphSaveClientIdRef = useRef(globalThis.crypto?.randomUUID?.() || `arc-save-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   const collaborationActionTimerRef = useRef(null);
-  const collaborationMotionSendIntervalRef = useRef(16);
+  const collaborationMotionSendIntervalRef = useRef(COLLABORATION_ACTION_BATCH_MS);
   const pendingCollaborationActionRef = useRef(new Map());
   const pendingNodeMoveLockRequestsRef = useRef(new Map());
   const latestRemoteCollaborationRevisionRef = useRef(new Map());
+  const pendingRemoteCollaborationActionsRef = useRef(new Map());
+  const remoteCollaborationActionTimerRef = useRef(null);
   const pendingCanvasArrowActionsRef = useRef(new Map());
   const localCanvasMotionRoomRef = useRef('');
   const collaborationPresenceRef = useRef({ projectId: '', graphId: '' });
@@ -1847,6 +1851,33 @@ export function App() {
   const [activeTabId, setActiveTabId] = useState(null);
   const activeTabIdRef = useRef(activeTabId);
   activeTabIdRef.current = activeTabId;
+  const flushRemoteCollaborationActions = useCallback(() => {
+    remoteCollaborationActionTimerRef.current = null;
+    const updates = [...pendingRemoteCollaborationActionsRef.current.values()];
+    pendingRemoteCollaborationActionsRef.current.clear();
+    if (!updates.length) return;
+    setRemoteCollaborationActions((current) => mergeRemoteCollaborationActions(
+      current,
+      updates,
+      activeProjectIdRef.current,
+      activeTabIdRef.current
+    ));
+  }, []);
+  const queueRemoteCollaborationAction = useCallback((action) => {
+    const key = `${action.projectId}:${action.graphId}:${action.userId}`;
+    pendingRemoteCollaborationActionsRef.current.set(key, action);
+    if (remoteCollaborationActionTimerRef.current === null) {
+      remoteCollaborationActionTimerRef.current = window.setTimeout(
+        flushRemoteCollaborationActions,
+        COLLABORATION_ACTION_BATCH_MS
+      );
+    }
+  }, [flushRemoteCollaborationActions]);
+  const clearRemoteCollaborationActionBatch = useCallback(() => {
+    window.clearTimeout(remoteCollaborationActionTimerRef.current);
+    remoteCollaborationActionTimerRef.current = null;
+    pendingRemoteCollaborationActionsRef.current.clear();
+  }, []);
   const maxWarmTabs = useMemo(() => {
     if (desktopMode) return 10;
     if (typeof navigator !== 'undefined') {
@@ -2097,11 +2128,12 @@ export function App() {
     }));
   }, [activeProjectId, activeTabId]);
   useEffect(() => {
+    clearRemoteCollaborationActionBatch();
     setRemoteCollaborationActions([]);
     setTransientCanvasArrows([]);
     setNodeMoveLockState({ roomKey: '', locks: {} });
     return () => sendCollaborationAction({ kind: 'idle' }, true);
-  }, [activeProjectId, activeTabId, sendCollaborationAction]);
+  }, [activeProjectId, activeTabId, sendCollaborationAction, clearRemoteCollaborationActionBatch]);
   useEffect(() => {
     if (collaborationSocketStatus === 'connected') return;
     setNodeMoveLockState({ roomKey: '', locks: {} });
@@ -2115,6 +2147,19 @@ export function App() {
   const graphCheckToastAtRef = useRef(0);
   const graphsHydratedRef = useRef(false);
   const [workspaceHydrated, setWorkspaceHydrated] = useState(false);
+  const initialEmptyWorkspacePanelHandledRef = useRef(false);
+  useEffect(() => {
+    if (initialEmptyWorkspacePanelHandledRef.current || !workspaceHydrated || needsSetup) return;
+    if (!localDesktopWorkspace && activeProjectId
+      && (projectCollaboration.projectId !== activeProjectId || !projectCollaboration.tabsInitialized)) return;
+    initialEmptyWorkspacePanelHandledRef.current = true;
+    if (activeTabId || tabs.length) return;
+    setIsProjectsOpen(false);
+    setIsPluginStoreOpen(false);
+    setIsBotSidebarOpen(false);
+    setIsVariablesOpen(false);
+    setIsLibraryOpen(true);
+  }, [activeProjectId, activeTabId, localDesktopWorkspace, needsSetup, projectCollaboration, tabs.length, workspaceHydrated]);
   const discordRpcRequestRef = useRef(null);
   const discordRpcRevisionRef = useRef(0);
   const discordRpcInFlightRef = useRef(false);
@@ -3294,7 +3339,7 @@ export function App() {
       collaborationClientIdRef.current = globalThis.crypto?.randomUUID?.() || `arc-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       setCollaborationSocketStatus(reconnectAttempts ? 'reconnecting' : 'connecting');
       setCollaborationConnectionFlaky(false);
-      collaborationMotionSendIntervalRef.current = 16;
+      collaborationMotionSendIntervalRef.current = COLLABORATION_ACTION_BATCH_MS;
       try {
         socket = new WebSocket(wsUrl);
       } catch {
@@ -3324,7 +3369,7 @@ export function App() {
         const isBad = missed || congested || averageRtt >= 350 || jitter >= 180;
         collaborationMotionSendIntervalRef.current = missed || congested || averageRtt >= 350 || jitter >= 180
           ? 50
-          : averageRtt >= 180 || jitter >= 70 ? 32 : 16;
+          : averageRtt >= 180 || jitter >= 70 ? 50 : COLLABORATION_ACTION_BATCH_MS;
         if (isBad) {
           consecutiveBadSamples += 1;
           consecutiveGoodSamples = 0;
@@ -4098,7 +4143,7 @@ export function App() {
             const lastRevision = latestRemoteCollaborationRevisionRef.current.get(revisionKey) || 0;
             if (Number.isFinite(actionRevision) && actionRevision > 0 && actionRevision <= lastRevision) return;
             if (Number.isFinite(actionRevision) && actionRevision > 0) latestRemoteCollaborationRevisionRef.current.set(revisionKey, actionRevision);
-            setRemoteCollaborationActions((previous) => [...previous.filter((item) => item.userId !== action.userId), action]);
+            queueRemoteCollaborationAction(action);
             if (action.action?.kind === 'studio-draft') {
               if (action.action.studioType === 'embed') {
                 setEmbedStudio((current) => {
@@ -4143,6 +4188,15 @@ export function App() {
             const lastRevision = latestRemoteCollaborationRevisionRef.current.get(revisionKey) || 0;
             if (Number.isFinite(clearRevision) && clearRevision > 0 && clearRevision <= lastRevision) return;
             if (Number.isFinite(clearRevision) && clearRevision > 0) latestRemoteCollaborationRevisionRef.current.set(revisionKey, clearRevision);
+            for (const [key, action] of pendingRemoteCollaborationActionsRef.current) {
+              if (action.userId === userId && (!hasRoomIdentity || (action.projectId === projectId && action.graphId === graphId))) {
+                pendingRemoteCollaborationActionsRef.current.delete(key);
+              }
+            }
+            if (!pendingRemoteCollaborationActionsRef.current.size) {
+              window.clearTimeout(remoteCollaborationActionTimerRef.current);
+              remoteCollaborationActionTimerRef.current = null;
+            }
             setRemoteCollaborationActions((previous) => previous.filter((item) => item.userId !== userId
               || hasRoomIdentity && (item.projectId !== projectId || item.graphId !== graphId)));
           } else if (msg.type === 'LOGS_CLEARED') {
@@ -4263,7 +4317,8 @@ export function App() {
         setRemoteCollaborationActions([]);
         latestRemoteCollaborationRevisionRef.current.clear();
         localCanvasMotionRoomRef.current = '';
-        collaborationMotionSendIntervalRef.current = 16;
+        collaborationMotionSendIntervalRef.current = COLLABORATION_ACTION_BATCH_MS;
+        clearRemoteCollaborationActionBatch();
         setCollaborationConnectionFlaky(false);
         setCollaborators([]);
         setProjectCollaboration({ projectId: '', graphIds: [], tabsInitialized: false, users: [] });
@@ -7432,7 +7487,8 @@ export function App() {
     pendingCollaborationActionRef.current.clear();
     latestRemoteCollaborationRevisionRef.current.clear();
     localCanvasMotionRoomRef.current = '';
-    collaborationMotionSendIntervalRef.current = 16;
+    collaborationMotionSendIntervalRef.current = COLLABORATION_ACTION_BATCH_MS;
+    clearRemoteCollaborationActionBatch();
     liveGraphReadyRef.current.clear();
     liveGraphBaseRef.current.clear();
     liveGraphRevisionRef.current.clear();

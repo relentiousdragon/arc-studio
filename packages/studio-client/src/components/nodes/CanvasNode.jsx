@@ -15,6 +15,7 @@ import { onPageBlur } from '../../core/pageFocus.js';
 import { MediaPreviewModal } from '../ui/MediaPreviewModal.jsx';
 import { mediaKind, useMediaView } from '../ui/mediaTypes.js';
 import { resolveVariableReference } from '../../core/projectVariables.js';
+import { createDebouncedFieldWriter } from '../../core/debouncedFieldWriter.js';
 import { getInputDefault } from '../../../../studio-server/src/engine/NodeSchemaDefinitions.js';
 import { isReservedTemplateRoot, TEMPLATE_FUNCTION_NAMES, TEMPLATE_SYSTEM_PATHS, validateTemplateSyntax } from '../../../../studio-server/src/engine/TemplateExpressions.js';
 import { attachTemplateAutocomplete, BUILTIN_TEMPLATE_FUNCTIONS } from '../../core/templateFieldAutocomplete.js';
@@ -730,13 +731,15 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
   }
   const textEditor = (id, label, maxLength = 2000, placeholder = '', autocomplete = true) => {
     const value = String(node.data?.[id] ?? '');
-    const openTextEditor = () => onOpenTextStudio?.(node, id, label, value, maxLength);
+    const openTextEditor = (draftValue = value) => onOpenTextStudio?.(node, id, label, String(draftValue ?? ''), maxLength);
     const valuePaths = templatePaths;
     const templateSuggestions = nodeDef.inputs.filter((pin) => /^arg_\d+$/.test(pin.id)).map((pin) => ({ name: pin.id.replace(/^arg_/, 'arg'), label: pin.label }));
     const syntaxError = validateTemplateSyntax(value);
-    const field = value.length > LONG_TEXT_THRESHOLD
-      ? <DiscordLongTextField value={value} onOpenEditor={openTextEditor} label={label} maxLength={maxLength} />
-      : <CharacterLimit value={value} maxLength={maxLength}><DiscordTextField onOpenTextEditor={openTextEditor} discordAutocomplete={autocomplete} templateAutocomplete templateValuePaths={valuePaths} templateSuggestions={templateSuggestions} templateFunctions={templateFunctions} graphVariables={graphVariables} as="textarea" rows={2} maxLength={maxLength} value={value} appEmojis={appEmojis} onChange={(event) => update(id, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder={placeholder} aria-label={label} /></CharacterLimit>;
+    const field = <DraftedTextField
+      showCharacterLimit
+      longTextEditor={{ label, maxLength }}
+      field={<DiscordTextField onOpenTextEditor={openTextEditor} discordAutocomplete={autocomplete} templateAutocomplete templateValuePaths={valuePaths} templateSuggestions={templateSuggestions} templateFunctions={templateFunctions} graphVariables={graphVariables} as="textarea" rows={2} maxLength={maxLength} value={value} appEmojis={appEmojis} onChange={(event) => update(id, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder={placeholder} aria-label={label} />}
+    />;
     return <>
       {field}
       {syntaxError && <div className="node-config-warning template-syntax-warning" role="alert"><AlertTriangle size={12} /><span>{syntaxError}</span></div>}
@@ -748,9 +751,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     const valuePaths = templatePaths;
     const templateSuggestions = nodeDef.inputs.filter((pin) => /^arg_\d+$/.test(pin.id)).map((pin) => ({ name: pin.id.replace(/^arg_/, 'arg'), label: pin.label }));
     const syntaxError = validateTemplateSyntax(value);
-    const field = multiline && value.length > LONG_TEXT_THRESHOLD
-      ? <DiscordLongTextField value={value} onOpenEditor={() => onOpenTextStudio?.(node, id, label, value, maxLength)} label={label} maxLength={maxLength} />
-      : <DiscordTextField
+    const field = <DiscordTextField
         as={multiline ? 'textarea' : 'input'}
         maskWhenInactive={!multiline && id === 'auth_token'}
         rows={multiline ? 2 : undefined}
@@ -763,7 +764,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
         templateFunctions={templateFunctions}
         templateAutocomplete
         autoComplete={id === 'auth_token' ? 'new-password' : undefined}
-        onOpenTextEditor={() => onOpenTextStudio?.(node, id, label, value, maxLength)}
+        onOpenTextEditor={(draftValue = value) => onOpenTextStudio?.(node, id, label, String(draftValue ?? ''), maxLength)}
         onChange={(event) => update(id, event.target.value)}
         onPointerDown={(event) => event.stopPropagation()}
         placeholder={placeholder}
@@ -831,7 +832,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     const value = String(node.data?.[id] ?? '');
     const valuePaths = templatePaths;
     const templateSuggestions = nodeDef.inputs.filter((pin) => /^arg_\d+$/.test(pin.id)).map((pin) => ({ name: pin.id.replace(/^arg_/, 'arg'), label: pin.label }));
-    return <DiscordTextField
+    return <DraftedTextField field={<DiscordTextField
       value={value}
       appEmojis={appEmojis}
       graphVariables={graphVariables}
@@ -844,7 +845,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       onPointerDown={(event) => event.stopPropagation()}
       placeholder="Used when unconnected"
       aria-label={label}
-    />;
+    />} />;
   };
   const valueTypes = [{ value: 'number', label: 'Number' }, { value: 'string', label: 'Text' }, { value: 'boolean', label: 'Boolean' }, { value: 'object', label: 'Object / Array' }];
   const functionArgumentTypes = [...valueTypes,
@@ -943,7 +944,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       {!isConnected('activity_type') && <FallbackField label="Activity type"><AnimatedDropdown value={String(node.data?.activity_type ?? 0)} options={activityTypes} onChange={(value) => update('activity_type', Number(value))} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Presence activity type" className="node-select" /></FallbackField>}
       {Number(node.data?.activity_type) === 1 && String(node.data?.activity_text ?? 'ARC Studio').trim() && templateInput('stream_url', 'Stream URL', { maxLength: 2048, inputMode: 'url', placeholder: 'https://twitch.tv/your-channel' })}
       {!isConnected('status') && <FallbackField label="Status"><AnimatedDropdown value={node.data?.status ?? 'online'} options={statuses} onChange={(value) => update('status', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Bot presence status" className="node-select" /></FallbackField>}
-      {!isConnected('custom_status_text') && <FallbackField label="Custom status"><DiscordTextField value={node.data?.custom_status_text ?? ''} maxLength={128} appEmojis={appEmojis} graphVariables={graphVariables} templateValuePaths={templatePaths} templateFunctions={templateFunctions} templateAutocomplete discordAutocomplete onOpenTextEditor={() => onOpenTextStudio?.(node, 'custom_status_text', 'Custom status', String(node.data?.custom_status_text ?? ''), 128)} onChange={(event) => update('custom_status_text', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave blank to clear" aria-label="Custom status text" /></FallbackField>}
+      {!isConnected('custom_status_text') && <FallbackField label="Custom status"><DiscordTextField value={node.data?.custom_status_text ?? ''} maxLength={128} appEmojis={appEmojis} graphVariables={graphVariables} templateValuePaths={templatePaths} templateFunctions={templateFunctions} templateAutocomplete discordAutocomplete onOpenTextEditor={(draftValue = node.data?.custom_status_text ?? '') => onOpenTextStudio?.(node, 'custom_status_text', 'Custom status', String(draftValue ?? ''), 128)} onChange={(event) => update('custom_status_text', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave blank to clear" aria-label="Custom status text" /></FallbackField>}
       <span className="node-config-hint">Activity and custom status accept {'{{variables}}'}, event values, and custom emoji.</span>
     </div>;
   }
@@ -1628,16 +1629,101 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
 }
 
 function FallbackField({ label, children }) {
-  if (React.isValidElement(children) && children.type === 'textarea' && String(children.props.value ?? '').length > LONG_TEXT_THRESHOLD) {
-    return <label className="node-config-fallback"><span>{label}</span><DiscordLongTextField
-      value={String(children.props.value ?? '')}
-      onChange={(value) => children.props.onChange?.({ target: { value } })}
-      label={label}
-      maxLength={children.props.maxLength}
-      rows={14}
-    /></label>;
+  const isTextField = React.isValidElement(children)
+    && typeof children.props.onChange === 'function'
+    && (children.type === 'textarea'
+      || children.type === 'input'
+      || children.type === DiscordTextField)
+    && !['checkbox', 'color', 'file', 'hidden', 'radio', 'range', 'reset', 'submit', 'button'].includes(children.props.type);
+  if (!isTextField) return <label className="node-config-fallback"><span>{label}</span>{children}</label>;
+  const longTextEditor = typeof children.props.onOpenTextEditor === 'function'
+    ? { label, maxLength: children.props.maxLength, rows: 14 }
+    : null;
+  return <label className="node-config-fallback"><span>{label}</span><DraftedTextField field={children} longTextEditor={longTextEditor} /></label>;
+}
+
+function DraftedTextField({ field, showCharacterLimit = false, longTextEditor = null }) {
+  const externalValue = String(field.props.value ?? '');
+  const [draft, setDraft] = React.useState(externalValue);
+  const [focused, setFocused] = React.useState(false);
+  const draftRef = React.useRef(externalValue);
+  const composingRef = React.useRef(false);
+  const onChangeRef = React.useRef(field.props.onChange);
+  onChangeRef.current = field.props.onChange;
+  const writerRef = React.useRef(null);
+  if (!writerRef.current) {
+    writerRef.current = createDebouncedFieldWriter((value) => {
+      onChangeRef.current?.({ target: { value }, currentTarget: { value } });
+    });
   }
-  return <label className="node-config-fallback"><span>{label}</span>{children}</label>;
+
+  React.useEffect(() => {
+    if (focused) return;
+    draftRef.current = externalValue;
+    setDraft(externalValue);
+  }, [externalValue, focused]);
+  React.useEffect(() => () => writerRef.current?.flush(), []);
+
+  const onChange = (event) => {
+    const value = event.target.value;
+    draftRef.current = value;
+    setDraft(value);
+    if (!composingRef.current) writerRef.current.schedule(value);
+  };
+  const onCompositionStart = (event) => {
+    writerRef.current.flush();
+    composingRef.current = true;
+    field.props.onCompositionStart?.(event);
+  };
+  const onCompositionEnd = (event) => {
+    composingRef.current = false;
+    const value = event.target.value;
+    draftRef.current = value;
+    setDraft(value);
+    writerRef.current.schedule(value);
+    field.props.onCompositionEnd?.(event);
+  };
+  const onOpenTextEditor = field.props.onOpenTextEditor
+    ? (...args) => {
+      writerRef.current.flush();
+      return field.props.onOpenTextEditor(draftRef.current, ...args);
+    }
+    : undefined;
+
+  if (longTextEditor && externalValue.length > LONG_TEXT_THRESHOLD && !focused) {
+    return <DiscordLongTextField
+      value={externalValue}
+      onOpenEditor={() => field.props.onOpenTextEditor(externalValue)}
+      label={longTextEditor.label}
+      maxLength={longTextEditor.maxLength}
+      rows={longTextEditor.rows}
+    />;
+  }
+
+  const textField = React.cloneElement(field, {
+    value: draft,
+    onChange,
+    onFocus: (event) => {
+      setFocused(true);
+      field.props.onFocus?.(event);
+    },
+    onBlur: (event) => {
+      if (composingRef.current) {
+        composingRef.current = false;
+        draftRef.current = event.target.value;
+        writerRef.current.schedule(draftRef.current);
+      }
+      writerRef.current.flush();
+      setFocused(false);
+      field.props.onBlur?.(event);
+    },
+    onCompositionStart,
+    onCompositionEnd,
+    ...(onOpenTextEditor ? { onOpenTextEditor } : {})
+  });
+  return showCharacterLimit
+    ? <CharacterLimit value={draft} maxLength={field.props.maxLength}>{textField}</CharacterLimit>
+    : textField;
 }
 
 function FallbackCheckbox({ label, checked, onChange }) {
