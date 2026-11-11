@@ -13603,6 +13603,16 @@ body:has(.control-dock.is-resizing) .canvas-collaborator-navigation-layer {
   animation-direction: alternate-reverse;
 }
 
+[data-release-channel="stable"] .auth-screen::before {
+  opacity: .42;
+  background: radial-gradient(circle at 45% 45%, rgba(96, 165, 250, .15) 0%, rgba(56, 189, 248, .10) 34%, rgba(59, 130, 246, .05) 58%, transparent 74%);
+}
+
+[data-release-channel="stable"] .auth-screen::after {
+  opacity: .38;
+  background: radial-gradient(circle at 55% 55%, rgba(56, 189, 248, .12) 0%, rgba(96, 165, 250, .08) 36%, rgba(59, 130, 246, .04) 60%, transparent 74%);
+}
+
 [data-theme="light"] .auth-screen::before {
   opacity: .46;
   background: radial-gradient(circle at 45% 45%, rgba(139, 92, 246, .12) 0%, rgba(59, 130, 246, .08) 36%, transparent 72%);
@@ -13611,6 +13621,16 @@ body:has(.control-dock.is-resizing) .canvas-collaborator-navigation-layer {
 [data-theme="light"] .auth-screen::after {
   opacity: .40;
   background: radial-gradient(circle at 55% 55%, rgba(14, 165, 233, .10) 0%, rgba(168, 85, 247, .07) 38%, transparent 72%);
+}
+
+[data-release-channel="stable"][data-theme="light"] .auth-screen::before {
+  opacity: .34;
+  background: radial-gradient(circle at 45% 45%, rgba(96, 165, 250, .09) 0%, rgba(56, 189, 248, .05) 36%, transparent 72%);
+}
+
+[data-release-channel="stable"][data-theme="light"] .auth-screen::after {
+  opacity: .30;
+  background: radial-gradient(circle at 55% 55%, rgba(56, 189, 248, .08) 0%, rgba(96, 165, 250, .04) 38%, transparent 72%);
 }
 
 @keyframes ambientFloat {
@@ -13773,6 +13793,32 @@ body:has(.control-dock.is-resizing) .canvas-collaborator-navigation-layer {
   width: min(100% - 96px, 1080px);
   grid-template-columns: minmax(0, 1fr) minmax(360px, 430px);
   gap: clamp(64px, 9vw, 140px);
+}
+
+@media (min-width: 761px) {
+  .app-root[data-ui-scale="80"] .auth-layout {
+    width: min(100% - 90px, 1150px);
+    grid-template-columns: minmax(0, 1fr) minmax(425px, 500px);
+    gap: clamp(65px, 10vw, 145px);
+  }
+
+  .app-root[data-ui-scale="90"] .auth-layout {
+    width: min(100% - 80px, 1022px);
+    grid-template-columns: minmax(0, 1fr) minmax(378px, 444px);
+    gap: clamp(58px, 8.9vw, 129px);
+  }
+
+  .app-root[data-ui-scale="80"] .is-desktop .auth-layout {
+    width: min(100% - 120px, 1350px);
+    grid-template-columns: minmax(0, 1fr) minmax(450px, 538px);
+    gap: clamp(80px, 11.25vw, 175px);
+  }
+
+  .app-root[data-ui-scale="90"] .is-desktop .auth-layout {
+    width: min(100% - 107px, 1200px);
+    grid-template-columns: minmax(0, 1fr) minmax(400px, 478px);
+    gap: clamp(71px, 10vw, 156px);
+  }
 }
 
 .is-desktop .auth-layout {
@@ -15023,6 +15069,88 @@ body:has(.control-dock.is-resizing) .canvas-collaborator-navigation-layer {
 
   .setup-network {
     display: none;
+  }
+}
+
+@media (orientation: landscape) and (max-height: 560px) and (pointer: coarse) {
+  .auth-screen {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden !important;
+  }
+
+  .auth-layout,
+  .is-desktop .auth-layout {
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+    justify-items: stretch;
+    gap: clamp(18px, 4vw, 40px);
+    width: min(100% - 32px, 920px);
+    max-width: 100%;
+    padding: 10px 0;
+  }
+
+  .auth-intro {
+    width: auto;
+  }
+
+  .auth-intro-brand img {
+    width: 32px;
+    height: 32px;
+  }
+
+  .auth-intro-copy {
+    margin-top: clamp(14px, 4vh, 26px);
+  }
+
+  .auth-intro-copy h1 {
+    font-size: calc((clamp(25px, 4vw, 36px)) * var(--arc-font-scale, 1));
+  }
+
+  .auth-card {
+    padding: 14px 16px 10px;
+  }
+
+  .auth-heading {
+    margin-bottom: 8px;
+  }
+
+  .auth-heading h1 {
+    margin: 4px 0 3px;
+  }
+
+  .auth-form {
+    gap: 4px;
+  }
+
+  .field-label {
+    margin-top: 3px;
+  }
+
+  .auth-input-wrap {
+    height: 34px;
+  }
+
+  .auth-submit {
+    height: 32px;
+    margin-top: 4px;
+  }
+
+  .auth-passkey-block {
+    gap: 4px;
+    margin-top: 5px;
+  }
+
+  .auth-passkey-divider {
+    height: 10px;
+  }
+
+  .auth-passkey-button {
+    min-height: 30px;
+  }
+
+  .auth-footer {
+    margin-top: 8px;
+    padding-top: 6px;
   }
 }
 
