@@ -2,6 +2,9 @@ import React, { useEffect, useRef } from 'react';
 
 const GRID_SPACING = 32;
 const INFLUENCE_RADIUS = 98;
+const CURSOR_INFLUENCE_RADIUS = INFLUENCE_RADIUS * 0.95;
+const AMBIENT_INFLUENCE_RADIUS = INFLUENCE_RADIUS * 1.05;
+const PHONE_AMBIENT_RADIUS_SCALE = 0.55;
 const MAX_DPR = 2;
 //
 function withAlpha(color, alpha, context) {
@@ -39,7 +42,8 @@ export function AuthGridCanvas({ reducedMotion = false }) {
     let baseDotColor = 'rgba(163, 178, 208, 0.34)';
     let activeDotColor = 'rgba(112, 185, 232, 0.95)';
     let activeGlowColor = 'rgba(112, 185, 232, 0.48)';
-
+    let cursorDotColor = 'rgba(78, 83, 91, 0.96)';
+    let cursorGlowColor = 'rgba(78, 83, 91, 0.48)';
     let cardDotColor = 'rgba(150, 160, 175, 0.14)';
     let cardActiveColor = 'rgba(205, 215, 230, 0.26)';
     let cardActiveGlow = 'rgba(180, 195, 215, 0.12)';
@@ -52,11 +56,15 @@ export function AuthGridCanvas({ reducedMotion = false }) {
       activeGlowColor = withAlpha(accent, 0.48, ctx);
       if (isDark) {
         baseDotColor = 'rgba(163, 178, 208, 0.34)';
+        cursorDotColor = 'rgba(78, 83, 91, 0.96)';
+        cursorGlowColor = 'rgba(78, 83, 91, 0.48)';
         cardDotColor = 'rgba(150, 160, 175, 0.14)';
         cardActiveColor = 'rgba(205, 215, 230, 0.26)';
         cardActiveGlow = 'rgba(180, 195, 215, 0.12)';
       } else {
         baseDotColor = 'rgba(74, 88, 112, 0.46)';
+        cursorDotColor = 'rgba(104, 111, 121, 0.92)';
+        cursorGlowColor = 'rgba(104, 111, 121, 0.34)';
         cardDotColor = 'rgba(90, 105, 125, 0.16)';
         cardActiveColor = 'rgba(75, 90, 110, 0.28)';
         cardActiveGlow = 'rgba(85, 100, 120, 0.12)';
@@ -148,34 +156,150 @@ export function AuthGridCanvas({ reducedMotion = false }) {
     };
 
     let dots = [];
+    let hotspotCount = 4;
+    let ambientMotion = null;
+    const ambientPaths = [
+      (time, phase) => [Math.cos(time + phase), Math.sin(time + phase)],
+      (time, phase) => [Math.sin(time + phase), Math.sin((time + phase) * 2) * 0.5],
+      (time, phase, index) => {
+        const diagonalPosition = Math.sin(time + phase);
+        return [
+          diagonalPosition,
+          diagonalPosition * (index < hotspotCount / 2 ? 1 : -1)
+        ];
+      },
+      (time, phase) => [
+        Math.sin(time + phase),
+        Math.sin(time + phase) * Math.cos(time + phase) * 1.5
+      ]
+    ];
+    const evaluateAmbientPath = (motion, elapsed) => {
+      const duration = motion.nextSwitchAt - motion.pathStartedAt;
+      const clampedElapsed = Math.min(elapsed, duration);
+      const progress = clampedElapsed / duration;
+      const boostedElapsed = clampedElapsed
+        + (motion.speedBoost * duration / Math.PI) * (1 - Math.cos(Math.PI * progress));
+      const pathElapsed = boostedElapsed + Math.max(0, elapsed - duration);
+      const path = ambientPaths[motion.pathIndex];
+      const time = pathElapsed * 0.001265;
+      return Array.from({ length: hotspotCount }, (_, index) => {
+        const phase = motion.phaseOffset + index * (Math.PI * 2 / hotspotCount);
+        const [x, y] = path(time, phase, index);
+        return {
+          x: width * (0.28 + x * 0.22),
+          y: height * (0.5 + y * 0.38)
+        };
+      });
+    };
+
+    const getAmbientPointers = (time = 0) => {
+      if (hotspotCount === 0 || (isPhoneTouchDevice() && reducedMotion)) return [];
+      if (!ambientMotion) {
+        ambientMotion = {
+          pathIndex: Math.floor(Math.random() * ambientPaths.length),
+          pathStartedAt: time,
+          phaseOffset: Math.random() * Math.PI * 2,
+          nextSwitchAt: time + 2000 + Math.random() * 2000,
+          speedBoost: 0.05 + Math.random() * 0.10,
+          transitionFrom: null,
+          transitionStartedAt: 0
+        };
+      }
+
+      const getCurrentPositions = (atTime) => {
+        const positions = evaluateAmbientPath(ambientMotion, atTime - ambientMotion.pathStartedAt);
+        if (!ambientMotion.transitionFrom) return positions;
+        const progress = Math.min(1, (atTime - ambientMotion.transitionStartedAt) / 700);
+        const eased = progress * progress * (3 - 2 * progress);
+        return positions.map((position, index) => ({
+          x: ambientMotion.transitionFrom[index].x
+            + (position.x - ambientMotion.transitionFrom[index].x) * eased,
+          y: ambientMotion.transitionFrom[index].y
+            + (position.y - ambientMotion.transitionFrom[index].y) * eased
+        }));
+      };
+
+      if (time >= ambientMotion.nextSwitchAt) {
+        const currentPositions = getCurrentPositions(time);
+        let nextPath = Math.floor(Math.random() * (ambientPaths.length - 1));
+        if (nextPath >= ambientMotion.pathIndex) nextPath++;
+        ambientMotion = {
+          pathIndex: nextPath,
+          pathStartedAt: time,
+          phaseOffset: Math.random() * Math.PI * 2,
+          nextSwitchAt: time + 2000 + Math.random() * 2000,
+          speedBoost: 0.05 + Math.random() * 0.10,
+          transitionFrom: currentPositions,
+          transitionStartedAt: time
+        };
+      }
+
+      const positions = getCurrentPositions(time);
+      if (ambientMotion.transitionFrom && time - ambientMotion.transitionStartedAt >= 700) {
+        ambientMotion.transitionFrom = null;
+      }
+      return positions;
+    };
 
     const isPhoneTouchDevice = () => {
       if (typeof window === 'undefined') return false;
-      const noHover = window.matchMedia?.('(hover: none)').matches;
       const coarsePointer = window.matchMedia?.('(pointer: coarse)').matches;
-      const isCompact = window.innerWidth <= 840;
-      return noHover || (coarsePointer && isCompact);
+      return Boolean(coarsePointer && Math.min(window.innerWidth, window.innerHeight) <= 840);
+    };
+
+    const isPhonePortrait = () => isPhoneTouchDevice() && window.innerHeight > window.innerWidth;
+    const shouldAnimate = () => !reducedMotion && !isPhonePortrait();
+    const getAmbientRadius = () => isPhoneTouchDevice()
+      ? AMBIENT_INFLUENCE_RADIUS * PHONE_AMBIENT_RADIUS_SCALE
+      : AMBIENT_INFLUENCE_RADIUS;
+
+    const updateHotspotCount = () => {
+      if (isPhonePortrait()) {
+        hotspotCount = 0;
+        return;
+      }
+      const declaredScale = Number(canvas.closest('.app-root')?.dataset.uiScale) / 100;
+      const uiScale = Number.isFinite(declaredScale) && declaredScale > 0 ? declaredScale : 1;
+      const availableArea = (width * height) / (uiScale * uiScale);
+      hotspotCount = availableArea < 800000 ? 4 : availableArea < 1500000 ? 6 : 8;
     };
 
     const renderStaticFrame = () => {
       updateCardRect();
       ctx.clearRect(0, 0, width, height);
       cardCtx?.clearRect(0, 0, width, height);
+      const ambientPointers = getAmbientPointers();
+      const ambientRadius = getAmbientRadius();
       for (const dot of dots) {
         const inCard = isPointInCard(dot.baseX, dot.baseY);
         if (inCard && isOverExcluded(dot.baseX, dot.baseY)) {
           continue;
         }
         const target = inCard ? (cardCtx || ctx) : ctx;
+        let proximity = 0;
+        if (!inCard) {
+          for (const pointer of ambientPointers) {
+            const distance = Math.hypot(dot.baseX - pointer.x, dot.baseY - pointer.y);
+            if (distance < ambientRadius) {
+              proximity = Math.max(proximity, 1 - distance / ambientRadius);
+            }
+          }
+        }
         target.beginPath();
         if (inCard) {
           target.arc(dot.baseX, dot.baseY, 0.9, 0, Math.PI * 2);
           target.fillStyle = cardDotColor;
         } else {
-          target.arc(dot.baseX, dot.baseY, 1.0, 0, Math.PI * 2);
-          target.fillStyle = baseDotColor;
+          target.arc(dot.baseX, dot.baseY, 1 + proximity * 1.3, 0, Math.PI * 2);
+          target.fillStyle = proximity > 0.04 ? activeDotColor : baseDotColor;
+          if (proximity > 0.04) {
+            target.shadowColor = activeGlowColor;
+            target.shadowBlur = proximity * 8;
+          }
         }
         target.fill();
+        target.shadowColor = 'transparent';
+        target.shadowBlur = 0;
       }
     };
 
@@ -201,6 +325,8 @@ export function AuthGridCanvas({ reducedMotion = false }) {
       const offsetX = (width % GRID_SPACING) * 0.5;
       const offsetY = (height % GRID_SPACING) * 0.5;
 
+      updateHotspotCount();
+      ambientMotion = null;
       dots = [];
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
@@ -216,26 +342,19 @@ export function AuthGridCanvas({ reducedMotion = false }) {
         }
       }
 
-      if (reducedMotion || isPhoneTouchDevice()) {
+      if (!shouldAnimate()) {
         renderStaticFrame();
       }
     };
 
     buildGrid();
 
-    if (reducedMotion) {
-      renderStaticFrame();
-      return () => {
-        themeObserver.disconnect();
-      };
-    }
-
     let mouseX = -9999;
     let mouseY = -9999;
     let mouseActive = false;
 
     const onPointerMove = (e) => {
-      if (e.pointerType === 'touch' || isPhoneTouchDevice()) {
+      if (e.pointerType === 'touch' || isPhoneTouchDevice() || reducedMotion) {
         if (mouseActive) {
           mouseActive = false;
           mouseX = -9999;
@@ -294,7 +413,7 @@ export function AuthGridCanvas({ reducedMotion = false }) {
 
     const onResize = () => {
       buildGrid();
-      if (isPhoneTouchDevice()) {
+      if (!shouldAnimate()) {
         if (animId) {
           cancelAnimationFrame(animId);
           animId = null;
@@ -313,21 +432,14 @@ export function AuthGridCanvas({ reducedMotion = false }) {
     window.addEventListener('keydown', onKeyDown, { passive: true });
     window.addEventListener('blur', onPointerLeave);
     window.addEventListener('resize', onResize);
+    window.addEventListener('orientationchange', onResize);
 
-    if (isPhoneTouchDevice()) {
-      renderStaticFrame();
-      return () => {
-        themeObserver.disconnect();
-        window.removeEventListener('pointermove', onPointerMove);
-        window.removeEventListener('pointerleave', onPointerLeave);
-        window.removeEventListener('pointerdown', onPointerDown);
-        window.removeEventListener('focusin', onFocusIn);
-        window.removeEventListener('keydown', onKeyDown);
-        window.removeEventListener('blur', onPointerLeave);
-        window.removeEventListener('resize', onResize);
-        dots = [];
-      };
-    }
+    const scaleObserver = new MutationObserver(() => {
+      ambientMotion = null;
+      onResize();
+    });
+    const appRoot = canvas.closest('.app-root');
+    if (appRoot) scaleObserver.observe(appRoot, { attributes: true, attributeFilter: ['data-ui-scale'] });
 
     let slowFrames = 0;
     let isLowPerf = false;
@@ -355,29 +467,49 @@ export function AuthGridCanvas({ reducedMotion = false }) {
       cardCtx?.clearRect(0, 0, width, height);
 
       const twoPi = Math.PI * 2;
+      const ambientPointers = getAmbientPointers(now);
+      const ambientRadius = getAmbientRadius();
 
       for (const dot of dots) {
-        let proximity = 0;
+        let cursorProximity = 0;
         if (mouseActive) {
           const dx = dot.baseX - mouseX;
           const dy = dot.baseY - mouseY;
           const dist = Math.hypot(dx, dy);
+          const cursorRadius = mouseX < width * 0.55
+            ? CURSOR_INFLUENCE_RADIUS * 0.85
+            : CURSOR_INFLUENCE_RADIUS;
 
-          if (dist < INFLUENCE_RADIUS) {
-            proximity = 1 - dist / INFLUENCE_RADIUS;
+          if (dist < cursorRadius) {
+            cursorProximity = 1 - dist / cursorRadius;
           }
         }
-
+        let ambientProximity = 0;
         const inCard = isPointInCard(dot.baseX, dot.baseY);
+        if (!inCard) {
+          for (const pointer of ambientPointers) {
+            const dx = dot.baseX - pointer.x;
+            const dy = dot.baseY - pointer.y;
+            const dist = Math.hypot(dx, dy);
+            if (dist < ambientRadius) {
+              ambientProximity = Math.max(ambientProximity, 1 - dist / ambientRadius);
+            }
+          }
+        }
+        const proximity = Math.max(cursorProximity, ambientProximity);
+
         if (inCard && isOverExcluded(dot.baseX, dot.baseY)) {
           continue;
         }
 
         const maxLift = isLowPerf ? (inCard ? 4 : 7) : (inCard ? 6.5 : 11);
         dot.targetLift = -Math.pow(proximity, 1.6) * maxLift;
-        dot.currentLift += (dot.targetLift - dot.currentLift) * 0.12 * delta;
-        dot.glow += (proximity - dot.glow) * 0.14 * delta;
+        const response = proximity > 0.04 ? 0.22 : 0.12;
+        dot.currentLift += (dot.targetLift - dot.currentLift) * response * delta;
+        const glowTarget = proximity;
+        dot.glow += (glowTarget - dot.glow) * 0.14 * delta;
 
+        const drawX = dot.baseX;
         const drawY = dot.baseY + dot.currentLift;
         const hasGlow = dot.glow > 0.04;
         const target = inCard ? (cardCtx || ctx) : ctx;
@@ -393,11 +525,12 @@ export function AuthGridCanvas({ reducedMotion = false }) {
               target.shadowBlur = dot.glow * 4.5;
             }
           } else {
-            const size = 1.0 + dot.glow * 1.3;
-            target.arc(dot.baseX, drawY, size, 0, twoPi);
-            target.fillStyle = activeDotColor;
+            const size = 1 + dot.glow * 1.3;
+            target.arc(drawX, drawY, size, 0, twoPi);
+            const cursorDriven = cursorProximity > 0.04;
+            target.fillStyle = cursorDriven ? cursorDotColor : activeDotColor;
             if (!isLowPerf) {
-              target.shadowColor = activeGlowColor;
+              target.shadowColor = cursorDriven ? cursorGlowColor : activeGlowColor;
               target.shadowBlur = dot.glow * 8;
             }
           }
@@ -411,7 +544,7 @@ export function AuthGridCanvas({ reducedMotion = false }) {
             target.arc(dot.baseX, drawY, 0.9, 0, twoPi);
             target.fillStyle = cardDotColor;
           } else {
-            target.arc(dot.baseX, drawY, 1.0, 0, twoPi);
+            target.arc(drawX, drawY, 1, 0, twoPi);
             target.fillStyle = baseDotColor;
           }
           target.fill();
@@ -421,11 +554,12 @@ export function AuthGridCanvas({ reducedMotion = false }) {
       animId = requestAnimationFrame(frame);
     };
 
-    animId = requestAnimationFrame(frame);
+    if (shouldAnimate()) animId = requestAnimationFrame(frame);
 
     return () => {
       if (animId) cancelAnimationFrame(animId);
       themeObserver.disconnect();
+      scaleObserver.disconnect();
       window.removeEventListener('pointermove', onPointerMove);
       window.removeEventListener('pointerleave', onPointerLeave);
       window.removeEventListener('pointerdown', onPointerDown);
@@ -433,6 +567,7 @@ export function AuthGridCanvas({ reducedMotion = false }) {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('blur', onPointerLeave);
       window.removeEventListener('resize', onResize);
+      window.removeEventListener('orientationchange', onResize);
       dots = [];
     };
   }, [reducedMotion]);
