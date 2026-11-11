@@ -87,7 +87,6 @@ jobs:
         shell: bash
         env:
           ARC_DESKTOP_TARGET: ${{ matrix.target }}
-          ARC_RELEASE_CHANNEL: ${{ contains(github.ref_name, '-') && 'nightly' || 'stable' }}
           ARC_UPDATE_REPOSITORY: ${{ github.repository }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
