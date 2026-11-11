@@ -1,6 +1,6 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, AudioLines, File, FileCode2, FileImage, FileVideo, List, Plus, Search, Trash2, Upload, X } from 'lucide-react';
+import { AlertTriangle, AudioLines, ChevronDown, File, FileCode2, FileImage, FileVideo, List, Plus, Search, Trash2, Upload, X } from 'lucide-react';
 import { functionArgumentPinId, functionInputPinType, functionReturnInputPinId, getFunctionGraphArguments, getFunctionGraphReturnValues, getFunctionInputArguments, getFunctionReturnValues, getNodeTemplateInputPins, getTextTemplateSlots, PinColors } from './nodeDefinitions.js';
 import { bitfieldToPermissions, DISCORD_PERMISSIONS } from './permissionCatalog.js';
 import { AnimatedCheckbox, AnimatedDropdown } from '../ui/CustomControls.jsx';
@@ -19,8 +19,11 @@ import { getInputDefault } from '../../../../studio-server/src/engine/NodeSchema
 import { isReservedTemplateRoot, TEMPLATE_FUNCTION_NAMES, TEMPLATE_SYSTEM_PATHS, validateTemplateSyntax } from '../../../../studio-server/src/engine/TemplateExpressions.js';
 import { attachTemplateAutocomplete, BUILTIN_TEMPLATE_FUNCTIONS } from '../../core/templateFieldAutocomplete.js';
 import { MODIFY_COMPONENT_STYLE_OPTIONS, DISCORD_OBJECT_PROPERTIES } from 'chezcord';
+import { getVisibleNodeSockets } from '../../core/nodeSocketVisibility.js';
+import { getConnectedTemplateInputPaths, resolveInferredObjectProperties } from '../../core/objectPropertySuggestions.js';
 //
 const slashCommandNamePattern = /^[-_'\p{L}\p{N}\p{sc=Deva}\p{sc=Thai}]{1,32}$/u;
+const LEGACY_WEB_SERVER_PIN_IDS = ['path', 'method', 'status', 'content_type', 'template', 'routes_json', 'files_json'];
 const componentsV2PropertyOptions = [
   { value: 'spoiler', label: 'Spoiler' },
   { value: 'accentColor', label: 'Accent color' },
@@ -36,6 +39,7 @@ const componentsV2PropertyOptions = [
 ];
 
 export { MODIFY_COMPONENT_STYLE_OPTIONS, DISCORD_OBJECT_PROPERTIES };
+export { resolveInferredObjectProperties };
 const defaultValueForType = (type) => type === 'number' ? 0 : type === 'boolean' ? false : type === 'array' ? [] : type === 'object' ? {} : '';
 const eventSocketHints = {
   application_id: 'Discord application (bot) ID associated with this interaction',
@@ -53,6 +57,40 @@ const eventSocketHints = {
   user_id: 'Discord user ID of the person who triggered this event or interaction',
   username: 'Discord username of the person who invoked this command'
 };
+function NodePinColumn({ pins, direction, connectedPinIds, pinRevealEnabled, forceExpanded = false, expanded = false, onExpand, renderPin }) {
+  const [dragging, setDragging] = React.useState(false);
+  const isExpanded = pinRevealEnabled && (expanded || dragging || forceExpanded);
+  const { entries, hiddenCount } = getVisibleNodeSockets(pins, connectedPinIds, isExpanded, pinRevealEnabled);
+  const showControl = pinRevealEnabled && hiddenCount > 0;
+
+  React.useEffect(() => {
+    if (!dragging) return undefined;
+    const finishDrag = () => setDragging(false);
+    window.addEventListener('pointerup', finishDrag, true);
+    window.addEventListener('pointercancel', finishDrag, true);
+    return () => {
+      window.removeEventListener('pointerup', finishDrag, true);
+      window.removeEventListener('pointercancel', finishDrag, true);
+    };
+  }, [dragging]);
+
+  return <div
+    className={`node-pin-column node-pin-${direction}s ${isExpanded ? 'is-expanded' : ''}`}
+    onPointerDownCapture={(event) => {
+      if (event.target.closest('.node-pin-row')) setDragging(true);
+    }}
+  >
+    {entries.map(({ pin, index }) => renderPin(pin, direction, index))}
+    {showControl && <div
+      className="node-pin-more"
+      aria-hidden="true"
+      onPointerEnter={onExpand}
+    >
+      <span>Show {hiddenCount} more</span><ChevronDown size={11} />
+    </div>}
+  </div>;
+}
+
 function VariableJSONFallback({ type, value, onChange }) {
   const [draft, setDraft] = React.useState(null);
   const text = draft ?? JSON.stringify(value ?? defaultValueForType(type), null, 2);
@@ -165,72 +203,6 @@ function resolveThreadTypeValue(value, fallback = 11) {
   return /^\d+$/.test(text) ? Number(text) : fallback;
 }
 
-export function resolveInferredObjectProperties(pinIds, incomingConnections, nodeById) {
-  const pinList = Array.isArray(pinIds) ? pinIds : [pinIds];
-  let wire = null;
-  for (const pinId of pinList) {
-    wire = incomingConnections?.get?.(pinId);
-    if (wire) break;
-  }
-  if (!wire) {
-    return [
-      ...DISCORD_OBJECT_PROPERTIES.message,
-      ...DISCORD_OBJECT_PROPERTIES.user,
-      ...DISCORD_OBJECT_PROPERTIES.member,
-      ...DISCORD_OBJECT_PROPERTIES.channel,
-      ...DISCORD_OBJECT_PROPERTIES.guild,
-      ...DISCORD_OBJECT_PROPERTIES.interaction
-    ];
-  }
-  const sourceNode = nodeById?.get?.(wire.sourceNodeId);
-  const sourcePin = String(wire.sourcePinId || '').toLowerCase();
-  const sourceNodeType = String(sourceNode?.type || '').toLowerCase();
-
-  if (sourcePin.includes('author') || sourcePin === 'user' || sourcePin.endsWith('_user')) {
-    return DISCORD_OBJECT_PROPERTIES.user;
-  }
-  if (sourcePin.includes('member')) {
-    return DISCORD_OBJECT_PROPERTIES.member;
-  }
-  if (sourcePin.includes('message')) {
-    return DISCORD_OBJECT_PROPERTIES.message;
-  }
-  if (sourcePin.includes('channel')) {
-    return DISCORD_OBJECT_PROPERTIES.channel;
-  }
-  if (sourcePin.includes('guild') || sourcePin.includes('server')) {
-    return DISCORD_OBJECT_PROPERTIES.guild;
-  }
-  if (sourcePin.includes('role')) {
-    return DISCORD_OBJECT_PROPERTIES.role;
-  }
-  if (sourcePin.includes('interaction')) {
-    return DISCORD_OBJECT_PROPERTIES.interaction;
-  }
-  if (sourcePin.includes('emoji')) {
-    return DISCORD_OBJECT_PROPERTIES.emoji;
-  }
-
-  if (sourceNodeType.includes('message')) return DISCORD_OBJECT_PROPERTIES.message;
-  if (sourceNodeType.includes('member')) return DISCORD_OBJECT_PROPERTIES.member;
-  if (sourceNodeType.includes('user')) return DISCORD_OBJECT_PROPERTIES.user;
-  if (sourceNodeType.includes('channel')) return DISCORD_OBJECT_PROPERTIES.channel;
-  if (sourceNodeType.includes('role')) return DISCORD_OBJECT_PROPERTIES.role;
-  if (sourceNodeType.includes('guild')) return DISCORD_OBJECT_PROPERTIES.guild;
-  if (sourceNodeType.includes('interaction') || sourceNodeType.includes('button') || sourceNodeType.includes('select')) {
-    return DISCORD_OBJECT_PROPERTIES.interaction;
-  }
-
-  return [
-    ...DISCORD_OBJECT_PROPERTIES.message,
-    ...DISCORD_OBJECT_PROPERTIES.user,
-    ...DISCORD_OBJECT_PROPERTIES.member,
-    ...DISCORD_OBJECT_PROPERTIES.channel,
-    ...DISCORD_OBJECT_PROPERTIES.guild,
-    ...DISCORD_OBJECT_PROPERTIES.interaction
-  ];
-}
-
 function PropertySuggestInput({ value, onChange, placeholder, ariaLabel, suggestions = [] }) {
   const [open, setOpen] = React.useState(false);
   const [selectedIndex, setSelectedIndex] = React.useState(0);
@@ -331,15 +303,63 @@ function PropertySuggestInput({ value, onChange, placeholder, ariaLabel, suggest
 }
 
 function CanvasNodeView({
-  node, definition, loadFailed = false, authToken = '', connectedInputIds = new Set(), incomingConnections, nodeById, graphVariables = [], eventTemplatePaths = [], templatePreviewValues = {}, callableGraphs = [], selected = false, illuminated = false, simulationMetric = null, simulationActive = false, isLocked = false, findOptions = null, isFindCurrent = false,
+  node, definition, loadFailed = false, loadFailureReason = 'This node type is unavailable.', authToken = '', connectedInputIds = new Set(), connectedOutputIds = new Set(), pinRevealEnabled = true, isConnectingWire = false, autoRevealInputs = false, incomingConnections, nodeById, nodeDefinitionsById, graphVariables = [], eventTemplatePaths = [], templatePreviewValues = {}, callableGraphs = [], selected = false, illuminated = false, simulationMetric = null, simulationActive = false, isLocked = false, findOptions = null, isFindCurrent = false,
   snappedPin = null, appEmojis = [], mediaAssets = [], onUploadMedia, onLoadMediaContent, modalFieldOptions = [], componentsV2SourceConnected = false, onSelect, onDelete, onNodeDataChange, onPinStartConnect, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph
 }) {
   const nodeDef = definition || { label: node.label || node.type, color: '#778196', category: 'Node', inputs: [], outputs: [] };
   const isDeprecated = Boolean(nodeDef.deprecationMessage);
+  const showLegacyWebServerInputs = node.type === 'action_web_server_start' && LEGACY_WEB_SERVER_PIN_IDS.some((pinId) => Object.hasOwn(node.data || {}, pinId) || incomingConnections?.has?.(pinId));
+  const targetGraph = ['function_call', 'execute_graph'].includes(node.type)
+    ? callableGraphs.find((graph) => graph.id === node.data?.graphId)
+    : null;
+  const targetGraphDisabled = targetGraph?.enabled === false;
+  const [expandedSocketColumns, setExpandedSocketColumns] = React.useState({ inputs: false, outputs: false });
+  const wireDragWasActive = React.useRef(false);
+  const wireDragPointerPosition = React.useRef(null);
+  const collapseSocketsIfPointerOutside = React.useCallback((x, y) => {
+    const bounds = cardRef.current?.getBoundingClientRect();
+    if (!bounds || (x >= bounds.left && x <= bounds.right && y >= bounds.top && y <= bounds.bottom)) return;
+    setExpandedSocketColumns({ inputs: false, outputs: false });
+  }, []);
+  React.useEffect(() => {
+    if (!isConnectingWire) {
+      if (wireDragWasActive.current) {
+        wireDragWasActive.current = false;
+        const pointer = wireDragPointerPosition.current;
+        if (pointer) collapseSocketsIfPointerOutside(pointer.x, pointer.y);
+      }
+      return undefined;
+    }
+
+    wireDragWasActive.current = true;
+    wireDragPointerPosition.current = null;
+    const recordPointerPosition = (event) => {
+      wireDragPointerPosition.current = { x: event.clientX, y: event.clientY };
+      if (event.type === 'pointerup' || event.type === 'pointercancel') {
+        collapseSocketsIfPointerOutside(event.clientX, event.clientY);
+      }
+    };
+    window.addEventListener('pointermove', recordPointerPosition, true);
+    window.addEventListener('pointerup', recordPointerPosition, true);
+    window.addEventListener('pointercancel', recordPointerPosition, true);
+    return () => {
+      window.removeEventListener('pointermove', recordPointerPosition, true);
+      window.removeEventListener('pointerup', recordPointerPosition, true);
+      window.removeEventListener('pointercancel', recordPointerPosition, true);
+    };
+  }, [collapseSocketsIfPointerOutside, isConnectingWire]);
+  React.useEffect(() => {
+    if (!pinRevealEnabled) setExpandedSocketColumns({ inputs: false, outputs: false });
+  }, [pinRevealEnabled]);
   const execFirst = (pins = []) => [...pins].sort((left, right) => Number(right.type === 'exec') - Number(left.type === 'exec'));
-  const inputs = loadFailed ? [] : execFirst(nodeDef.inputs);
+  const inputs = loadFailed ? [] : execFirst(nodeDef.inputs.filter((pin) => !LEGACY_WEB_SERVER_PIN_IDS.includes(pin.id) || showLegacyWebServerInputs));
   const outputs = loadFailed ? [] : execFirst(nodeDef.outputs);
-  const rows = Math.max(inputs.length, outputs.length);
+  const inputSocketView = getVisibleNodeSockets(inputs, connectedInputIds, false, pinRevealEnabled);
+  const outputSocketView = getVisibleNodeSockets(outputs, connectedOutputIds, false, pinRevealEnabled);
+  const rows = Math.max(
+    inputSocketView.entries.length + Number(inputSocketView.hiddenCount > 0),
+    outputSocketView.entries.length + Number(outputSocketView.hiddenCount > 0)
+  );
   const update = (key, value, label) => onNodeDataChange?.(node.id, typeof key === 'object' ? key : { [key]: value }, label);
   const selectedVariable = resolveVariableReference(graphVariables, node.data?.variableId, node.data?.scope || 'graph');
   const templatePaths = React.useMemo(() => {
@@ -350,8 +370,9 @@ function CanvasNodeView({
       const root = String(item?.path || '').split(/[.[]/)[0].toLowerCase();
       return item?.path && root && !graphVariables.some((variable) => String(variable?.name || '').toLowerCase() === root);
     }).map((item) => ({ path: item.path, label: item.label || item.path }));
-    return [...new Map([...systemPaths, ...variablePaths, ...eventPaths, ...mediaPaths].map((item) => [item.path, item])).values()];
-  }, [graphVariables, eventTemplatePaths, mediaAssets]);
+    const connectedPaths = getConnectedTemplateInputPaths(nodeDef.inputs, incomingConnections, nodeById, nodeDefinitionsById, graphVariables);
+    return [...new Map([...systemPaths, ...variablePaths, ...eventPaths, ...connectedPaths, ...mediaPaths].map((item) => [item.path, item])).values()];
+  }, [graphVariables, eventTemplatePaths, incomingConnections, mediaAssets, nodeById, nodeDef.inputs, nodeDefinitionsById]);
   const templateFunctions = React.useMemo(() => {
     return (callableGraphs || [])
       .filter((graph) => graph?.graphType === 'function' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(graph.name || '') && !isReservedTemplateRoot(graph.name))
@@ -419,7 +440,7 @@ function CanvasNodeView({
 
   return (
     <article
-      className={`canvas-node ${selected ? 'is-selected' : ''} ${illuminated ? 'is-illuminated' : ''} ${isLocked ? 'is-locked' : ''} ${loadFailed ? 'is-load-failed' : ''} ${isDeprecated ? 'is-deprecated' : ''}`}
+      className={`canvas-node ${selected ? 'is-selected' : ''} ${illuminated ? 'is-illuminated' : ''} ${isLocked ? 'is-locked' : ''} ${loadFailed ? 'is-load-failed' : ''} ${isDeprecated ? 'is-deprecated' : ''} ${targetGraphDisabled ? 'is-disabled-target' : ''}`}
       data-node-card-id={node.id}
       tabIndex={-1}
       style={{ '--node-accent': nodeDef.color, '--node-rows': rows }}
@@ -431,23 +452,33 @@ function CanvasNodeView({
         const target = callableGraphs.find((graph) => graph.id === node.data?.graphId && graph.graphType === 'function');
         if (target) onOpenFunctionGraph?.(target);
       }}
-      data-tooltip={loadFailed ? 'Failed to load this node' : node.type === 'function_call' && callableGraphs.some((graph) => graph.id === node.data?.graphId && graph.graphType === 'function') ? 'Double-click to open this function graph' : undefined}
+      data-tooltip={loadFailed ? loadFailureReason : targetGraphDisabled ? 'This node targets a disabled graph' : node.type === 'function_call' && targetGraph?.graphType === 'function' ? 'Double-click to open this function graph' : undefined}
       aria-disabled={loadFailed || isDeprecated || undefined}
       aria-label={`${node.label || nodeDef.label} node`}
+      onPointerLeave={(event) => {
+        const bounds = event.currentTarget.getBoundingClientRect();
+        const pointerInside = event.clientX >= bounds.left && event.clientX <= bounds.right
+          && event.clientY >= bounds.top && event.clientY <= bounds.bottom;
+        if (pointerInside) return;
+        if (!isConnectingWire) setExpandedSocketColumns({ inputs: false, outputs: false });
+      }}
     >
       <header className="node-header">
         <span className="node-type-mark"><span /></span>
         <span className="node-category">{renderCanvasFindText(nodeDef.category, findOptions, isFindCurrent)}</span>
+        {loadFailed && <AlertTriangle size={13} aria-label={loadFailureReason} title={loadFailureReason} />}
         {simulationMetric && <span className={`node-simulation-metric ${simulationActive ? 'is-active' : ''} ${simulationMetric.status === 'error' ? 'is-error' : ''}`} title={`${simulationMetric.count} execution${simulationMetric.count === 1 ? '' : 's'} · last ${simulationMetric.lastMs.toFixed(2)} ms · total ${simulationMetric.totalMs.toFixed(2)} ms${simulationMetric.lastGapMs == null ? '' : ` · ${simulationMetric.lastGapMs.toFixed(2)} ms since previous node`}${simulationMetric.incomingWire ? ` · from ${simulationMetric.incomingWire.sourceNodeId}` : ''}`}>{simulationMetric.lastMs < 0.1 && simulationMetric.lastMs > 0 ? '<0.1' : `${simulationMetric.lastMs.toFixed(simulationMetric.lastMs >= 10 ? 1 : 2)} ms`}{simulationMetric.count > 1 ? ` ×${simulationMetric.count}` : ''}</span>}
         {!isLocked && <button className="node-delete" onClick={(event) => { event.stopPropagation(); onDelete?.(node.id); }} title="Delete node" aria-label="Delete node" tabIndex={selected ? 0 : -1}><X size={13} /></button>}
       </header>
       <div className="node-title" data-tooltip={node.label && node.label !== nodeDef.label ? `Node type: ${nodeDef.label}` : undefined}>{renderCanvasFindText(node.label || nodeDef.label, findOptions, isFindCurrent)}</div>
       <div className="node-pins">
-        <div className="node-pin-column node-pin-inputs">{inputs.map((pin, index) => renderPin(pin, 'input', index))}</div>
-        <div className="node-pin-column node-pin-outputs">{outputs.map((pin, index) => renderPin(pin, 'output', index))}</div>
+        <NodePinColumn pins={inputs} direction="input" connectedPinIds={connectedInputIds} pinRevealEnabled={pinRevealEnabled} forceExpanded={autoRevealInputs} expanded={expandedSocketColumns.inputs} onExpand={() => setExpandedSocketColumns((current) => ({ ...current, inputs: true }))} renderPin={renderPin} />
+        <NodePinColumn pins={outputs} direction="output" connectedPinIds={connectedOutputIds} pinRevealEnabled={pinRevealEnabled} expanded={expandedSocketColumns.outputs} onExpand={() => setExpandedSocketColumns((current) => ({ ...current, outputs: true }))} renderPin={renderPin} />
       </div>
+      {loadFailed && <div className="node-config node-disabled-target-message" role="status"><AlertTriangle size={13} /><span>{loadFailureReason}</span></div>}
       {!loadFailed && isDeprecated && <div className="node-config node-deprecated-message" role="note"><AlertTriangle size={13} /><span>{nodeDef.deprecationMessage}</span></div>}
-      {!loadFailed && !isDeprecated && !nodeDef.requiresGenericEditor && renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues, componentsV2SourceConnected, templatePaths, incomingConnections, nodeById, mediaAssets, onUploadMedia, onLoadMediaContent)}
+      {!loadFailed && !isDeprecated && targetGraphDisabled && <div className="node-config node-disabled-target-message" role="status"><AlertTriangle size={13} /><span>Target graph is disabled. Enable it before this node can run.</span></div>}
+      {!loadFailed && !isDeprecated && !nodeDef.requiresGenericEditor && renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues, componentsV2SourceConnected, templatePaths, incomingConnections, nodeById, nodeDefinitionsById, mediaAssets, onUploadMedia, onLoadMediaContent)}
       {!loadFailed && !isDeprecated && (nodeDef.requiresGenericEditor || nodeDef.editorOnlyInputs?.length > 0) && <div className="node-config node-config-stack node-schema-fallback">
         {nodeDef.requiresGenericEditor && <span className="node-config-hint">This workspace schema differs from this client’s editor. These values are used by the workspace server.</span>}
         {nodeDef.editorOnlyInputs.filter((pin) => pin.type !== 'exec' && !connectedInputIds.has(pin.id)).map((pin) => {
@@ -529,6 +560,7 @@ function equalCallableGraphOptions(left = [], right = [], node) {
     const before = left[index];
     const after = right[index];
     if (before?.id !== after?.id || before?.name !== after?.name) return false;
+    if (before.id === targetId && before.enabled !== after.enabled) return false;
     if (node.type === 'function_call' && before.id === targetId) {
       if (before.graphType !== after.graphType || functionSignature(before) !== functionSignature(after)) return false;
     }
@@ -596,7 +628,7 @@ function renderCanvasFindText(value, findOptions, currentNode = false) {
   return parts;
 }
 
-function renderSchemaControls(node, controls, update, connectedInputIds) {
+function renderSchemaControls(node, controls, update, connectedInputIds, graphVariables = [], callableGraphs = []) {
   if (!Array.isArray(controls) || controls.length === 0) return null;
   const visibleControls = controls.filter((control) => {
     if (connectedInputIds.has(control.inputId || control.key)) return false;
@@ -646,21 +678,42 @@ function renderSchemaControls(node, controls, update, connectedInputIds) {
         /></FallbackField>;
       }
       if (control.type === 'text') {
-        return <FallbackField key={control.key} label={label}><input
-          value={String(value ?? '')}
-          maxLength={control.maxLength}
-          onChange={(event) => update(control.key, event.target.value)}
-          onPointerDown={(event) => event.stopPropagation()}
-          placeholder={control.placeholder}
-          aria-label={label}
-        /></FallbackField>;
+        const templateFunctions = callableGraphs
+          .filter((graph) => graph?.graphType === 'function' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(graph.name || '') && !isReservedTemplateRoot(graph.name))
+          .map((graph) => ({ name: graph.name, label: `${graph.name}()` }));
+        const field = control.template
+          ? <DiscordTextField
+            type={control.secret ? 'password' : 'text'}
+            value={String(value ?? '')}
+            maxLength={control.maxLength}
+            graphVariables={graphVariables}
+            templateFunctions={templateFunctions}
+            templateAutocomplete
+            autoComplete={control.secret ? 'new-password' : undefined}
+            onChange={(event) => update(control.key, event.target.value)}
+            onPointerDown={(event) => event.stopPropagation()}
+            placeholder={control.placeholder}
+            aria-label={label}
+          />
+          : <input
+            value={String(value ?? '')}
+            maxLength={control.maxLength}
+            onChange={(event) => update(control.key, event.target.value)}
+            onPointerDown={(event) => event.stopPropagation()}
+            placeholder={control.placeholder}
+            aria-label={label}
+          />;
+        return <FallbackField key={control.key} label={label}>
+          {field}
+          {control.secret && <small className="node-config-hint">Use a Secret variable to keep the token encrypted. Literal text is saved in graph data.</small>}
+        </FallbackField>;
       }
       return null;
     })}
   </div>;
 }
 
-function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues, componentsV2SourceConnected = false, templatePaths = [], incomingConnections = null, nodeById = null, mediaAssets = [], onUploadMedia, onLoadMediaContent) {
+function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues, componentsV2SourceConnected = false, templatePaths = [], incomingConnections = null, nodeById = null, nodeDefinitionsById = null, mediaAssets = [], onUploadMedia, onLoadMediaContent) {
   const isConnected = (pinId) => connectedInputIds.has(pinId);
   const templateFunctions = (callableGraphs || [])
     .filter((graph) => graph?.graphType === 'function' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(graph.name || '') && !isReservedTemplateRoot(graph.name))
@@ -695,9 +748,11 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     const valuePaths = templatePaths;
     const templateSuggestions = nodeDef.inputs.filter((pin) => /^arg_\d+$/.test(pin.id)).map((pin) => ({ name: pin.id.replace(/^arg_/, 'arg'), label: pin.label }));
     const syntaxError = validateTemplateSyntax(value);
-    return <>
-      <FallbackField label={label}><DiscordTextField
+    const field = multiline && value.length > LONG_TEXT_THRESHOLD
+      ? <DiscordLongTextField value={value} onOpenEditor={() => onOpenTextStudio?.(node, id, label, value, maxLength)} label={label} maxLength={maxLength} />
+      : <DiscordTextField
         as={multiline ? 'textarea' : 'input'}
+        maskWhenInactive={!multiline && id === 'auth_token'}
         rows={multiline ? 2 : undefined}
         maxLength={maxLength}
         inputMode={inputMode}
@@ -707,15 +762,71 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
         templateSuggestions={templateSuggestions}
         templateFunctions={templateFunctions}
         templateAutocomplete
+        autoComplete={id === 'auth_token' ? 'new-password' : undefined}
         onOpenTextEditor={() => onOpenTextStudio?.(node, id, label, value, maxLength)}
         onChange={(event) => update(id, event.target.value)}
         onPointerDown={(event) => event.stopPropagation()}
         placeholder={placeholder}
         aria-label={label}
-      /></FallbackField>
+      />;
+    return <>
+      <FallbackField label={label}>{field}</FallbackField>
       {syntaxError && <div className="node-config-warning template-syntax-warning" role="alert"><AlertTriangle size={12} /><span>{syntaxError}</span></div>}
     </>;
   };
+  const serverOptions = [...(nodeById?.values?.() || [])]
+    .filter((item) => item.type === 'action_web_server_start')
+    .map((item) => ({ value: item.id, label: `${item.label || 'Web Server'} · ${item.id.slice(0, 8)}` }));
+  const serverSelector = (placeholder = 'Select a started web server') => isConnected('web_server_id') ? null : <FallbackField label="Web Server">
+    <AnimatedDropdown value={node.data?.web_server_id || ''} options={serverOptions} onChange={(value) => update('web_server_id', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Web server" placeholder={placeholder} className="node-select" disabled={!serverOptions.length} />
+  </FallbackField>;
+  if (node.type === 'action_web_server_route') {
+    return <div className="node-config node-config-stack web-server-node-config">
+      {serverSelector()}
+      {!isConnected('method') && <FallbackField label="HTTP Method"><AnimatedDropdown value={node.data?.method || 'GET'} options={['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].map((value) => ({ value, label: value }))} onChange={(value) => update('method', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Web route HTTP method" className="node-select" /></FallbackField>}
+      {templateInput('path', 'Path', { maxLength: 512, placeholder: '/api/users/:id' })}
+      {!isConnected('status') && <FallbackField label="Response Status"><NodeNumberInput min="200" max="599" step="1" value={node.data?.status ?? 200} onChange={(event) => update('status', numericNodeInputValue(event.target.value, { min: 200, max: 599, integer: true, fallback: 200 }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Web route response status" /></FallbackField>}
+      {templateInput('content_type', 'Content Type', { maxLength: 128, placeholder: 'application/json; charset=utf-8' })}
+      {templateInput('auth_token', 'Bearer Token', { maxLength: 4096, placeholder: '{{api_key}}' })}
+      <span className="node-config-hint">Use a Secret variable to keep the token encrypted. Literal text is saved in graph data.</span>
+      {templateInput('headers_json', 'Response Headers JSON', { multiline: true, maxLength: 8192, placeholder: '{"cache-control":"no-store"}' })}
+      {templateInput('response', 'Response Template', { multiline: true, maxLength: 256 * 1024, placeholder: '{"ok":true,"id":<%= params.id %>}' })}
+      <span className="node-config-hint">Templates can read query, params, body, and request. HTML values are escaped. JSON responses encode each <code>{'<%= value %>'}</code> as JSON. Unescaped output and executable EJS are disabled.</span>
+      <span className="node-config-hint">A blank bearer token makes the route public. Add a token for private APIs. Bind to 127.0.0.1 for local only access.</span>
+    </div>;
+  }
+  if (node.type === 'action_web_server_static_file') {
+    return <div className="node-config node-config-stack web-server-node-config">
+      {serverSelector()}
+      {templateInput('path', 'URL Path', { maxLength: 512, placeholder: '/styles.css' })}
+      {!isConnected('asset') && <SingleMediaPicker value={node.data?.asset || ''} mediaAssets={mediaAssets} onUploadMedia={onUploadMedia} onLoadMediaContent={onLoadMediaContent} onChange={(value) => update('asset', value)} />}
+      {templateInput('auth_token', 'Bearer Token', { maxLength: 4096, placeholder: '{{api_key}}' })}
+      <span className="node-config-hint">Use a Secret variable to keep the token encrypted. Literal text is saved in graph data.</span>
+      {templateInput('content_type', 'Content Type Override', { maxLength: 128, placeholder: 'Leave blank to detect from file' })}
+      {!isConnected('status') && <FallbackField label="Response Status"><NodeNumberInput min="200" max="599" step="1" value={node.data?.status ?? 200} onChange={(event) => update('status', numericNodeInputValue(event.target.value, { min: 200, max: 599, integer: true, fallback: 200 }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Static file response status" /></FallbackField>}
+      {templateInput('headers_json', 'Response Headers JSON', { multiline: true, maxLength: 8192, placeholder: '{"cache-control":"public, max-age=3600"}' })}
+      <span className="node-config-hint">Files are read only from this project’s media library and verified before serving. An uploaded .ejs file uses the safe data lookup template syntax.</span>
+    </div>;
+  }
+  if (node.type === 'action_web_server_stop_one') return <div className="node-config node-config-stack web-server-node-config">{serverSelector('Select the web server to stop')}<span className="node-config-hint">This stops only the selected server. Its routes and static files are removed with it.</span></div>;
+  if (node.type === 'action_web_server_start') {
+    const showLegacySettings = LEGACY_WEB_SERVER_PIN_IDS.some((pinId) => Object.hasOwn(node.data || {}, pinId) || incomingConnections?.has?.(pinId));
+    return <div className="node-config node-config-stack web-server-node-config">
+      {!isConnected('port') && <FallbackField label="Port"><NodeNumberInput min="0" max="65535" step="1" value={node.data?.port ?? 3001} onChange={(event) => update('port', numericNodeInputValue(event.target.value, { min: 0, max: 65535, integer: true, fallback: 0 }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Web server port" /></FallbackField>}
+      {templateInput('host', 'Bind host', { maxLength: 255, placeholder: '127.0.0.1' })}
+      {showLegacySettings && <details className="web-server-legacy-settings"><summary>Legacy inline routes</summary>
+        {templateInput('path', 'Fallback Route Path', { maxLength: 512, placeholder: '/' })}
+        {!isConnected('method') && <FallbackField label="Fallback Method"><AnimatedDropdown value={node.data?.method || 'GET'} options={['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].map((value) => ({ value, label: value }))} onChange={(value) => update('method', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Legacy fallback HTTP method" className="node-select" /></FallbackField>}
+        {!isConnected('status') && <FallbackField label="Fallback Status"><NodeNumberInput min="200" max="599" step="1" value={node.data?.status ?? 200} onChange={(event) => update('status', numericNodeInputValue(event.target.value, { min: 200, max: 599, integer: true, fallback: 200 }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Legacy fallback status" /></FallbackField>}
+        {templateInput('content_type', 'Fallback Content Type', { maxLength: 128, placeholder: 'text/html; charset=utf-8' })}
+        {templateInput('template', 'Fallback Response Template', { multiline: true, maxLength: 256 * 1024, placeholder: '<h1>Hello <%= query.name %></h1>' })}
+        {templateInput('routes_json', 'Routes JSON', { multiline: true, maxLength: 5 * 1024 * 1024, placeholder: '[]' })}
+        {templateInput('files_json', 'Static Files JSON', { multiline: true, maxLength: 5 * 1024 * 1024, placeholder: '{}' })}
+      </details>}
+      <span className="node-config-hint">Connect this node’s Exec and Server ID outputs to Add Web Route or Serve Web File. Use Server ID with Stop Web Server to stop only this listener. The default host only accepts local connections. Use a public bind host only when network access is intended.</span>
+    </div>;
+  }
+  if (node.type === 'action_web_server_stop') return <div className="node-config node-config-stack"><span className="node-config-hint">Stops all servers started by this project. They also stop when the bot disconnects.</span></div>;
   const comparisonInput = (id, label) => {
     const value = String(node.data?.[id] ?? '');
     const valuePaths = templatePaths;
@@ -952,13 +1063,13 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     </div>;
   }
   if (node.type === 'data_object_get') {
-    const objectProps = resolveInferredObjectProperties('object', incomingConnections, nodeById);
+    const objectProps = resolveInferredObjectProperties('object', incomingConnections, nodeById, nodeDefinitionsById, graphVariables);
     return <div className="node-config node-config-stack">
       {!isConnected('key') && <FallbackField label="Property"><PropertySuggestInput value={node.data?.key ?? ''} onChange={(value) => update('key', value)} suggestions={objectProps} placeholder="property_name or author.id" ariaLabel="Property key" /></FallbackField>}
     </div>;
   }
   if (node.type === 'data_object_set') {
-    const objectProps = resolveInferredObjectProperties('object', incomingConnections, nodeById);
+    const objectProps = resolveInferredObjectProperties('object', incomingConnections, nodeById, nodeDefinitionsById, graphVariables);
     return <div className="node-config node-config-stack">
       {!isConnected('key') && <FallbackField label="Property"><PropertySuggestInput value={node.data?.key ?? ''} onChange={(value) => update('key', value)} suggestions={objectProps} placeholder="property_name" ariaLabel="Property key" /></FallbackField>}
       {!isConnected('value') && templateInput('value', 'Value', { placeholder: 'Value to assign' })}
@@ -1004,7 +1115,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     </div>;
   }
   if (node.type === 'data_get_value_by_path') {
-    const pathProps = resolveInferredObjectProperties(['value', 'data'], incomingConnections, nodeById);
+    const pathProps = resolveInferredObjectProperties(['value', 'data'], incomingConnections, nodeById, nodeDefinitionsById, graphVariables);
     return <div className="node-config node-config-stack">
       {!isConnected('path') && <FallbackField label="Path"><PropertySuggestInput value={node.data?.path ?? ''} onChange={(value) => update('path', value)} suggestions={pathProps} placeholder="user.profile.name or items[0].id" ariaLabel="Value path" /></FallbackField>}
       {!isConnected('fallback') && <FallbackField label="Fallback"><input value={node.data?.fallback ?? ''} onChange={(event) => update('fallback', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when the path is missing" aria-label="Path lookup fallback" /></FallbackField>}
@@ -1012,7 +1123,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
   }
   if (node.type === 'data_find_array_item' || node.type === 'data_filter_array') {
     const comparisonOptions = [{ value: 'equals', label: 'Equals' }, { value: 'not_equals', label: 'Does not equal' }, { value: 'contains', label: 'Contains' }, { value: 'starts_with', label: 'Starts with' }, { value: 'ends_with', label: 'Ends with' }, { value: 'greater_than', label: 'Greater than' }, { value: 'greater_or_equal', label: 'At least' }, { value: 'less_than', label: 'Less than' }, { value: 'less_or_equal', label: 'At most' }, { value: 'exists', label: 'Path exists' }, { value: 'is_empty', label: 'Is empty' }];
-    const arrayProps = resolveInferredObjectProperties(['array'], incomingConnections, nodeById);
+    const arrayProps = resolveInferredObjectProperties(['array'], incomingConnections, nodeById, nodeDefinitionsById, graphVariables);
     return <div className="node-config node-config-stack">
       {!isConnected('path') && <FallbackField label="Property path (optional)"><PropertySuggestInput value={node.data?.path ?? ''} onChange={(value) => update('path', value)} suggestions={arrayProps} placeholder="id or user.name; blank checks each item" ariaLabel="Array item property path" /></FallbackField>}
       {node.type === 'data_filter_array' && !isConnected('operator') && <FallbackField label="Comparison"><AnimatedDropdown value={node.data?.operator || 'equals'} options={comparisonOptions} onChange={(value) => update('operator', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Array filter comparison" className="node-select" /></FallbackField>}
@@ -1034,12 +1145,6 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     </FallbackField>}
     {!isConnected('max') && <FallbackField label="Maximum"><NodeNumberInput allowEmpty step="any" value={node.data?.max ?? 1} onChange={(event) => update('max', numericNodeInputValue(event.target.value, { allowEmpty: true }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Random number maximum" /></FallbackField>}
   </div>;
-  if (node.type === 'function_math') {
-    return <div className="node-config node-config-stack">
-      {nodeDef.inputs.filter((pin) => pin.type === 'number' && !isConnected(pin.id)).map((pin) => <FallbackField key={pin.id} label={pin.label}><NodeNumberInput step="any" value={node.data?.[pin.id] ?? pin.defaultValue ?? 0} onChange={(event) => update(pin.id, numericNodeInputValue(event.target.value, { fallback: Number(pin.defaultValue) || 0 }))} onPointerDown={(event) => event.stopPropagation()} aria-label={pin.label} /></FallbackField>)}
-      {!isConnected('operation') && <AnimatedDropdown value={node.data?.operation || 'add'} options={[{ value: 'add', label: 'A + B' }, { value: 'subtract', label: 'A − B' }, { value: 'multiply', label: 'A × B' }, { value: 'divide', label: 'A ÷ B' }, { value: 'modulo', label: 'A mod B' }]} onChange={(value) => update('operation', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Arithmetic operation" className="node-select" />}
-    </div>;
-  }
   if (node.type === 'value_text') {
     return <div className="node-config node-config-stack">{textEditor('value', 'Text value', 2000, 'Hello World')}</div>;
   }
@@ -1510,7 +1615,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       {!isConnected('time') && <FallbackField label="Time (ISO or timestamp)"><input value={node.data?.time ?? ''} onChange={(event) => update('time', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="2026-10-17T12:00:00Z" aria-label="Time to continue" /></FallbackField>}
     </div>;
   }
-  const schemaControls = renderSchemaControls(node, nodeDef.editorControls, update, connectedInputIds);
+  const schemaControls = renderSchemaControls(node, nodeDef.editorControls, update, connectedInputIds, graphVariables, callableGraphs);
   if (node.type.startsWith('math_')) {
     const numericInputs = nodeDef.inputs.filter((pin) => pin.type === 'number' && !isConnected(pin.id));
     if (!numericInputs.length) return schemaControls;
@@ -1539,6 +1644,152 @@ function FallbackCheckbox({ label, checked, onChange }) {
   return <div className="node-checkbox-label"><AnimatedCheckbox checked={checked} onChange={onChange} onPointerDown={(event) => event.stopPropagation()} label={label} /><span>{label}</span></div>;
 }
 
+function hasFileTransfer(event) {
+  return Array.from(event.dataTransfer?.types || []).includes('Files');
+}
+
+function SingleMediaPicker({ value = '', mediaAssets = [], onUploadMedia, onLoadMediaContent, onChange }) {
+  const [mediaPickerOpen, setMediaPickerOpen] = React.useState(false);
+  const [mediaPickerFilter, setMediaPickerFilter] = React.useState('all');
+  const [mediaPickerQuery, setMediaPickerQuery] = React.useState('');
+  const [mediaPickerView, setMediaPickerView] = useMediaView();
+  const [error, setError] = React.useState('');
+  const [autoSelectedFirst, setAutoSelectedFirst] = React.useState(true);
+  const [pickerContextMenu, setPickerContextMenu] = React.useState(null);
+  const [mediaPreview, setMediaPreview] = React.useState(null);
+  const [fileDropActive, setFileDropActive] = React.useState(false);
+  const pickerContextMenuRef = React.useRef(null);
+  const fileInputRef = React.useRef(null);
+  const selectedAsset = mediaAssets.find((asset) => asset?.id === value) || null;
+
+  const filteredMedia = mediaAssets.filter((asset) => {
+    const kind = mediaKind(asset);
+    const name = `${asset.filename || ''} ${asset.contentType || ''}`.toLowerCase();
+    const matchesFilter = mediaPickerFilter === 'all' || kind === mediaPickerFilter || (mediaPickerFilter === 'files' && kind === 'file');
+    return matchesFilter && name.includes(mediaPickerQuery.trim().toLowerCase());
+  });
+
+  const orderedMedia = React.useMemo(() => {
+    if (!autoSelectedFirst || !selectedAsset) return filteredMedia;
+    const selectedId = selectedAsset.id;
+    return [...filteredMedia].sort((left, right) => {
+      const leftRank = left.id === selectedId ? 0 : 1;
+      const rightRank = right.id === selectedId ? 0 : 1;
+      if (leftRank !== rightRank) return leftRank - rightRank;
+      return 0;
+    });
+  }, [autoSelectedFirst, filteredMedia, selectedAsset]);
+
+  const uploadFiles = async (fileList) => {
+    const selected = Array.from(fileList || []);
+    if (!onUploadMedia) { setError('Media uploads are unavailable right now.'); return; }
+    if (!selected.length) return;
+    const uploaded = [];
+    const failed = [];
+    for (const file of selected) {
+      try { uploaded.push(await onUploadMedia(file)); }
+      catch (uploadError) { failed.push(uploadError); }
+    }
+    if (uploaded.length) {
+      onChange(uploaded[0].id);
+      setAutoSelectedFirst(false);
+      setMediaPickerOpen(false);
+    }
+    setError(failed.length ? `${failed[0].message || 'Upload failed.'}${failed.length > 1 ? ` (${failed.length} files failed.)` : ''}` : '');
+  };
+  const onFiles = (event) => { const selected = event.target.files; event.target.value = ''; void uploadFiles(selected); };
+  const handleFileDragOver = (event) => {
+    if (!hasFileTransfer(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = 'copy';
+    setFileDropActive(true);
+  };
+  const handleFileDragLeave = (event) => {
+    if (!hasFileTransfer(event)) return;
+    if (!event.currentTarget.contains(event.relatedTarget)) setFileDropActive(false);
+  };
+  const handleFileDrop = (event) => {
+    if (!hasFileTransfer(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setFileDropActive(false);
+    void uploadFiles(event.dataTransfer.files);
+  };
+
+  React.useEffect(() => {
+    if (!mediaPickerOpen) return undefined;
+    const closeOnEscape = (event) => { if (event.key === 'Escape') setMediaPickerOpen(false); };
+    document.addEventListener('keydown', closeOnEscape);
+    return () => { document.removeEventListener('keydown', closeOnEscape); };
+  }, [mediaPickerOpen]);
+
+  React.useEffect(() => {
+    if (!pickerContextMenu) return undefined;
+    const close = (event) => {
+      if (event.target instanceof Node && pickerContextMenuRef.current?.contains(event.target)) return;
+      setPickerContextMenu(null);
+    };
+    const onKeyDown = (event) => { if (event.key === 'Escape') setPickerContextMenu(null); };
+    document.addEventListener('pointerdown', close, true);
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => {
+      document.removeEventListener('pointerdown', close, true);
+      document.removeEventListener('keydown', onKeyDown, true);
+    };
+  }, [pickerContextMenu]);
+
+  const openPickerPreview = async (asset) => {
+    if (!asset) return;
+    const kind = mediaKind(asset);
+    if (!['image', 'audio', 'video'].includes(kind)) return;
+    let full = asset;
+    if (!full.data && onLoadMediaContent) full = await onLoadMediaContent(asset).catch(() => asset);
+    const previewList = mediaAssets.filter((item) => ['image', 'audio', 'video'].includes(mediaKind(item)));
+    const nextAsset = { ...asset, ...full, data: full.data || asset.preview || '', id: asset.id, filename: asset.filename };
+    setMediaPreview(nextAsset);
+    setPickerContextMenu(null);
+    if (previewList.length <= 1) {
+      setMediaPreview(nextAsset);
+      return;
+    }
+    setMediaPreview({ ...nextAsset, __previewList: previewList });
+  };
+
+  return <FallbackField label="Project Media File">
+    <div className="node-attachment-picker" onPointerDown={(event) => event.stopPropagation()}>
+      <button type="button" className="node-attachment-choose node-attachment-choose--wide" onClick={() => { setMediaPickerFilter('all'); setAutoSelectedFirst(true); setMediaPickerOpen(true); }}>
+        {selectedAsset ? `Choose file • ${selectedAsset.filename}` : 'Choose file'}
+      </button>
+      <input ref={fileInputRef} className="node-attachment-file-input" type="file" onChange={onFiles} />
+      {mediaPickerOpen && createPortal(<div className="project-asset-picker-backdrop" role="presentation" onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }} onPointerDown={(event) => { if (event.target === event.currentTarget) setMediaPickerOpen(false); }}>
+        <section className={`project-asset-picker${fileDropActive ? ' is-file-drag-over' : ''}`} role="dialog" aria-modal="true" aria-label="Choose project media" data-arc-media-drop-target onDragOver={handleFileDragOver} onDragLeave={handleFileDragLeave} onDrop={handleFileDrop} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }}>
+          {fileDropActive && <div className="project-media-drop-overlay" aria-live="polite"><Upload size={20} /><span>Drop files to upload</span></div>}
+          <header><div><strong>Choose project media</strong><small>Select a file from this project</small></div><div className="project-asset-picker-header-actions"><button type="button" className="project-media-upload" disabled={!onUploadMedia} onClick={() => fileInputRef.current?.click()}><Upload size={13} /> Upload from device</button><button type="button" onClick={() => setMediaPickerOpen(false)} aria-label="Close media picker"><X size={15} /></button></div></header>
+          <div className="project-asset-picker-tools"><label><Search size={13} /><input autoFocus value={mediaPickerQuery} onChange={(event) => setMediaPickerQuery(event.target.value)} placeholder="Search project files" /></label><select aria-label="Filter file types" value={mediaPickerFilter} onChange={(event) => setMediaPickerFilter(event.target.value)}><option value="all">All supported types</option><option value="image">Images</option><option value="video">Videos</option><option value="audio">Audio</option><option value="files">Other files</option></select><button type="button" className={mediaPickerView === 'grid' ? 'is-active' : ''} aria-label="Grid view" title="Grid view" onClick={() => setMediaPickerView('grid')}><FileImage size={13} /></button><button type="button" className={mediaPickerView === 'list' ? 'is-active' : ''} aria-label="List view" title="List view" onClick={() => setMediaPickerView('list')}><List size={13} /></button></div>
+          <div className={`project-asset-picker-grid${mediaPickerView === 'list' ? ' is-list' : ''}`}>{orderedMedia.map((asset) => { const kind = mediaKind(asset); const Icon = kind === 'image' ? FileImage : kind === 'video' ? FileVideo : kind === 'audio' ? AudioLines : File; const canPreview = ['image', 'audio', 'video'].includes(kind); return <button type="button" className={`project-asset-picker-card${selectedAsset?.id === asset.id ? ' is-selected' : ''}`} key={asset.id || asset.filename} onContextMenu={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setPickerContextMenu({ x: event.clientX, y: event.clientY, asset });
+          }} onClick={() => { setAutoSelectedFirst(false); onChange(asset.id); setMediaPickerOpen(false); }} title={'Use ' + asset.filename}><span>{asset.preview && (kind === 'image' || kind === 'video') ? <img src={asset.preview} alt="" /> : <Icon size={23} />} {selectedAsset?.id === asset.id && <i aria-hidden="true">✓</i>}</span><strong>{asset.filename}</strong><small>{asset.contentType || 'File'}{canPreview ? ' • View media' : ''}</small></button>; })}{!orderedMedia.length && <p>{mediaAssets.length ? 'No files match this filter.' : 'No project media yet. Upload files from this window or use the Assets tab.'}</p>}</div>
+        </section>
+      </div>, document.body)}
+      {pickerContextMenu && createPortal(<div ref={pickerContextMenuRef} className="canvas-context-menu attachment-context-menu project-asset-picker-context-menu" role="menu" style={{ left: pickerContextMenu.x, top: pickerContextMenu.y }} onPointerDown={(event) => event.stopPropagation()}>
+        {['image', 'audio', 'video'].includes(mediaKind(pickerContextMenu.asset)) && <button role="menuitem" onClick={() => { void openPickerPreview(pickerContextMenu.asset); }}><span>View media</span></button>}
+        <button role="menuitem" onClick={() => { setAutoSelectedFirst(false); onChange(pickerContextMenu.asset.id); setPickerContextMenu(null); setMediaPickerOpen(false); }}><span>Choose file</span></button>
+      </div>, document.body)}
+      {mediaPreview && <MediaPreviewModal asset={mediaPreview.__previewList ? { ...mediaPreview, id: mediaPreview.id, filename: mediaPreview.filename } : mediaPreview} assets={mediaPreview.__previewList || mediaAssets.filter((item) => ['image', 'audio', 'video'].includes(mediaKind(item)))} onNavigate={async (asset) => {
+        const previewList = mediaAssets.filter((item) => ['image', 'audio', 'video'].includes(mediaKind(item)));
+        const next = previewList.find((item) => item.id === asset.id) || asset;
+        let full = next;
+        if (!full.data && onLoadMediaContent) full = await onLoadMediaContent(next).catch(() => next);
+        setMediaPreview({ ...next, ...full, data: full.data || next.preview || '' });
+      }} onClose={() => setMediaPreview(null)} />}
+      {error && <small className="node-attachment-error" role="alert">{error}</small>}
+    </div>
+  </FallbackField>;
+}
+
 function AttachmentPicker({ files = [], authToken = '', mediaAssets = [], onUploadMedia, onLoadMediaContent, onChange }) {
   const [error, setError] = React.useState('');
   const [mediaPreview, setMediaPreview] = React.useState(null);
@@ -1546,12 +1797,14 @@ function AttachmentPicker({ files = [], authToken = '', mediaAssets = [], onUplo
   const [mediaPickerFilter, setMediaPickerFilter] = React.useState('all');
   const [mediaPickerQuery, setMediaPickerQuery] = React.useState('');
   const [selectedMediaIds, setSelectedMediaIds] = React.useState([]);
+  const [autoSelectedFirst, setAutoSelectedFirst] = React.useState(true);
   const [mediaPickerView, setMediaPickerView] = useMediaView();
   const [urlEntryOpen, setUrlEntryOpen] = React.useState(false);
   const [url, setUrl] = React.useState('');
   const [filename, setFilename] = React.useState('');
   const [urlLoading, setUrlLoading] = React.useState(false);
   const [uploadQueue, setUploadQueue] = React.useState([]);
+  const [fileDropActive, setFileDropActive] = React.useState(false);
   const [contextMenu, setContextMenu] = React.useState(null);
   const contextMenuRef = React.useRef(null);
   const fileInputRef = React.useRef(null);
@@ -1559,12 +1812,10 @@ function AttachmentPicker({ files = [], authToken = '', mediaAssets = [], onUplo
     if (!mediaPickerOpen) return undefined;
     const closeOnEscape = (event) => { if (event.key === 'Escape') setMediaPickerOpen(false); };
     document.addEventListener('keydown', closeOnEscape);
-    const removePageBlurListener = onPageBlur(() => setMediaPickerOpen(false));
-    return () => { document.removeEventListener('keydown', closeOnEscape); removePageBlurListener(); };
+    return () => { document.removeEventListener('keydown', closeOnEscape); };
   }, [mediaPickerOpen]);
-  const onFiles = async (event) => {
-    const selected = Array.from(event.target.files || []);
-    event.target.value = '';
+  const uploadFiles = async (fileList) => {
+    const selected = Array.from(fileList || []);
     if (!onUploadMedia) { setError('Media uploads are unavailable right now.'); return; }
     if (files.length + selected.length > 10) { setError('Choose up to 10 files.'); return; }
     if (selected.some((file) => file.name.length > 120)) { setError('Filenames must be 120 characters or fewer.'); return; }
@@ -1595,6 +1846,25 @@ function AttachmentPicker({ files = [], authToken = '', mediaAssets = [], onUplo
     };
     await Promise.all(Array.from({ length: Math.min(3, jobs.length) }, worker));
   };
+  const onFiles = (event) => { const selected = event.target.files; event.target.value = ''; void uploadFiles(selected); };
+  const handleFileDragOver = (event) => {
+    if (!hasFileTransfer(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = 'copy';
+    setFileDropActive(true);
+  };
+  const handleFileDragLeave = (event) => {
+    if (!hasFileTransfer(event)) return;
+    if (!event.currentTarget.contains(event.relatedTarget)) setFileDropActive(false);
+  };
+  const handleFileDrop = (event) => {
+    if (!hasFileTransfer(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setFileDropActive(false);
+    void uploadFiles(event.dataTransfer.files);
+  };
   const remove = (index) => onChange(files.filter((_, fileIndex) => fileIndex !== index));
   const filteredMedia = mediaAssets.filter((asset) => {
     const kind = mediaKind(asset);
@@ -1602,9 +1872,23 @@ function AttachmentPicker({ files = [], authToken = '', mediaAssets = [], onUplo
     const matchesFilter = mediaPickerFilter === 'all' || mediaPickerFilter === 'files' ? mediaPickerFilter === 'all' || kind === 'file' : kind === mediaPickerFilter;
     return matchesFilter && name.includes(mediaPickerQuery.trim().toLowerCase());
   });
-  const toggleMediaSelection = (asset) => setSelectedMediaIds((current) => current.includes(asset.id)
-    ? current.filter((id) => id !== asset.id)
-    : [...current, asset.id]);
+  const orderedMedia = React.useMemo(() => {
+    if (!autoSelectedFirst || !files.length) return filteredMedia;
+    const preferredIds = new Set(files.map((file) => file.id).filter(Boolean));
+    if (!preferredIds.size) return filteredMedia;
+    return [...filteredMedia].sort((left, right) => {
+      const leftRank = preferredIds.has(left.id) ? 0 : 1;
+      const rightRank = preferredIds.has(right.id) ? 0 : 1;
+      if (leftRank !== rightRank) return leftRank - rightRank;
+      return 0;
+    });
+  }, [autoSelectedFirst, files, filteredMedia]);
+  const toggleMediaSelection = (asset) => {
+    setAutoSelectedFirst(false);
+    setSelectedMediaIds((current) => current.includes(asset.id)
+      ? current.filter((id) => id !== asset.id)
+      : [...current, asset.id]);
+  };
   const addSelectedMedia = () => {
     const selected = mediaAssets.filter((asset) => selectedMediaIds.includes(asset.id));
     let merged = [...files];
@@ -1682,14 +1966,15 @@ function AttachmentPicker({ files = [], authToken = '', mediaAssets = [], onUplo
   return <>
     <div className="node-attachment-picker" onPointerDown={(event) => event.stopPropagation()}>
       <div className="node-attachment-heading"><span>Attachments</span><span>{files.length} / 10 · 20 MiB each</span></div>
-      <button className="node-attachment-choose" type="button" onClick={() => { setMediaPickerFilter('all'); setSelectedMediaIds([]); setMediaPickerOpen(true); }} onContextMenu={openContextMenu}>Choose files</button>
+      <button className="node-attachment-choose" type="button" onClick={() => { setMediaPickerFilter('all'); setAutoSelectedFirst(true); setSelectedMediaIds([]); setMediaPickerOpen(true); }} onContextMenu={openContextMenu}>Choose files</button>
       <input ref={fileInputRef} className="node-attachment-file-input" type="file" multiple onChange={onFiles} />
-      {mediaPickerOpen && createPortal(<div className="project-asset-picker-backdrop" role="presentation" onPointerDown={(event) => { if (event.target === event.currentTarget) setMediaPickerOpen(false); }}>
-        <section className="project-asset-picker" role="dialog" aria-modal="true" aria-label="Choose files from project media">
+      {mediaPickerOpen && createPortal(<div className="project-asset-picker-backdrop" role="presentation" onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }} onPointerDown={(event) => { if (event.target === event.currentTarget) setMediaPickerOpen(false); }}>
+        <section className={`project-asset-picker${fileDropActive ? ' is-file-drag-over' : ''}`} role="dialog" aria-modal="true" aria-label="Choose files from project media" data-arc-media-drop-target onDragOver={handleFileDragOver} onDragLeave={handleFileDragLeave} onDrop={handleFileDrop} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }}>
+          {fileDropActive && <div className="project-media-drop-overlay" aria-live="polite"><Upload size={20} /><span>Drop files to upload</span></div>}
           <header><div><strong>Choose files</strong><small>Select one or more files from this project</small></div><div className="project-asset-picker-header-actions"><button type="button" className="project-media-upload" disabled={!onUploadMedia} onClick={() => fileInputRef.current?.click()}><Upload size={13} /> Upload from device</button><button type="button" onClick={() => setMediaPickerOpen(false)} aria-label="Close media picker"><X size={15} /></button></div></header>
           <div className="project-asset-picker-tools"><label><Search size={13} /><input autoFocus value={mediaPickerQuery} onChange={(event) => setMediaPickerQuery(event.target.value)} placeholder="Search project files" /></label><select aria-label="Filter file types" value={mediaPickerFilter} onChange={(event) => setMediaPickerFilter(event.target.value)}><option value="all">All file types</option><option value="image">Images</option><option value="video">Videos</option><option value="audio">Audio</option><option value="files">Other files</option></select><button type="button" className={mediaPickerView === 'grid' ? 'is-active' : ''} aria-label="Grid view" title="Grid view" onClick={() => setMediaPickerView('grid')}><FileImage size={13} /></button><button type="button" className={mediaPickerView === 'list' ? 'is-active' : ''} aria-label="List view" title="List view" onClick={() => setMediaPickerView('list')}><List size={13} /></button></div>
           {!!uploadQueue.length && <div className="node-attachment-upload-queue node-attachment-picker-queue" aria-live="polite">{uploadQueue.map((item) => <div key={item.id}><span>{item.name}</span>{item.state === 'queued' || item.state === 'uploading' ? <progress max="100" value={item.progress} aria-label={`${item.name} upload progress`} /> : <small className={item.state === 'error' ? 'is-error' : ''}>{item.state === 'success' ? 'Uploaded' : item.message || 'Failed'}</small>}</div>)}</div>}
-          <div className={`project-asset-picker-grid${mediaPickerView === 'list' ? ' is-list' : ''}`}>{filteredMedia.map((asset) => { const kind = mediaKind(asset); const Icon = kind === 'image' ? FileImage : kind === 'video' ? FileVideo : kind === 'audio' ? AudioLines : File; return <button type="button" className={`project-asset-picker-card${selectedMediaIds.includes(asset.id) ? ' is-selected' : ''}`} key={asset.id} aria-pressed={selectedMediaIds.includes(asset.id)} onClick={() => toggleMediaSelection(asset)} title={'Select ' + asset.filename}><span>{asset.preview && (kind === 'image' || kind === 'video') ? <img src={asset.preview} alt="" /> : <Icon size={23} />}{selectedMediaIds.includes(asset.id) && <i aria-hidden="true">✓</i>}</span><strong>{asset.filename}</strong><small>{asset.contentType} · {Math.ceil(Number(asset.size || 0) / 1024)} KB</small></button>; })}{!filteredMedia.length && <p>{mediaAssets.length ? 'No files match this filter.' : 'No project media yet. Upload files from this window or use the Assets tab.'}</p>}</div>
+          <div className={`project-asset-picker-grid${mediaPickerView === 'list' ? ' is-list' : ''}`}>{orderedMedia.map((asset) => { const kind = mediaKind(asset); const Icon = kind === 'image' ? FileImage : kind === 'video' ? FileVideo : kind === 'audio' ? AudioLines : File; const canPreview = ['image', 'audio', 'video'].includes(kind); return <button type="button" className={`project-asset-picker-card${selectedMediaIds.includes(asset.id) ? ' is-selected' : ''}`} key={asset.id} aria-pressed={selectedMediaIds.includes(asset.id)} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setContextMenu({ left: event.clientX, top: event.clientY, asset }); }} onClick={() => toggleMediaSelection(asset)} title={'Select ' + asset.filename}><span>{asset.preview && (kind === 'image' || kind === 'video') ? <img src={asset.preview} alt="" /> : <Icon size={23} />}{selectedMediaIds.includes(asset.id) && <i aria-hidden="true">✓</i>}</span><strong>{asset.filename}</strong><small>{asset.contentType} · {Math.ceil(Number(asset.size || 0) / 1024)} KB{canPreview ? ' • View media' : ''}</small></button>; })}{!orderedMedia.length && <p>{mediaAssets.length ? 'No files match this filter.' : 'No project media yet. Upload files from this window or use the Assets tab.'}</p>}</div>
           <footer><span>{selectedMediaIds.length} selected</span><button type="button" disabled={!selectedMediaIds.length} onClick={addSelectedMedia}>Add selected files</button></footer>
         </section>
       </div>, document.body)}
@@ -1716,7 +2001,8 @@ function AttachmentPicker({ files = [], authToken = '', mediaAssets = [], onUplo
       </form>}
       <small>24 MiB total per message. URL files are downloaded into the graph and included in exports. Embed images can use attachment://filename.</small>
       {error && <small className="node-attachment-error" role="alert">{error}</small>}
-      {contextMenu && createPortal(<div ref={contextMenuRef} className="canvas-context-menu attachment-context-menu" role="menu" style={{ left: contextMenu.left, top: contextMenu.top }} onPointerDown={(event) => event.stopPropagation()}>
+      {contextMenu && createPortal(<div ref={contextMenuRef} className="canvas-context-menu attachment-context-menu project-asset-picker-context-menu" role="menu" style={{ left: contextMenu.left, top: contextMenu.top }} onPointerDown={(event) => event.stopPropagation()}>
+        {contextMenu.asset && ['image', 'audio', 'video'].includes(mediaKind(contextMenu.asset)) && <button role="menuitem" onClick={() => { void (async () => { let full = contextMenu.asset; if (!full.data && onLoadMediaContent) full = await onLoadMediaContent(contextMenu.asset).catch(() => contextMenu.asset); setMediaPreview({ ...contextMenu.asset, ...full, data: full.data || contextMenu.asset.preview || '' }); setContextMenu(null); })(); }}><span>View media</span></button>}
         <button role="menuitem" onClick={() => { setUrlEntryOpen(true); setContextMenu(null); setError(''); }}><span>Use URL</span></button>
       </div>, document.body)}
     </div>
