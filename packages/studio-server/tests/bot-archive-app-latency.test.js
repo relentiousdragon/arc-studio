@@ -191,6 +191,26 @@ test('standalone bot export includes the console log runtime when its nodes are 
   assert.ok(listZipEntries(archive).has('src/engine/nodes/runtime/console_log.js'));
 });
 
+test('standalone bot export includes graph-controlled web request runtime and dispatch', () => {
+  const archive = buildBotArchive([{
+    id: 'web-request-export',
+    nodes: [
+      { id: 'request', type: 'event_web_server_request', data: { method: 'GET', path: '/items/:id' } },
+      { id: 'response', type: 'action_web_server_response', data: {} }
+    ],
+    connections: []
+  }]);
+  const entries = listZipEntries(archive);
+  const graphRunner = readZipEntry(archive, 'src/engine/GraphRunner.js');
+  const runtime = readZipEntry(archive, 'src/engine/nodes/runtime/web_server.js');
+  const main = readZipEntry(archive, 'src/index.js');
+
+  assert.ok(entries.has('src/engine/nodes/runtime/web_server.js'));
+  assert.match(graphRunner, /action_web_server_response/);
+  assert.match(runtime, /WEB_SERVER_REQUEST/);
+  assert.match(main, /dispatchGraphEvent: \(eventName, payload, graphId\) => dispatchGraphs\(eventName, payload, graphId\)/);
+});
+
 test('standalone bot export stores graph and node IDs without display names', () => {
   const archive = buildBotArchive([{
     id: 'graph_id_123',
