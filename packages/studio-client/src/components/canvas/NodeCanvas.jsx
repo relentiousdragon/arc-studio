@@ -2462,11 +2462,6 @@ export function NodeCanvas({
 
   const movePointer = (event) => {
     pointerPositionRef.current = { x: event.clientX, y: event.clientY };
-    const pendingNodeDrag = pendingNodeMoveDragRef.current;
-    if (pendingNodeDrag && pendingNodeDrag.pointerId === event.pointerId) {
-      pendingNodeDrag.lastX = event.clientX;
-      pendingNodeDrag.lastY = event.clientY;
-    }
     if (typeof event.altKey === 'boolean' && event.altKey !== altDownRef.current) {
       altDownRef.current = event.altKey;
       setAltHeld(event.altKey);
@@ -2515,8 +2510,6 @@ export function NodeCanvas({
       };
       beginNodeDrag(downEvent, node);
       if (pendingNodeMoveDragRef.current) {
-        pendingNodeMoveDragRef.current.lastX = event.clientX;
-        pendingNodeMoveDragRef.current.lastY = event.clientY;
         const drag = draggingNodeRef.current;
         if (drag && !drag.historyStarted) onHistoryGroupStart?.();
         if (drag) {
@@ -2684,14 +2677,16 @@ export function NodeCanvas({
       }
       const groupDeltaX = x - draggingNode.initialX;
       const groupDeltaY = y - draggingNode.initialY;
-      setDraggingNode((current) => current ? {
-        ...current,
+      const nextDrag = {
+        ...draggingNode,
         historyStarted: true,
         deltaX: groupDeltaX,
         deltaY: groupDeltaY,
         shiftKey: event.shiftKey,
-        cloneRequested: current.cloneRequested || (cloneRequested && waitingForLock)
-      } : current);
+        cloneRequested: draggingNode.cloneRequested || (cloneRequested && waitingForLock)
+      };
+      draggingNodeRef.current = nextDrag;
+      setDraggingNode(nextDrag);
       return;
     }
     if (draggingNote) {
@@ -3121,6 +3116,7 @@ export function NodeCanvas({
           onCollaborationAction?.({ kind: 'selection', selectedNodeIds: movingIds, nodePositions: collaborationMotionSupported ? finalPositions : undefined }, true);
           onReleaseNodeMoveLock?.(nodeMoveLockIds(draggingNodeRef.current), graphId, projectId);
         }
+        draggingNodeRef.current = null;
         setDraggingNode(null);
         setDraggingNote(null);
         selectionStartRef.current = null;
@@ -3428,7 +3424,7 @@ export function NodeCanvas({
       arcEvents.emit('toast:notify', { title: 'Node movement unavailable', message: 'Reconnect to the shared graph before moving nodes.', type: 'warning' });
       return;
     }
-    const pending = { pointerId: event.pointerId, nodeIds: movingIds, granted: false, cancelled: false, finalPointer: null };
+    const pending = { pointerId: event.pointerId, granted: false, cancelled: false, finalPointer: null };
     let lockRequest;
     try { lockRequest = onRequestNodeMoveLock(movingIds); }
     catch (error) {
@@ -3466,10 +3462,8 @@ export function NodeCanvas({
         const grantedDrag = { ...current, lockGranted: true };
         draggingNodeRef.current = grantedDrag;
         setDraggingNode(grantedDrag);
+        if (!grantedDrag.cloned && !isLocked && grantedDrag.cloneRequested) startDragClone(grantedDrag);
         if (pending.finalPointer) {
-          if (!grantedDrag.cloned && !isLocked && (grantedDrag.cloneRequested || grantedDrag.altKey || pending.finalPointer.altKey)) {
-            startDragClone(grantedDrag);
-          }
           pendingNodeMoveDragRef.current = null;
           finishPointerRef.current?.(pending.finalPointer, connectingWireRef.current || connectingWire);
         }
@@ -4739,6 +4733,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
           setNodeMovePending(false);
         }
         if (draggingNode) onReleaseNodeMoveLock?.(nodeMoveLockIds(draggingNode), graphId, projectId);
+        draggingNodeRef.current = null;
         pendingPinDragRef.current = null;
         setPendingPinDragNodeId(null);
         if (wireCutDragRef.current?.active) {
