@@ -7,6 +7,7 @@ import node_event_slash_autocomplete from './events/event_slash_autocomplete.js'
 import node_event_button_click from './events/event_button_click.js';
 import node_event_member_join from './events/event_member_join.js';
 import node_event_message_update from './events/event_message_update.js';
+import node_event_web_server_request from './events/event_web_server_request.js';
 import node_event_message_delete from './events/event_message_delete.js';
 import node_event_reaction_add from './events/event_reaction_add.js';
 import node_event_reaction_remove from './events/event_reaction_remove.js';
@@ -159,6 +160,7 @@ import node_data_parse_json from './values-data/data_parse_json.js';
 import node_data_to_number from './values-data/data_to_number.js';
 import node_data_check_value from './values-data/data_check_value.js';
 import node_data_check_permission from './values-data/data_check_permission.js';
+import node_data_check_content_scan from './values-data/data_check_content_scan.js';
 import node_data_get_value_by_path from './values-data/data_get_value_by_path.js';
 import node_data_find_array_item from './values-data/data_find_array_item.js';
 import node_data_filter_array from './values-data/data_filter_array.js';
@@ -209,6 +211,12 @@ import node_action_web_retry from './web-network/action_web_retry.js';
 import node_action_websocket_connect from './web-network/action_websocket_connect.js';
 import node_action_websocket_send from './web-network/action_websocket_send.js';
 import node_action_websocket_close from './web-network/action_websocket_close.js';
+import node_action_web_server_start from './web-network/action_web_server_start.js';
+import node_action_web_server_route from './web-network/action_web_server_route.js';
+import node_action_web_server_response from './web-network/action_web_server_response.js';
+import node_action_web_server_static_file from './web-network/action_web_server_static_file.js';
+import node_action_web_server_stop_one from './web-network/action_web_server_stop_one.js';
+import node_action_web_server_stop from './web-network/action_web_server_stop.js';
 //
 export const nodeDefinitions = [
   node_event_message_create,
@@ -219,6 +227,7 @@ export const nodeDefinitions = [
   node_event_button_click,
   node_event_member_join,
   node_event_message_update,
+  node_event_web_server_request,
   node_event_message_delete,
   node_event_reaction_add,
   node_event_reaction_remove,
@@ -362,6 +371,7 @@ export const nodeDefinitions = [
   node_data_to_number,
   node_data_check_value,
   node_data_check_permission,
+  node_data_check_content_scan,
   node_data_get_value_by_path,
   node_data_find_array_item,
   node_data_filter_array,
@@ -409,5 +419,11 @@ export const nodeDefinitions = [
   node_action_web_retry,
   node_action_websocket_connect,
   node_action_websocket_send,
-  node_action_websocket_close
+  node_action_websocket_close,
+  node_action_web_server_start,
+  node_action_web_server_route,
+  node_action_web_server_response,
+  node_action_web_server_static_file,
+  node_action_web_server_stop_one,
+  node_action_web_server_stop
 ];
