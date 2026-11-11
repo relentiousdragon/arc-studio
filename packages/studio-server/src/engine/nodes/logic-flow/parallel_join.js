@@ -9,13 +9,15 @@ export default {
       "id": "exec",
       "label": "Exec",
       "type": "exec",
+      description: "Receives a completed branch from the matching Parallel node.",
     }
   ],
   "outputs": [
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
+      "type": "exec",
+      description: "Continues once every branch has reached this Join node."
     }
   ]
 };

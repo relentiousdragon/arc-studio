@@ -8,20 +8,23 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
+      "type": "exec",
+      description: "Starts the asynchronous wait."
     },
     {
       "id": "ms",
       "label": "Duration (ms)",
       "type": "number",
-      "defaultValue": 1000
+      "defaultValue": 1000,
+      description: "Time to wait before continuing, in milliseconds."
     }
   ],
   "outputs": [
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
+      "type": "exec",
+      description: "Continues after the wait completes."
     }
   ]
 };

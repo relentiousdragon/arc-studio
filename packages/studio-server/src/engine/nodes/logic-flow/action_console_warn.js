@@ -14,20 +14,23 @@ export default {
     {
       id: 'exec',
       label: 'Exec',
-      type: 'exec'
+      type: 'exec',
+      description: "Writes the message to the warning log."
     },
     {
       id: 'message',
       label: 'Message',
       type: 'string',
-      defaultValue: ''
+      defaultValue: '',
+      description: "Text to write to the Studio console."
     }
   ],
   outputs: [
     {
       id: 'exec',
       label: 'Exec',
-      type: 'exec'
+      type: 'exec',
+      description: "Continues after the warning is logged."
     }
   ]
 };

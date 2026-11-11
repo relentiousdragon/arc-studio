@@ -8,19 +8,22 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
+      "type": "exec",
+      description: "Starts all connected branches concurrently."
     }
   ],
   "outputs": [
     {
       "id": "branch_a_exec",
       "label": "Branch 1",
-      "type": "exec"
+      "type": "exec",
+      description: "Starts the first concurrent branch."
     },
     {
       "id": "branch_b_exec",
       "label": "Branch 2",
-      "type": "exec"
+      "type": "exec",
+      description: "Starts the second concurrent branch."
     }
   ]
 };

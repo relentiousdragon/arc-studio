@@ -10,14 +10,16 @@ export default {
       "id": "value",
       "label": "Value",
       "type": "boolean",
-      "defaultValue": false
+      "defaultValue": false,
+      description: "Boolean value to invert."
     }
   ],
   "outputs": [
     {
       "id": "result",
       "label": "Result",
-      "type": "boolean"
+      "type": "boolean",
+      description: "The opposite of the input boolean."
     }
   ]
 };

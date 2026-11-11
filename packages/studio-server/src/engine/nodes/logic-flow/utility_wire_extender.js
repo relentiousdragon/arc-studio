@@ -10,24 +10,28 @@ export default {
     {
       "id": "exec_in",
       "label": "Exec In",
-      "type": "exec"
+      "type": "exec",
+      description: "Execution flow to pass through the node."
     },
     {
       "id": "value_in_1",
       "label": "Any Value 1",
-      "type": "any"
+      "type": "any",
+      description: "Any typed data value to pass through the node."
     }
   ],
   "outputs": [
     {
       "id": "exec_out",
       "label": "Exec Out",
-      "type": "exec"
+      "type": "exec",
+      description: "Execution flow passed through unchanged."
     },
     {
       "id": "value_out_1",
       "label": "Any Value 1",
-      "type": "any"
+      "type": "any",
+      description: "Data value passed through unchanged."
     }
   ]
 };

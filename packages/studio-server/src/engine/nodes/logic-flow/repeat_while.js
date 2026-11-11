@@ -13,36 +13,42 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
+      "type": "exec",
+      description: "Starts checking the loop condition."
     },
     {
       "id": "condition",
       "label": "Condition",
       "type": "boolean",
-      "defaultValue": true
+      "defaultValue": true,
+      description: "Repeats the Body branch while this value is true."
     },
     {
       "id": "interval_ms",
       "label": "Interval (ms)",
       "type": "number",
-      "defaultValue": 500
+      "defaultValue": 500,
+      description: "Time to wait before each check and iteration, in milliseconds."
     }
   ],
   "outputs": [
     {
       "id": "body_exec",
       "label": "Body",
-      "type": "exec"
+      "type": "exec",
+      description: "Runs once for each loop iteration."
     },
     {
       "id": "completed_exec",
       "label": "Completed",
-      "type": "exec"
+      "type": "exec",
+      description: "Runs when the condition becomes false."
     },
     {
       "id": "iteration",
       "label": "Iteration",
-      "type": "number"
+      "type": "number",
+      description: "One-based number of the current iteration."
     }
   ]
 };

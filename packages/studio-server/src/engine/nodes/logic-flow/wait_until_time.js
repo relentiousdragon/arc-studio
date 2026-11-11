@@ -8,20 +8,23 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
+      "type": "exec",
+      description: "Starts waiting for the target time."
     },
     {
       "id": "time",
       "label": "Time (ISO or ms)",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "ISO date or Unix timestamp in milliseconds to wait for."
     }
   ],
   "outputs": [
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
+      "type": "exec",
+      description: "Continues when the target time is reached."
     }
   ]
 };

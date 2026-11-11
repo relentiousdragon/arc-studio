@@ -8,14 +8,16 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
+      "type": "exec",
+      description: "Starts the matching event graph."
     }
   ],
   "outputs": [
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
+      "type": "exec",
+      description: "Continues after the target graph finishes."
     }
   ]
 };

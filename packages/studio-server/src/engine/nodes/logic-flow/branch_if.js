@@ -8,25 +8,29 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
+      "type": "exec",
+      description: "Evaluates the condition and selects an execution branch."
     },
     {
       "id": "condition",
       "label": "Condition",
       "type": "boolean",
-      "defaultValue": false
+      "defaultValue": false,
+      description: "Boolean value used to choose the True or False branch."
     }
   ],
   "outputs": [
     {
       "id": "true_exec",
       "label": "True",
-      "type": "exec"
+      "type": "exec",
+      description: "Runs when the condition is true."
     },
     {
       "id": "false_exec",
       "label": "False",
-      "type": "exec"
+      "type": "exec",
+      description: "Runs when the condition is false."
     }
   ]
 };

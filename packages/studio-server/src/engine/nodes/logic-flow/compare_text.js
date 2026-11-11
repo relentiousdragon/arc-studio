@@ -9,26 +9,30 @@ export default {
       "id": "text_a",
       "label": "Text A",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "First text value to compare."
     },
     {
       "id": "text_b",
       "label": "Text B",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Second text value to compare."
     },
     {
       "id": "operator",
       "label": "Operator",
       "type": "string",
-      "defaultValue": "equals"
+      "defaultValue": "equals",
+      description: "Comparison to perform on the two text values."
     }
   ],
   "outputs": [
     {
       "id": "result",
       "label": "Result",
-      "type": "boolean"
+      "type": "boolean",
+      description: "True when the selected text comparison matches."
     }
   ]
 };

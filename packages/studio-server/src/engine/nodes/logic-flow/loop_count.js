@@ -8,30 +8,35 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
+      "type": "exec",
+      description: "Starts the counted loop."
     },
     {
       "id": "count",
       "label": "Count",
       "type": "number",
-      "defaultValue": 1
+      "defaultValue": 1,
+      description: "Number of times to run the Body branch."
     }
   ],
   "outputs": [
     {
       "id": "body_exec",
       "label": "Body",
-      "type": "exec"
+      "type": "exec",
+      description: "Runs once for each loop iteration."
     },
     {
       "id": "completed_exec",
       "label": "Completed",
-      "type": "exec"
+      "type": "exec",
+      description: "Runs after all iterations finish."
     },
     {
       "id": "index",
       "label": "Index (0-based)",
-      "type": "number"
+      "type": "number",
+      description: "Zero-based index of the current iteration."
     }
   ]
 };

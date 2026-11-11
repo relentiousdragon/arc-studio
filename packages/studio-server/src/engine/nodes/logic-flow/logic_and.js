@@ -10,20 +10,23 @@ export default {
       "id": "a",
       "label": "A",
       "type": "boolean",
-      "defaultValue": false
+      "defaultValue": false,
+      description: "First boolean value to test."
     },
     {
       "id": "b",
       "label": "B",
       "type": "boolean",
-      "defaultValue": false
+      "defaultValue": false,
+      description: "Second boolean value to test."
     }
   ],
   "outputs": [
     {
       "id": "result",
       "label": "Result",
-      "type": "boolean"
+      "type": "boolean",
+      description: "True only when both inputs are true."
     }
   ]
 };

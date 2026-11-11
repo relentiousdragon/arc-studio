@@ -16,42 +16,49 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
+      "type": "exec",
+      description: "Checks the value against each case in order."
     },
     {
       "id": "value",
       "label": "Value",
       "type": "arg",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Value compared with the configured cases."
     },
     {
       "id": "case_1",
       "label": "Case 1",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "First value to compare against the input."
     },
     {
       "id": "case_2",
       "label": "Case 2",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Second value to compare against the input."
     }
   ],
   "outputs": [
     {
       "id": "case_1_exec",
       "label": "Case 1",
-      "type": "exec"
+      "type": "exec",
+      description: "Runs when the input matches Case 1."
     },
     {
       "id": "case_2_exec",
       "label": "Case 2",
-      "type": "exec"
+      "type": "exec",
+      description: "Runs when the input matches Case 2."
     },
     {
       "id": "default_exec",
       "label": "Default",
-      "type": "exec"
+      "type": "exec",
+      description: "Runs when no case matches the input."
     }
   ]
 };
