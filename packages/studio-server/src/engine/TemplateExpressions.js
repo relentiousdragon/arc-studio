@@ -23,6 +23,17 @@ export function isReservedTemplateRoot(value) {
 export function isReservedTemplateVariableName(value) {
   return String(value ?? '').trim().toLowerCase().startsWith(TEMPLATE_SYSTEM_ROOT);
 }
+const RESERVED_TEMPLATE_ENVIRONMENT_NAMES = new Set([
+  'DISCORD_BOT_TOKEN', 'SESSION_SECRET', 'ARC_SETUP_KEY', 'ARC_BOT_TOKEN_ENCRYPTION_KEY',
+  'ARC_CRYPTO_SECRET', 'ARC_ACTIVITY_WEBHOOK_URL'
+]);
+export function isTemplateEnvironmentNameAllowed(name = '') {
+  const normalized = String(name || '').trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(normalized)) return false;
+  const upper = normalized.toUpperCase();
+  if (RESERVED_TEMPLATE_ENVIRONMENT_NAMES.has(upper)) return false;
+  return true;
+}
 function templateText(value) {
   if (value == null) return '';
   if (typeof value === 'object') { try { return JSON.stringify(value); } catch { return ''; } }
