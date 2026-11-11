@@ -24,6 +24,12 @@ export const PinColors = {
   embed: '#f472b6'
 };
 
+const convertiblePinTypes = new Set(['string', 'number']);
+export const isConvertiblePinPair = (sourceType, targetType) => (
+  (convertiblePinTypes.has(sourceType) && convertiblePinTypes.has(targetType) && sourceType !== targetType)
+  || (sourceType === 'arg' && (targetType === 'string' || targetType === 'number'))
+);
+
 export { getNodeArgumentPins, MAX_NODE_ARGUMENTS, resolveDynamicNodePins };
 export { functionArgumentPinId, functionInputPinType, functionReturnInputPinId, functionReturnOutputPinId, getFunctionGraphArguments, getFunctionGraphReturnValues, getFunctionInputArguments, getFunctionReturnValues };
 
