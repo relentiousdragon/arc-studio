@@ -33,10 +33,19 @@ export class ActivityStore {
   }
 
   record(user, action, summary, details = {}) {
+    let avatarUrl = '';
+    try {
+      const avatar = new URL(String(user?.avatar || ''));
+      if (avatar.protocol === 'https:' && !avatar.username && !avatar.password && avatar.href.length <= 2048) avatarUrl = avatar.href;
+    } catch {}
     const entry = {
       id: `activity_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
       timestamp: new Date().toISOString(),
-      actor: { id: String(user?.id || ''), username: String(user?.username || 'Unknown') },
+      actor: {
+        id: String(user?.id || ''),
+        username: String(user?.username || 'Unknown'),
+        ...(avatarUrl ? { avatarUrl } : {})
+      },
       action: String(action).slice(0, 48),
       summary: String(summary).slice(0, 240),
       details
