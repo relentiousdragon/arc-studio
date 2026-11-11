@@ -39,6 +39,7 @@ export function ProjectMediaPanel({ assets = [], canEdit = true, onUpload, onDow
   const [queue, setQueue] = useState([]);
   const [preview, setPreview] = useState(null);
   const [queueLeaving, setQueueLeaving] = useState(false);
+  const [fileDropActive, setFileDropActive] = useState(false);
   const [error, setError] = useState('');
   const inputRef = useRef(null);
   const queueHideTimerRef = useRef(0);
@@ -102,7 +103,28 @@ export function ProjectMediaPanel({ assets = [], canEdit = true, onUpload, onDow
     catch (previewError) { setError(previewError.message || 'Could not open this media file.'); }
   };
 
-  return <section className="project-media-panel" aria-label="Project media assets">
+  const hasFileTransfer = (event) => Array.from(event.dataTransfer?.types || []).includes('Files');
+  const handleFileDragOver = (event) => {
+    if (!hasFileTransfer(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = 'copy';
+    setFileDropActive(true);
+  };
+  const handleFileDragLeave = (event) => {
+    if (!hasFileTransfer(event)) return;
+    if (!event.currentTarget.contains(event.relatedTarget)) setFileDropActive(false);
+  };
+  const handleFileDrop = (event) => {
+    if (!hasFileTransfer(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setFileDropActive(false);
+    void addFiles(event.dataTransfer.files);
+  };
+
+  return <section className={`project-media-panel${fileDropActive ? ' is-file-drag-over' : ''}`} aria-label="Project media assets" data-arc-media-drop-target onDragOver={handleFileDragOver} onDragLeave={handleFileDragLeave} onDrop={handleFileDrop}>
+    {fileDropActive && <div className="project-media-drop-overlay" aria-live="polite"><Upload size={20} /><span>Drop files to upload</span></div>}
     <header className="project-media-toolbar">
       <label className="project-media-search"><Search size={13} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter files" aria-label="Filter project media" /></label>
       <div className="project-media-actions">
