@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readdir } from 'node:fs/promises';
 import test, { beforeEach } from 'node:test';
-import { BuiltInNodeDefinitions, BundledNodeTypes, createDefaultNodeData, getAvailableNodeDefinitions, getNodeRegistryDefinitions, isNodeTypeSupported, registerPluginNodeDefinitions, setWorkspaceNodeDefinitions } from '../../studio-client/src/components/nodes/nodeDefinitions.js';
+import { BuiltInNodeDefinitions, BundledNodeTypes, createDefaultNodeData, getAvailableNodeDefinitions, getNodeRegistryDefinitions, isNodeTypeCreatable, isNodeTypeSupported, registerPluginNodeDefinitions, setWorkspaceNodeDefinitions } from '../../studio-client/src/components/nodes/nodeDefinitions.js';
 import { getNodeRegistryRequiredFeatures, NODE_REGISTRY_PROTOCOL_VERSION } from '../src/engine/NodeRegistryContract.js';
 import { NodeDefinitions, PinTypes } from '../src/engine/NodeRegistry.js';
 beforeEach(() => setWorkspaceNodeDefinitions(Object.values(NodeDefinitions)));
@@ -81,7 +81,10 @@ test('declarative editor controls have valid metadata and supply node defaults',
   assert.deepEqual(createDefaultNodeData('function_return'), {
     returns: [{ returnId: 'output_1', name: 'Result', valueType: 'number', defaultValue: 0 }]
   });
-  assert.deepEqual(createDefaultNodeData('function_math'), { operation: 'add' });
+  assert.equal(Object.hasOwn(NodeDefinitions, 'function_math'), false);
+  assert.equal(BundledNodeTypes.has('function_math'), false);
+  assert.equal(isNodeTypeCreatable('function_math'), false);
+  assert.equal(isNodeTypeCreatable('math_add'), true);
   assert.deepEqual(createDefaultNodeData('build_embed'), { blocks: [], components: [] });
   assert.deepEqual(createDefaultNodeData('build_modal'), { modal: { customId: 'arc_modal', title: 'Tell us more', components: [{ type: 'text', customId: 'details', label: 'Details', style: 2, required: true, minLength: 1, maxLength: 1000 }] } });
   assert.deepEqual(createDefaultNodeData('data_permission_overwrites'), { overwriteCount: 1, target_id_1: '', target_type_1: 0, allow_1: [], deny_1: [] });
