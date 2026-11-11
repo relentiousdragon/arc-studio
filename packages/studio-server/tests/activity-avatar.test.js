@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { inflateSync } from 'node:zlib';
-import { activityAvatarPath, activityAvatarUrl, renderActivityAvatarPng, verifyActivityAvatarSignature } from '../src/security/ActivityAvatar.js';
+import { activityAvatarPath, activityAvatarTextColor, activityAvatarUrl, renderActivityAvatarPng, verifyActivityAvatarSignature } from '../src/security/ActivityAvatar.js';
 //
+test('generated avatar initials use the higher-contrast text color', () => {
+  assert.deepEqual(activityAvatarTextColor([251, 211, 141]), [17, 24, 39]);
+  assert.deepEqual(activityAvatarTextColor([30, 50, 70]), [255, 255, 255]);
+});
+
 test('generated ARC account avatars are cached PNG images', () => {
   const first = renderActivityAvatarPng('user_123', 'a');
   const cached = renderActivityAvatarPng('user_123', 'A');
@@ -37,6 +42,7 @@ test('activity avatar URLs use the HTTPS ARC workspace origin and generated init
   assert.equal(avatarUrl.pathname, '/api/activity-avatars/user_123.png');
   assert.equal(avatarPath, `${avatarUrl.pathname}${avatarUrl.search}`);
   assert.equal(avatarUrl.searchParams.get('initial'), 'E');
+  assert.equal(avatarUrl.searchParams.get('revision'), '2');
   assert.equal(verifyActivityAvatarSignature('user_123', 'E', avatarUrl.searchParams.get('signature'), secret), true);
   assert.equal(verifyActivityAvatarSignature('user_123', 'F', avatarUrl.searchParams.get('signature'), secret), false);
   assert.equal(verifyActivityAvatarSignature('user_123', 'E', avatarUrl.searchParams.get('signature'), 'wrong-secret'), false);
