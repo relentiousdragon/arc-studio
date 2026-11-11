@@ -5,6 +5,7 @@ import { GraphRunner } from './GraphRunner.js';
 import { isReservedTemplateRoot, isReservedTemplateVariableName, validateTemplateFunctionName } from './TemplateExpressions.js';
 import { getFunctionInputArguments } from './FunctionGraphContract.js';
 import { GraphWebSocketManager } from './nodes/runtime/websocket.js';
+import { closeGraphWebServers, closeProjectWebServers } from './nodes/runtime/web_server.js';
 import { startCronScheduler } from './CronSchedule.js';
 import { waitForGatewayReady } from './GatewayReadyWaiter.js';
 import { NodeDefinitions } from './NodeRegistry.js';
@@ -170,6 +171,8 @@ export class BotManager {
 
   switchProject(id) {
     if (this.status === 'ONLINE' || this.status === 'CONNECTING') throw new Error('Stop the gateway before switching projects.');
+    void closeProjectWebServers(this.projectDir)
+      .catch((error) => this.log('WARN', `Web server shutdown warning: ${error.message || 'Could not stop project web servers.'}`));
     this.stopBotUptime();
     this.graphWebSockets.closeAll();
     this.webSocketDispatchGraphEvent = null;
@@ -1698,6 +1701,7 @@ export class BotManager {
     if (graphData.enabled === false && previousGraph?.enabled !== false) {
       for (const controller of this.graphRunControllers.get(tabId) || []) controller.abort();
       this.graphRunControllers.delete(tabId);
+      void closeGraphWebServers(this.projectDir, tabId).catch((error) => this.log('WARN', `Could not stop web servers for disabled graph ${tabId}: ${error.message}`));
     }
     this.deletedGraphIds.delete(tabId);
     this.graphs.set(tabId, { ...graphData, id: tabId, updatedAt: new Date().toISOString() });
@@ -1713,6 +1717,7 @@ export class BotManager {
   deleteGraph(tabId) {
     for (const controller of this.graphRunControllers.get(tabId) || []) controller.abort();
     this.graphRunControllers.delete(tabId);
+    void closeGraphWebServers(this.projectDir, tabId).catch((error) => this.log('WARN', `Could not stop web servers for deleted graph ${tabId}: ${error.message}`));
     this.graphs.delete(tabId);
     this.deletedGraphIds.add(tabId);
     this.variableStates.delete(tabId);
@@ -1897,6 +1902,7 @@ export class BotManager {
         && (graph.nodes || []).some((node) => {
           const definition = NodeDefinitions[node.type];
           if (definition?.gatewayEvent !== normalizedEventName) return false;
+          if (node.type === 'event_web_server_request' && payload?.routeId && node.id !== payload.routeId) return false;
           if (String(normalizedEventName).startsWith('WEBSOCKET_') && String(node.data?.filter_connection_id || '').trim()
             && String(node.data.filter_connection_id).trim() !== String(payload?.connectionId || '')) return false;
           if (node.type === 'event_slash_command' && String(node.data?.commandName || '').trim()
@@ -1944,6 +1950,7 @@ export class BotManager {
               return (permissions & 8n) !== 0n || (permissions & 32n) !== 0n;
             },
             deploySlashCommands: () => this.deploySlashCommands(),
+            dispatchGraphEvent: (nextEventName, nextPayload, nextGraphId) => dispatchGraphEvent(nextEventName, nextPayload, nextGraphId),
             signal: graphController.signal,
             waitForGateway: (timeoutMs, signal) => this.status === 'ONLINE'
               ? Promise.resolve(true)
@@ -2168,6 +2175,8 @@ export class BotManager {
     this.stopCronScheduler = null;
     this.graphRunAbortController?.abort();
     this.graphRunAbortController = null;
+    void closeProjectWebServers(this.projectDir)
+      .catch((error) => this.log('WARN', `Web server shutdown warning: ${error.message || 'Could not stop project web servers.'}`));
     this.graphWebSockets.closeAll();
     this.webSocketDispatchGraphEvent = null;
     this.stopBotUptime();
@@ -2264,6 +2273,7 @@ export class BotManager {
       getSecretVariableValue: (variableId, scope, sourceGraph) => this.getSecretValue(scope, scope === 'project' ? '' : sourceGraph?.id, variableId),
       appEmojis: this.applicationEmojis,
       mock: true,
+      interceptedOutputs,
       debug: Boolean(debugSession),
       onSimulationStep: debugSession ? undefined : (step) => this.broadcastWS({ type: 'MOCK_SIMULATION_STEP', payload: { runId: simulationId, tabId: graph.id, step } }),
       onDebugStep: debugSession ? async (step) => {
