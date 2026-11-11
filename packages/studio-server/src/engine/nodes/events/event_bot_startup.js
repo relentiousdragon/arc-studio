@@ -37,26 +37,26 @@ export default {
       "id": "wait_for_gateway",
       "label": "Wait for Gateway",
       "type": "boolean",
-      "defaultValue": false
-    },
+      "defaultValue": false,
+      description: "Wait for the Discord Gateway before continuing."},
     {
       "id": "timeout_seconds",
       "label": "Gateway Timeout (seconds)",
       "type": "number",
-      "defaultValue": 30
-    }
+      "defaultValue": 30,
+      description: "Maximum time to wait for the Gateway connection."}
   ],
   "outputs": [
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Runs when bot startup begins."},
     {
       "id": "gateway_connected",
       "label": "Gateway Connected",
       "type": "boolean",
-      "eventPath": "gatewayConnected"
-    }
+      "eventPath": "gatewayConnected",
+      description: "Whether the Discord Gateway connected before the timeout."}
   ]
 };

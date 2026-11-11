@@ -13,19 +13,19 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Runs when a server becomes unavailable."},
     {
       "id": "guild_id",
       "label": "Server ID",
       "type": "string",
-      "eventPath": "id"
-    },
+      "eventPath": "id",
+      description: "ID of the server where the event occurred."},
     {
       "id": "unavailable",
       "label": "Unavailable",
       "type": "boolean",
-      "eventPath": "unavailable"
-    }
+      "eventPath": "unavailable",
+      description: "Whether the server is temporarily unavailable."}
   ]
 };

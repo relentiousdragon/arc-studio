@@ -13,25 +13,25 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Runs when a member presence or status changes."},
     {
       "id": "user_id",
       "label": "User ID",
       "type": "string",
-      "eventPath": "user.id"
-    },
+      "eventPath": "user.id",
+      description: "ID of the user who triggered or was affected by the event."},
     {
       "id": "guild_id",
       "label": "Server ID",
       "type": "string",
-      "eventPath": "guild_id"
-    },
+      "eventPath": "guild_id",
+      description: "ID of the server where the event occurred."},
     {
       "id": "status",
       "label": "Status",
       "type": "string",
-      "eventPath": "status"
-    }
+      "eventPath": "status",
+      description: "Current presence status of the user."}
   ]
 };

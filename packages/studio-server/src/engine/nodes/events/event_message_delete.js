@@ -14,31 +14,31 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Runs when a message is deleted."},
     {
       "id": "message",
       "label": "Deleted Message Payload",
       "type": "object",
-      "eventPath": "$"
-    },
+      "eventPath": "$",
+      description: "The deleted message payload, when available."},
     {
       "id": "message_id",
       "label": "Message ID",
       "type": "string",
-      "eventPath": "id"
-    },
+      "eventPath": "id",
+      description: "ID of the message tied to this event."},
     {
       "id": "channel_id",
       "label": "Channel ID",
       "type": "string",
-      "eventPath": "channel_id"
-    },
+      "eventPath": "channel_id",
+      description: "ID of the channel where the event occurred."},
     {
       "id": "guild_id",
       "label": "Server ID",
       "type": "string",
-      "eventPath": "guild_id"
-    }
+      "eventPath": "guild_id",
+      description: "ID of the server where the event occurred."}
   ]
 };

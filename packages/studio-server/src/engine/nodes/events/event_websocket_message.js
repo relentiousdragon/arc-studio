@@ -5,13 +5,13 @@ export default {
   label: 'On WebSocket Message',
   color: '#0ea5e9',
   gatewayEvent: 'WEBSOCKET_MESSAGE',
-  inputs: [{ id: 'filter_connection_id', label: 'Filter Connection ID', type: 'string', defaultValue: '' }],
+  inputs: [{ id: 'filter_connection_id', label: 'Filter Connection ID', type: 'string', defaultValue: '', description: "Only handle events from this connection ID. Leave blank for all connections."}],
   outputs: [
-    { id: 'exec', label: 'Exec', type: 'exec' },
-    { id: 'connection_id', label: 'Connection ID', type: 'string', eventPath: 'connectionId' },
-    { id: 'data', label: 'Message', type: 'string', eventPath: 'data' },
-    { id: 'is_binary', label: 'Is Binary', type: 'boolean', eventPath: 'isBinary' },
-    { id: 'byte_length', label: 'Byte Length', type: 'number', eventPath: 'byteLength' },
-    { id: 'url', label: 'URL', type: 'string', eventPath: 'url' }
+    { id: 'exec', label: 'Exec', type: 'exec', description: "Runs when a WebSocket message arrives."},
+    { id: 'connection_id', label: 'Connection ID', type: 'string', eventPath: 'connectionId', description: "ID of the WebSocket connection."},
+    { id: 'data', label: 'Message', type: 'string', eventPath: 'data', description: "Data received in the WebSocket message."},
+    { id: 'is_binary', label: 'Is Binary', type: 'boolean', eventPath: 'isBinary', description: "Whether the WebSocket message contains binary data."},
+    { id: 'byte_length', label: 'Byte Length', type: 'number', eventPath: 'byteLength', description: "Message size in bytes."},
+    { id: 'url', label: 'URL', type: 'string', eventPath: 'url', description: "URL used for the WebSocket connection."}
   ]
 };

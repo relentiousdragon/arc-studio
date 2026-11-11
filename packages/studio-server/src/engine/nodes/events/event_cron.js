@@ -31,19 +31,19 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Runs on the configured cron schedule."},
     {
       "id": "scheduled_at",
       "label": "Scheduled At",
       "type": "string",
-      "eventPath": "scheduledAt"
-    },
+      "eventPath": "scheduledAt",
+      description: "Time this schedule fired."},
     {
       "id": "time_zone",
       "label": "Time Zone",
       "type": "string",
-      "eventPath": "timeZone"
-    }
+      "eventPath": "timeZone",
+      description: "Time zone used to evaluate the schedule."}
   ]
 };

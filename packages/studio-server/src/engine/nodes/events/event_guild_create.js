@@ -13,25 +13,25 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Runs when the app becomes available in a server."},
     {
       "id": "guild_id",
       "label": "Server ID",
       "type": "string",
-      "eventPath": "id"
-    },
+      "eventPath": "id",
+      description: "ID of the server where the event occurred."},
     {
       "id": "name",
       "label": "Name",
       "type": "string",
-      "eventPath": "name"
-    },
+      "eventPath": "name",
+      description: "Current name of the event target."},
     {
       "id": "member_count",
       "label": "Member Count",
       "type": "number",
-      "eventPath": "member_count"
-    }
+      "eventPath": "member_count",
+      description: "Number of server members, when available."}
   ]
 };

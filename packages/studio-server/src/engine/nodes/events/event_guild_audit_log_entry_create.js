@@ -13,61 +13,61 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Runs when an audit log entry is created."},
     {
       "id": "audit_log_id",
       "label": "Audit Log Entry ID",
       "type": "string",
-      "eventPath": "id"
-    },
+      "eventPath": "id",
+      description: "ID of the audit log entry."},
     {
       "id": "guild_id",
       "label": "Server ID",
       "type": "string",
-      "eventPath": "guild_id"
-    },
+      "eventPath": "guild_id",
+      description: "ID of the server where the event occurred."},
     {
       "id": "action_type",
       "label": "Action Type ID",
       "type": "number",
-      "eventPath": "action_type"
-    },
+      "eventPath": "action_type",
+      description: "Discord audit log action type value."},
     {
       "id": "target_id",
       "label": "Target ID",
       "type": "string",
-      "eventPath": "target_id"
-    },
+      "eventPath": "target_id",
+      description: "ID of the object changed by the action."},
     {
       "id": "user_id",
       "label": "Acting User ID",
       "type": "string",
-      "eventPath": "user_id"
-    },
+      "eventPath": "user_id",
+      description: "ID of the user who triggered or was affected by the event."},
     {
       "id": "reason",
       "label": "Reason",
       "type": "string",
-      "eventPath": "reason"
-    },
+      "eventPath": "reason",
+      description: "Reason recorded with the audit log entry."},
     {
       "id": "changes",
       "label": "Changes",
       "type": "array",
-      "eventPath": "changes"
-    },
+      "eventPath": "changes",
+      description: "Fields changed in the audit log entry."},
     {
       "id": "options",
       "label": "Options",
       "type": "object",
-      "eventPath": "options"
-    },
+      "eventPath": "options",
+      description: "Arguments submitted with the command."},
     {
       "id": "entry",
       "label": "Full Audit Log Entry",
       "type": "object",
-      "eventPath": "$"
-    }
+      "eventPath": "$",
+      description: "Full audit log entry."}
   ]
 };

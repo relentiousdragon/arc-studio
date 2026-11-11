@@ -13,31 +13,85 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Runs when a role is created."},
     {
       "id": "role_id",
       "label": "Role ID",
       "type": "string",
-      "eventPath": "role.id"
-    },
+      "eventPath": "role.id",
+      description: "ID of the role tied to this event."},
     {
       "id": "guild_id",
       "label": "Server ID",
       "type": "string",
-      "eventPath": "guild_id"
-    },
+      "eventPath": "guild_id",
+      description: "ID of the server where the event occurred."},
     {
       "id": "name",
       "label": "Name",
       "type": "string",
-      "eventPath": "role.name"
-    },
+      "eventPath": "role.name",
+      description: "Current name of the event target."},
     {
       "id": "color",
       "label": "Color",
       "type": "number",
-      "eventPath": "role.color"
-    }
+      "eventPath": "role.color",
+      description: "Role color as an RGB value."},
+    {
+      "id": "hoist",
+      "label": "Show Separately",
+      "type": "boolean",
+      "eventPath": "role.hoist",
+      description: "Whether the role has its own member list."},
+    {
+      "id": "position",
+      "label": "Position",
+      "type": "number",
+      "eventPath": "role.position",
+      description: "Role position in the server."},
+    {
+      "id": "permissions",
+      "label": "Permissions",
+      "type": "string",
+      "eventPath": "role.permissions",
+      description: "Role permission bitfield."},
+    {
+      "id": "managed",
+      "label": "Managed",
+      "type": "boolean",
+      "eventPath": "role.managed",
+      description: "Whether an integration manages this role."},
+    {
+      "id": "mentionable",
+      "label": "Mentionable",
+      "type": "boolean",
+      "eventPath": "role.mentionable",
+      description: "Whether members can mention this role."},
+    {
+      "id": "icon",
+      "label": "Icon",
+      "type": "string",
+      "eventPath": "role.icon",
+      description: "Role icon hash, if set."},
+    {
+      "id": "unicode_emoji",
+      "label": "Unicode Emoji",
+      "type": "string",
+      "eventPath": "role.unicode_emoji",
+      description: "Role emoji, if set."},
+    {
+      "id": "flags",
+      "label": "Flags",
+      "type": "number",
+      "eventPath": "role.flags",
+      description: "Role flags bitfield."},
+    {
+      "id": "tags",
+      "label": "Tags",
+      "type": "object",
+      "eventPath": "role.tags",
+      description: "Integration and subscription role tags."}
   ]
 };

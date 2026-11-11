@@ -11,7 +11,7 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    }
+      "type": "exec",
+      description: "Runs when the bot connects."}
   ]
 };

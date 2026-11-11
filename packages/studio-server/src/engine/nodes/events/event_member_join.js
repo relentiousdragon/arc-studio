@@ -13,22 +13,22 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Runs when a new user joins a guild."},
     {
       "id": "user_id",
       "label": "User ID",
-      "type": "string"
-    },
+      "type": "string",
+      description: "ID of the user who triggered or was affected by the event."},
     {
       "id": "username",
       "label": "Username",
-      "type": "string"
-    },
+      "type": "string",
+      description: "Username of the user who triggered the event."},
     {
       "id": "guild_id",
       "label": "Guild ID",
-      "type": "string"
-    }
+      "type": "string",
+      description: "ID of the server where the event occurred."}
   ]
 };
