@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Puzzle, Search, X } from 'lucide-react';
-import { BuiltInNodeDefinitions, NodeCategories, getVisibleNewNodeDefinitions, isNodeDefinitionNew, markNewNodeDefinitionsSeen } from '../nodes/nodeDefinitions.js';
+import { BuiltInNodeDefinitions, NodeCategories, getVisibleNewNodeDefinitions, isNodeDefinitionHidden, isNodeDefinitionNew, markNewNodeDefinitionsSeen } from '../nodes/nodeDefinitions.js';
 import { NodeTypeIcon } from '../nodes/NodeTypeIcon.jsx';
 import { createSearchIndex } from './nodeSearch.js';
 //
@@ -12,10 +12,10 @@ export function NodePalette({ isOpen, onClose, onSelectNode, pluginDefinitionsRe
   const inputRef = useRef(null);
   const resultsRef = useRef(null);
   const categories = ['All', ...new Set([...Object.values(NodeCategories), ...definitions.map((node) => node.category).filter(Boolean)])];
-  const newNodes = useMemo(() => getVisibleNewNodeDefinitions(definitions.filter((node) => !node.hidden), newNodesUserKey), [definitions, newNodesUserKey, newNodesRevision, pluginDefinitionsRevision]);
+  const newNodes = useMemo(() => getVisibleNewNodeDefinitions(definitions, newNodesUserKey), [definitions, newNodesUserKey, newNodesRevision, pluginDefinitionsRevision]);
   const showNewSection = !query.trim() && selectedCategory === 'All' && newNodes.length > 0;
   const newNodeTypes = useMemo(() => new Set(showNewSection ? newNodes.map((node) => node.type) : []), [showNewSection, newNodes]);
-  const searchIndex = useMemo(() => createSearchIndex(definitions.filter((node) => !node.hidden), (node) => [
+  const searchIndex = useMemo(() => createSearchIndex(definitions.filter((node) => !isNodeDefinitionHidden(node)), (node) => [
     node.label, node.description, node.category, node.type.replaceAll('_', ' '), node.pluginName, node.pluginId,
     ...(node.inputs || []).map((pin) => pin.label), ...(node.outputs || []).map((pin) => pin.label)
   ]), [definitions, pluginDefinitionsRevision]);
@@ -29,11 +29,11 @@ export function NodePalette({ isOpen, onClose, onSelectNode, pluginDefinitionsRe
     setQuery('');
     setSelectedCategory('All');
     setActiveIndex(0);
-    markNewNodeDefinitionsSeen(getVisibleNewNodeDefinitions(definitions.filter((node) => !node.hidden), newNodesUserKey), newNodesUserKey);
+    markNewNodeDefinitionsSeen(getVisibleNewNodeDefinitions(definitions, newNodesUserKey), newNodesUserKey);
     setNewNodesRevision((revision) => revision + 1);
     const focusTimer = window.setTimeout(() => inputRef.current?.focus(), 40);
     const expiryTimer = window.setInterval(() => {
-      markNewNodeDefinitionsSeen(getVisibleNewNodeDefinitions(definitions.filter((node) => !node.hidden), newNodesUserKey), newNodesUserKey);
+      markNewNodeDefinitionsSeen(getVisibleNewNodeDefinitions(definitions, newNodesUserKey), newNodesUserKey);
       setNewNodesRevision((revision) => revision + 1);
     }, 15000);
     return () => { window.clearTimeout(focusTimer); window.clearInterval(expiryTimer); };
