@@ -251,8 +251,16 @@ export const DISCORD_OBJECT_PROPERTIES = Object.freeze({
     Object.freeze({ key: 'pinned', label: 'Is Pinned', desc: 'Whether message is pinned' }),
     Object.freeze({ key: 'tts', label: 'Is TTS', desc: 'Whether message was text to speech' }),
     Object.freeze({ key: 'attachments', label: 'Attachments', desc: 'Array of attached files' }),
+    Object.freeze({ key: 'attachments[0].id', label: 'First Attachment ID', desc: 'ID of the first attached file' }),
+    Object.freeze({ key: 'attachments[0].filename', label: 'First Attachment Filename', desc: 'Filename of the first attached file' }),
+    Object.freeze({ key: 'attachments[0].url', label: 'First Attachment URL', desc: 'Download URL of the first attached file' }),
     Object.freeze({ key: 'embeds', label: 'Embeds', desc: 'Array of message embeds' }),
+    Object.freeze({ key: 'embeds[0].title', label: 'First Embed Title', desc: 'Title of the first embed' }),
+    Object.freeze({ key: 'embeds[0].description', label: 'First Embed Description', desc: 'Description of the first embed' }),
+    Object.freeze({ key: 'embeds[0].url', label: 'First Embed URL', desc: 'URL of the first embed' }),
     Object.freeze({ key: 'reactions', label: 'Reactions', desc: 'Array of reaction objects' }),
+    Object.freeze({ key: 'reactions[0].count', label: 'First Reaction Count', desc: 'Number of times the first emoji was used' }),
+    Object.freeze({ key: 'reactions[0].emoji.name', label: 'First Reaction Emoji', desc: 'Name of the first reaction emoji' }),
     Object.freeze({ key: 'type', label: 'Type', desc: 'Message type number' })
   ]),
   user: Object.freeze([
@@ -322,7 +330,9 @@ export const DISCORD_OBJECT_PROPERTIES = Object.freeze({
     Object.freeze({ key: 'hoist', label: 'Is Hoisted', desc: 'Whether displayed separately in member list' }),
     Object.freeze({ key: 'position', label: 'Position', desc: 'Position in hierarchy' }),
     Object.freeze({ key: 'permissions', label: 'Permissions', desc: 'Bitwise permission string' }),
-    Object.freeze({ key: 'mentionable', label: 'Is Mentionable', desc: 'Whether role is mentionable by everyone' })
+    Object.freeze({ key: 'mentionable', label: 'Is Mentionable', desc: 'Whether role is mentionable by everyone' }),
+    Object.freeze({ key: 'flags', label: 'Role Flags', desc: 'Bitfield of role flags' }),
+    Object.freeze({ key: 'unicode_emoji', label: 'Unicode Emoji', desc: 'Unicode emoji used as the role icon' })
   ]),
   interaction: Object.freeze([
     Object.freeze({ key: 'id', label: 'Interaction ID', desc: 'Unique interaction snowflake ID' }),
