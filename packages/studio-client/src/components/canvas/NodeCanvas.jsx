@@ -3083,7 +3083,8 @@ export function NodeCanvas({
   finishPointerRef.current = finishPointer;
 
   const finishCanvasPointer = (event) => {
-    if (event.target instanceof Element && event.target.closest('.canvas-chat-bubble')) return;
+    if (event.target instanceof Element && event.target.closest('.canvas-chat-bubble')
+      && !draggingNodeRef.current && !pendingNodeMoveDragRef.current) return;
     if (pointerMoveFrameRef.current) window.cancelAnimationFrame(pointerMoveFrameRef.current);
     pointerMoveFrameRef.current = 0;
     pendingPointerMoveRef.current = null;
@@ -3108,6 +3109,10 @@ export function NodeCanvas({
             shiftKey: event.shiftKey,
             target: event.target
           };
+          pendingNodeDrag.drag = draggingNodeRef.current;
+          draggingNodeRef.current = null;
+          setDraggingNode(null);
+          setNodeMovePending(false);
           if (event.pointerType === 'touch' && touchNodeGestureRef.current?.pointerId === event.pointerId) {
             window.clearTimeout(touchNodeGestureRef.current.timer);
             touchNodeGestureRef.current = null;
@@ -3483,11 +3488,13 @@ export function NodeCanvas({
           setNodeMovePending(false);
         }
         if (!pending.cancelled) {
-          const current = draggingNodeRef.current;
+          const current = draggingNodeRef.current || pending.drag;
           if (current?.lockRequest === pending) {
             if (current.historyStarted) onHistoryGroupEnd?.();
-            draggingNodeRef.current = null;
-            setDraggingNode(null);
+            if (draggingNodeRef.current === current) {
+              draggingNodeRef.current = null;
+              setDraggingNode(null);
+            }
           }
           arcEvents.emit('toast:notify', { title: 'Node is being moved', message: 'Another collaborator has this node reserved while moving it.', type: 'warning' });
         }
@@ -3499,6 +3506,12 @@ export function NodeCanvas({
       }
       pending.granted = true;
       setNodeMovePending(false);
+      if (pending.finalPointer && pending.drag?.lockRequest === pending) {
+        draggingNodeRef.current = { ...pending.drag, lockGranted: true };
+        pendingNodeMoveDragRef.current = null;
+        finishPointerRef.current?.(pending.finalPointer, connectingWireRef.current || connectingWire);
+        return;
+      }
       const current = draggingNodeRef.current;
       if (current?.lockRequest === pending) {
         const grantedDrag = { ...current, lockGranted: true };
@@ -3516,11 +3529,13 @@ export function NodeCanvas({
         setNodeMovePending(false);
       }
       if (!pending.cancelled) {
-        const current = draggingNodeRef.current;
+        const current = draggingNodeRef.current || pending.drag;
         if (current?.lockRequest === pending) {
           if (current.historyStarted) onHistoryGroupEnd?.();
-          draggingNodeRef.current = null;
-          setDraggingNode(null);
+          if (draggingNodeRef.current === current) {
+            draggingNodeRef.current = null;
+            setDraggingNode(null);
+          }
         }
         arcEvents.emit('toast:notify', { title: 'Node movement unavailable', message: error?.message || 'Could not reserve this node for movement.', type: 'warning' });
       }
@@ -4738,7 +4753,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
   return (
     <div
       ref={containerRef}
-      className={`node-canvas ${isPanning ? 'is-panning' : ''} ${isWheelPanning ? 'is-wheel-panning' : ''} ${isWheelZooming ? 'is-wheel-zooming' : ''} ${isPanning || isWheelPanning || isWheelZooming ? 'is-navigating-camera' : ''} ${draggingNode?.historyStarted ? 'is-dragging-node' : ''} ${nodeMovePending && draggingNode?.historyStarted ? 'is-node-move-pending' : ''} ${connectingWire ? 'is-connecting-wire' : ''} ${connectingWire?.clickToConnect ? 'is-click-connecting' : ''} ${graphChatComposerOpen ? 'has-graph-chat-composer' : ''} ${(altHeld || altDownRef.current) && !isLocked && !isPanning && !connectingWire && !drawingArrow ? 'is-cutting-wires' : ''}`}
+      className={`node-canvas ${isPanning ? 'is-panning' : ''} ${isWheelPanning ? 'is-wheel-panning' : ''} ${isWheelZooming ? 'is-wheel-zooming' : ''} ${isPanning || isWheelPanning || isWheelZooming ? 'is-navigating-camera' : ''} ${draggingNode?.historyStarted ? 'is-dragging-node' : ''} ${nodeMovePending && draggingNode?.historyStarted ? 'is-node-move-pending' : ''} ${connectingWire ? 'is-connecting-wire' : ''} ${connectingWire?.clickToConnect ? 'is-click-connecting' : ''} ${graphChatComposerOpen ? 'has-graph-chat-composer' : ''} ${(altHeld || altDownRef.current) && !isLocked && !isPanning && !connectingWire && !drawingArrow && !draggingNode?.historyStarted ? 'is-cutting-wires' : ''}`}
       style={{ display: isActive ? undefined : 'none' }}
       data-performance={performanceReduced ? 'reduced' : 'normal'}
       data-canvas-quality={effectiveCanvasQuality}
