@@ -48,6 +48,8 @@ const EMPTY_NODE_CONNECTIONS = Object.freeze({ incoming: [], outgoing: [], incid
 const boundsContain = (outer, inner) => Boolean(outer && inner
   && outer.left <= inner.left && outer.top <= inner.top
   && outer.right >= inner.right && outer.bottom >= inner.bottom);
+const isAltModifierKey = (event) => event.key === 'Alt' || event.code === 'AltLeft' || event.code === 'AltRight';
+const nodeMoveLockIds = (drag) => drag?.lockNodeIds || drag?.nodeIds || (drag?.id ? [drag.id] : []);
 const textInputPopupOpen = () => typeof document !== 'undefined' && Boolean(document.querySelector('.arc-full-emoji-picker, .discord-emoji-suggestions'));
 const graphChatEmojiPattern = /^<(a?):([a-zA-Z0-9_~]{2,32}):(\d+)>$/;
 //
@@ -532,6 +534,7 @@ export function NodeCanvas({
   const [deleteConfirmationArrowIds, setDeleteConfirmationArrowIds] = useState([]);
   const [selectionBox, setSelectionBox] = useState(null);
   const [draggingNode, setDraggingNode] = useState(null);
+  const [nodeMovePending, setNodeMovePending] = useState(false);
   const draggingNodeRef = useRef(draggingNode);
   draggingNodeRef.current = draggingNode;
   const pendingNodeMoveDragRef = useRef(null);
@@ -654,8 +657,9 @@ export function NodeCanvas({
       pending.cancelled = true;
       pendingNodeMoveDragRef.current = null;
     }
+    setNodeMovePending(false);
     const activeDrag = draggingNodeRef.current;
-    if (activeDrag) onReleaseNodeMoveLock?.(activeDrag.nodeIds || [activeDrag.id], graphId, projectId);
+    if (activeDrag) onReleaseNodeMoveLock?.(nodeMoveLockIds(activeDrag), graphId, projectId);
   }, [graphId, projectId, onReleaseNodeMoveLock]);
   useEffect(() => {
     if (isActive) return;
@@ -664,21 +668,22 @@ export function NodeCanvas({
       pending.cancelled = true;
       pendingNodeMoveDragRef.current = null;
     }
+    setNodeMovePending(false);
     const activeDrag = draggingNodeRef.current;
     if (activeDrag) {
-      onReleaseNodeMoveLock?.(activeDrag.nodeIds || [activeDrag.id], graphId, projectId);
+      onReleaseNodeMoveLock?.(nodeMoveLockIds(activeDrag), graphId, projectId);
       setDraggingNode(null);
     }
   }, [graphId, isActive, onReleaseNodeMoveLock, projectId]);
   useEffect(() => {
     if (!draggingNode || !collaborationOnline) return undefined;
     if (!collaborationReady) {
-      onReleaseNodeMoveLock?.(draggingNode.nodeIds || [draggingNode.id], graphId, projectId);
+      onReleaseNodeMoveLock?.(nodeMoveLockIds(draggingNode), graphId, projectId);
       setDraggingNode(null);
       arcEvents.emit('toast:notify', { title: 'Node movement stopped', message: 'Reconnect to the shared graph before continuing to move this node.', type: 'warning' });
       return undefined;
     }
-    const ids = draggingNode.nodeIds || [draggingNode.id];
+    const ids = nodeMoveLockIds(draggingNode);
     const timer = window.setInterval(() => {
       Promise.resolve(onRequestNodeMoveLock?.(ids)).then((granted) => {
         if (granted) return;
@@ -1142,14 +1147,44 @@ export function NodeCanvas({
   useEffect(() => {
     if (!isActive) return undefined;
     const onKeyDown = (event) => {
-      if (canvasFindOpen && event.key === 'Escape') return;
       if (event.key === 'Shift') setShiftHeld(true);
-      if (event.key === 'Alt') {
+      if (isAltModifierKey(event)) {
         altDownRef.current = true;
         setAltHeld(true);
       }
       const shortcutBlocked = isTextTarget(event.target) || (event.target instanceof HTMLElement && Boolean(event.target.closest('[role="dialog"]')));
       if (event.code === 'Space' && !event.repeat && !shortcutBlocked) spaceDownRef.current = true;
+    };
+    const onKeyUp = (event) => {
+      if (event.code === 'Space') spaceDownRef.current = false;
+      if (event.key === 'Shift') setShiftHeld(false);
+      if (isAltModifierKey(event)) {
+        altDownRef.current = false;
+        setAltHeld(false);
+      }
+    };
+    const resetModifiers = () => {
+      spaceDownRef.current = false;
+      altDownRef.current = false;
+      setAltHeld(false);
+      setShiftHeld(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', resetModifiers);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', resetModifiers);
+      resetModifiers();
+    };
+  }, [isActive]);
+
+  useEffect(() => {
+    if (!isActive) return undefined;
+    const onKeyDown = (event) => {
+      if (canvasFindOpen && event.key === 'Escape') return;
+      const shortcutBlocked = isTextTarget(event.target) || (event.target instanceof HTMLElement && Boolean(event.target.closest('[role="dialog"]')));
       if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 'a' && !shortcutBlocked) {
         event.preventDefault();
         event.stopPropagation();
@@ -1248,22 +1283,9 @@ export function NodeCanvas({
         setDraggingArrows(null);
       }
     };
-    const onKeyUp = (event) => {
-      if (event.code === 'Space') spaceDownRef.current = false;
-      if (event.key === 'Shift') setShiftHeld(false);
-      if (event.key === 'Alt') {
-        altDownRef.current = false;
-        setAltHeld(false);
-      }
-    };
-    const onBlur = () => { spaceDownRef.current = false; altDownRef.current = false; setAltHeld(false); setShiftHeld(false); };
     window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
-    window.addEventListener('blur', onBlur);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
-      window.removeEventListener('blur', onBlur);
     };
   }, [isActive, selectedNodeId, selectedNodeIds, selectedNoteIds, selectedArrowIds, canvasArrows, connectingWire, drawingArrow, isLocked, canvasLocked, nodes, connections, onOpenPalette, cancelConnectingWire, pan, zoom, notes, contextMenu, onRequestCreateTagGroup, currentUser, onNotesChange, onCollaborationAction, graphChatEnabled, collaborationReady, graphId, graphChatComposerOpen, canvasFindOpen, settings.shortcuts?.addNote]);
 
@@ -2332,8 +2354,9 @@ export function NodeCanvas({
         if (pending) {
           pending.cancelled = true;
           pendingNodeMoveDragRef.current = null;
+          setNodeMovePending(false);
         }
-        if (draggingNode) onReleaseNodeMoveLock?.(draggingNode.nodeIds || [draggingNode.id], graphId, projectId);
+        if (draggingNode) onReleaseNodeMoveLock?.(nodeMoveLockIds(draggingNode), graphId, projectId);
         setDraggingNode(null);
         setDraggingNote(null);
         selectionStartRef.current = null;
@@ -2983,7 +3006,7 @@ export function NodeCanvas({
     }
     if (finalSelectedNodeIds.length || finalSelectedNoteIds.length || finalSelectedArrowIds.length || marqueeStart) onCollaborationAction?.({ kind: 'selection', cursor: finishCursor, selectedNodeIds: finalSelectedNodeIds, selectedNoteIds: finalSelectedNoteIds, selectedArrowIds: finalSelectedArrowIds, nodePositions: finishedNodePositions, notePositions: finishedNotePositions }, true);
     else if (finishCursor) onCollaborationAction?.({ kind: 'cursor', cursor: finishCursor, mode: 'move', selectedNodeIds, nodePositions: finishedNodePositions, notePositions: finishedNotePositions }, true);
-    if (finishedDraggingNode) onReleaseNodeMoveLock?.(finishedDraggingNode.nodeIds || [finishedDraggingNode.id], graphId, projectId);
+    if (finishedDraggingNode) onReleaseNodeMoveLock?.(nodeMoveLockIds(finishedDraggingNode), graphId, projectId);
   };
 
   const finishCanvasPointer = (event) => {
@@ -2997,6 +3020,7 @@ export function NodeCanvas({
     if (pendingNodeDrag && pendingNodeDrag.pointerId === event.pointerId) {
       pendingNodeDrag.cancelled = true;
       pendingNodeMoveDragRef.current = null;
+      setNodeMovePending(false);
       if (event.pointerType === 'touch' && touchNodeGestureRef.current?.pointerId === event.pointerId) {
         window.clearTimeout(touchNodeGestureRef.current.timer);
         touchNodeGestureRef.current = null;
@@ -3037,7 +3061,7 @@ export function NodeCanvas({
           selectNodes(movingIds, node.id);
           onNodeMoveCommit?.(finalPositions);
           onCollaborationAction?.({ kind: 'selection', selectedNodeIds: movingIds, nodePositions: collaborationMotionSupported ? finalPositions : undefined }, true);
-          onReleaseNodeMoveLock?.(movingIds, graphId, projectId);
+          onReleaseNodeMoveLock?.(nodeMoveLockIds(draggingNodeRef.current), graphId, projectId);
         }
         setDraggingNode(null);
         setDraggingNote(null);
@@ -3059,7 +3083,7 @@ export function NodeCanvas({
       selectionStartRef.current = null;
       setSelectionBox(null);
       setIsPanning(false);
-      if (draggingNode) onReleaseNodeMoveLock?.(draggingNode.nodeIds || [draggingNode.id], graphId, projectId);
+      if (draggingNode) onReleaseNodeMoveLock?.(nodeMoveLockIds(draggingNode), graphId, projectId);
       setDraggingNode(null);
       setDraggingNote(null);
       onHistoryGroupEnd?.();
@@ -3135,8 +3159,10 @@ export function NodeCanvas({
         return;
       }
     }
+    const isCardHit = Boolean(event.target instanceof Element && event.target.closest('[data-node-card-id]'));
     if (event.button === 0 && event.altKey && event.shiftKey && !canvasLocked
       && containerRef.current?.contains(event.target)
+      && !isCardHit
       && !(event.target instanceof Element && event.target.closest('.canvas-tools, .canvas-breadcrumbs, [data-arrow-control-id]'))) {
       const bounds = canvasGeometryRef.current.bounds;
       const displayScale = getCanvasDisplayScale(containerRef.current);
@@ -3155,11 +3181,9 @@ export function NodeCanvas({
       containerRef.current.setPointerCapture?.(event.pointerId);
       return;
     }
-    const isWireHit = Boolean(event.target instanceof Element && event.target.closest('[data-wire-id]')) || Boolean(findNearbyWire(event.clientX, event.clientY, 16));
-    const isCardHit = Boolean(event.target instanceof Element && event.target.closest('[data-node-card-id]'));
     if (event.button === 0 && (event.altKey || altDownRef.current) && !event.shiftKey && !canvasLocked
       && containerRef.current?.contains(event.target)
-      && (isWireHit || !isCardHit)
+      && !isCardHit
       && !(event.target instanceof Element && event.target.closest('button, input, textarea, select, .node-config, [data-arrow-control-id], .canvas-tools, .canvas-breadcrumbs'))) {
       const initialWire = findNearbyWire(event.clientX, event.clientY, 16);
       const cutIds = new Set();
@@ -3318,7 +3342,7 @@ export function NodeCanvas({
     const altKey = event.altKey;
     const shiftKey = event.shiftKey;
     const startDrag = () => {
-      const drag = { id: node.id, nodeIds: movingIds, initialPositions, startX, startY, startPan, initialX: node.x, initialY: node.y, historyStarted: false, altKey, shiftKey };
+      const drag = { id: node.id, nodeIds: movingIds, lockNodeIds: movingIds, initialPositions, startX, startY, startPan, initialX: node.x, initialY: node.y, historyStarted: false, altKey, shiftKey };
       setDraggingNode(drag);
       onCollaborationAction?.({ kind: 'node-drag', cursor: collaborationCursorRef.current, nodeIds: movingIds }, true);
     };
@@ -3332,16 +3356,21 @@ export function NodeCanvas({
     }
     const pending = { pointerId: event.pointerId, nodeIds: movingIds, lastX: startX, lastY: startY, cancelled: false };
     pendingNodeMoveDragRef.current = pending;
+    setNodeMovePending(true);
     let lockRequest;
     try { lockRequest = onRequestNodeMoveLock(movingIds); }
     catch (error) {
       pendingNodeMoveDragRef.current = null;
+      setNodeMovePending(false);
       arcEvents.emit('toast:notify', { title: 'Node movement unavailable', message: error?.message || 'Could not reserve this node for movement.', type: 'warning' });
       return;
     }
     Promise.resolve(lockRequest).then((granted) => {
       if (!granted) {
-        if (pendingNodeMoveDragRef.current === pending) pendingNodeMoveDragRef.current = null;
+        if (pendingNodeMoveDragRef.current === pending) {
+          pendingNodeMoveDragRef.current = null;
+          setNodeMovePending(false);
+        }
         if (!pending.cancelled) arcEvents.emit('toast:notify', { title: 'Node is being moved', message: 'Another collaborator has this node reserved while moving it.', type: 'warning' });
         return;
       }
@@ -3350,13 +3379,17 @@ export function NodeCanvas({
         return;
       }
       pendingNodeMoveDragRef.current = null;
+      setNodeMovePending(false);
       startDrag();
       const scale = getCanvasDisplayScale(containerRef.current);
       const deltaX = ((pending.lastX - startX) / scale - (viewportRef.current.pan.x - startPan.x)) / viewportRef.current.zoom;
       const deltaY = ((pending.lastY - startY) / scale - (viewportRef.current.pan.y - startPan.y)) / viewportRef.current.zoom;
       setDraggingNode((current) => current ? { ...current, deltaX, deltaY } : current);
     }).catch((error) => {
-      if (pendingNodeMoveDragRef.current === pending) pendingNodeMoveDragRef.current = null;
+      if (pendingNodeMoveDragRef.current === pending) {
+        pendingNodeMoveDragRef.current = null;
+        setNodeMovePending(false);
+      }
       if (!pending.cancelled) arcEvents.emit('toast:notify', { title: 'Node movement unavailable', message: error?.message || 'Could not reserve this node for movement.', type: 'warning' });
     });
   };
@@ -4572,7 +4605,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
   return (
     <div
       ref={containerRef}
-      className={`node-canvas ${isPanning ? 'is-panning' : ''} ${isWheelPanning ? 'is-wheel-panning' : ''} ${isWheelZooming ? 'is-wheel-zooming' : ''} ${isPanning || isWheelPanning || isWheelZooming ? 'is-navigating-camera' : ''} ${draggingNode ? 'is-dragging-node' : ''} ${connectingWire ? 'is-connecting-wire' : ''} ${connectingWire?.clickToConnect ? 'is-click-connecting' : ''} ${graphChatComposerOpen ? 'has-graph-chat-composer' : ''} ${(altHeld || altDownRef.current) && !isLocked && !isPanning && !connectingWire && !drawingArrow ? 'is-cutting-wires' : ''}`}
+      className={`node-canvas ${isPanning ? 'is-panning' : ''} ${isWheelPanning ? 'is-wheel-panning' : ''} ${isWheelZooming ? 'is-wheel-zooming' : ''} ${isPanning || isWheelPanning || isWheelZooming ? 'is-navigating-camera' : ''} ${draggingNode ? 'is-dragging-node' : ''} ${nodeMovePending ? 'is-node-move-pending' : ''} ${connectingWire ? 'is-connecting-wire' : ''} ${connectingWire?.clickToConnect ? 'is-click-connecting' : ''} ${graphChatComposerOpen ? 'has-graph-chat-composer' : ''} ${(altHeld || altDownRef.current) && !isLocked && !isPanning && !connectingWire && !drawingArrow ? 'is-cutting-wires' : ''}`}
       style={{ display: isActive ? undefined : 'none' }}
       data-performance={performanceReduced ? 'reduced' : 'normal'}
       data-canvas-quality={effectiveCanvasQuality}
@@ -4606,8 +4639,9 @@ const previewOutput = (node, outputId, seen = new Set()) => {
         if (pendingNodeDrag) {
           pendingNodeDrag.cancelled = true;
           pendingNodeMoveDragRef.current = null;
+          setNodeMovePending(false);
         }
-        if (draggingNode) onReleaseNodeMoveLock?.(draggingNode.nodeIds || [draggingNode.id], graphId, projectId);
+        if (draggingNode) onReleaseNodeMoveLock?.(nodeMoveLockIds(draggingNode), graphId, projectId);
         pendingPinDragRef.current = null;
         setPendingPinDragNodeId(null);
         if (wireCutDragRef.current?.active) {
