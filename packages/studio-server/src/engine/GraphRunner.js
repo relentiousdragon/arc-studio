@@ -13,7 +13,7 @@ import {
 import { PluginStore } from './PluginStore.js';
 import { CDN, EmbedBuilder, parseEmoji } from 'chezcord';
 import { evaluateMathNode } from './MathOperations.js';
-import { getTemplateReferences, isReservedTemplateVariableName, renderTextTemplate } from './TemplateExpressions.js';
+import { getTemplateReferences, isReservedTemplateVariableName, isTemplateEnvironmentNameAllowed, renderTextTemplate } from './TemplateExpressions.js';
 import { buildEventTemplateValues } from './EventTemplatePaths.js';
 import { fieldLimitWarning } from './FieldLimits.js';
 import fs from 'node:fs';
@@ -47,6 +47,7 @@ const DISCORD_INTERACTION_NODE_TYPES = new Set([
 ]);
 const NETWORK_NODE_TYPES = new Set(['action_http_download', 'action_web_fetch', 'action_web_retry']);
 const WEBSOCKET_NODE_TYPES = new Set(['action_websocket_connect', 'action_websocket_send', 'action_websocket_close']);
+const WEB_SERVER_NODE_TYPES = new Set(['action_web_server_start', 'action_web_server_route', 'action_web_server_static_file', 'action_web_server_response', 'action_web_server_stop_one', 'action_web_server_stop']);
 const CRYPTO_NODE_TYPES = new Set([
   'action_crypto_hash', 'action_crypto_hmac', 'action_crypto_verify_hmac',
   'action_crypto_encrypt', 'action_crypto_decrypt', 'action_crypto_random'
@@ -143,7 +144,7 @@ export class GraphRunner {
       } catch { return new Map(); }
     })();
     let appAvatarAttachmentPromise = null;
-    const templateResolutionOptions = () => {
+    const templateResolutionOptions = (allowProjectMedia = false) => {
       const appUser = context.client?.user;
       const options = {
         systemTemplateValues: {
@@ -155,9 +156,9 @@ export class GraphRunner {
         }
       };
       if (context.templateEnvironmentAccess === true) {
-        options.resolveEnvironment = (name) => Object.hasOwn(process.env, name) ? process.env[name] : undefined;
+        options.resolveEnvironment = (name) => isTemplateEnvironmentNameAllowed(name) && Object.hasOwn(process.env, name) ? process.env[name] : undefined;
       }
-      if (context.templateMediaPathAccess === true && context.projectDir) {
+      if ((context.templateMediaPathAccess === true || allowProjectMedia) && context.projectDir) {
         options.resolveMediaPath = (filename) => {
           const requested = String(filename || '').toLowerCase();
           const asset = [...projectMediaById.values()].find((item) => String(item.filename || '').toLowerCase() === requested);
@@ -994,7 +995,10 @@ export class GraphRunner {
         }
         return readEventTemplateRoot(name);
       }, context.appEmojis, (expression, references) => warnUndefinedTemplate(node, expression, references), {
-        ...templateResolutionOptions(),
+        ...templateResolutionOptions((node.type === 'action_web_server_start' && ['template', 'routes_json', 'files_json'].includes(pinId))
+          || (node.type === 'action_web_server_route' && ['path', 'content_type', 'headers_json', 'auth_token', 'response'].includes(pinId))
+          || (node.type === 'action_web_server_static_file' && ['path', 'asset', 'auth_token', 'content_type', 'headers_json'].includes(pinId))
+          || (node.type === 'event_web_server_request' && pinId === 'auth_token')),
         resolveFunction: (name, values) => resolveTemplateGraphFunction(name, values, context.graphCallStack || [graph.id])
       });
       return warnFieldValue(node, pinId, renderedValue);
@@ -1128,6 +1132,7 @@ export class GraphRunner {
         if (['event_button_click', 'event_select_menu', 'event_modal_submit'].includes(node.type) && String(node.data?.custom_id || '').trim()
           && String(node.data.custom_id).trim() !== String(eventPayload?.data?.custom_id || '').trim()) return false;
         if (node.type === 'event_cron' && eventPayload?.cronNodeId && node.id !== eventPayload.cronNodeId) return false;
+        if (node.type === 'event_web_server_request' && eventPayload?.routeId && node.id !== eventPayload.routeId) return false;
         if (definition.gatewayInteractionType && Number(eventPayload.type) !== definition.gatewayInteractionType) return false;
         if (definition.gatewayCommandType && Number(eventPayload.data?.type || 1) !== definition.gatewayCommandType) return false;
         if (definition.gatewayComponentTypes && !definition.gatewayComponentTypes.includes(Number(eventPayload.data?.component_type))) return false;
@@ -1843,6 +1848,20 @@ export class GraphRunner {
             log
           });
           currentExecWires.push(...(result === 'failure' ? findExecOutputs(targetNode.id, 'failure_exec') : findExecContinuation(targetNode.id, wire.targetPinId)));
+        } else if (WEB_SERVER_NODE_TYPES.has(targetNode.type)) {
+          const { executeWebServerNode } = await import('./nodes/runtime/web_server.js');
+          await executeWebServerNode(targetNode, {
+            resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
+            resolveNodeInput: (node, pinId, fallback) => resolveDataInput(node, pinId, fallback),
+            hasInput: (pinId) => Boolean(findInputConnection(targetNode.id, pinId)),
+            setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value),
+            graphId: graph.id,
+            graph,
+            dispatchGraphEvent: context.dispatchGraphEvent,
+            context,
+            log
+          });
+          currentExecWires.push(...findExecContinuation(targetNode.id, wire.targetPinId));
         } else if (CRYPTO_NODE_TYPES.has(targetNode.type)) {
           const { executeCryptoNode } = await import('./nodes/runtime/crypto.js');
           executeCryptoNode(targetNode, {
