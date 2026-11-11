@@ -15,6 +15,7 @@ import { downloadSafeHttpFile } from '../engine/SafeHttpRequest.js';
 import { EmbedStore } from '../engine/EmbedStore.js';
 import { ActivityStore } from '../security/ActivityStore.js';
 import { ActivityWebhookDispatcher, ActivityWebhookStore } from '../security/ActivityWebhook.js';
+import { activityAvatarUrl, renderActivityAvatarPng, verifyActivityAvatarSignature } from '../security/ActivityAvatar.js';
 import { StarterProjects } from '../storage/StarterProjects.js';
 import { hasImportableTextContent } from '../storage/ImportContentReview.js';
 import { randomUUID, createHash } from 'node:crypto';
@@ -168,13 +169,13 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     if (res.headersSent) return;
     res.status(status).json({ error: error instanceof Error ? error.message : String(error), code: 'PASSKEY_FAILED' });
   };
-  const recordPasskeySignIn = (user, clientBuild, method) => {
-    recordTeamActivity({ user }, 'account.signed_in', 'Signed in to the workspace', {
+  const recordPasskeySignIn = (req, user, clientBuild, method) => {
+    recordTeamActivity(req, 'account.signed_in', 'Signed in to the workspace', {
       method,
       ...(typeof clientBuild?.version === 'string' && /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/.test(clientBuild.version) ? { clientVersion: clientBuild.version } : {}),
       ...(clientBuild?.platform === 'Windows' || clientBuild?.platform === 'Linux' || clientBuild?.platform === 'macOS' ? { clientPlatform: clientBuild.platform } : {}),
       ...(['x64', 'x86', 'arm64', 'arm'].includes(clientBuild?.architecture) ? { clientArchitecture: clientBuild.architecture } : {})
-    });
+    }, user);
   };
   const registryFeatures = () => getNodeRegistryRequiredFeatures(Object.values(NodeDefinitions));
   const registryRevision = () => getNodeRegistryPayload().registryRevision;
@@ -318,18 +319,19 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
   const activityWebhookDispatcher = new ActivityWebhookDispatcher(activityWebhookStore, (entryId, status, entry) => activityStores.get(entry?.details?.projectId)?.updateWebhookStatus(entryId, status));
   const resetPasswordAttempts = new Map();
   const releaseNotesCache = new Map();
-  const recordTeamActivity = (req, action, summary, details) => {
+  const recordTeamActivity = (req, action, summary, details, actorUser = req.user) => {
     if (serverConfig.desktopMode || (userStore.listUsers().length < 2 && !activityWebhookStore.isEnabled())) return;
     try {
-      let projectManager = managerForUser(req.user) || botManager;
+      let projectManager = managerForUser(actorUser) || botManager;
       const requestedProjectId = String(details?.projectId || '');
       if (requestedProjectId && projectManager?.projectStore?.projects?.some((project) => project.id === requestedProjectId)) {
-        projectManager = managerForUser({ ...req.user, activeProjectId: requestedProjectId }) || projectManager;
+        projectManager = managerForUser({ ...actorUser, activeProjectId: requestedProjectId }) || projectManager;
       }
       const projectId = String(projectManager?.project?.id || 'default');
       const projectName = projectManager?.project?.name || 'Workspace';
       const activityStore = activityStoreForProject(projectManager);
-      const entry = activityStore.record(req.user, action, summary, { ...(details || {}), projectId, projectName: details?.projectName || projectName });
+      const actor = { ...actorUser, avatar: activityAvatarUrl(req, actorUser, serverConfig.sessionSecret) };
+      const entry = activityStore.record(actor, action, summary, { ...(details || {}), projectId, projectName: details?.projectName || projectName });
       activityWebhookDispatcher.enqueue(entry, ACTIVITY_WEBHOOK_AVATAR_URL);
     }
     catch (error) { logger.log('ERROR', `Could not record team activity: ${error.message}`); }
@@ -431,6 +433,17 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     });
   });
 
+  router.get('/activity-avatars/:userId.png', (req, res) => {
+    const initial = Array.from(String(req.query.initial || 'U').trim())[0]?.toLocaleUpperCase() || 'U';
+    const signature = String(req.query.signature || '');
+    if (!verifyActivityAvatarSignature(req.params.userId, initial, signature, serverConfig.sessionSecret)) return res.sendStatus(404);
+    res.set({
+      'Cache-Control': 'public, max-age=604800',
+      'Cross-Origin-Resource-Policy': 'cross-origin',
+      'X-Content-Type-Options': 'nosniff'
+    }).type('png').send(renderActivityAvatarPng(req.params.userId, initial));
+  });
+
   router.post('/auth/verify-setup-key', (req, res) => {
     if (userStore.isSetupCompleted()) {
       return res.status(400).json({ error: 'Initial setup has already been completed.' });
@@ -523,11 +536,11 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
         : '';
       const buildPlatform = ['Windows', 'Linux', 'macOS'].includes(clientBuild?.platform) ? clientBuild.platform : '';
       const buildArchitecture = ['x64', 'x86', 'arm64', 'arm'].includes(clientBuild?.architecture) ? clientBuild.architecture : '';
-      recordTeamActivity({ user: session.user }, 'account.signed_in', 'Signed in to the workspace', {
+      recordTeamActivity(req, 'account.signed_in', 'Signed in to the workspace', {
         ...(buildVersion ? { clientVersion: buildVersion } : {}),
         ...(buildPlatform ? { clientPlatform: buildPlatform } : {}),
         ...(buildArchitecture ? { clientArchitecture: buildArchitecture } : {})
-      });
+      }, session.user);
       res.json({ success: true, ...session });
     } catch (err) {
       const ownerPasswordIncorrect = !serverConfig.desktopMode && err.ownerPasswordIncorrect === true;
@@ -648,7 +661,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       const result = await passkeyService.verifyAuthentication(req, req.body?.ceremonyId, req.body?.response, req.body?.rememberMe === true);
       if (result.replacementPending) return res.status(202).json({ replacementPending: true, pendingId: result.pendingId, retryAt: result.retryAt });
       logger.info(`User signed in with a passkey: ${result.user.username} (role: ${result.user.role})`);
-      recordPasskeySignIn(result.user, req.body?.clientBuild || null, 'passkey');
+      recordPasskeySignIn(req, result.user, req.body?.clientBuild || null, 'passkey');
       res.json({ success: true, ...result });
     } catch (error) { rejectPasskey(res, error); }
   });
@@ -660,7 +673,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       const result = passkeyService.continueAuthenticatedLogin(req.body?.pendingId);
       if (result.replacementPending) return res.status(202).json({ replacementPending: true, pendingId: result.pendingId, retryAt: result.retryAt });
       logger.info(`User signed in with a passkey: ${result.user.username} (role: ${result.user.role})`);
-      recordPasskeySignIn(result.user, req.body?.clientBuild || null, 'passkey');
+      recordPasskeySignIn(req, result.user, req.body?.clientBuild || null, 'passkey');
       res.json({ success: true, ...result });
     } catch (error) { rejectPasskey(res, error); }
   });
@@ -748,7 +761,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       const result = passkeyService.redeemDesktopTicket({ state: req.body?.state, ticket: req.body?.ticket, codeVerifier: req.body?.codeVerifier });
       if (result.kind === 'authentication') {
         logger.info(`User signed in with a passkey from the desktop app: ${result.user.username} (role: ${result.user.role})`);
-        recordPasskeySignIn(result.user, req.body?.clientBuild || null, 'passkey-desktop');
+        recordPasskeySignIn(req, result.user, req.body?.clientBuild || null, 'passkey-desktop');
       }
       res.json({ success: true, ...result });
     } catch (error) { rejectPasskey(res, error); }
@@ -800,6 +813,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
   router.post('/auth/logout', (req, res) => {
     const token = req.headers['x-arc-token'] || req.headers.authorization?.replace(/^Bearer\s+/i, '');
     userStore.endSession(token);
+    if (req.user) recordTeamActivity(req, 'account.signed_out', 'Signed out of the workspace', {});
     res.json({ success: true });
   });
 
@@ -822,7 +836,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       const result = userStore.renamePrimaryAdmin(req.user.id, req.body?.username);
       if (result.changed) {
         logger.info(`Primary workspace owner renamed their account to "${result.user.username}"`);
-        recordTeamActivity({ ...req, user: result.user }, 'account.renamed', `Renamed the owner account to ${result.user.username}`, { previousUsername: req.user.username, username: result.user.username });
+        recordTeamActivity(req, 'account.renamed', `Renamed the owner account to ${result.user.username}`, { previousUsername: req.user.username, username: result.user.username }, result.user);
       }
       res.json({ success: true, ...result });
     } catch (error) {
