@@ -31,14 +31,14 @@ export default {
       "label": "Flags",
       "type": "string",
       "defaultValue": "",
-      description: "Regular expression flags, such as i or g."
+      description: "Regular expression flags. Separate flags with commas or spaces, such as g, i."
     },
     {
       "id": "replacement",
       "label": "Replacement",
       "type": "string",
       "defaultValue": "",
-      description: "Text placed in place of each match."
+      description: "Text placed in place of each match, limited to 2,000 characters."
     }
   ],
   "outputs": [
@@ -64,13 +64,19 @@ export default {
       "id": "matches",
       "label": "All Matches",
       "type": "object",
-      description: "All matched text values."
+      description: "Up to 1,000 matched text values."
     },
     {
       "id": "captures",
       "label": "Capture Groups",
       "type": "object",
       description: "Capture groups from the first match."
+    },
+    {
+      "id": "named_captures",
+      "label": "Named Captures",
+      "type": "object",
+      description: "Named capture groups from the first match."
     },
     {
       "id": "index",
