@@ -407,18 +407,20 @@ function installedHostAdapter(pluginId) {
 }
 
 function parseArcVersion(version) {
-  const match = String(version || '').trim().replace(/^v/i, '').match(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/);
+  const match = String(version || '').trim().replace(/^v/i, '').match(/^((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*))?)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/);
   if (!match) return null;
-  const prerelease = match[4] ? match[4].split('.') : null;
+  const prerelease = match[2] ? match[2].split('.') : null;
   if (prerelease?.some((part) => !part || (/^\d+$/.test(part) && part.length > 1 && part.startsWith('0')))) return null;
-  return { core: match.slice(1, 4).map((part) => BigInt(part)), prerelease };
+  const core = match[1].split('.').map((part) => BigInt(part));
+  if (core.length === 3) core.push(0n);
+  return { core, prerelease };
 }
 
 function compareArcVersions(leftVersion, rightVersion) {
   const left = parseArcVersion(leftVersion);
   const right = parseArcVersion(rightVersion);
   if (!left || !right) return null;
-  for (let index = 0; index < 3; index += 1) {
+  for (let index = 0; index < 4; index += 1) {
     if (left.core[index] !== right.core[index]) return left.core[index] > right.core[index] ? 1 : -1;
   }
   if (!left.prerelease && !right.prerelease) return 0;
@@ -451,7 +453,7 @@ function stableJson(value) {
 
 function normalizedMinimumVersion(version, pluginId = 'Plugin') {
   const minimum = version ?? LEGACY_MIN_ARC_VERSION;
-  if (!parseArcVersion(minimum)) throw new Error(`${pluginId} needs a valid minArcStudioVersion (SemVer).`);
+  if (!parseArcVersion(minimum)) throw new Error(`${pluginId} needs a valid minArcStudioVersion (ARC Studio version).`);
   return String(minimum).replace(/^v/i, '');
 }
 
@@ -1492,6 +1494,8 @@ export class PluginStore {
       || Buffer.byteLength(JSON.stringify(manifestInput), 'utf8') > 1024 * 1024) {
       throw new Error('The local host adapter manifest has an invalid ID or exceeds the 1 MiB limit.');
     }
+    const minimumVersion = declaredMinimumVersion(manifestInput.minArcStudioVersion, manifestInput.name || pluginId);
+    assertArcStudioCompatible(manifestInput.name || pluginId, minimumVersion);
     if (LOCAL_HOST_ADAPTERS.has(pluginId)) throw new Error(`Plugin ID “${pluginId}” is reserved by a bundled host adapter.`);
     const previous = readInstalled()[pluginId];
     if (previous && previous.kind !== 'host-adapter') throw new Error(`Plugin ID “${pluginId}” is already used by a different plugin type.`);
