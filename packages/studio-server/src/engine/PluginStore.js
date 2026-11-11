@@ -21,6 +21,9 @@ const MAX_ADAPTER_DEPENDENCIES = 16;
 const MAX_ADAPTER_LOCK_BYTES = 2 * 1024 * 1024;
 const MAX_ADAPTER_LOCK_PACKAGES = 256;
 const MAX_ADAPTER_INSTALL_BYTES = 200 * 1024 * 1024;
+const MAX_ADAPTER_EXPORT_FILE_COUNT = 16;
+const MAX_ADAPTER_EXPORT_FILE_BYTES = 1024 * 1024;
+const MAX_ADAPTER_EXPORT_BYTES = 4 * 1024 * 1024;
 const LEGACY_MIN_ARC_VERSION = '2026.1.1.0';
 const pluginRepositoryRoot = process.env.ARC_PLUGINS_PATH?.trim()
   ? path.resolve(process.env.ARC_PLUGINS_PATH.trim())
@@ -146,6 +149,29 @@ function validateNpmDependencies(value, pluginId = 'Adapter') {
     names.add(name);
     return { name, version };
   }).sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function validateAdapterExportFiles(value, runtimeModule, pluginId) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > MAX_ADAPTER_EXPORT_FILE_COUNT) {
+    throw new Error(`${pluginId} may declare at most ${MAX_ADAPTER_EXPORT_FILE_COUNT} standalone export files.`);
+  }
+  const reserved = new Set(['arc-plugin.json', 'package.json', 'package-lock.json', runtimeModule.toLowerCase()]);
+  const seen = new Set();
+  return value.map((relativePath) => {
+    if (typeof relativePath !== 'string' || relativePath.length > 255
+      || !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(relativePath)
+      || path.posix.isAbsolute(relativePath)
+      || relativePath.split('/').some((part) => !part || part === '.' || part === '..' || part.toLowerCase() === 'node_modules')
+      || reserved.has(path.posix.basename(relativePath).toLowerCase())) {
+      throw new Error(`${pluginId} declares an unsafe standalone export file path.`);
+    }
+    const normalized = path.posix.normalize(relativePath);
+    const key = normalized.toLowerCase();
+    if (normalized !== relativePath || seen.has(key)) throw new Error(`${pluginId} declares a duplicate standalone export file path.`);
+    seen.add(key);
+    return normalized;
+  });
 }
 
 function inspectNpmLock(bytes, dependencies, pluginId) {
@@ -688,8 +714,8 @@ function validateRegistry(registry, defaultRepository) {
   });
 }
 
-async function getRegistry(force = false) {
-  const repository = readPluginSettings();
+async function getRegistry(force = false, repositoryInput = null) {
+  const repository = repositoryInput ? normalizeRepositoryUrl(repositoryInput) : readPluginSettings();
   const cached = registryCache.get(repository.url);
   if (!force && cached && Date.now() - cached.timestamp < 5 * 60 * 1000) return cached.entries;
   if (registryRequests.has(repository.url)) return registryRequests.get(repository.url);
@@ -872,6 +898,7 @@ function savePack(entry, pack, botManager, sourceType = 'catalog', { autoUpdate 
       sourceTrust: sourceType === 'local' ? 'local' : isDefaultRepository(entry.repositoryUrl) ? 'default' : 'custom',
       sourceUrl: entry.sourceUrl || null,
       repositoryUrl: entry.repositoryUrl || null,
+      ...(sourceType === 'local' ? { localPack: structuredClone(pack) } : {}),
       autoUpdate: autoUpdate === true,
       installedAt: previous?.installedAt || new Date().toISOString(),
       installedBy: previous?.installedBy || installedBy || null,
@@ -1027,6 +1054,22 @@ async function installRemoteHostAdapter(entry, manifest, repository, botManager,
   const expectedRuntime = Buffer.from(entry.runtimeSha256, 'hex');
   const actualRuntime = Buffer.from(runtimeDigest, 'hex');
   if (actualRuntime.length !== expectedRuntime.length || !timingSafeEqual(actualRuntime, expectedRuntime)) throw new Error('Adapter runtime digest does not match the reviewed catalogue entry.');
+  const exportFiles = validateAdapterExportFiles(manifest.export?.files, runtimeModule, manifest.name);
+  const exportFileBytes = [];
+  let totalExportBytes = 0;
+  for (const relativePath of exportFiles) {
+    const filePath = `${path.posix.dirname(entry.path)}/${relativePath}`;
+    const response = await fetch(artifactUrl(repository, entry.commit, filePath), {
+      headers: { Accept: 'application/octet-stream', 'User-Agent': 'ARC-Studio-Plugin-Store' },
+      signal: AbortSignal.timeout(10000),
+      redirect: 'error'
+    });
+    if (!response.ok) throw new Error(`${repository.provider === 'github' ? 'GitHub' : 'GitLab'} returned ${response.status} while downloading ${entry.name} export file.`);
+    const bytes = await readLimited(response, MAX_ADAPTER_EXPORT_FILE_BYTES);
+    totalExportBytes += bytes.length;
+    if (totalExportBytes > MAX_ADAPTER_EXPORT_BYTES) throw new Error(`${entry.name} standalone export files exceed the 4 MiB limit.`);
+    exportFileBytes.push({ relativePath, bytes });
+  }
   let dependencyLockBytes = null;
   if (npmDependencies.length) {
     const lockPath = `${path.posix.dirname(entry.path)}/package-lock.json`;
@@ -1058,6 +1101,12 @@ async function installRemoteHostAdapter(entry, manifest, repository, botManager,
     fs.writeFileSync(path.join(stagedDirectory, 'arc-plugin.json'), JSON.stringify(manifest, null, 2), { mode: 0o600 });
     fs.writeFileSync(path.join(stagedDirectory, 'package.json'), JSON.stringify({ private: true, type: 'module' }), { mode: 0o600 });
     fs.writeFileSync(path.join(stagedDirectory, runtimeModule), runtimeBytes, { mode: 0o600 });
+    for (const { relativePath, bytes } of exportFileBytes) {
+      const target = path.resolve(stagedDirectory, ...relativePath.split('/'));
+      if (!target.startsWith(`${path.resolve(stagedDirectory)}${path.sep}`)) throw new Error(`${entry.name} declares an unsafe standalone export file path.`);
+      fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(target, bytes, { mode: 0o600, flag: 'wx' });
+    }
     if (npmDependencies.length) {
       const installedPackageCount = await installNpmDependencies(stagedDirectory, stageRoot, npmDependencies, dependencyLockBytes, manifest.name);
       if (installedPackageCount !== entry.dependencyPackageCount) throw new Error('Installed dependency count differs from the reviewed package lock.');
@@ -1212,6 +1261,138 @@ export class PluginStore {
     return Object.values(installed).map((plugin) => ({ ...plugin, ...studioCompatibility(plugin.minArcStudioVersion, plugin.name || plugin.id) }));
   }
 
+  static projectRequirements(graphs = [], { includeLocalArtifacts = true } = {}) {
+    const graphList = Array.isArray(graphs) ? graphs : [...(graphs?.values?.() || [])];
+    const installed = readInstalled();
+    const graphById = new Map(graphList.filter((graph) => graph?.id).map((graph) => [graph.id, graph]));
+    const pluginIds = new Set(graphList.map((graph) => graph?.pluginId).filter((id) => typeof id === 'string' && id));
+    for (const graph of graphList) for (const node of graph?.nodes || []) {
+      if (typeof node?.pluginId === 'string' && node.pluginId) pluginIds.add(node.pluginId);
+      for (const plugin of Object.values(installed)) {
+        if (plugin.nodes?.some((definition) => definition.type === node?.type)) pluginIds.add(plugin.id);
+      }
+      if (node?.type === 'function_call') {
+        const target = graphById.get(node.data?.graphId);
+        if (target?.pluginId) pluginIds.add(target.pluginId);
+      }
+    }
+    for (const graph of graphList) for (const requirement of graph?.pluginRequirements || []) {
+      if (typeof requirement?.id === 'string' && requirement.id) pluginIds.add(requirement.id);
+    }
+    const requirements = [];
+    for (const id of pluginIds) {
+      const plugin = installed[id];
+      const ownedGraphs = graphList.filter((graph) => graph?.pluginId === id);
+      if (!plugin) {
+        const preserved = graphList.flatMap((graph) => graph?.pluginRequirements || []).find((item) => item?.id === id);
+        requirements.push(preserved ? structuredClone(preserved) : { id, name: ownedGraphs[0]?.pluginName || id, version: ownedGraphs[0]?.pluginVersion || '', kind: 'unknown', sourceType: 'unknown' });
+        continue;
+      }
+      const requirement = {
+        id: plugin.id,
+        name: plugin.name || plugin.id,
+        version: plugin.version || '',
+        kind: plugin.kind || 'graph-pack',
+        sourceType: plugin.sourceType || 'catalog',
+        sourceTrust: plugin.sourceTrust || '',
+        repositoryUrl: plugin.repositoryUrl || null,
+        sourceUrl: plugin.sourceUrl || null,
+        nodeTypes: (plugin.nodes || []).map((node) => node.type).filter((type) => typeof type === 'string'),
+        graphIds: Array.isArray(plugin.graphIds) ? [...plugin.graphIds] : []
+      };
+      if (includeLocalArtifacts && plugin.sourceType === 'local' && plugin.kind === 'graph-pack' && plugin.localPack) requirement.localPack = structuredClone(plugin.localPack);
+      if (includeLocalArtifacts && plugin.sourceType === 'local' && plugin.kind === 'wasm-adapter') {
+        try {
+          const directory = adapterDirectory(plugin.id, plugin.version);
+          requirement.localManifest = JSON.parse(fs.readFileSync(path.join(directory, 'arc-plugin.json'), 'utf8'));
+          requirement.localWasmBase64 = fs.readFileSync(path.join(directory, 'adapter.wasm')).toString('base64');
+        } catch { /* */ }
+      }
+      requirements.push(requirement);
+    }
+    return requirements.slice(0, 100);
+  }
+
+  static graphRequirements(graph, projectGraphs = []) {
+    const graphList = Array.isArray(projectGraphs) ? projectGraphs : [...(projectGraphs?.values?.() || [])];
+    const graphById = new Map(graphList.filter((item) => item?.id).map((item) => [item.id, item]));
+    const selected = new Map();
+    const pending = [graph];
+    while (pending.length) {
+      const current = pending.pop();
+      if (!current?.id || selected.has(current.id)) continue;
+      selected.set(current.id, current);
+      for (const node of current.nodes || []) {
+        if (!['function_call', 'execute_graph'].includes(node?.type)) continue;
+        const target = graphById.get(node.data?.graphId);
+        if (target) pending.push(target);
+      }
+    }
+    return this.projectRequirements([...selected.values()], { includeLocalArtifacts: false });
+  }
+
+  static projectImportRequirements(requirements = [], { allowLocal = true } = {}) {
+    const installed = readInstalled();
+    const trustedRepositories = new Set([DEFAULT_REPOSITORY_URL, readPluginSettings().url]);
+    for (const plugin of Object.values(installed)) {
+      try { if (plugin.repositoryUrl) trustedRepositories.add(normalizeRepositoryUrl(plugin.repositoryUrl).url); } catch { /* */ }
+    }
+    return (Array.isArray(requirements) ? requirements : []).slice(0, 100).map((requirement) => {
+      const existing = installed[requirement?.id];
+      const repo = (() => { try { return normalizeRepositoryUrl(requirement?.repositoryUrl).url; } catch { return ''; } })();
+      const trustedSource = Boolean(repo && trustedRepositories.has(repo));
+      const localPack = requirement?.sourceType === 'local' && requirement?.kind === 'graph-pack' && requirement.localPack && typeof requirement.localPack === 'object';
+      const localWasm = requirement?.sourceType === 'local' && requirement?.kind === 'wasm-adapter' && requirement.localManifest && typeof requirement.localWasmBase64 === 'string';
+      const canImportLocal = allowLocal && Boolean(localPack || localWasm);
+      const canFetchMarketplace = requirement?.sourceType === 'catalog' && trustedSource && ['graph-pack', 'wasm-adapter'].includes(requirement?.kind);
+      const sameSource = requirement?.sourceType === 'local'
+        ? existing?.sourceType === 'local'
+        : requirement?.sourceType === 'catalog' && existing?.sourceType === 'catalog' && repo && existing?.repositoryUrl === repo;
+      const alreadyAvailable = Boolean(existing && existing.version === requirement?.version && sameSource);
+      const source = requirement?.sourceType === 'local' ? (allowLocal ? 'Included local plugin' : 'Local plugin, not included in graph files') : repo || requirement?.sourceUrl || 'Unknown source';
+      return {
+        id: String(requirement?.id || '').slice(0, 64),
+        name: String(requirement?.name || requirement?.id || 'Unknown plugin').slice(0, 100),
+        version: String(requirement?.version || '').slice(0, 32),
+        kind: String(requirement?.kind || 'unknown'),
+        sourceType: String(requirement?.sourceType || 'unknown'),
+        repositoryUrl: repo || null,
+        source,
+        available: alreadyAvailable,
+        installable: !alreadyAvailable && Boolean(canImportLocal || canFetchMarketplace),
+        includedLocal: Boolean(canImportLocal)
+      };
+    });
+  }
+
+  static async importProjectRequirement(requirement, botManager, { installedBy = null, allowLocal = true } = {}) {
+    const installed = readInstalled()[requirement?.id];
+    const repositoryUrl = (() => { try { return normalizeRepositoryUrl(requirement?.repositoryUrl || '').url; } catch { return ''; } })();
+    const sameSource = requirement?.sourceType === 'local'
+      ? installed?.sourceType === 'local'
+      : requirement?.sourceType === 'catalog' && installed?.sourceType === 'catalog' && repositoryUrl && installed?.repositoryUrl === repositoryUrl;
+    if (installed?.version === requirement?.version && sameSource) return { id: requirement.id, status: 'available' };
+    if (allowLocal && requirement?.sourceType === 'local' && requirement?.kind === 'graph-pack' && requirement.localPack) {
+      const plugin = this.importLocal(requirement.localPack, botManager, { autoUpdate: false, installedBy });
+      return { id: plugin.id, status: 'installed' };
+    }
+    if (allowLocal && requirement?.sourceType === 'local' && requirement?.kind === 'wasm-adapter' && requirement.localManifest && typeof requirement.localWasmBase64 === 'string') {
+      const plugin = this.importLocalAdapter(requirement.localManifest, requirement.localWasmBase64, { autoUpdate: false, installedBy });
+      return { id: plugin.id, status: 'installed' };
+    }
+    const repo = normalizeRepositoryUrl(requirement?.repositoryUrl || '').url;
+    const trusted = repo === DEFAULT_REPOSITORY_URL || repo === readPluginSettings().url
+      || Object.values(readInstalled()).some((plugin) => {
+        try { return plugin.id === requirement.id && normalizeRepositoryUrl(plugin.repositoryUrl).url === repo; } catch { return false; }
+      });
+    if (!trusted) throw new Error('This plugin source is not trusted in the current ARC Studio settings.');
+    if (!['graph-pack', 'wasm-adapter'].includes(requirement?.kind)) throw new Error('This plugin type requires a separate host runtime review.');
+    const entry = (await getRegistry(false, repo)).find((plugin) => plugin.id === requirement.id && plugin.version === requirement.version);
+    if (!entry) throw new Error('This exact plugin version is no longer available at its recorded source.');
+    const plugin = await installRegistryEntry(entry, botManager, { autoUpdate: false, installedBy });
+    return { id: plugin.id, status: 'installed' };
+  }
+
   static exportAdapters(graphs = []) {
     const usedTypes = new Set((graphs || []).flatMap((graph) => (graph.nodes || []).map((node) => node?.type).filter((type) => typeof type === 'string')));
     registerInstalledAdapters();
@@ -1290,6 +1471,191 @@ export class PluginStore {
     }
     registerInstalledAdapters();
     return installed[manifest.id];
+  }
+
+  static async importLocalHostAdapter(manifestInput, runtimeInput, exportInputs, packageLockInput, {
+    projectDir = '',
+    permissions = [],
+    installedBy = null,
+    hostCodeConfirmed = false,
+    ownerApprovedHostCode = false
+  } = {}) {
+    if (hostCodeConfirmed !== true || ownerApprovedHostCode !== true) {
+      throw new Error('Only the project owner or a workspace admin can review and install local host adapter code.');
+    }
+    if (!projectDir) throw new Error('An active project is required to install a host adapter.');
+    if (!manifestInput || typeof manifestInput !== 'object' || Array.isArray(manifestInput)
+      || manifestInput.kind !== 'host-adapter' || manifestInput.schemaVersion !== 1) {
+      throw new Error('Choose a valid local host adapter manifest.');
+    }
+    const pluginId = String(manifestInput.id || '');
+    if (!/^[a-z0-9][a-z0-9.-]{1,62}$/.test(pluginId)
+      || Buffer.byteLength(JSON.stringify(manifestInput), 'utf8') > 1024 * 1024) {
+      throw new Error('The local host adapter manifest has an invalid ID or exceeds the 1 MiB limit.');
+    }
+    if (LOCAL_HOST_ADAPTERS.has(pluginId)) throw new Error(`Plugin ID “${pluginId}” is reserved by a bundled host adapter.`);
+    const previous = readInstalled()[pluginId];
+    if (previous && previous.kind !== 'host-adapter') throw new Error(`Plugin ID “${pluginId}” is already used by a different plugin type.`);
+    const runtimeModule = manifestInput.runtime?.module;
+    if (typeof runtimeModule !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.js$/.test(runtimeModule)) {
+      throw new Error('The local host adapter must declare a runtime JavaScript file beside arc-plugin.json.');
+    }
+    const decodeBase64 = (value, label, maxBytes) => {
+      if (typeof value !== 'string' || value.length > Math.ceil(maxBytes / 3) * 4
+        || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
+        throw new Error(`${label} is not valid base64 or exceeds its size limit.`);
+      }
+      return Buffer.from(value, 'base64');
+    };
+    let runtimeBytes;
+    try { runtimeBytes = Buffer.isBuffer(runtimeInput) ? runtimeInput : decodeBase64(runtimeInput || '', 'Host adapter runtime', 2 * 1024 * 1024); }
+    catch { throw new Error('Host adapter runtime is not valid base64.'); }
+    if (!runtimeBytes.length || runtimeBytes.length > 2 * 1024 * 1024) throw new Error('Host adapter runtime must be between 1 byte and 2 MiB.');
+    const runtimeDigest = createHash('sha256').update(runtimeBytes).digest();
+    const expectedRuntime = Buffer.from(String(manifestInput.runtime?.sha256 || ''), 'hex');
+    if (expectedRuntime.length !== runtimeDigest.length || !timingSafeEqual(runtimeDigest, expectedRuntime)) {
+      throw new Error('Host adapter runtime digest does not match arc-plugin.json.');
+    }
+    const exportFiles = validateAdapterExportFiles(manifestInput.export?.files, runtimeModule, manifestInput.name || pluginId);
+    if (!Array.isArray(exportInputs) || exportInputs.length !== exportFiles.length) {
+      throw new Error('The selected adapter folder is missing one or more declared export files.');
+    }
+    const exportFileBytes = [];
+    const seenExportFiles = new Set();
+    let totalExportBytes = 0;
+    for (const item of exportInputs) {
+      const relativePath = item?.relativePath;
+      if (!exportFiles.includes(relativePath) || seenExportFiles.has(relativePath)) {
+        throw new Error('The selected adapter folder contains an unexpected or duplicate export file.');
+      }
+      seenExportFiles.add(relativePath);
+      let bytes;
+      try { bytes = Buffer.isBuffer(item.bytes) ? item.bytes : decodeBase64(item.base64 || '', `Host adapter export file ${relativePath}`, MAX_ADAPTER_EXPORT_FILE_BYTES); }
+      catch { throw new Error(`Host adapter export file ${relativePath} is not valid base64.`); }
+      if (bytes.length > MAX_ADAPTER_EXPORT_FILE_BYTES) throw new Error(`Host adapter export file ${relativePath} exceeds the 1 MiB limit.`);
+      totalExportBytes += bytes.length;
+      if (totalExportBytes > MAX_ADAPTER_EXPORT_BYTES) throw new Error('Host adapter export files exceed the 4 MiB limit.');
+      exportFileBytes.push({ relativePath, bytes });
+    }
+    const npmDependencies = validateNpmDependencies(manifestInput.npmDependencies, manifestInput.name || pluginId);
+    const runtimeDependencies = manifestInput.runtimeDependencies;
+    if (!Array.isArray(runtimeDependencies) || runtimeDependencies.length > MAX_ADAPTER_DEPENDENCIES
+      || runtimeDependencies.some((name) => typeof name !== 'string' || !/^(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*$/i.test(name))
+      || new Set(runtimeDependencies).size !== runtimeDependencies.length
+      || npmDependencies.some(({ name }) => runtimeDependencies.includes(name))) {
+      throw new Error(`${manifestInput.name || pluginId} has an invalid ARC runtime dependency list.`);
+    }
+    let packageLockBytes = null;
+    if (npmDependencies.length) {
+      try { packageLockBytes = Buffer.isBuffer(packageLockInput) ? packageLockInput : decodeBase64(packageLockInput || '', `${manifestInput.name || pluginId} package lockfile`, MAX_ADAPTER_LOCK_BYTES); }
+      catch { throw new Error(`${manifestInput.name || pluginId} package lockfile is not valid base64.`); }
+      inspectNpmLock(packageLockBytes, npmDependencies, manifestInput.name || pluginId);
+    } else if (packageLockInput && String(packageLockInput).length) {
+      throw new Error('A package-lock.json is not supported when the adapter declares no npm dependencies.');
+    }
+    const granted = normalizePermissionGrant(pluginId, permissions, manifestInput.permissions);
+    const adapterDirectoryName = pluginId.startsWith('arc.') ? pluginId.slice(4) : pluginId;
+    fs.mkdirSync(adapterRoot, { recursive: true });
+    const stageRoot = fs.mkdtempSync(path.join(adapterRoot, '.local-stage-'));
+    const stagedDirectory = path.join(stageRoot, adapterDirectoryName);
+    const destination = hostAdapterDirectory(pluginId);
+    const backup = `${destination}.backup-${randomUUID()}`;
+    let movedOriginal = false;
+    let movedStage = false;
+    const installedBefore = readInstalled();
+    const projectPermissionsBefore = readProjectPermissionFile(projectDir);
+    let installedWritten = false;
+    let permissionsWritten = false;
+    try {
+      fs.mkdirSync(stagedDirectory, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(path.join(stagedDirectory, 'arc-plugin.json'), JSON.stringify(manifestInput, null, 2), { mode: 0o600 });
+      fs.writeFileSync(path.join(stagedDirectory, runtimeModule), runtimeBytes, { mode: 0o600 });
+      for (const { relativePath, bytes } of exportFileBytes) {
+        const target = path.resolve(stagedDirectory, ...relativePath.split('/'));
+        if (!target.startsWith(`${path.resolve(stagedDirectory)}${path.sep}`)) throw new Error('The adapter declares an unsafe export file path.');
+        fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+        fs.writeFileSync(target, bytes, { mode: 0o600, flag: 'wx' });
+      }
+      if (npmDependencies.length) {
+        await installNpmDependencies(stagedDirectory, stageRoot, npmDependencies, packageLockBytes, manifestInput.name || pluginId);
+      } else {
+        fs.writeFileSync(path.join(stagedDirectory, 'package.json'), JSON.stringify({ private: true, type: 'module' }), { mode: 0o600 });
+      }
+      if (runtimeDependencies.length) {
+        const hostNodeModules = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../node_modules');
+        const require = createRequire(path.join(hostNodeModules, 'arc-plugin-resolver.cjs'));
+        const localNodeModules = path.join(stagedDirectory, 'node_modules');
+        fs.mkdirSync(localNodeModules, { recursive: true });
+        const npmNames = new Set(npmDependencies.map(({ name }) => name));
+        for (const dependency of runtimeDependencies) {
+          if (npmNames.has(dependency)) continue;
+          try { require.resolve(dependency); }
+          catch { throw new Error(`This adapter needs the ARC runtime dependency “${dependency}”, which is not available in this ARC Studio build.`); }
+          const hostPackage = path.join(hostNodeModules, dependency);
+          const localPackage = path.join(localNodeModules, dependency);
+          if (!fs.statSync(hostPackage).isDirectory()) throw new Error(`ARC runtime dependency “${dependency}” is not a package directory.`);
+          fs.mkdirSync(path.dirname(localPackage), { recursive: true });
+          fs.symlinkSync(hostPackage, localPackage, process.platform === 'win32' ? 'junction' : 'dir');
+        }
+      }
+      const definition = loadBundledHostAdapters(stageRoot, { builtIn: false }).get(pluginId);
+      if (!definition) throw new Error('The selected folder is not a valid host adapter or its runtime digest does not match.');
+      const installed = { ...installedBefore };
+      const previousPlugin = installed[pluginId];
+      if (fs.existsSync(destination)) {
+        fs.renameSync(destination, backup);
+        movedOriginal = true;
+      }
+      fs.renameSync(stagedDirectory, destination);
+      movedStage = true;
+      const installationId = previousPlugin?.installationId || randomUUID();
+      installed[pluginId] = {
+        id: definition.id,
+        name: definition.name,
+        description: definition.description,
+        author: definition.author,
+        license: definition.license,
+        version: definition.version,
+        minArcStudioVersion: definition.minArcStudioVersion,
+        kind: 'host-adapter',
+        sourceType: 'local',
+        sourceTrust: 'local',
+        repositoryUrl: null,
+        sha256: createHash('sha256').update(JSON.stringify(manifestInput)).digest('hex'),
+        runtimeSha256: definition.runtime.sha256.toLowerCase(),
+        runtimeDependencies,
+        npmDependencies,
+        dependencyLockSha256: packageLockBytes ? createHash('sha256').update(packageLockBytes).digest('hex') : '',
+        dependencyPackageCount: packageLockBytes ? inspectNpmLock(packageLockBytes, npmDependencies, definition.name).packageCount : 0,
+        thirdPartyNotices: definition.thirdPartyNotices || [],
+        autoUpdate: false,
+        settingsSchema: definition.settingsSchema,
+        nodes: definition.nodes.map(({ type, label, category, description, color, inputs, outputs, requiredPermission }) => ({ type, label, category, description, color, inputs, outputs, ...(requiredPermission ? { requiredPermission } : {}) })),
+        permissions: definition.permissions,
+        installationId,
+        installedAt: previousPlugin?.installedAt || new Date().toISOString(),
+        installedBy: previousPlugin?.installedBy || installedBy || null,
+        updatedAt: new Date().toISOString()
+      };
+      writeInstalled(installed);
+      installedWritten = true;
+      const projectPermissionFile = { ...projectPermissionsBefore };
+      projectPermissionFile[pluginId] = { installationId, granted, updatedAt: new Date().toISOString() };
+      writeProjectPermissionFile(projectDir, projectPermissionFile);
+      permissionsWritten = true;
+      hostAdapterRuntimePromises.delete(pluginId);
+      registerInstalledAdapters();
+      if (movedOriginal) fs.rmSync(backup, { recursive: true, force: true });
+      return installed[pluginId];
+    } catch (error) {
+      if (installedWritten) writeInstalled(installedBefore);
+      if (permissionsWritten) writeProjectPermissionFile(projectDir, projectPermissionsBefore);
+      if (movedStage && fs.existsSync(destination)) fs.rmSync(destination, { recursive: true, force: true });
+      if (movedOriginal && fs.existsSync(backup)) fs.renameSync(backup, destination);
+      throw error;
+    } finally {
+      fs.rmSync(stageRoot, { recursive: true, force: true });
+    }
   }
 
   static async executeAdapter(nodeType, inputs, { projectDir = '' } = {}) {
