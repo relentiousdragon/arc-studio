@@ -75,3 +75,30 @@ test('graph patches reject prototype and identity field writes', () => {
     collections: []
   }), /invalid field operation/);
 });
+
+test('graph patches preserve nested __proto__ data without changing object prototypes', () => {
+  const base = JSON.parse('{"id":"graph","nodes":[{"id":"node","data":{"text":"before"}}],"connections":[]}');
+  const current = JSON.parse('{"id":"graph","nodes":[{"id":"node","data":{"text":"before","remote":"kept"}}],"connections":[]}');
+  const editedNode = JSON.parse('{"id":"node","data":{"text":"after","__proto__":{"marker":"value"}}}');
+  const result = applyGraphStatePatch(current, {
+    version: 1,
+    fields: [],
+    collections: [{
+      key: 'nodes',
+      changes: [{
+        id: 'node',
+        beforeExists: true,
+        before: base.nodes[0],
+        afterExists: true,
+        after: editedNode
+      }]
+    }]
+  });
+  const data = result.nodes[0].data;
+
+  assert.equal(Object.getPrototypeOf(data), Object.prototype);
+  assert.equal(Object.hasOwn(data, '__proto__'), true);
+  assert.deepEqual(data.__proto__, { marker: 'value' });
+  assert.equal(data.remote, 'kept');
+  assert.equal(({}).marker, undefined);
+});

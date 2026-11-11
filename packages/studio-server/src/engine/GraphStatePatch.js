@@ -22,7 +22,12 @@ export function mergeConcurrentGraphValue(base, current, incoming) {
     const result = {};
     for (const key of new Set([...Object.keys(base), ...Object.keys(current), ...Object.keys(incoming)])) {
       const value = mergeConcurrentGraphValue(base[key], current[key], incoming[key]);
-      if (value !== undefined) result[key] = value;
+      if (value !== undefined) Object.defineProperty(result, key, {
+        configurable: true,
+        enumerable: true,
+        value,
+        writable: true
+      });
     }
     return result;
   }

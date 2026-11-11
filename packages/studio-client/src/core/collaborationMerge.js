@@ -21,7 +21,12 @@ export function mergeCollaborativeValue(base, local, remote) {
     const result = {};
     for (const key of new Set([...Object.keys(base), ...Object.keys(local), ...Object.keys(remote)])) {
       const value = mergeCollaborativeValue(base[key], local[key], remote[key]);
-      if (value !== undefined) result[key] = value;
+      if (value !== undefined) Object.defineProperty(result, key, {
+        configurable: true,
+        enumerable: true,
+        value,
+        writable: true
+      });
     }
     return result;
   }
