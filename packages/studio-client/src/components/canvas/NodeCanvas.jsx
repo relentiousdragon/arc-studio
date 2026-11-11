@@ -10,6 +10,8 @@ import { AUTO_QUALITY_SWITCH_COOLDOWN_MS, commitPendingAutoCanvasQuality, create
 import { onPageBlur } from '../../core/pageFocus.js';
 import { readAppStorage, writeAppStorage } from '../../core/storage.js';
 import { getNodesNearInputSockets } from '../../core/nodeSocketVisibility.js';
+import { getRemoteCursorInterpolationDuration } from '../../core/collaborationMotion.js';
+import { getRemoteSocketRevealByNode } from '../../core/collaborationSocketReveal.js';
 import { arcEvents } from '../../core/ArcEvents.js';
 import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
@@ -23,6 +25,7 @@ const NODE_WIDTH = 248;
 const EMPTY_PIN_SET = new Set();
 const EMPTY_TEMPLATE_PREVIEW_VALUES = Object.freeze({});
 const EMPTY_REMOTE_NODE_STATE = Object.freeze({});
+const EMPTY_SOCKET_REVEAL = Object.freeze({ inputs: false, outputs: false });
 const warnedFailedNodeTypes = new Set();
 const chatHasHiddenMessagesAbove = (feed, isHistory, hasOlderMessages) => {
   if (!feed) return false;
@@ -242,18 +245,17 @@ function RemoteCollaborationCursor({ peer }) {
   useLayoutEffect(() => {
     const element = elementRef.current;
     if (!element || !Number.isFinite(cursor?.x) || !Number.isFinite(cursor?.y)) return undefined;
+    const receivedAt = performance.now();
     const target = { x: cursor.x, y: cursor.y };
     if (!displayedRef.current) {
       displayedRef.current = target;
       element.style.transform = `translate3d(${target.x}px, ${target.y}px, 0)`;
-      lastUpdateRef.current = Number(peer.updatedAt) || Date.now();
+      lastUpdateRef.current = receivedAt;
       return undefined;
     }
     const from = displayedRef.current;
-    const serverUpdatedAt = Number(peer.updatedAt) || Date.now();
-    const gap = lastUpdateRef.current ? Math.max(0, serverUpdatedAt - lastUpdateRef.current) : 70;
-    const duration = Math.min(70, Math.max(20, gap * 0.8));
-    lastUpdateRef.current = serverUpdatedAt;
+    const duration = getRemoteCursorInterpolationDuration(lastUpdateRef.current, receivedAt);
+    lastUpdateRef.current = receivedAt;
     let frame = 0;
     const startedAt = performance.now();
     const step = (now) => {
@@ -295,23 +297,23 @@ function RemoteWirePreview({ peer, computePath }) {
   const { start, cursor } = peer.action;
   useLayoutEffect(() => {
     if (!Number.isFinite(cursor?.x) || !Number.isFinite(cursor?.y) || !start) return undefined;
+    const receivedAt = performance.now();
     const target = { x: cursor.x, y: cursor.y };
     const startKey = `${start.x}:${start.y}`;
     const sameStart = lastStartRef.current === startKey;
     if (!displayedRef.current || !sameStart) {
       displayedRef.current = target;
       lastStartRef.current = startKey;
-      lastUpdateRef.current = Number(peer.updatedAt) || Date.now();
+      lastUpdateRef.current = receivedAt;
       if (pathRef.current) pathRef.current.setAttribute('d', computePathRef.current(start.x, start.y, target.x, target.y));
       if (circleRef.current) { circleRef.current.setAttribute('cx', String(target.x)); circleRef.current.setAttribute('cy', String(target.y)); }
       return undefined;
     }
     const from = displayedRef.current;
-    const serverUpdatedAt = Number(peer.updatedAt) || Date.now();
-    const updateGap = lastUpdateRef.current ? Math.max(0, serverUpdatedAt - lastUpdateRef.current) : 0;
+    const updateGap = lastUpdateRef.current ? Math.max(0, receivedAt - lastUpdateRef.current) : 0;
     const duration = sameStart && displayedRef.current ? Math.min(125, Math.max(50, updateGap * 1.2)) : 0;
     lastStartRef.current = startKey;
-    lastUpdateRef.current = serverUpdatedAt;
+    lastUpdateRef.current = receivedAt;
     const startedAt = performance.now();
     let frame = 0;
     const step = (now) => {
@@ -937,6 +939,7 @@ export function NodeCanvas({
   const rightPanMovedRef = useRef(false);
   const rightPanOriginRef = useRef(null);
   const collaborationCursorRef = useRef(null);
+  const socketRevealHoverRef = useRef(null);
   const applyPanDuringGesture = (nextPan) => {
     viewportRef.current = { ...viewportRef.current, pan: nextPan };
     setPan(nextPan);
@@ -1034,7 +1037,10 @@ export function NodeCanvas({
     if (!bounds) return;
     zoomAtScreenPoint(requestedZoom, bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
   };
-  useEffect(() => { collaborationCursorRef.current = null; }, [graphId]);
+  useEffect(() => {
+    collaborationCursorRef.current = null;
+    socketRevealHoverRef.current = null;
+  }, [graphId]);
   const reportGraphChatCursorMode = (mode) => {
     let cursor = collaborationCursorRef.current;
     const pointer = pointerPositionRef.current;
@@ -1983,12 +1989,11 @@ export function NodeCanvas({
 
   const getSocketPosition = useCallback((nodeId, pinId, direction) => {
     const cachedPosition = socketPositionCacheRef.current.positions.get(`${nodeId}\u0000${pinId}\u0000${direction}`);
+    const nodePosition = localNodePositionById?.get(nodeId) || remoteNodePositionById.get(nodeId) || nodePositionById.get(nodeId);
+    if (!nodePosition) return { x: 0, y: 0 };
     if (cachedPosition) {
-      const nodePosition = localNodePositionById?.get(nodeId) || remoteNodePositionById.get(nodeId) || nodePositionById.get(nodeId);
       return { x: nodePosition.x + cachedPosition.x, y: nodePosition.y + cachedPosition.y };
     }
-    if (!nodePositionById.has(nodeId)) return { x: 0, y: 0 };
-    const nodePosition = localNodePositionById?.get(nodeId) || remoteNodePositionById.get(nodeId) || nodePositionById.get(nodeId);
     const definition = nodeDefinitionsById.get(nodeId);
     const pins = direction === 'output' ? definition?.outputs || [] : definition?.inputs || [];
     const index = Math.max(0, pins.findIndex((pin) => pin.id === pinId));
@@ -2674,8 +2679,25 @@ export function NodeCanvas({
         const target = event.target instanceof Element ? event.target : null;
         const isTextField = Boolean(target?.closest('input, textarea, [contenteditable="true"], .cm-content'));
         const isWire = Boolean(target?.closest('.wire-group, .wire-visible, .wire-hit-area'));
+        const revealColumnElement = target?.closest('[data-pin-column]');
+        const revealNodeId = revealColumnElement?.closest('[data-node-card-id]')?.getAttribute('data-node-card-id');
+        const revealColumn = revealColumnElement?.getAttribute('data-pin-column');
+        const hoveredNodeId = target?.closest('[data-node-card-id]')?.getAttribute('data-node-card-id');
+        const activeSocketReveal = socketRevealHoverRef.current;
+        if (target?.closest('.node-pin-more') && revealNodeId && ['inputs', 'outputs'].includes(revealColumn)) {
+          const nextReveal = activeSocketReveal?.nodeId === revealNodeId
+            ? activeSocketReveal
+            : { nodeId: revealNodeId, columns: new Set() };
+          nextReveal.columns.add(revealColumn);
+          socketRevealHoverRef.current = nextReveal;
+        } else if (activeSocketReveal && activeSocketReveal.nodeId !== hoveredNodeId) {
+          socketRevealHoverRef.current = null;
+        }
+        const socketReveals = socketRevealHoverRef.current
+          ? [...socketRevealHoverRef.current.columns].map((column) => ({ nodeId: socketRevealHoverRef.current.nodeId, column }))
+          : [];
         const mode = graphChatTypingRef.current ? 'chat-typing' : isTextField ? 'text' : isWire ? 'cut' : isPanning ? 'pan' : 'move';
-        onCollaborationAction?.({ kind: 'cursor', cursor, mode, selectedNodeIds });
+        onCollaborationAction?.({ kind: 'cursor', cursor, mode, selectedNodeIds, socketReveals });
       }
     }
     if (selectionStartRef.current) {
@@ -4261,9 +4283,27 @@ const previewOutput = (node, outputId, seen = new Set()) => {
     for (const state of states.values()) if (!state.owner) state.owner = state.selection;
     return states;
   }, [remoteActions]);
+  const remoteSocketRevealByNode = useMemo(() => getRemoteSocketRevealByNode(remoteActions), [remoteActions]);
   const canvasNodeActionsRef = useRef({});
   canvasNodeActionsRef.current = {
     selectNodes, deleteNode, updateNodeData, startWire, startWireFromInput, startWireFromOutput,
+    onSocketRevealHover: (nodeId, column) => {
+      const cursor = collaborationCursorRef.current;
+      if (cursor) {
+        const active = socketRevealHoverRef.current;
+        const nextReveal = active?.nodeId === nodeId ? active : { nodeId, columns: new Set() };
+        nextReveal.columns.add(column);
+        socketRevealHoverRef.current = nextReveal;
+        const socketReveals = [...nextReveal.columns].map((activeColumn) => ({ nodeId, column: activeColumn }));
+        onCollaborationAction?.({ kind: 'cursor', cursor, mode: 'move', selectedNodeIds, socketReveals }, true);
+      }
+    },
+    onSocketRevealLeave: (nodeId) => {
+      if (socketRevealHoverRef.current?.nodeId !== nodeId) return;
+      socketRevealHoverRef.current = null;
+      const cursor = collaborationCursorRef.current;
+      if (cursor) onCollaborationAction?.({ kind: 'cursor', cursor, mode: 'move', selectedNodeIds, socketReveals: [] }, true);
+    },
     onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio,
     onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph, callableGraphs
   };
@@ -4274,6 +4314,8 @@ const previewOutput = (node, outputId, seen = new Set()) => {
     onDelete: (id) => canvasNodeActionsRef.current.deleteNode?.(id),
     onNodeDataChange: (id, data, label) => canvasNodeActionsRef.current.updateNodeData?.(id, data, label),
     onPinStartConnect: (...args) => canvasNodeActionsRef.current.startWire?.(...args),
+    onSocketRevealHover: (...args) => canvasNodeActionsRef.current.onSocketRevealHover?.(...args),
+    onSocketRevealLeave: (...args) => canvasNodeActionsRef.current.onSocketRevealLeave?.(...args),
     onOpenVariables: (...args) => canvasNodeActionsRef.current.onOpenVariables?.(...args),
     onOpenEmbedStudio: (...args) => canvasNodeActionsRef.current.onOpenEmbedStudio?.(...args),
     onOpenTextStudio: (...args) => canvasNodeActionsRef.current.onOpenTextStudio?.(...args),
@@ -4960,6 +5002,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
           const definition = nodeDefinitionsById.get(node.id);
           const templatePreviewValues = templatePreviewValuesByNode.get(node.id) || EMPTY_TEMPLATE_PREVIEW_VALUES;
           const remoteVisual = remoteNodeVisualStateById.get(node.id) || EMPTY_REMOTE_NODE_STATE;
+          const remoteSocketReveal = remoteSocketRevealByNode.get(node.id) || EMPTY_SOCKET_REVEAL;
           const remoteSelection = remoteVisual.selection;
           const remoteOwner = remoteVisual.owner;
           const remotePosition = remoteNodePositionById.get(node.id);
@@ -4995,7 +5038,8 @@ const previewOutput = (node, outputId, seen = new Set()) => {
                 connectedOutputIds={connectionByNodePin.outgoing.get(node.id) || EMPTY_PIN_SET}
                 pinRevealEnabled={settings.progressiveSocketReveal !== false}
                 isConnectingWire={Boolean(connectingWire?.nodeId === node.id || pendingPinDragNodeId === node.id)}
-                autoRevealInputs={autoRevealInputNodeIds.has(node.id)}
+                autoRevealInputs={autoRevealInputNodeIds.has(node.id) || remoteSocketReveal.inputs}
+                autoRevealOutputs={remoteSocketReveal.outputs}
                 incomingConnections={connectionByNodePin.incoming.get(node.id)}
                 nodeById={nodeById}
                 nodeDefinitionsById={nodeDefinitionsById}
@@ -5127,7 +5171,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
             const sender = isOwnMessage ? currentUser?.username || bubble.username : bubble.username;
             const location = isOwnMessage ? 'You' : bubble.graphName || 'Current graph';
             return <div className={`canvas-chat-feed-message${isHistory ? ' is-history' : ' is-live'}${isDimmed || bubble.failed ? ' is-dimmed' : ''}${isFading ? ' is-fading' : ''}${bubble.failed ? ' is-failed' : ''}`} key={`feed-${bubble.clientActionId || bubble.id}`} style={{ '--collaborator-color': bubble.failed ? 'var(--muted)' : bubble.color }}>
-              <span><strong>{chatDisplayName(sender)}</strong><i> · {chatDisplayName(location)}</i>{bubble.failed && (<span className="canvas-chat-feed-not-sent"> Not sent</span>)}</span>
+              <span><strong>{chatDisplayName(sender)}</strong><i title={location}> · {location}</i>{bubble.failed && (<span className="canvas-chat-feed-not-sent"> Not sent</span>)}</span>
               <div>{renderGraphChatContent(bubble.content)}</div>
             </div>;
           })}
