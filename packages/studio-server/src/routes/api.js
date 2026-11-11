@@ -910,6 +910,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       const projectManager = managerForUser({ ...req.user, activeProjectId: req.params.projectId }) || botManager;
       const bundle = botManager.projectStore.exportProject(req.params.projectId, {
         includeSecrets: req.query.includeSecrets === '1',
+        pluginRequirements: PluginStore.projectRequirements(projectManager.graphs),
         secretValueResolver: (scope, graphId, variableId) => projectManager.getSecretValue(scope, graphId, variableId)
       });
       res.setHeader('Cache-Control', 'no-store, private');
@@ -923,6 +924,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       const projectManager = managerForUser({ ...req.user, activeProjectId: req.params.projectId }) || botManager;
       const bundle = await botManager.projectStore.exportEncryptedProject(req.params.projectId, req.body?.password, {
         includeSecrets: req.body?.includeSecrets === true,
+        pluginRequirements: PluginStore.projectRequirements(projectManager.graphs),
         secretValueResolver: (scope, graphId, variableId) => projectManager.getSecretValue(scope, graphId, variableId)
       });
       res.setHeader('Cache-Control', 'no-store, private');
@@ -937,6 +939,11 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       const bundle = submittedBundle?.format === 'arc-project-encrypted'
         ? await botManager.projectStore.decryptProjectBundle(submittedBundle, readProjectImportPassword(req))
         : submittedBundle;
+      const pluginRequirements = Array.isArray(bundle?.plugins) ? bundle.plugins : [];
+      const pluginPlan = PluginStore.projectImportRequirements(pluginRequirements);
+      if (pluginPlan.length && req.headers['x-arc-import-plugins'] !== 'true') {
+        return res.status(409).json({ code: 'PROJECT_PLUGIN_IMPORT_CONFIRMATION_REQUIRED', plugins: pluginPlan });
+      }
       if (!serverConfig.desktopMode && hasImportableTextContent(bundle) && req.headers['x-arc-confirm-collaborative-text'] !== 'true') {
         return res.status(409).json({
           code: 'IMPORT_SHARED_CONTENT_CONFIRMATION_REQUIRED',
@@ -945,10 +952,34 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       }
       const integrityWarning = !bundle?.integrity;
       const project = botManager.projectStore.importProject(bundle, { trusted: req.headers['x-arc-trusted'] === 'true', allowOldVersion: req.headers['x-arc-allow-old-version'] === 'true', ownerId: req.user.id });
-      managerForUser({ ...req.user, activeProjectId: project.id })?.importProjectSecretValues();
+      const importedManager = managerForUser({ ...req.user, activeProjectId: project.id });
+      importedManager?.importProjectSecretValues();
+      const pluginImportResults = [];
+      const previousRegistryRevision = registryRevision();
+      let pluginRegistryChanged = false;
+      for (const requirement of pluginRequirements) {
+        const plan = pluginPlan.find((plugin) => plugin.id === requirement?.id);
+        if (!plan) continue;
+        if (plan.available) {
+          pluginImportResults.push({ id: plan.id, name: plan.name, status: 'available' });
+          continue;
+        }
+        if (!plan.installable || !importedManager) {
+          pluginImportResults.push({ id: plan.id, name: plan.name, status: 'unavailable', message: 'This plugin source or local plugin file is not available for automatic import.' });
+          continue;
+        }
+        try {
+          const result = await PluginStore.importProjectRequirement(requirement, importedManager, { installedBy: req.user?.username });
+          pluginImportResults.push({ ...result, name: plan.name });
+          pluginRegistryChanged = pluginRegistryChanged || result.status === 'installed';
+        } catch (error) {
+          pluginImportResults.push({ id: plan.id, name: plan.name, status: 'unavailable', message: String(error.message || 'Could not install this plugin.').slice(0, 300) });
+        }
+      }
+      if (pluginRegistryChanged) publishRegistryChange(previousRegistryRevision);
       recordTeamActivity(req, 'project.imported', `Imported project “${project.name}”`, { projectId: project.id });
       broadcastWorkspace({ type: 'PROJECTS_UPDATED', payload: botManager.projectStore.list() });
-      res.json({ success: true, project, integrityWarning, ...botManager.getProjects() });
+      res.json({ success: true, project, integrityWarning, pluginImportResults, ...botManager.getProjects() });
     } catch (error) {
       if (error.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' || error.code === 'PROJECT_REQUIRES_NEWER_ARC') {
         return res.status(409).json({ error: error.message, code: error.code, projectVersion: error.projectVersion || null, currentVersion: error.currentVersion || null, unknownProjectVersion: error.unknownProjectVersion === true });
@@ -1540,6 +1571,40 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     }
   });
 
+  router.post('/plugins/import-host-adapter', requirePermission('graphs:write'), async (req, res) => {
+    const previousRevision = registryRevision();
+    try {
+      if (req.body?.trustConfirmed !== true || req.body?.hostCodeConfirmed !== true) {
+        return res.status(400).json({ error: 'Review and accept the local host adapter runtime warning before importing it.' });
+      }
+      const manager = managerForUser(req.user);
+      const ownerApprovedHostCode = manager.project.ownerId === req.user.id || req.user.permissions?.includes('*') === true;
+      if (!ownerApprovedHostCode) return res.status(403).json({ error: 'Only the project owner or a workspace admin can install server runtime code.' });
+      const plugin = await PluginStore.importLocalHostAdapter(
+        req.body?.manifest,
+        req.body?.runtimeBase64,
+        req.body?.exportFiles,
+        req.body?.packageLockBase64,
+        {
+          projectDir: manager.projectDir,
+          permissions: Array.isArray(req.body?.permissions) ? req.body.permissions : [],
+          installedBy: req.user?.username,
+          hostCodeConfirmed: true,
+          ownerApprovedHostCode
+        }
+      );
+      publishRegistryChange(previousRevision);
+      recordTeamActivity(req, 'plugin.imported', `Imported local host adapter “${plugin.name || plugin.id}”`, { pluginId: plugin.id, pluginName: plugin.name || '' });
+      res.json({
+        success: true,
+        plugin: { ...plugin, grantedPermissions: PluginStore.projectPermissions(manager.projectDir, plugin.id), installedBy: installerForResponse(plugin) },
+        installed: installedPluginsForResponse(manager)
+      });
+    } catch (error) {
+      res.status(400).json({ error: error.message || 'Could not import this local host adapter.' });
+    }
+  });
+
   router.post('/plugins/:pluginId/install', requirePermission('graphs:write'), async (req, res) => {
     const previousRevision = registryRevision();
     try {
@@ -1769,6 +1834,15 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     }
   });
 
+  router.post('/graphs/plugin-requirements', requirePermission('graphs:read'), (req, res) => {
+    const graph = req.body?.graph;
+    if (!graph || !Array.isArray(graph.nodes) || !Array.isArray(graph.connections)) {
+      return res.status(400).json({ error: 'Choose a valid graph to inspect.' });
+    }
+    const manager = managerForUser(req.user) || botManager;
+    res.json({ plugins: PluginStore.graphRequirements(graph, manager.getGraphs()) });
+  });
+
   router.post('/graphs/import', requirePermission('graphs:write'), async (req, res) => {
     let payload;
     try { payload = await readArcArchive(decodeArcArchiveRequest(req.body, 'graph'), 'arc-graph'); }
@@ -1777,6 +1851,8 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     if (!source || !Array.isArray(source.nodes) || !Array.isArray(source.connections)) {
       return res.status(400).json({ error: 'Choose a valid ARC Studio graph file.' });
     }
+    const pluginRequirements = Array.isArray(payload?.plugins) ? payload.plugins : Array.isArray(source.pluginRequirements) ? source.pluginRequirements : [];
+    const pluginPlan = PluginStore.projectImportRequirements(pluginRequirements, { allowLocal: false });
     const { integrity, ...integrityContent } = payload;
     const digest = createHash('sha256').update(stableJson(integrityContent)).digest('hex');
     if (!integrity || integrity.algorithm !== 'sha256' || integrity.digest !== digest) {
@@ -1794,6 +1870,9 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
         code: 'IMPORT_SHARED_CONTENT_CONFIRMATION_REQUIRED',
         workspaceName: userStore.workspaceName || 'ARC Studio Workspace'
       });
+    }
+    if (pluginPlan.length && req.headers['x-arc-import-plugins'] !== 'true') {
+      return res.status(409).json({ code: 'GRAPH_PLUGIN_IMPORT_CONFIRMATION_REQUIRED', plugins: pluginPlan });
     }
     let importMediaStore = null;
     let mediaBeforeImport = new Set();
@@ -1813,15 +1892,49 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
         }
         return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, normalizeAttachments(item, depth + 1)]));
       };
+      const importedGraph = normalizeAttachments(source);
+      const pluginImportResults = [];
+      const previousRegistryRevision = registryRevision();
+      let pluginRegistryChanged = false;
+      for (const requirement of pluginRequirements) {
+        const plan = pluginPlan.find((plugin) => plugin.id === requirement?.id);
+        if (!plan) continue;
+        if (plan.available) {
+          pluginImportResults.push({ id: plan.id, name: plan.name, status: 'available' });
+          continue;
+        }
+        if (!plan.installable) {
+          pluginImportResults.push({ id: plan.id, name: plan.name, status: 'unavailable', message: 'This plugin is local, unavailable, or not from a trusted catalog source.' });
+          continue;
+        }
+        try {
+          const result = await PluginStore.importProjectRequirement(requirement, botManager, { installedBy: req.user?.username, allowLocal: false });
+          pluginImportResults.push({ ...result, name: plan.name });
+          pluginRegistryChanged = pluginRegistryChanged || result.status === 'installed';
+        } catch (error) {
+          pluginImportResults.push({ id: plan.id, name: plan.name, status: 'unavailable', message: String(error.message || 'Could not install this plugin.').slice(0, 300) });
+        }
+      }
+      if (pluginRegistryChanged) publishRegistryChange(previousRegistryRevision);
+      const unavailablePluginIds = new Set(pluginImportResults.filter((item) => item.status === 'unavailable').map((item) => item.id));
+      const requirementForNode = (node) => pluginRequirements.find((requirement) => (requirement.nodeTypes || []).includes(node.type)
+        || (typeof requirement.id === 'string' && node.type.startsWith(`${requirement.id}.`))
+        || node.type === 'function_call' && (requirement.graphIds || []).includes(node.data?.graphId));
+      importedGraph.nodes = importedGraph.nodes.map((node) => {
+        const requirement = requirementForNode(node);
+        if (!requirement) return node;
+        return { ...node, pluginId: requirement.id, pluginName: requirement.name || requirement.id, pluginVersion: requirement.version || '', pluginUnavailable: unavailablePluginIds.has(requirement.id) };
+      });
+      if (pluginRequirements.length) importedGraph.pluginRequirements = pluginRequirements;
       const id = `graph_import_${randomUUID()}`;
       const name = String(source.name || 'Imported graph').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 80) || 'Imported graph';
-      const graph = { ...normalizeAttachments(source), id, name };
+      const graph = { ...importedGraph, id, name };
       delete graph.isDirty;
       const saved = botManager.saveGraph(id, graph);
       importedGraphSaved = true;
       recordTeamActivity(req, 'graph.imported', `Imported graph “${saved.name}”`, { graphId: saved.id, graphName: saved.name, graphType: saved.graphType || 'event', nodeCount: saved.nodes.length });
       if (mediaStore.list().some((asset) => !mediaBeforeImport.has(asset.id))) broadcastProject(botManager.project?.id, { type: 'MEDIA_ASSETS_UPDATED', payload: { projectId: botManager.project?.id } });
-      res.status(201).json({ success: true, graph: saved });
+      res.status(201).json({ success: true, graph: saved, pluginImportResults });
     } catch (error) {
       if (importMediaStore && !importedGraphSaved) {
         try { for (const asset of importMediaStore.list()) if (!mediaBeforeImport.has(asset.id)) importMediaStore.delete(asset.id); } catch {}
