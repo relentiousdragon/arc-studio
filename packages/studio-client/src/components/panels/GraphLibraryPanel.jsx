@@ -5,7 +5,7 @@ import { arcEvents } from '../../core/ArcEvents.js';
 import { readAppStorage, writeAppStorage } from '../../core/storage.js';
 import { onPageBlur } from '../../core/pageFocus.js';
 import { AlertCircle, AlertTriangle, AudioLines, BookmarkPlus, Braces, Calculator, ChevronDown, ChevronRight, Clock3, Copy, Database, Download, File, FileCode2, FileImage, FileUp, FileVideo, FolderTree, GitCompare, GripVertical, Layers, MoreHorizontal, PackageOpen, Pencil, Play, Plus, Puzzle, RotateCcw, Save, Search, Sparkles, Star, ToggleLeft, ToggleRight, Trash2, X } from 'lucide-react';
-import { BuiltInNodeDefinitions, createDefaultNodeData, getVisibleNewNodeDefinitions, isNodeDefinitionNew, markNewNodeDefinitionsSeen } from '../nodes/nodeDefinitions.js';
+import { BuiltInNodeDefinitions, createDefaultNodeData, getVisibleNewNodeDefinitions, isNodeDefinitionHidden, isNodeDefinitionNew, markNewNodeDefinitionsSeen } from '../nodes/nodeDefinitions.js';
 import { NodeTypeIcon } from '../nodes/NodeTypeIcon.jsx';
 import { CharacterLimit, TextInput } from '../ui/Inputs.jsx';
 import { SidebarResizeHandle } from '../ui/SidebarResizeHandle.jsx';
@@ -113,7 +113,7 @@ export function GraphLibraryPanel({
     return { ...current, [projectId]: { ...currentProject, [kind]: typeof update === 'function' ? update(previous) : update } };
   });
   useEffect(() => {
-    const pluginCategories = [...new Set(definitions.filter((node) => node.pluginAdapter && !node.hidden).map((node) => node.category).filter(Boolean))];
+    const pluginCategories = [...new Set(definitions.filter((node) => node.pluginAdapter && !isNodeDefinitionHidden(node)).map((node) => node.category).filter(Boolean))];
     if (!pluginCategories.length) return;
     updateExpandedGroups('nodes', (current) => {
       const additions = Object.fromEntries(pluginCategories.filter((category) => current[category] === undefined).map((category) => [category, true]));
@@ -129,7 +129,7 @@ export function GraphLibraryPanel({
   const graphSelectionAnchorRef = useRef(null);
   const graphSearchIndex = useMemo(() => createSearchIndex(graphs, (graph) => [graph.name, graph.graphType, graph.id]), [graphs]);
   const templateSearchIndex = useMemo(() => createSearchIndex(templates, (graph) => [graph.name, graph.graphType, graph.id]), [templates]);
-  const nodeSearchIndex = useMemo(() => createSearchIndex(definitions.filter((node) => !node.hidden), (node) => [
+  const nodeSearchIndex = useMemo(() => createSearchIndex(definitions.filter((node) => !isNodeDefinitionHidden(node)), (node) => [
     node.label, node.description, node.category, node.type.replaceAll('_', ' '), node.pluginName, node.pluginId,
     ...(node.inputs || []).map((pin) => pin.label), ...(node.outputs || []).map((pin) => pin.label)
   ]), [definitions]);
@@ -224,7 +224,7 @@ export function GraphLibraryPanel({
     setGraphMoveDropTarget(null);
   };
   const graphLastSeen = new Map(graphActivity.map((entry) => [entry.graphId, entry]));
-  const searchNodes = search(nodeSearchIndex, definitions.filter((node) => !node.hidden));
+  const searchNodes = search(nodeSearchIndex, definitions.filter((node) => !isNodeDefinitionHidden(node)));
   const nodeGroups = groupNodes(searchNodes);
   const compatiblePrefabs = nodePrefabs;
   const filteredPrefabs = search(prefabSearchIndex, compatiblePrefabs);
@@ -237,7 +237,7 @@ export function GraphLibraryPanel({
   const frequentGraphs = graphs.length >= 10 ? rankByUsage(filteredGraphs, usage.graphs, (graph) => graph.id, 3) : [];
   const frequentEmbeds = filteredEmbeds.length >= 10 ? rankByUsage(filteredEmbeds, usage.embeds, (asset) => asset.id, 3) : [];
   const allGraphGroupNames = groupGraphs(graphs, graphCategories).map(([name]) => name);
-  const allNodeGroupNames = groupNodes(definitions.filter((node) => !node.hidden)).map(([name]) => name);
+  const allNodeGroupNames = groupNodes(definitions.filter((node) => !isNodeDefinitionHidden(node))).map(([name]) => name);
   const activeGroupKind = activeSection === 'graphs' ? 'graphs' : activeSection === 'nodes' ? 'nodes' : null;
   const activeGroupNames = activeGroupKind === 'graphs' ? allGraphGroupNames : activeGroupKind === 'nodes' ? allNodeGroupNames : [];
   const activeExpandedGroups = activeGroupKind === 'graphs' ? expandedGroups : expandedNodeGroups;
@@ -679,7 +679,13 @@ export function GraphLibraryPanel({
             const report = graphValidationReports?.get?.(graph.id);
             const errorCount = report?.errors?.length || 0;
             const warningCount = report?.warnings?.length || 0;
-            return <button key={graph.id} className={`graph-library-entry graph-library-entry-with-activity${active ? ' is-active' : ''}${selected ? ' is-multi-selected' : ''}`} aria-pressed={selected} aria-current={active ? 'page' : undefined} onClick={(event) => handleGraphClick(event, graph)} onContextMenu={(event) => openContextMenu(event, graph)} title={active ? 'Currently active graph' : lastSeen ? `Last here: ${lastSeen.username || 'Collaborator'} · ${formatGraphLastSeen(lastSeen.updatedAt)}` : 'Open graph'}><FileCode2 size={14} /><span className="graph-library-entry-copy"><span className="graph-library-entry-title"><span>{graph.name || 'Untitled graph'}</span>{defaultGraphId === graph.id && <Star className="graph-default-star" size={11} fill="currentColor" title="Default for new graphs" />}{errorCount > 0 ? (
+            const graphKey = graphSelectionKey(graph);
+            return <button key={graph.id} className={`graph-library-entry graph-library-entry-with-activity${active ? ' is-active' : ''}${selected ? ' is-multi-selected' : ''}${contextMenu?.kind === 'graph' && contextMenu.graph?.id === graph.id ? ' is-context-menu-open' : ''}`} aria-pressed={selected} aria-current={active ? 'page' : undefined} draggable={!desktopMode} onPointerDown={(event) => {
+              const graphIds = uniqueSelectedGraphKeys.includes(graphKey)
+                ? uniqueSelectedGraphKeys.map((key) => graphs.find((item) => graphSelectionKey(item) === key)?.id).filter(Boolean)
+                : [graph.id];
+              beginPointerDrag(event, { type: 'graph-call', graphId: graph.id, graphIds });
+            }} onClickCapture={suppressClickAfterDrag} onDragStart={(event) => startGraphDrag(event, graph)} onDragEnd={finishGraphDrag} onClick={(event) => handleGraphClick(event, graph)} onContextMenu={(event) => openContextMenu(event, graph)} title={active ? 'Currently active graph. Drag into the canvas to call this graph.' : lastSeen ? `Last here: ${lastSeen.username || 'Collaborator'} · ${formatGraphLastSeen(lastSeen.updatedAt)}. Drag into the canvas to call this graph.` : 'Drag into the canvas to call this graph'}><FileCode2 size={14} /><span className="graph-library-entry-copy"><span className="graph-library-entry-title"><span>{graph.name || 'Untitled graph'}</span>{defaultGraphId === graph.id && <Star className="graph-default-star" size={11} fill="currentColor" title="Default for new graphs" />}{errorCount > 0 ? (
               <span role="button" tabIndex={0} className="graph-library-issue is-error" title={`${errorCount} blocking error${errorCount === 1 ? '' : 's'}`} aria-label={`${errorCount} blocking error${errorCount === 1 ? '' : 's'}`} onClick={(event) => { event.stopPropagation(); event.preventDefault(); onOpenGraphReview?.(graph); }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.stopPropagation(); event.preventDefault(); onOpenGraphReview?.(graph); } }}><AlertCircle size={13} /></span>
             ) : warningCount > 0 ? (
               <span role="button" tabIndex={0} className="graph-library-issue is-warning" title={`${warningCount} review warning${warningCount === 1 ? '' : 's'}`} aria-label={`${warningCount} review warning${warningCount === 1 ? '' : 's'}`} onClick={(event) => { event.stopPropagation(); event.preventDefault(); onOpenGraphReview?.(graph); }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.stopPropagation(); event.preventDefault(); onOpenGraphReview?.(graph); } }}><AlertTriangle size={13} /></span>
@@ -768,7 +774,7 @@ export function GraphLibraryPanel({
         {!filteredTemplates.length && <div className="graph-library-empty">{templates.length ? 'No matching templates' : 'No templates'}</div>}
       </>}
       {activeSection === 'nodes' && <>
-        <div className="graph-library-section-heading graph-library-subsection"><span><FileCode2 size={13} /> Node library</span><small>{definitions.filter((node) => !node.hidden).length}</small></div>
+        <div className="graph-library-section-heading graph-library-subsection"><span><FileCode2 size={13} /> Node library</span><small>{definitions.filter((node) => !isNodeDefinitionHidden(node)).length}</small></div>
         <section className="graph-library-frequent">
           <div className="graph-library-section-heading graph-library-subsection"><span><Star size={13} /> Frequently used</span><small>{frequentNodes.length} / 5</small></div>
           {frequentNodes.length > 0
