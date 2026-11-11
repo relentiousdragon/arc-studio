@@ -103,10 +103,12 @@ const liveGraphChatBubbles = new Map();
 const liveCanvasArrows = new Map();
 const liveCollaborationStudioDrafts = new Map();
 const liveNoteEditLocks = new Map();
+const liveNodeMoveLocks = new Map();
 const recentProjectGraphUse = new Map();
 let collaborationActionRevision = 0;
 const nextCollaborationActionRevision = () => ++collaborationActionRevision;
 const NOTE_EDIT_LOCK_TTL_MS = 15_000;
+const NODE_MOVE_LOCK_TTL_MS = 15_000;
 const COLLAB_CURSOR_IDLE_MS = 30_000;
 const activeWorkspaceCollaborators = () => getActiveCollaborators(wss.clients, WebSocket.OPEN);
 const collaboratorColor = (id) => getCollaboratorColor(id, activeWorkspaceCollaborators());
@@ -170,6 +172,8 @@ const sendGraphChatSnapshot = (client, roomKey) => {
 };
 const noteLockSnapshot = (roomKey) => [...(liveNoteEditLocks.get(roomKey)?.values() || [])]
   .map(({ timer, socket, note, ...lock }) => lock);
+const nodeMoveLockSnapshot = (roomKey) => [...(liveNodeMoveLocks.get(roomKey)?.values() || [])]
+  .map(({ timer, socket, ...lock }) => lock);
 const sameCollaborationValue = (left, right) => {
   if (Object.is(left, right)) return true;
   if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
@@ -759,7 +763,38 @@ wss.on('connection', (ws, request) => {
     }
     for (const roomKey of changedRooms) publishNoteEditLocks(roomKey);
   };
-  ws.on('close', () => { clearTimeout(authTimeout); clearCollaborationAction(); clearNoteEditLocksForSocket(ws, null, true); publishPresence(); });
+  const publishNodeMoveLocks = (roomKey) => {
+    const [projectId, ...graphParts] = roomKey.split(':');
+    sendToCollaborationRoom(roomKey, {
+      type: 'NODE_MOVE_LOCKS_UPDATED',
+      payload: { projectId, graphId: graphParts.join(':'), locks: nodeMoveLockSnapshot(roomKey) }
+    });
+  };
+  const removeNodeMoveLock = (roomKey, nodeId) => {
+    const room = liveNodeMoveLocks.get(roomKey);
+    const lock = room?.get(nodeId);
+    if (!lock) return false;
+    clearTimeout(lock.timer);
+    room.delete(nodeId);
+    if (!room.size) liveNodeMoveLocks.delete(roomKey);
+    publishNodeMoveLocks(roomKey);
+    return true;
+  };
+  const clearNodeMoveLocksForSocket = (socket, roomFilter = null) => {
+    const changedRooms = new Set();
+    for (const [roomKey, room] of liveNodeMoveLocks) {
+      if (roomFilter && roomFilter !== roomKey) continue;
+      for (const [nodeId, lock] of room) {
+        if (lock.socket !== socket) continue;
+        clearTimeout(lock.timer);
+        room.delete(nodeId);
+        changedRooms.add(roomKey);
+      }
+      if (!room.size) liveNodeMoveLocks.delete(roomKey);
+    }
+    for (const roomKey of changedRooms) publishNodeMoveLocks(roomKey);
+  };
+  ws.on('close', () => { clearTimeout(authTimeout); clearCollaborationAction(); clearNoteEditLocksForSocket(ws, null, true); clearNodeMoveLocksForSocket(ws); publishPresence(); });
   ws.on('message', async (data) => {
     try {
       const msg = JSON.parse(data.toString());
@@ -984,6 +1019,7 @@ wss.on('connection', (ws, request) => {
         const nextRoomKey = projectId && graphId ? collaborationRoomKey(projectId, graphId) : null;
         if (ws.arcRoomKey !== nextRoomKey) {
           clearNoteEditLocksForSocket(ws, ws.arcRoomKey);
+          clearNodeMoveLocksForSocket(ws, ws.arcRoomKey);
           clearCollaborationAction();
         }
         ws.arcPresence = projectId && graphId ? { projectId, graphId } : null;
@@ -997,6 +1033,7 @@ wss.on('connection', (ws, request) => {
           const room = liveCollaborationActions.get(nextRoomKey);
           if (room) for (const action of room.values()) ws.send(JSON.stringify({ type: 'COLLAB_ACTION_UPDATED', payload: action }));
           ws.send(JSON.stringify({ type: 'NOTE_EDIT_LOCKS_UPDATED', payload: { projectId, graphId, locks: noteLockSnapshot(nextRoomKey) } }));
+          ws.send(JSON.stringify({ type: 'NODE_MOVE_LOCKS_UPDATED', payload: { projectId, graphId, locks: nodeMoveLockSnapshot(nextRoomKey) } }));
           sendGraphChatSnapshot(ws, nextRoomKey);
           sendCanvasArrowSnapshot(ws, nextRoomKey);
         }
@@ -1016,6 +1053,102 @@ wss.on('connection', (ws, request) => {
         } else if (ws.arcPresence) ws.send(JSON.stringify({ type: 'GRAPH_STATE_SYNC', payload: { projectId, graphId, ready: true, revision: 0 } }));
         publishPresence();
         if (lastSeenUpdated) broadcastProjectLastSeen();
+      } else if (msg.type === 'NODE_MOVE_LOCK_REQUEST' || msg.type === 'NODE_MOVE_LOCK_RELEASE') {
+        const roomKey = ws.arcRoomKey;
+        const actionProjectId = typeof msg.projectId === 'string' ? msg.projectId : '';
+        const actionGraphId = typeof msg.graphId === 'string' ? msg.graphId : '';
+        const requestId = typeof msg.requestId === 'string' ? msg.requestId.slice(0, 120) : '';
+        const nodeIds = Array.isArray(msg.nodeIds)
+          ? [...new Set(msg.nodeIds.filter((id) => typeof id === 'string' && id.length > 0 && id.length <= 100))].slice(0, 50)
+          : [];
+        if (!roomKey || !ws.arcPresence || actionProjectId !== ws.arcPresence.projectId || actionGraphId !== ws.arcPresence.graphId
+          || !nodeIds.length || nodeIds.length !== new Set(msg.nodeIds).size) {
+          if (msg.type === 'NODE_MOVE_LOCK_REQUEST' && requestId) ws.send(JSON.stringify({
+            type: 'NODE_MOVE_LOCK_RESULT',
+            payload: { projectId: actionProjectId, graphId: actionGraphId, requestId, granted: false, message: 'Node movement is unavailable in this graph.' }
+          }));
+          return;
+        }
+        if (msg.type === 'NODE_MOVE_LOCK_RELEASE') {
+          const room = liveNodeMoveLocks.get(roomKey);
+          let changed = false;
+          for (const nodeId of nodeIds) {
+            const lock = room?.get(nodeId);
+            if (lock?.socket !== ws || lock.clientId !== msg.clientId) continue;
+            clearTimeout(lock.timer);
+            room.delete(nodeId);
+            changed = true;
+          }
+          if (room && !room.size) liveNodeMoveLocks.delete(roomKey);
+          if (changed) publishNodeMoveLocks(roomKey);
+          return;
+        }
+        const denyNodeMoveLock = (message) => ws.send(JSON.stringify({
+          type: 'NODE_MOVE_LOCK_RESULT',
+          payload: { projectId: actionProjectId, graphId: actionGraphId, requestId, granted: false, message }
+        }));
+        const permissions = ws.arcUser?.permissions || [];
+        const clientId = typeof msg.clientId === 'string' ? msg.clientId.slice(0, 120) : '';
+        if (!requestId || !clientId) {
+          denyNodeMoveLock('This editing session could not be verified.');
+          return;
+        }
+        if (!permissions.includes('*') && !permissions.includes('graphs:write')) {
+          denyNodeMoveLock('You do not have permission to move nodes in this graph.');
+          return;
+        }
+        const now = Date.now();
+        if (!ws.arcNodeMoveLockRate || now - ws.arcNodeMoveLockRate.windowAt >= 1000) ws.arcNodeMoveLockRate = { windowAt: now, count: 0 };
+        if (++ws.arcNodeMoveLockRate.count > 30) {
+          denyNodeMoveLock('Node movement requests are arriving too quickly.');
+          return;
+        }
+        const liveState = liveGraphStates.get(`${actionProjectId}:${actionGraphId}`);
+        const sourceGraph = liveState?.graph || ws.arcManager.getGraphs().find((graph) => graph.id === actionGraphId);
+        const graphNodeIds = new Set((sourceGraph?.nodes || []).map((node) => node.id));
+        if (nodeIds.some((id) => !graphNodeIds.has(id))) {
+          denyNodeMoveLock('A selected node is no longer in this graph.');
+          return;
+        }
+        const room = liveNodeMoveLocks.get(roomKey) || new Map();
+        for (const nodeId of nodeIds) {
+          const lock = room.get(nodeId);
+          if (lock && lock.expiresAt <= now) removeNodeMoveLock(roomKey, nodeId);
+        }
+        const currentRoom = liveNodeMoveLocks.get(roomKey) || new Map();
+        const conflict = nodeIds.map((id) => currentRoom.get(id)).find((lock) => lock
+          && (lock.socket !== ws || lock.clientId !== clientId || lock.userId !== ws.arcUser.id));
+        if (conflict) {
+          denyNodeMoveLock(`${conflict.username || 'A collaborator'} is moving one of these nodes.`);
+          return;
+        }
+        let nextRoom = liveNodeMoveLocks.get(roomKey);
+        if (!nextRoom) { nextRoom = new Map(); liveNodeMoveLocks.set(roomKey, nextRoom); }
+        for (const nodeId of nodeIds) {
+          const previous = nextRoom.get(nodeId);
+          if (previous) clearTimeout(previous.timer);
+          const lock = {
+            projectId: actionProjectId,
+            graphId: actionGraphId,
+            nodeId,
+            userId: ws.arcUser.id,
+            username: ws.arcUser.username,
+            color: ws.arcColor || collaboratorColor(ws.arcUser.id),
+            clientId,
+            expiresAt: now + NODE_MOVE_LOCK_TTL_MS,
+            socket: ws
+          };
+          lock.timer = setTimeout(() => {
+            if (liveNodeMoveLocks.get(roomKey)?.get(nodeId) === lock) removeNodeMoveLock(roomKey, nodeId);
+          }, NODE_MOVE_LOCK_TTL_MS + 10);
+          lock.timer.unref?.();
+          nextRoom.set(nodeId, lock);
+        }
+        publishNodeMoveLocks(roomKey);
+        ws.send(JSON.stringify({
+          type: 'NODE_MOVE_LOCK_RESULT',
+          payload: { projectId: actionProjectId, graphId: actionGraphId, requestId, granted: true }
+        }));
       } else if (msg.type === 'NOTE_EDIT_LOCK_REQUEST' || msg.type === 'NOTE_EDIT_LOCK_RELEASE') {
         const roomKey = ws.arcRoomKey;
         const actionProjectId = typeof msg.projectId === 'string' ? msg.projectId : '';
@@ -1420,6 +1553,18 @@ wss.on('connection', (ws, request) => {
         const positions = normalizeNodePositions(msg.positions);
         if (!positions.length) return;
         const key = `${projectId}:${graphId}`;
+        const clientId = typeof msg.clientId === 'string' ? msg.clientId.slice(0, 120) : '';
+        for (const position of positions) {
+          const lock = liveNodeMoveLocks.get(key)?.get(position.id);
+          if (lock && lock.expiresAt <= now) removeNodeMoveLock(key, position.id);
+          const activeLock = liveNodeMoveLocks.get(key)?.get(position.id);
+          if (activeLock && (activeLock.socket !== ws || activeLock.clientId !== clientId || activeLock.userId !== ws.arcUser.id)) {
+            ws.send(JSON.stringify({ type: 'GRAPH_NODE_MOVE_REJECTED', payload: {
+              projectId, graphId, nodeId: position.id, message: `${activeLock.username || 'A collaborator'} is moving this node.`
+            } }));
+            return;
+          }
+        }
         let state = liveGraphStates.get(key);
         if (!state) {
           const initialGraph = ws.arcManager.getGraphs().find((graph) => graph.id === graphId);
@@ -1450,7 +1595,7 @@ wss.on('connection', (ws, request) => {
         sendToCollaborationRoom(roomKey, { type: 'GRAPH_NODE_MOVED', payload: {
           projectId, graphId, positions, revision,
           sourceUserId: ws.arcUser.id,
-          clientId: typeof msg.clientId === 'string' ? msg.clientId.slice(0, 120) : ''
+          clientId
         } });
       } else if (msg.type === 'GRAPH_STATE') {
         const payload = msg.payload || msg;
@@ -1523,13 +1668,36 @@ wss.on('connection', (ws, request) => {
           }
         }
         if (previous) candidateGraph = rebaseNodePositions(candidateGraph, previous.graph, previous.nodePositionRevisions, Number.isInteger(baseRevision) ? baseRevision : previous.revision);
+        const roomKey = collaborationRoomKey(projectId, graph.id);
+        const nodeLocks = liveNodeMoveLocks.get(roomKey);
+        const protectedNodeIds = new Set();
+        if (previous && nodeLocks) for (const [nodeId, lock] of nodeLocks) {
+          if (lock.expiresAt <= Date.now()) {
+            removeNodeMoveLock(roomKey, nodeId);
+            continue;
+          }
+          const ownsLock = lock.socket === ws && lock.clientId === payload.clientId && lock.userId === ws.arcUser.id;
+          if (ownsLock) continue;
+          protectedNodeIds.add(nodeId);
+          const authoritative = previous.graph.nodes.find((node) => node.id === nodeId);
+          if (!authoritative) continue;
+          const index = candidateGraph.nodes.findIndex((node) => node.id === nodeId);
+          if (index >= 0) candidateGraph.nodes[index] = cloneCollaborationValue(authoritative);
+          else candidateGraph.nodes.push(cloneCollaborationValue(authoritative));
+        }
+        if (previous && protectedNodeIds.size) {
+          const protectedConnections = (previous.graph.connections || []).filter((connection) =>
+            protectedNodeIds.has(connection.sourceNodeId) || protectedNodeIds.has(connection.targetNodeId));
+          candidateGraph.connections = (candidateGraph.connections || []).filter((connection) =>
+            !protectedNodeIds.has(connection.sourceNodeId) && !protectedNodeIds.has(connection.targetNodeId));
+          candidateGraph.connections.push(...protectedConnections.map(cloneCollaborationValue));
+        }
         if (Array.isArray(candidateGraph.notes)) candidateGraph.notes = candidateGraph.notes.map((note) => ({ ...note }));
         const previousNotes = new Map((previous?.graph?.notes || []).map((note) => [note.id, note]));
         const incomingNotes = Array.isArray(candidateGraph.notes)
           ? candidateGraph.notes
           : (previous?.graph?.notes || []).map((note) => ({ ...note }));
         const incomingById = new Map(incomingNotes.map((note) => [note.id, note]));
-        const roomKey = collaborationRoomKey(projectId, graph.id);
         const locks = liveNoteEditLocks.get(roomKey);
         let adjustedNotes = false;
         const rejectedNoteEdits = [];
