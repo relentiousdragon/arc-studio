@@ -65,6 +65,10 @@ function getStaticJsonProperties(sourceNode) {
   const properties = [];
   const append = (current, prefix = '', depth = 0) => {
     if (depth >= 4 || properties.length >= 100 || !current || typeof current !== 'object') return;
+    if (Array.isArray(current)) {
+      if (current.length) append(current[0], `${prefix}[0]`, depth + 1);
+      return;
+    }
     for (const key of Object.keys(current)) {
       if (properties.length >= 100) return;
       const part = /^[A-Za-z_$][A-Za-z0-9_$-]*$/.test(key) ? key : `[${JSON.stringify(key)}]`;
@@ -79,15 +83,16 @@ function getStaticJsonProperties(sourceNode) {
 }
 
 function objectPropertyGroup(sourceNode, sourcePin, sourcePinDefinition) {
-  const pin = `${sourcePin} ${sourcePinDefinition?.label || ''}`.toLowerCase();
-  if (pin.includes('message')) return 'message';
+  const pin = String(sourcePin || '').toLowerCase();
+  if (pin === 'mentions' || pin === 'author' || pin === 'user' || pin === 'target_user' || pin.endsWith('_user')) return 'user';
+  if (pin === 'mention_roles' || pin === 'role' || pin === 'target_role' || pin.endsWith('_role')) return 'role';
   if (pin.includes('member')) return 'member';
-  if (pin.includes('author') || pin === 'user' || pin.includes('target_user')) return 'user';
+  if (pin.includes('message')) return 'message';
   if (pin.includes('channel')) return 'channel';
   if (pin.includes('guild') || pin.includes('server')) return 'guild';
-  if (pin.includes('role')) return 'role';
   if (pin.includes('interaction')) return 'interaction';
   if (pin.includes('emoji')) return 'emoji';
+  if (pin.includes('author')) return 'user';
   if (sourcePinDefinition?.colorType === 'attachment') return 'attachment';
   const sourceType = String(sourceNode?.type || '').toLowerCase();
   if (sourceType.includes('message')) return 'message';
