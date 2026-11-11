@@ -21626,7 +21626,8 @@ a.embed-preview-title:hover {
   transition: bottom .18s var(--ease);
 }
 
-.canvas-chat-overlay:hover { opacity: 1; }
+.canvas-chat-overlay.is-hovered { opacity: 1; }
+.canvas-chat-overlay.is-composing { opacity: 1; pointer-events: auto; }
 
 .canvas-chat-feed {
   position: relative;
@@ -21639,21 +21640,27 @@ a.embed-preview-title:hover {
   gap: 5px;
   overflow: hidden;
   pointer-events: none;
-  mask-image: linear-gradient(to bottom, transparent, #000 16%);
+  mask-image: none;
 }
 
-.canvas-chat-feed.is-history { flex: 1 1 auto; max-height: min(235px, 38vh, calc(100% - 82px)); justify-content: flex-start; overflow-x: hidden; overflow-y: auto; padding-right: 0; mask-image: none; overscroll-behavior: contain; pointer-events: auto; scrollbar-width: none; }
+.canvas-chat-feed.has-hidden-above { mask-image: linear-gradient(to bottom, transparent, #000 16%, #000 100%); }
+.canvas-chat-feed.has-hidden-below { mask-image: linear-gradient(to bottom, #000 0%, #000 84%, transparent); }
+.canvas-chat-feed.has-hidden-above.has-hidden-below { mask-image: linear-gradient(to bottom, transparent, #000 16%, #000 84%, transparent); }
+.canvas-chat-feed.is-history { flex: 1 1 auto; max-height: min(235px, 38vh, calc(100% - 82px)); justify-content: flex-start; overflow-x: hidden; overflow-y: auto; padding-right: 0; overscroll-behavior: contain; pointer-events: auto; scrollbar-width: none; }
 .canvas-chat-feed.is-history::-webkit-scrollbar { display: none; width: 0; height: 0; }
 .canvas-chat-history-empty { padding: 4px 0; color: var(--muted); font: 10px/1.5 "DM Mono", monospace; }
 
 .canvas-chat-feed-message {
   min-width: 0;
+  width: fit-content;
+  max-width: 100%;
   animation: canvas-chat-feed-in .18s ease-out both;
   opacity: 1;
   transition: opacity 1s linear;
   pointer-events: auto;
 }
 
+.canvas-chat-overlay:not(.is-composing) .canvas-chat-feed-message { pointer-events: none; }
 .canvas-chat-feed-message.is-live { animation: canvas-chat-feed-in .18s ease-out both; }
 .canvas-chat-feed-message.is-dimmed { opacity: .58; }
 .canvas-chat-feed-message.is-fading { opacity: 0; }
