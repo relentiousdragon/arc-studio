@@ -7207,14 +7207,6 @@ body.is-resizing-sidebar .slash-command-studio {
   transition: bottom .18s var(--ease);
 }
 
-.context-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--success);
-  opacity: .8;
-}
-
 .context-separator {
   color: var(--line-strong);
 }
@@ -16031,14 +16023,6 @@ body[data-compact-context="true"] .context-menu-heading {
   color: var(--warning);
 }
 
-.canvas-context-label.has-validation-warnings .context-dot {
-  background: var(--warning);
-}
-
-.canvas-context-label.is-validation-ready .context-dot {
-  background: var(--success);
-}
-
 .graph-library-panel {
   position: absolute;
   z-index: 20;
@@ -21622,10 +21606,6 @@ a.embed-preview-title:hover {
   padding: 10px 8px;
   color: var(--success);
   font-size: calc((10px) * var(--arc-font-scale, 1));
-}
-
-.canvas-context-label .context-dot {
-  animation: statusPulse 1.7s ease infinite;
 }
 
 .canvas-context-validation {
