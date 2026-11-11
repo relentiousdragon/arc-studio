@@ -850,8 +850,8 @@ export function NodeCanvas({
   useEffect(() => {
     if (!connectingWire || settings.progressiveSocketReveal === false) setAutoRevealInputNodeIds(EMPTY_PIN_SET);
   }, [connectingWire, settings.progressiveSocketReveal]);
-  canvasInteractionActiveRef.current = Boolean(isPanning || draggingNode?.historyStarted || draggingNote || connectingWire || selectionBox);
-  const autoQualityInteractionActive = canvasQualityMode === 'auto' && Boolean(isPanning || isWheelPanning || isWheelZooming || draggingNode?.historyStarted || draggingNote || connectingWire);
+  canvasInteractionActiveRef.current = Boolean(isPanning || (draggingNode?.historyStarted && !draggingNode.released) || draggingNote || connectingWire || selectionBox);
+  const autoQualityInteractionActive = canvasQualityMode === 'auto' && Boolean(isPanning || isWheelPanning || isWheelZooming || (draggingNode?.historyStarted && !draggingNode.released) || draggingNote || connectingWire);
   const autoQualityInteractionActiveRef = useRef(autoQualityInteractionActive);
   autoQualityInteractionActiveRef.current = autoQualityInteractionActive;
   const autoQualityModeWasActiveRef = useRef(canvasQualityMode === 'auto');
@@ -2485,6 +2485,7 @@ export function NodeCanvas({
       altDownRef.current = event.altKey;
       setAltHeld(event.altKey);
     }
+    if (draggingNode?.released) return;
     if (wireCutDragRef.current?.active) {
       const drag = wireCutDragRef.current;
       const dx = event.clientX - drag.lastX;
@@ -2779,7 +2780,7 @@ export function NodeCanvas({
       const activeDrag = draggingNodeRef.current;
       const pointer = pointerPositionRef.current;
       const container = containerRef.current;
-      if (activeDrag?.historyStarted && pointer && container && document.visibilityState !== 'hidden') {
+      if (activeDrag?.historyStarted && !activeDrag.released && pointer && container && document.visibilityState !== 'hidden') {
         const bounds = canvasGeometryRef.current.bounds;
         const edgeSize = 56;
         const speed = 760;
@@ -3109,9 +3110,9 @@ export function NodeCanvas({
             shiftKey: event.shiftKey,
             target: event.target
           };
-          pendingNodeDrag.drag = draggingNodeRef.current;
-          draggingNodeRef.current = null;
-          setDraggingNode(null);
+          pendingNodeDrag.drag = { ...draggingNodeRef.current, released: true };
+          draggingNodeRef.current = pendingNodeDrag.drag;
+          setDraggingNode(pendingNodeDrag.drag);
           setNodeMovePending(false);
           if (event.pointerType === 'touch' && touchNodeGestureRef.current?.pointerId === event.pointerId) {
             window.clearTimeout(touchNodeGestureRef.current.timer);
@@ -4753,7 +4754,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
   return (
     <div
       ref={containerRef}
-      className={`node-canvas ${isPanning ? 'is-panning' : ''} ${isWheelPanning ? 'is-wheel-panning' : ''} ${isWheelZooming ? 'is-wheel-zooming' : ''} ${isPanning || isWheelPanning || isWheelZooming ? 'is-navigating-camera' : ''} ${draggingNode?.historyStarted ? 'is-dragging-node' : ''} ${nodeMovePending && draggingNode?.historyStarted ? 'is-node-move-pending' : ''} ${connectingWire ? 'is-connecting-wire' : ''} ${connectingWire?.clickToConnect ? 'is-click-connecting' : ''} ${graphChatComposerOpen ? 'has-graph-chat-composer' : ''} ${(altHeld || altDownRef.current) && !isLocked && !isPanning && !connectingWire && !drawingArrow && !draggingNode?.historyStarted ? 'is-cutting-wires' : ''}`}
+      className={`node-canvas ${isPanning ? 'is-panning' : ''} ${isWheelPanning ? 'is-wheel-panning' : ''} ${isWheelZooming ? 'is-wheel-zooming' : ''} ${isPanning || isWheelPanning || isWheelZooming ? 'is-navigating-camera' : ''} ${draggingNode?.historyStarted && !draggingNode.released ? 'is-dragging-node' : ''} ${nodeMovePending && draggingNode?.historyStarted && !draggingNode.released ? 'is-node-move-pending' : ''} ${connectingWire ? 'is-connecting-wire' : ''} ${connectingWire?.clickToConnect ? 'is-click-connecting' : ''} ${graphChatComposerOpen ? 'has-graph-chat-composer' : ''} ${(altHeld || altDownRef.current) && !isLocked && !isPanning && !connectingWire && !drawingArrow && !(draggingNode?.historyStarted && !draggingNode.released) ? 'is-cutting-wires' : ''}`}
       style={{ display: isActive ? undefined : 'none' }}
       data-performance={performanceReduced ? 'reduced' : 'normal'}
       data-canvas-quality={effectiveCanvasQuality}
