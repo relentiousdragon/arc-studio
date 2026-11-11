@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowRight, Puzzle, Search, X, Plus, Workflow } from 'lucide-react';
 import { NodeTypeIcon } from '../nodes/NodeTypeIcon.jsx';
+import { isNodeDefinitionHidden } from '../nodes/nodeDefinitions.js';
 import { createSearchIndex } from './nodeSearch.js';
 //
 export function CommandPalette({ isOpen, graphs = [], definitions = [], plugins = [], onClose, onAddNode, onOpenGraph, onOpenPlugin, onGoToNode }) {
@@ -11,7 +12,7 @@ export function CommandPalette({ isOpen, graphs = [], definitions = [], plugins 
 
   const allItems = useMemo(() => {
     const definitionsByType = new Map(definitions.map((definition) => [definition.type, definition]));
-    const nodeItems = definitions.filter((node) => !node.hidden).map((node) => ({
+    const nodeItems = definitions.filter((node) => !isNodeDefinitionHidden(node)).map((node) => ({
       id: `add:${node.type}`, kind: 'add', group: node.pluginAdapter ? 'Plugin nodes' : 'Nodes', label: node.label,
       detail: `${node.category || 'Node'}${node.pluginName ? ` · ${node.pluginName}` : ''}`,
       disabled: Boolean(node.loadFailed),
