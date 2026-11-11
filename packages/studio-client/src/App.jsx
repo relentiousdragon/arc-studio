@@ -6,6 +6,8 @@ import { NodeCanvas } from './components/canvas/NodeCanvas.jsx';
 import { ControlDock } from './components/dock/ControlDock.jsx';
 import { onPageBlur } from './core/pageFocus.js';
 import { mergeRemoteCollaborationActions } from './core/collaborationActions.js';
+import { createCollaborationGraphPatch } from './core/collaborationGraphPatch.js';
+import { mergeCollaborativeValue } from './core/collaborationMerge.js';
 import { RenderErrorBoundary } from './components/ui/RenderErrorBoundary.jsx';
 const COLLABORATION_ACTION_BATCH_MS = 32;
 const lazyNamed = (loader, name) => {
@@ -1162,6 +1164,7 @@ export function App() {
   const liveGraphSendTimersRef = useRef(new Map());
   const rejectedLiveGraphToastRef = useRef(new Set());
   const liveGraphReadyRef = useRef(new Set());
+  const graphPatchSupportRef = useRef(new Map());
   const autoSaveInFlightRef = useRef(new Set());
   const collaborationClientIdRef = useRef(globalThis.crypto?.randomUUID?.() || `arc-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   const graphSaveClientIdRef = useRef(globalThis.crypto?.randomUUID?.() || `arc-save-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -3574,6 +3577,7 @@ export function App() {
             setNodeMoveLockState({ roomKey: '', locks: {} });
             liveGraphRevisionRef.current.clear();
             liveGraphReadyRef.current.clear();
+            graphPatchSupportRef.current.clear();
             lastLiveGraphSentRef.current.clear();
             pendingLiveGraphRef.current.clear();
             for (const timer of liveGraphSendTimersRef.current.values()) window.clearTimeout(timer);
@@ -3663,6 +3667,7 @@ export function App() {
             reconnectGraphBaseRef.current.clear();
             liveGraphBaseRef.current = new Map(projectGraphs.map((graph) => [graph.id, snapshotGraph(graph)]));
             liveGraphRevisionRef.current.clear();
+            graphPatchSupportRef.current.clear();
             lastLiveGraphSentRef.current.clear();
             pendingLiveGraphRef.current.clear();
             setSavedGraphs(projectGraphs);
@@ -3761,6 +3766,7 @@ export function App() {
             const payload = msg.payload;
             if (payload.projectId !== activeProjectIdRef.current) return;
             if (deletedGraphsRef.current.has(`${payload.projectId}:${payload.graphId}`)) return;
+            graphPatchSupportRef.current.set(payload.graphId, payload.patchSupported === true);
             liveGraphReadyRef.current.add(`${payload.projectId}:${payload.graphId}`);
             setLiveSyncRevision((revision) => revision + 1);
             if (!payload.graph?.id) return;
@@ -3806,7 +3812,6 @@ export function App() {
             const base = scrubStoredSecretDrafts(reconnectBase || liveGraphBaseRef.current.get(incoming.id) || savedGraphsRef.current.find((item) => item.id === incoming.id) || incoming, incoming);
             const local = scrubStoredSecretDrafts(tabsRef.current.find((item) => item.id === incoming.id), incoming);
             const mergeBase = scrubStoredSecretDrafts(isOwnUpdate ? pending.graph : base, incoming);
-            const merged = mergeGraphState(mergeBase, local || mergeBase, incoming);
             if (!localDesktopWorkspace && reconnectBase && local?.isDirty && !sameGraphContent(local, reconnectBase)
               && !sameGraphContent(incoming, reconnectBase) && !sameGraphContent(local, incoming)) {
               const recoveryGraph = { ...snapshotGraph(local), id: createEditorId('recovery'), name: `${local.name || 'Untitled graph'} recovery` };
@@ -3839,6 +3844,8 @@ export function App() {
             }
             setTabs((current) => current.map((tab) => {
               if (tab.id !== incoming.id) return tab;
+              const latestLocal = scrubStoredSecretDrafts(tab, incoming);
+              const merged = mergeGraphState(mergeBase, latestLocal || mergeBase, incoming);
               const saved = savedGraphsRef.current.find((item) => item.id === incoming.id);
               return { ...merged, isDirty: saved ? !sameGraphContent(merged, saved) : true };
             }));
@@ -3932,6 +3939,7 @@ export function App() {
             liveGraphBaseRef.current.delete(graphId);
             reconnectGraphBaseRef.current.delete(graphId);
             liveGraphRevisionRef.current.delete(graphId);
+            graphPatchSupportRef.current.delete(graphId);
             lastLiveGraphSentRef.current.delete(graphId);
             pendingLiveGraphRef.current.delete(graphId);
             remoteGraphConflictsRef.current.delete(graphId);
@@ -4057,7 +4065,13 @@ export function App() {
             for (const key of remoteProjectTabGraphsRef.current.keys()) {
               if (key.startsWith(remoteGraphPrefix) && !retainedGraphIds.has(key.slice(remoteGraphPrefix.length))) remoteProjectTabGraphsRef.current.delete(key);
             }
-            setTabs(nextTabs);
+            setTabs((current) => {
+              const currentById = new Map(current.map((tab) => [tab.id, tab]));
+              const retainedDirtyTabs = current.filter((tab) => tab.isDirty && !effectiveGraphIds.includes(tab.id)
+                && !deletedGraphsRef.current.has(`${payload.projectId}:${tab.id}`));
+              const ids = [...new Set([...effectiveGraphIds, ...retainedDirtyTabs.map((tab) => tab.id)])];
+              return ids.map((id) => currentById.get(id) || knownGraphs.get(id)).filter(Boolean);
+            });
             if (!effectiveGraphIds.includes(activeTabIdRef.current)) setActiveTabId(nextTabs[0]?.id || null);
           } else if (msg.type === 'PROJECT_LAST_SEEN_UPDATED') {
             if (msg.payload && typeof msg.payload === 'object') setProjectLastSeen(msg.payload);
@@ -4457,6 +4471,18 @@ export function App() {
       const graphState = snapshotGraph(latestGraph, { includeSecretDrafts: true });
       const serialized = JSON.stringify(graphState);
       if (lastLiveGraphSentRef.current.get(graph.id) === serialized) return;
+      let graphPatch = null;
+      if (graphPatchSupportRef.current.get(graph.id) === true) {
+        const baseGraph = liveGraphBaseRef.current.get(graph.id);
+        if (baseGraph) {
+          graphPatch = createCollaborationGraphPatch(baseGraph, graphState);
+          if (graphPatch && graphPatch.fields.length === 0 && graphPatch.collections.length === 0) {
+            lastLiveGraphSentRef.current.set(graph.id, serialized);
+            return;
+          }
+          if (graphPatch && new TextEncoder().encode(JSON.stringify(graphPatch)).byteLength > 30_000_000) graphPatch = null;
+        }
+      }
       const syncId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
       pendingLiveGraphRef.current.set(graph.id, { serialized, syncId, clientId: collaborationClientIdRef.current, graph: graphState });
       if (graph.id === activeTabIdRef.current) setIsAutoSavingActiveGraph(true);
@@ -4467,7 +4493,7 @@ export function App() {
         baseRevision: liveGraphRevisionRef.current.get(graph.id) || 0,
         clientId: collaborationClientIdRef.current,
         syncId,
-        graph: graphState
+        ...(graphPatch ? { graphPatch } : { graph: graphState })
       }));
     }, 40);
     liveGraphSendTimersRef.current.set(graphKey, timer);
@@ -7834,7 +7860,7 @@ export function App() {
             handleSaveTextStudio();
           } else if (embedStudioOpenForActiveGraph) {
             handleSaveEmbedShortcut();
-          } else {
+          } else if (localDesktopWorkspace) {
             handleSaveGraph();
           }
         }
@@ -8816,7 +8842,7 @@ export function App() {
             ['Connect / disconnect gateway', formatShortcut((desktopMode ? settings.shortcuts?.connectGateway : null) || DEFAULT_SHORTCUTS.connectGateway, shortcutPlatform)],
             ['Rename selected node', formatShortcut((desktopMode ? settings.shortcuts?.renameNode : null) || DEFAULT_SHORTCUTS.renameNode, shortcutPlatform)],
             ['Reload ARC Studio', formatShortcut((desktopMode ? settings.shortcuts?.reloadStudio : null) || DEFAULT_SHORTCUTS.reloadStudio, shortcutPlatform)],
-            ['Save graph', formatShortcut((desktopMode ? settings.shortcuts?.saveGraph : null) || DEFAULT_SHORTCUTS.saveGraph, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')],
+            ...(localDesktopWorkspace ? [['Save graph', formatShortcut((desktopMode ? settings.shortcuts?.saveGraph : null) || DEFAULT_SHORTCUTS.saveGraph, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')]] : []),
             ['Undo', formatShortcut((desktopMode ? settings.shortcuts?.undo : null) || DEFAULT_SHORTCUTS.undo, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')],
             ['Redo', formatShortcut((desktopMode && settings.shortcuts?.redo && settings.shortcuts.redo !== DEFAULT_SHORTCUTS.redo ? settings.shortcuts.redo : getDefaultShortcut('redo', shortcutPlatform)), shortcutPlatform)],
             ['Copy / paste selected node', `${shortcutModifier} + C / V`],
@@ -9297,50 +9323,6 @@ function scrubRejectedSecretDrafts(graph) {
     return safe;
   });
   return changed ? { ...graph, variables } : graph;
-}
-
-function mergeCollaborativeValue(base, local, remote) {
-  if (collaborationValuesEqual(local, base)) return cloneCollaborationValue(remote);
-  if (collaborationValuesEqual(remote, base) || collaborationValuesEqual(local, remote)) return cloneCollaborationValue(local);
-  if (isPlainCollaborationObject(base) && isPlainCollaborationObject(local) && isPlainCollaborationObject(remote)) {
-    const result = {};
-    const keys = new Set([...Object.keys(base), ...Object.keys(local), ...Object.keys(remote)]);
-    for (const key of keys) {
-      const value = mergeCollaborativeValue(base[key], local[key], remote[key]);
-      if (value !== undefined) result[key] = value;
-    }
-    return result;
-  }
-  if ([base, local, remote].every((value) => Array.isArray(value) && value.every((item) => item && typeof item === 'object' && item.id != null))) {
-    const baseById = new Map(base.map((item) => [item.id, item]));
-    const localById = new Map(local.map((item) => [item.id, item]));
-    const remoteById = new Map(remote.map((item) => [item.id, item]));
-    const order = [...remote.map((item) => item.id), ...local.map((item) => item.id)].filter((id, index, ids) => ids.indexOf(id) === index);
-    const result = [];
-    for (const id of order) {
-      const value = mergeCollaborativeValue(baseById.get(id), localById.get(id), remoteById.get(id));
-      if (value !== undefined) result.push(value);
-    }
-    return result;
-  }
-  if ([base, local, remote].every((value) => Array.isArray(value) && value.length === base.length)) {
-    return base.map((item, index) => mergeCollaborativeValue(item, local[index], remote[index]));
-  }
-  return cloneCollaborationValue(remote);
-}
-
-function collaborationValuesEqual(left, right) {
-  if (left === right) return true;
-  if (left === undefined || right === undefined) return false;
-  try { return JSON.stringify(left) === JSON.stringify(right); } catch { return false; }
-}
-
-function cloneCollaborationValue(value) {
-  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
-}
-
-function isPlainCollaborationObject(value) {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
 function sameGraphContent(left, right) {
