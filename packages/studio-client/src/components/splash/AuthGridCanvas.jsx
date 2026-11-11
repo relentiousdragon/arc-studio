@@ -4,6 +4,16 @@ const GRID_SPACING = 32;
 const INFLUENCE_RADIUS = 98;
 const MAX_DPR = 2;
 //
+function withAlpha(color, alpha, context) {
+  context.fillStyle = color;
+  const normalized = context.fillStyle;
+  const hex = /^#([\da-f]{6})$/i.exec(normalized);
+  const rgb = hex
+    ? [1, 3, 5].map((index) => Number.parseInt(normalized.slice(index, index + 2), 16))
+    : /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i.exec(normalized)?.slice(1, 4).map(Number);
+  return rgb ? `rgba(${rgb.join(', ')}, ${alpha})` : `rgba(112, 185, 232, ${alpha})`;
+}
+
 export function AuthGridCanvas({ reducedMotion = false }) {
   const canvasRef = useRef(null);
   const cardCanvasRef = useRef(null);
@@ -27,8 +37,8 @@ export function AuthGridCanvas({ reducedMotion = false }) {
     let frameCount = 0;
 
     let baseDotColor = 'rgba(163, 178, 208, 0.34)';
-    let activeDotColor = 'rgba(168, 85, 247, 0.95)';
-    let activeGlowColor = 'rgba(168, 85, 247, 0.48)';
+    let activeDotColor = 'rgba(112, 185, 232, 0.95)';
+    let activeGlowColor = 'rgba(112, 185, 232, 0.48)';
 
     let cardDotColor = 'rgba(150, 160, 175, 0.14)';
     let cardActiveColor = 'rgba(205, 215, 230, 0.26)';
@@ -37,17 +47,16 @@ export function AuthGridCanvas({ reducedMotion = false }) {
     const readTheme = () => {
       const attr = themeRoot?.getAttribute('data-theme') || document.documentElement.getAttribute('data-theme') || 'dark';
       isDark = attr !== 'light';
+      const accent = getComputedStyle(themeRoot).getPropertyValue('--accent').trim() || '#70b9e8';
+      activeDotColor = withAlpha(accent, 0.95, ctx);
+      activeGlowColor = withAlpha(accent, 0.48, ctx);
       if (isDark) {
         baseDotColor = 'rgba(163, 178, 208, 0.34)';
-        activeDotColor = 'rgba(168, 85, 247, 0.95)';
-        activeGlowColor = 'rgba(168, 85, 247, 0.48)';
         cardDotColor = 'rgba(150, 160, 175, 0.14)';
         cardActiveColor = 'rgba(205, 215, 230, 0.26)';
         cardActiveGlow = 'rgba(180, 195, 215, 0.12)';
       } else {
         baseDotColor = 'rgba(74, 88, 112, 0.46)';
-        activeDotColor = 'rgba(115, 80, 200, 0.92)';
-        activeGlowColor = 'rgba(115, 80, 200, 0.40)';
         cardDotColor = 'rgba(90, 105, 125, 0.16)';
         cardActiveColor = 'rgba(75, 90, 110, 0.28)';
         cardActiveGlow = 'rgba(85, 100, 120, 0.12)';
@@ -56,9 +65,9 @@ export function AuthGridCanvas({ reducedMotion = false }) {
 
     readTheme();
     const themeObserver = new MutationObserver(readTheme);
-    themeObserver.observe(themeRoot, { attributes: true, attributeFilter: ['data-theme'] });
+    themeObserver.observe(themeRoot, { attributes: true, attributeFilter: ['data-theme', 'data-release-channel'] });
     if (themeRoot !== document.documentElement) {
-      themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+      themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-release-channel'] });
     }
 
     let cardRect = null;
