@@ -70,6 +70,17 @@ function avatarColor(userId) {
   return color.slice(1).match(/.{2}/g).map((part) => Number.parseInt(part, 16));
 }
 
+export function activityAvatarTextColor(rgb) {
+  const luminance = rgb.map((channel) => {
+    const value = channel / 255;
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  }).reduce((total, value, index) => total + value * [0.2126, 0.7152, 0.0722][index], 0);
+  const darkLuminance = (0.055 / 1.055) ** 2.4;
+  const whiteContrast = 1.05 / (luminance + 0.05);
+  const darkContrast = (luminance + 0.05) / (darkLuminance + 0.05);
+  return whiteContrast >= darkContrast ? [255, 255, 255] : [17, 24, 39];
+}
+
 function avatarSignature(userId, initial, secret) {
   return crypto.createHmac('sha256', secret).update(`arc-activity-avatar-v1:${userId}:${initial}`).digest('base64url');
 }
@@ -90,11 +101,12 @@ export function activityAvatarPath(actor, secret) {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(id) || typeof secret !== 'string' || !secret) return '';
   const initial = Array.from(String(actor?.username || '').trim())[0]?.toLocaleUpperCase() || 'U';
   const glyph = /^[A-Z0-9?]$/.test(initial) ? initial : '?';
-  const query = new URLSearchParams({ initial: glyph, signature: avatarSignature(id, glyph, secret) });
+  const query = new URLSearchParams({ initial: glyph, signature: avatarSignature(id, glyph, secret), revision: '2' });
   return `/api/activity-avatars/${encodeURIComponent(id)}.png?${query}`;
 }
 
 function makeAvatar(initial, rgb) {
+  const textRgb = activityAvatarTextColor(rgb);
   const pixels = Buffer.alloc(SIZE * SIZE * 4);
   const center = (SIZE - 1) / 2;
   const radiusSquared = 45 ** 2;
@@ -121,9 +133,9 @@ function makeAvatar(initial, rgb) {
           const x = left + column * scale + dx;
           const y = top + row * scale + dy;
           const offset = (y * SIZE + x) * 4;
-          pixels[offset] = 255;
-          pixels[offset + 1] = 255;
-          pixels[offset + 2] = 255;
+          pixels[offset] = textRgb[0];
+          pixels[offset + 1] = textRgb[1];
+          pixels[offset + 2] = textRgb[2];
           pixels[offset + 3] = 255;
         }
       }
