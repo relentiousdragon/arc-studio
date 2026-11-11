@@ -217,4 +217,3 @@ export function resolveDynamicNodePins(definition, node, connections = []) {
   }
   return null;
 }
-
