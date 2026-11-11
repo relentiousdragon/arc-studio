@@ -239,6 +239,7 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
       <Toggle label="Canvas grid" description="Show the canvas dot pattern" checked={settings.showGrid ?? true} onChange={(value) => update('showGrid', value)} />
       <Toggle label="Execution pulse" description="Animate active connections" checked={settings.wirePulse ?? true} onChange={(value) => update('wirePulse', value)} />
       <Toggle label="Magnetic sockets" description="Assist wire placement near pins" checked={settings.magneticSnap ?? true} onChange={(value) => update('magneticSnap', value)} />
+      <Toggle label="Reveal extra sockets on demand" description="Show extra sockets when needed." checked={settings.progressiveSocketReveal !== false} onChange={(value) => update('progressiveSocketReveal', value)} />
       <Toggle label="Always show socket hints" description="Show the socket’s purpose whenever you hover it" checked={settings.pinDescriptionsAlways ?? false} onChange={(value) => update('pinDescriptionsAlways', value)} />
       <Toggle label="Double-click wires to cut" description="Use a single click to pick up and reroute a wire" checked={settings.doubleClickWireToCut ?? false} onChange={(value) => update('doubleClickWireToCut', value)} />
       <Toggle label={`Cut wires only with ${platform === 'macos' ? 'Option' : 'Alt'}`} description={`Require holding ${platform === 'macos' ? 'Option' : 'Alt'} to cut wires with click or drag`} checked={settings.requireModifierToCutWires ?? false} onChange={(value) => update('requireModifierToCutWires', value)} />
