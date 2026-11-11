@@ -781,7 +781,7 @@ export function SplashScreen({
   const showRememberedUserCard = Boolean(rememberedProfile) && !needsSetup && !(desktopMode && workspaceMode === 'local');
 
   return (
-    <main className={`auth-screen ${desktopMode ? 'is-desktop' : ''}`} data-initial-setup={needsSetup ? 'true' : undefined} data-low-power={lowPower ? 'true' : undefined}>
+    <main className={`auth-screen ${desktopMode ? 'is-desktop' : ''}`} data-release-channel={releaseChannel} data-initial-setup={needsSetup ? 'true' : undefined} data-low-power={lowPower ? 'true' : undefined}>
       <AuthGridCanvas reducedMotion={reducedMotion} />
       {xmas && !reducedMotion && <canvas ref={snowCanvasRef} className="splash-snow" aria-hidden="true" />}
       {halloween && <canvas ref={halloweenCanvasRef} className="splash-halloween" aria-hidden="true" />}
