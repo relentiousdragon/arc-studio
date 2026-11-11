@@ -58,7 +58,6 @@ const icons = {
   function_input: LogIn,
   function_return: LogOut,
   function_call: Workflow,
-  function_math: Calculator,
   branch_if: GitBranch,
   branch_switch: GitBranch,
   parallel: GitFork,
