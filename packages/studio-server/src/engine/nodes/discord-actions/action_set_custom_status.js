@@ -10,25 +10,25 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Starts Set Custom Status."},
     {
       "id": "status_text",
       "label": "Status Text",
       "type": "string",
-      "defaultValue": "ARC Studio"
-    }
+      "defaultValue": "ARC Studio",
+      description: "Text shown as the bot's custom status."}
   ],
   "outputs": [
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
-    },
+      "type": "exec",
+      description: "Continues after Set Custom Status completes."},
     {
       "id": "success",
       "label": "Success",
-      "type": "boolean"
-    }
+      "type": "boolean",
+      description: "Whether the action completed successfully."}
   ]
 };
