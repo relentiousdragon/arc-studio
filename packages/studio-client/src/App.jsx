@@ -8544,7 +8544,7 @@ export function App() {
             )}
           </div>
           <div className={`canvas-context-label ${!activeGraph ? 'is-no-graph' : graphValidation.errors.length ? 'has-validation-errors' : graphValidation.warnings.length ? 'has-validation-warnings' : 'is-validation-ready'}`}>
-            {activeGraph ? <><span className="context-dot" />
+            {activeGraph ? <>
               {activeNodes.length} nodes <span className="context-separator">·</span> {activeConnections.length} connections
               {activeGraph.enabled === false && <><span className="context-separator">·</span><span className="canvas-disabled-status" role="status">Disabled</span></>}
               <span className="context-separator">·</span> {graphValidation.errors.length || graphValidation.warnings.length
