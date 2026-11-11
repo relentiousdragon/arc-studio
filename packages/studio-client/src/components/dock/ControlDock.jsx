@@ -21,9 +21,88 @@ const PERMISSION_DROPDOWN_OPTIONS = DISCORD_PERMISSIONS.map((perm) => ({ value: 
 const DEFAULT_MOCK_PERMISSIONS = Object.freeze([
   'ViewChannel', 'SendMessages', 'EmbedLinks', 'AttachFiles', 'ReadMessageHistory', 'UseApplicationCommands', 'AddReactions'
 ]);
+const HTTP_METHOD_OPTIONS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].map((value) => ({ value, label: value }));
 
 const EMPTY_DEBUG_VALUES = [];
 //
+function parseSimulationObject(source, label) {
+  let value;
+  try { value = JSON.parse(String(source || '{}')); }
+  catch { throw new Error(`${label} must be valid JSON.`); }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be a JSON object.`);
+  return value;
+}
+
+function matchSimulationPath(routePattern, requestPath) {
+  const expected = String(routePattern || '').split('/');
+  const actual = String(requestPath || '').split('/');
+  if (expected.length !== actual.length || !String(requestPath || '').startsWith('/')) throw new Error('Request path does not match the selected On Web Request route.');
+  const params = {};
+  for (let index = 0; index < expected.length; index += 1) {
+    if (expected[index].startsWith(':')) {
+      try { params[expected[index].slice(1)] = decodeURIComponent(actual[index]); }
+      catch { throw new Error('Request path contains an invalid encoded parameter.'); }
+    } else if (expected[index] !== actual[index]) throw new Error('Request path does not match the selected On Web Request route.');
+  }
+  return params;
+}
+
+function simulationSamplePath(routePath) {
+  return String(routePath || '/').split('/').map((part) => part.startsWith(':') ? 'sample' : part).join('/') || '/';
+}
+
+function createMockWebRequestPayload(values, timestamp) {
+  const route = values.webRequestNode;
+  if (!route) throw new Error('Add an On Web Request node before testing an HTTP request.');
+  const method = String(values.httpMethod || route.data?.method || 'GET').toUpperCase();
+  const path = String(values.httpPath || '');
+  const params = matchSimulationPath(route.data?.path || '/', path);
+  const rawQuery = parseSimulationObject(values.httpQuery, 'Query parameters');
+  const query = Object.create(null);
+  for (const [name, value] of Object.entries(rawQuery)) {
+    query[name] = /token|secret|password|authorization|cookie|api[_-]?key/i.test(name) ? '[REDACTED]' : value;
+  }
+  const rawHeaders = parseSimulationObject(values.httpHeaders, 'Request headers');
+  const headers = Object.fromEntries(Object.entries(rawHeaders)
+    .filter(([name]) => !/authorization|cookie|token|secret|password|api[_-]?key/i.test(name))
+    .map(([name, value]) => [name.toLowerCase(), Array.isArray(value) ? value.join(', ') : String(value ?? '')]));
+  const contentType = String(values.httpBodyType || 'application/json');
+  const bodyText = String(values.httpBody || '');
+  if (new TextEncoder().encode(bodyText).length > 16 * 1024) throw new Error('Request body exceeds 16 KB.');
+  let body = bodyText;
+  if (contentType.includes('json')) {
+    try { body = bodyText.trim() ? JSON.parse(bodyText) : null; }
+    catch { throw new Error('Request body must be valid JSON. Open it in Text Studio to edit larger payloads.'); }
+  }
+  if (contentType && !Object.keys(headers).some((name) => name.toLowerCase() === 'content-type')) headers['content-type'] = contentType;
+  const requestId = `mock_request_${timestamp}_${Math.random().toString(36).slice(2, 8)}`;
+  const webServerId = (values.graph?.connections || []).find((connection) => connection.targetNodeId === route.id && connection.targetPinId === 'web_server_id')?.sourceNodeId || route.data?.web_server_id || '';
+  const safeQuery = new URLSearchParams();
+  for (const [name, value] of Object.entries(query)) {
+    for (const item of Array.isArray(value) ? value : [value]) safeQuery.append(name, String(item ?? ''));
+  }
+  const requestUrl = `${path}${safeQuery.size ? `?${safeQuery.toString()}` : ''}`;
+  return {
+    requestId,
+    routeId: route.id,
+    webServerId,
+    method,
+    path,
+    query,
+    params,
+    headers,
+    body,
+    request: { method, url: requestUrl, path, headers }
+  };
+}
+
+function SimulatorTextField({ label, value, onChange, onOpenTextStudio, maxLength = 100000, rows = 2 }) {
+  return <div className="simulator-text-field">
+    <label className="dock-field-label"><span>{label}</span><textarea className="studio-field simulator-json-field" rows={rows} value={value} onChange={(event) => onChange(event.target.value)} aria-label={label} spellCheck={false} autoCapitalize="off" autoCorrect="off" /></label>
+    <button type="button" className="dock-icon-button simulator-text-editor-button" title={`Open ${label} in Text Studio`} aria-label={`Open ${label} in Text Studio`} onClick={() => onOpenTextStudio?.(label, value, maxLength, onChange)}><FileText size={13} /></button>
+  </div>;
+}
+
 function commandRequestError(error, fallback) {
   if (error?.message === 'Failed to fetch') return 'ARC Studio server is unreachable. Check that it is running, then try again.';
   if (error?.message === 'The string did not match the expected pattern.') return 'Command review could not form a valid Discord request. Reconnect the gateway to refresh the app details, then try again.';
@@ -80,7 +159,7 @@ function resolveLogNodeTarget(log, activeTabId) {
 
 export function ControlDock({
   logs = [], botStatus = 'DISCONNECTED', discordAuthWarning = null, botMetrics = {}, botProfile, activeTabId, activeProjectId = '', authToken, onEmojisChange, emojiCacheScope = '', networkOnline = true, cachedAppEmojis = [],
-  graphs = [], graphLookup = new Map(), graphValidationReports = [], graphNodes = [], nodeDefinitions = BuiltInNodeDefinitions, isLocked = false, canControlBot = false, consoleOpenRequest = 0, gatewayStartedRequest = 0, commandBrowserRequest = 0, onClearLogs, onStartBot, onStopBot, onEnsureGraphsSaved, onOpenGraph, onTraceLog, onTraceIssue, onIntentSummaryChange
+  graphs = [], graphLookup = new Map(), graphValidationReports = [], graphNodes = [], nodeDefinitions = BuiltInNodeDefinitions, isLocked = false, canControlBot = false, consoleOpenRequest = 0, gatewayStartedRequest = 0, commandBrowserRequest = 0, onClearLogs, onStartBot, onStopBot, onEnsureGraphsSaved, onOpenGraph, onTraceLog, onTraceIssue, onIntentSummaryChange, onOpenTextStudio
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState('console');
@@ -225,6 +304,13 @@ export function ControlDock({
   const [mockPermissions, setMockPermissions] = useState(() => DEFAULT_MOCK_PERMISSIONS);
   const [mockModalFieldId, setMockModalFieldId] = useState('sample-input');
   const [mockModalValues, setMockModalValues] = useState({});
+  const [selectedWebRequestNodeId, setSelectedWebRequestNodeId] = useState('');
+  const [mockHttpMethod, setMockHttpMethod] = useState('GET');
+  const [mockHttpPath, setMockHttpPath] = useState('/items/sample');
+  const [mockHttpQuery, setMockHttpQuery] = useState('{\n  "allow": "yes"\n}');
+  const [mockHttpHeaders, setMockHttpHeaders] = useState('{\n  "content-type": "application/json"\n}');
+  const [mockHttpBodyType, setMockHttpBodyType] = useState('application/json');
+  const [mockHttpBody, setMockHttpBody] = useState('{\n  "name": "Sample"\n}');
   const [selectedModalNodeId, setSelectedModalNodeId] = useState('');
   const [modalSubmissionSnapshot, setModalSubmissionSnapshot] = useState([]);
   const [simulating, setSimulating] = useState(false);
@@ -248,6 +334,8 @@ export function ControlDock({
   const simulationModals = useMemo(() => graphNodes.filter((node) => node.type === 'build_modal' && Array.isArray(node.data?.modal?.components)).map((node) => ({ node, modal: node.data.modal })), [graphNodes]);
   const selectedSimulationModal = simulationModals.find(({ node }) => node.id === selectedModalNodeId) || null;
   const selectedModalFields = selectedSimulationModal?.modal?.components || [];
+  const simulationWebRequestNodes = useMemo(() => graphNodes.filter((node) => node.type === 'event_web_server_request'), [graphNodes]);
+  const selectedWebRequestNode = simulationWebRequestNodes.find((node) => node.id === selectedWebRequestNodeId) || null;
   useEffect(() => {
     if (!simulationModals.some(({ node }) => node.id === selectedModalNodeId)) {
       const first = simulationModals[0] || null;
@@ -258,6 +346,16 @@ export function ControlDock({
       }
     }
   }, [simulationModals, selectedModalNodeId]);
+  useEffect(() => {
+    if (!simulationWebRequestNodes.some((node) => node.id === selectedWebRequestNodeId)) {
+      const first = simulationWebRequestNodes[0] || null;
+      setSelectedWebRequestNodeId(first?.id || '');
+      if (first) {
+        setMockHttpMethod(String(first.data?.method || 'GET').toUpperCase());
+        setMockHttpPath(simulationSamplePath(first.data?.path || '/'));
+      }
+    }
+  }, [simulationWebRequestNodes, selectedWebRequestNodeId]);
   const nodeDefinitionByType = useMemo(() => new Map(nodeDefinitions.map((definition) => [definition.type, definition])), [nodeDefinitions]);
   const tracePathEntries = useMemo(() => {
     const executions = simResult?.executedNodeIds || [];
@@ -638,12 +736,24 @@ export function ControlDock({
     }
   };
 
+  const createCurrentSimulationPayload = () => {
+    const graph = graphLookup.get(activeTabId) || { nodes: [], connections: [] };
+    const cronNodeId = graph.nodes?.find((node) => node.type === 'event_cron')?.id;
+    return createSimulationPayload(selectedEvent, {
+      mockContent, mockCommand, mockAuthor, mockChannelId, mockCustomId, mockModalFieldId, mockModalValues, mockPermissions,
+      modal: selectedSimulationModal?.modal, cronNodeId, webRequestNode: selectedWebRequestNode, graph,
+      httpMethod: mockHttpMethod, httpPath: mockHttpPath, httpQuery: mockHttpQuery, httpHeaders: mockHttpHeaders,
+      httpBodyType: mockHttpBodyType, httpBody: mockHttpBody
+    });
+  };
+
   const runSimulation = async () => {
     if (!authToken || !activeTabId) return;
+    let payload;
+    try { payload = createCurrentSimulationPayload(); }
+    catch (error) { arcEvents.emit('toast:notify', { title: 'Invalid HTTP request', message: error.message, type: 'error' }); return; }
     setSimulating(true);
     setSimResult(null);
-    const cronNodeId = graphLookup.get(activeTabId)?.nodes?.find((node) => node.type === 'event_cron')?.id;
-    const payload = createSimulationPayload(selectedEvent, { mockContent, mockCommand, mockAuthor, mockChannelId, mockCustomId, mockModalFieldId, mockModalValues, mockPermissions, modal: selectedSimulationModal?.modal, cronNodeId });
     if (selectedEvent === 'MODAL_SUBMIT') setModalSubmissionSnapshot(createModalSubmissionRows(selectedSimulationModal?.modal, mockModalValues, mockModalFieldId));
     try {
       const response = await fetch(apiUrl('/api/mock/inject'), {
@@ -664,14 +774,15 @@ export function ControlDock({
 
   const beginDebugRun = async () => {
     if (!authToken || !activeTabId || debugRunIdRef.current) return;
+    let payload;
+    try { payload = createCurrentSimulationPayload(); }
+    catch (error) { arcEvents.emit('toast:notify', { title: 'Invalid HTTP request', message: error.message, type: 'error' }); return; }
     const runId = `debug_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     debugRunIdRef.current = runId;
     setDebugRunId(runId);
     setDebugStep(null);
     setSimResult(null);
     setSimulating(true);
-    const cronNodeId = graphLookup.get(activeTabId)?.nodes?.find((node) => node.type === 'event_cron')?.id;
-    const payload = createSimulationPayload(selectedEvent, { mockContent, mockCommand, mockAuthor, mockChannelId, mockCustomId, mockModalFieldId, mockModalValues, mockPermissions, modal: selectedSimulationModal?.modal, cronNodeId });
     if (selectedEvent === 'MODAL_SUBMIT') setModalSubmissionSnapshot(createModalSubmissionRows(selectedSimulationModal?.modal, mockModalValues, mockModalFieldId));
     try {
       const response = await fetch(apiUrl('/api/mock/debug/start'), {
@@ -776,7 +887,14 @@ export function ControlDock({
 
   const saveFixture = (event) => {
     event.preventDefault();
-    const fixture = { id: `fixture_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, name: fixtureName.trim() || (selectedEvent === 'MESSAGE_CREATE' ? mockContent : selectedEvent === 'SLASH_COMMAND' ? `/${mockCommand}` : selectedEvent.replaceAll('_', ' ').toLowerCase()), eventName: selectedEvent, mockContent, mockCommand, mockAuthor, mockChannelId, mockCustomId, mockPermissions, createdAt: new Date().toISOString() };
+    const fixture = {
+      id: `fixture_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      name: fixtureName.trim() || (selectedEvent === 'MESSAGE_CREATE' ? mockContent : selectedEvent === 'SLASH_COMMAND' ? `/${mockCommand}` : selectedEvent.replaceAll('_', ' ').toLowerCase()),
+      eventName: selectedEvent, mockContent, mockCommand, mockAuthor, mockChannelId, mockCustomId, mockPermissions,
+      webRequestNodeId: selectedWebRequestNodeId, httpMethod: mockHttpMethod, httpPath: mockHttpPath,
+      httpQuery: mockHttpQuery, httpHeaders: mockHttpHeaders, httpBodyType: mockHttpBodyType, httpBody: mockHttpBody,
+      createdAt: new Date().toISOString()
+    };
     const next = [fixture, ...fixtures].slice(0, 30);
     setFixtures(next);
     writeAppStorage('arc_simulation_fixtures', JSON.stringify(next));
@@ -796,6 +914,13 @@ export function ControlDock({
     setMockPermissions(Array.isArray(fixture.mockPermissions) ? fixture.mockPermissions : (typeof fixture.mockPermissions === 'string' ? bitfieldToPermissions(fixture.mockPermissions) : DEFAULT_MOCK_PERMISSIONS));
     setMockAuthor(fixture.mockAuthor || 'Studio Tester');
     setMockChannelId(fixture.mockChannelId || '120000000000000002');
+    setSelectedWebRequestNodeId(fixture.webRequestNodeId || '');
+    setMockHttpMethod(fixture.httpMethod || 'GET');
+    setMockHttpPath(fixture.httpPath || '/');
+    setMockHttpQuery(fixture.httpQuery || '{}');
+    setMockHttpHeaders(fixture.httpHeaders || '{}');
+    setMockHttpBodyType(fixture.httpBodyType || 'application/json');
+    setMockHttpBody(fixture.httpBody || '{}');
   };
 
   const reviewCommands = async () => {
@@ -1019,7 +1144,16 @@ export function ControlDock({
         {activeTab === 'simulator' && <div className="simulator-panel">
           <div className="dock-panel-sidebar">
             <div className="panel-section-heading">Event</div>
-          <AnimatedDropdown value={selectedEvent} onChange={(eventName) => { setSelectedEvent(eventName); setMockCustomId(eventName === 'MODAL_SUBMIT' ? String(selectedSimulationModal?.modal?.customId || defaultMockCustomId(eventName)) : defaultMockCustomId(eventName)); }} options={[
+          <AnimatedDropdown value={selectedEvent} onChange={(eventName) => {
+            setSelectedEvent(eventName);
+            setMockCustomId(eventName === 'MODAL_SUBMIT' ? String(selectedSimulationModal?.modal?.customId || defaultMockCustomId(eventName)) : defaultMockCustomId(eventName));
+            if (eventName === 'WEB_SERVER_REQUEST' && simulationWebRequestNodes.length) {
+              const route = simulationWebRequestNodes[0];
+              setSelectedWebRequestNodeId(route.id);
+              setMockHttpMethod(String(route.data?.method || 'GET').toUpperCase());
+              setMockHttpPath(simulationSamplePath(route.data?.path || '/'));
+            }
+          }} options={[
               { value: 'MESSAGE_CREATE', label: 'Message created' }, { value: 'SLASH_COMMAND', label: 'Slash command' },
               { value: 'USER_COMMAND', label: 'User context command' }, { value: 'MESSAGE_COMMAND', label: 'Message context command' },
               { value: 'BUTTON_CLICK', label: 'Button clicked' }, { value: 'SELECT_MENU', label: 'Select menu used' },
@@ -1029,8 +1163,27 @@ export function ControlDock({
               { value: 'MESSAGE_DELETE', label: 'Message deleted' }, { value: 'MESSAGE_REACTION_ADD', label: 'Reaction added' },
               { value: 'MESSAGE_REACTION_REMOVE', label: 'Reaction removed' }, { value: 'CHANNEL_CREATE', label: 'Channel created' },
               { value: 'VOICE_STATE_UPDATE', label: 'Voice state changed' }
+              ,...(simulationWebRequestNodes.length ? [{ value: 'WEB_SERVER_REQUEST', label: 'HTTP request' }] : [])
             ]} ariaLabel="Simulation event" className="simulator-event-dropdown" />
-            {selectedEvent === 'MESSAGE_CREATE' ? <label className="dock-field-label">Message<input className="studio-field" value={mockContent} onChange={(event) => setMockContent(event.target.value)} placeholder="!ping" /></label> : ['SLASH_COMMAND', 'USER_COMMAND', 'MESSAGE_COMMAND'].includes(selectedEvent) ? <label className="dock-field-label">Command<input className="studio-field" value={mockCommand} onChange={(event) => setMockCommand(event.target.value)} placeholder={selectedEvent === 'SLASH_COMMAND' ? 'help' : 'Bookmark'} /></label> : null}
+            {selectedEvent === 'WEB_SERVER_REQUEST' ? <div className="simulator-http-request-fields">
+              {simulationWebRequestNodes.length ? <>
+                <label className="dock-field-label">Route<AnimatedDropdown value={selectedWebRequestNodeId} onChange={(nodeId) => {
+                  const route = simulationWebRequestNodes.find((node) => node.id === nodeId);
+                  setSelectedWebRequestNodeId(nodeId);
+                  if (route) {
+                    setMockHttpMethod(String(route.data?.method || 'GET').toUpperCase());
+                    setMockHttpPath(simulationSamplePath(route.data?.path || '/'));
+                  }
+                }} options={simulationWebRequestNodes.map((node) => ({ value: node.id, label: `${node.label || 'On Web Request'} · ${node.data?.method || 'GET'} ${node.data?.path || '/'}` }))} ariaLabel="HTTP route to test" className="simulator-event-dropdown" /></label>
+                {selectedWebRequestNode && <div className="simulator-http-route-meta"><span>{String(selectedWebRequestNode.data?.method || 'GET').toUpperCase()}</span><code>{selectedWebRequestNode.data?.path || '/'}</code></div>}
+                <label className="dock-field-label">Request path<input className="studio-field" value={mockHttpPath} onChange={(event) => setMockHttpPath(event.target.value)} placeholder="/items/sample" autoCapitalize="off" autoCorrect="off" spellCheck={false} /></label>
+                <div className="simulator-sample-note">Path parameters are extracted from this route. Request bodies over 16 KB are rejected.</div>
+                <SimulatorTextField label="Query parameters (JSON)" value={mockHttpQuery} onChange={setMockHttpQuery} onOpenTextStudio={onOpenTextStudio} maxLength={16 * 1024} rows={3} />
+                <SimulatorTextField label="Request headers (JSON)" value={mockHttpHeaders} onChange={setMockHttpHeaders} onOpenTextStudio={onOpenTextStudio} maxLength={16 * 1024} rows={3} />
+                <label className="dock-field-label">Body content type<AnimatedDropdown value={mockHttpBodyType} onChange={setMockHttpBodyType} options={[{ value: 'application/json', label: 'JSON' }, { value: 'text/plain', label: 'Text' }, { value: 'application/x-www-form-urlencoded', label: 'Form URL encoded' }]} ariaLabel="Request body content type" className="simulator-event-dropdown" /></label>
+                <SimulatorTextField label="Request body" value={mockHttpBody} onChange={setMockHttpBody} onOpenTextStudio={onOpenTextStudio} maxLength={16 * 1024} rows={4} />
+              </> : <div className="simulator-sample-note">Add an On Web Request node to the active graph to simulate HTTP calls.</div>}
+            </div> : selectedEvent === 'MESSAGE_CREATE' ? <label className="dock-field-label">Message<input className="studio-field" value={mockContent} onChange={(event) => setMockContent(event.target.value)} placeholder="!ping" /></label> : ['SLASH_COMMAND', 'USER_COMMAND', 'MESSAGE_COMMAND'].includes(selectedEvent) ? <label className="dock-field-label">Command<input className="studio-field" value={mockCommand} onChange={(event) => setMockCommand(event.target.value)} placeholder={selectedEvent === 'SLASH_COMMAND' ? 'help' : 'Bookmark'} /></label> : null}
             {selectedEvent === 'CRON_TICK' ? <div className="simulator-sample-note">Runs the first On Schedule node in this graph once, without waiting for its cron expression.</div> : <div className="simulator-sample-note">{simulationEventHint(selectedEvent)}</div>}
             {['BUTTON_CLICK', 'SELECT_MENU'].includes(selectedEvent) && <label className="dock-field-label">Custom ID<input className="studio-field" value={mockCustomId} onChange={(event) => setMockCustomId(event.target.value)} placeholder="component_custom_id" autoCapitalize="none" autoCorrect="off" spellCheck={false} /></label>}
             {selectedEvent === 'MODAL_SUBMIT' && <div className="simulation-modal-fields">
@@ -1046,15 +1199,17 @@ export function ControlDock({
                 <label className="dock-field-label">Submitted value<input className="studio-field" value={mockModalValues[mockModalFieldId] ?? ''} onChange={(event) => setMockModalValues((previous) => ({ ...previous, [mockModalFieldId]: event.target.value }))} placeholder="Sample response" /></label>
               </>}
             </div>}
-            <label className="dock-field-label">Author<input className="studio-field" value={mockAuthor} onChange={(event) => setMockAuthor(event.target.value)} /></label>
-            <label className="dock-field-label">Channel ID<input className="studio-field" value={mockChannelId} onChange={(event) => setMockChannelId(event.target.value)} /></label>
-            <label className="dock-field-label">Permissions<AnimatedDropdown multiple={true} searchable={true} searchThreshold={6} value={mockPermissions} options={PERMISSION_DROPDOWN_OPTIONS} onChange={setMockPermissions} placeholder="Choose permissions…" ariaLabel="Permissions" className="simulator-event-dropdown" /></label>
+            {selectedEvent !== 'WEB_SERVER_REQUEST' && <>
+              <label className="dock-field-label">Author<input className="studio-field" value={mockAuthor} onChange={(event) => setMockAuthor(event.target.value)} /></label>
+              <label className="dock-field-label">Channel ID<input className="studio-field" value={mockChannelId} onChange={(event) => setMockChannelId(event.target.value)} /></label>
+              <label className="dock-field-label">Permissions<AnimatedDropdown multiple={true} searchable={true} searchThreshold={6} value={mockPermissions} options={PERMISSION_DROPDOWN_OPTIONS} onChange={setMockPermissions} placeholder="Choose permissions…" ariaLabel="Permissions" className="simulator-event-dropdown" /></label>
+            </>}
             <div className="simulator-run-actions"><button className="studio-button studio-button-primary simulate-button" onClick={runSimulation} disabled={simulating || Boolean(debugRunId) || !activeTabId}><Play size={14} fill="currentColor" />{simulating ? 'Running…' : 'Run'}</button><button className="studio-button debug-run-button" onClick={beginDebugRun} disabled={simulating || Boolean(debugRunId) || !activeTabId}><StepForward size={14} />Debug</button></div>
             <div className="simulator-fixtures">
               <AnimatedDropdown value={selectedFixtureId} onChange={loadFixture} options={[{ value: '', label: 'Saved fixtures' }, ...fixtures.map((fixture) => ({ value: fixture.id, label: fixture.name }))]} ariaLabel="Saved simulation fixtures" className="simulator-event-dropdown" />
               <button type="button" className="dock-icon-button" onClick={() => { setFixtureName(''); setShowFixtureName((value) => !value); }} title="Save current event as a replay fixture" aria-label="Save simulation fixture"><Save size={13} /></button>
             </div>
-            {showFixtureName && <form className="simulator-fixture-form" onSubmit={saveFixture}><CharacterLimit value={fixtureName} maxLength={60}><input value={fixtureName} onChange={(event) => setFixtureName(event.target.value)} maxLength={60} placeholder={selectedEvent === 'MESSAGE_CREATE' ? mockContent || 'Fixture name' : `/${mockCommand}`} aria-label="Fixture name" /></CharacterLimit><button type="submit">Save</button></form>}
+            {showFixtureName && <form className="simulator-fixture-form" onSubmit={saveFixture}><CharacterLimit value={fixtureName} maxLength={60}><input className="studio-field" value={fixtureName} onChange={(event) => setFixtureName(event.target.value)} maxLength={60} placeholder={selectedEvent === 'MESSAGE_CREATE' ? mockContent || 'Fixture name' : `/${mockCommand}`} aria-label="Fixture name" /></CharacterLimit><button type="submit">Save</button></form>}
             {!!fixtures.length && selectedFixtureId && <button className="simulator-fixture-delete" onClick={() => { const next = fixtures.filter((fixture) => fixture.id !== selectedFixtureId); setFixtures(next); setSelectedFixtureId(''); writeAppStorage('arc_simulation_fixtures', JSON.stringify(next)); }}>Delete selected fixture</button>}
           </div>
           <div className="simulation-output">
@@ -1261,6 +1416,7 @@ function createSimulationPayload(eventName, values) {
   const author = { id: '990000000000000001', username: values.mockAuthor, discriminator: '0', bot: false };
   const member = { user: author, nick: 'Simulated Member', roles: [], permissions: permissionsBitfield };
   const base = { id: `mock_${timestamp}`, channel_id: values.mockChannelId, guild_id: '120000000000000000', member, permissions: permissionsBitfield, app_permissions: permissionsBitfield };
+  if (eventName === 'WEB_SERVER_REQUEST') return createMockWebRequestPayload(values, timestamp);
   if (eventName === 'CRON_TICK') return { ...base, cronNodeId: values.cronNodeId, scheduledAt: new Date(timestamp).toISOString(), timeZone: 'UTC', cronExpression: 'manual-debug' };
   if (eventName === 'MESSAGE_CREATE') return { ...base, content: values.mockContent, author, member };
   if (eventName === 'SLASH_COMMAND') return { ...base, type: 2, token: `mock_tok_${timestamp}`, member, data: { type: 1, name: values.mockCommand, options: [] } };
