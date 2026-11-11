@@ -8,25 +8,29 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
+      "type": "exec",
+      description: "Starts secure token generation."
     },
     {
       "id": "type",
       "label": "Format (hex/base64url/pin)",
       "type": "string",
-      "defaultValue": "hex"
+      "defaultValue": "hex",
+      description: "Format for the generated token or PIN."
     }
   ],
   "outputs": [
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
+      "type": "exec",
+      description: "Continues after the token is generated."
     },
     {
       "id": "token",
       "label": "Token / PIN",
-      "type": "string"
+      "type": "string",
+      description: "Cryptographically secure token or numeric PIN."
     }
   ]
 };

@@ -8,37 +8,43 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
+      "type": "exec",
+      description: "Starts signature verification."
     },
     {
       "id": "data",
       "label": "Payload",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Text that was signed."
     },
     {
       "id": "secret",
       "label": "Secret Key",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Secret key used to create the expected signature."
     },
     {
       "id": "signature",
       "label": "Expected Signature",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "HMAC signature to verify."
     }
   ],
   "outputs": [
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
+      "type": "exec",
+      description: "Continues after the signature is checked."
     },
     {
       "id": "isValid",
       "label": "Is Valid",
-      "type": "boolean"
+      "type": "boolean",
+      description: "True when the signature matches the input and secret."
     }
   ]
 };

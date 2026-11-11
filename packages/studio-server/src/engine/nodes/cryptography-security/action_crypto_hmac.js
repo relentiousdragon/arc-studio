@@ -8,37 +8,43 @@ export default {
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
+      "type": "exec",
+      description: "Starts HMAC signing."
     },
     {
       "id": "data",
       "label": "Payload",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Text to sign."
     },
     {
       "id": "secret",
       "label": "Secret Key",
       "type": "string",
-      "defaultValue": ""
+      "defaultValue": "",
+      description: "Secret key used to create the signature."
     },
     {
       "id": "algorithm",
       "label": "Algorithm",
       "type": "string",
-      "defaultValue": "sha256"
+      "defaultValue": "sha256",
+      description: "Hash algorithm used for HMAC."
     }
   ],
   "outputs": [
     {
       "id": "exec",
       "label": "Exec",
-      "type": "exec"
+      "type": "exec",
+      description: "Continues after the signature is created."
     },
     {
       "id": "signature",
       "label": "Signature",
-      "type": "string"
+      "type": "string",
+      description: "Hexadecimal HMAC signature for the input text."
     }
   ]
 };
