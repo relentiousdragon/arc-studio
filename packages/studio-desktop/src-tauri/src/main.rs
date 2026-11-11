@@ -23,7 +23,10 @@ fn build_release_channel() -> &'static str {
     option_env!("ARC_RELEASE_CHANNEL")
         .filter(|channel| *channel == "nightly" || *channel == "stable")
         .unwrap_or_else(|| {
-            if option_env!("CARGO_PKG_VERSION").is_some_and(|version| version.contains('-')) {
+            if option_env!("CARGO_PKG_VERSION")
+                .and_then(|version| version.split_once('-').map(|(_, prerelease)| prerelease))
+                .is_some_and(|prerelease| !prerelease.starts_with("stable."))
+            {
                 "nightly"
             } else {
                 "stable"
@@ -31,10 +34,26 @@ fn build_release_channel() -> &'static str {
         })
 }
 
+fn arc_version_label(version: &str) -> String {
+    let (version_without_build, build) = version
+        .split_once('+')
+        .map_or((version, String::new()), |(version, build)| {
+            (version, format!("+{build}"))
+        });
+    if let Some((core, prerelease)) = version_without_build.split_once('-') {
+        if let Some(patch) = prerelease.strip_prefix("stable.") {
+            if !patch.is_empty() && patch.bytes().all(|byte| byte.is_ascii_digit()) {
+                return format!("{core}.{patch}{build}");
+            }
+        }
+    }
+    format!("{version_without_build}{build}")
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ClientBuildInfo {
-    version: &'static str,
+    version: String,
     platform: &'static str,
     architecture: &'static str,
 }
@@ -42,7 +61,7 @@ struct ClientBuildInfo {
 #[tauri::command]
 fn get_client_build_info() -> ClientBuildInfo {
     ClientBuildInfo {
-        version: env!("CARGO_PKG_VERSION"),
+        version: arc_version_label(env!("CARGO_PKG_VERSION")),
         platform: std::env::consts::OS,
         architecture: std::env::consts::ARCH,
     }
@@ -330,8 +349,8 @@ async fn check_channel_update(webview: Webview, channel: String) -> Result<Optio
     let Some(update) = updater.check().await.map_err(|error| format!("Update check failed: {error}"))? else { return Ok(None); };
     let metadata = ChannelUpdateMetadata {
         rid: webview.resources_table().add(update.clone()),
-        current_version: update.current_version.clone(),
-        version: update.version.clone(),
+        current_version: arc_version_label(&update.current_version.to_string()),
+        version: arc_version_label(&update.version.to_string()),
         body: update.body.clone(),
         raw_json: update.raw_json.clone(),
     };
@@ -436,7 +455,7 @@ fn get_staged_update_status<R: tauri::Runtime>(app: tauri::AppHandle<R>, channel
     let metadata: StagedUpdateMetadata = serde_json::from_slice(&fs::read(&metadata_path).map_err(|error| format!("Could not read staged update details: {error}"))?)
         .map_err(|error| format!("Staged update details are invalid: {error}"))?;
     if metadata.channel != channel { return Ok(None); }
-    Ok(Some(StagedUpdateStatus { version: metadata.version, staged: true }))
+    Ok(Some(StagedUpdateStatus { version: arc_version_label(&metadata.version), staged: true }))
 }
 
 #[tauri::command]
