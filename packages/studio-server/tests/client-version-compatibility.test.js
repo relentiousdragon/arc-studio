@@ -15,8 +15,10 @@ test('the configured minimum client version is accepted and older clients are re
 });
 
 test('stable clients are ordered after prereleases of the same release', () => {
-  assert.equal(isArcStudioClientVersionAllowed('2026.1.1', '2026.1.1-nightly.8'), true);
-  assert.equal(isArcStudioClientVersionAllowed('2026.1.0', '2026.1.1-nightly.8'), false);
+  assert.equal(isArcStudioClientVersionAllowed('2026.1.1.1', '2026.1.1-nightly.8'), true);
+  assert.equal(isArcStudioClientVersionAllowed('2026.1.2.1', '2026.1.2-nightly.999'), true);
+  assert.equal(isArcStudioClientVersionAllowed('2026.1.2-nightly.999', '2026.1.2.1'), false);
+  assert.equal(isArcStudioClientVersionAllowed('2026.1.0.1', '2026.1.1-nightly.8'), false);
 });
 
 test('missing and invalid client versions are rejected', () => {
