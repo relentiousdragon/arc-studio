@@ -2966,6 +2966,10 @@ body.is-resizing-sidebar * {
   cursor: grabbing;
 }
 
+.node-canvas.is-node-move-pending .canvas-node {
+  cursor: grabbing;
+}
+
 .node-canvas.is-connecting-wire,
 .node-canvas.is-connecting-wire * {
   cursor: grabbing !important;
@@ -15997,8 +16001,7 @@ body[data-compact-context="true"] .context-menu-heading {
 }
 
 .node-canvas.is-cutting-wires,
-.node-canvas.is-cutting-wires .canvas-world,
-.node-canvas.is-cutting-wires .canvas-world * {
+.node-canvas.is-cutting-wires .canvas-world {
   cursor: url('/scissors.svg') 5 5, crosshair !important;
 }
 
