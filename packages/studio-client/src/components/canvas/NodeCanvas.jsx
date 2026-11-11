@@ -9,6 +9,7 @@ import { DEFAULT_SHORTCUTS, formatShortcut, shortcutMatches } from '../../core/s
 import { AUTO_QUALITY_SWITCH_COOLDOWN_MS, commitPendingAutoCanvasQuality, createAutoCanvasQualityController, recordAutoCanvasFrame, resetAutoCanvasQualityController } from '../../core/canvasQuality.js';
 import { onPageBlur } from '../../core/pageFocus.js';
 import { readAppStorage, writeAppStorage } from '../../core/storage.js';
+import { getNodesNearInputSockets } from '../../core/nodeSocketVisibility.js';
 import { arcEvents } from '../../core/ArcEvents.js';
 import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
@@ -22,6 +23,11 @@ const EMPTY_PIN_SET = new Set();
 const EMPTY_TEMPLATE_PREVIEW_VALUES = Object.freeze({});
 const EMPTY_REMOTE_NODE_STATE = Object.freeze({});
 const warnedFailedNodeTypes = new Set();
+const chatHasHiddenMessagesAbove = (feed, isHistory, hasOlderMessages) => {
+  if (!feed) return false;
+  if (isHistory) return feed.scrollTop > 1;
+  return hasOlderMessages;
+};
 const COLLABORATOR_COLORS = ['#63b3ed', '#f687b3', '#68d391', '#f6ad55', '#b794f4', '#4fd1c5', '#fc8181', '#90cdf4', '#fbd38d', '#9ae6b4'];
 const LARGE_GRAPH_NODE_LIMIT = 28;
 const LARGE_GRAPH_WIRE_LIMIT = 64;
@@ -329,7 +335,7 @@ function RemoteWirePreview({ peer, computePath }) {
 export function NodeCanvas({
   isActive = true,
   nodes: suppliedNodes = [], connections: suppliedConnections = [], graphId = '', projectId = '', focusRequest = null, followRequest = null, onFollowComplete, activePulseNodeIds = [], debugStep = null, simulationOverlay = null, onClearSimulationOverlay, onDebugAction, settings = {}, isLocked = false, canvasLocked = isLocked, canWriteGraphs = true, desktopMode = false, shortcutPlatform = 'windows', authToken = '', graphName = 'Untitled graph',
-  tagGroups = [], notes = [], arrows = [], transientArrows = [], currentUser = null, projectOwnerId = '', noteEditLocks = {}, collaborationOnline = false, collaborationReady = false, collaborationMotionSupported = false, collaborationClientId = '', onRequestNoteEditLock, onReleaseNoteEditLock, onNotesChange, onArrowsChange, onCanvasArrowAction, onTagGroupsChange, onRequestCreateTagGroup, onRequestEditTagGroup, onRenameNode,
+  tagGroups = [], notes = [], arrows = [], transientArrows = [], currentUser = null, projectOwnerId = '', noteEditLocks = {}, nodeMoveLocks = {}, collaborationOnline = false, collaborationReady = false, collaborationMotionSupported = false, collaborationClientId = '', onRequestNoteEditLock, onReleaseNoteEditLock, onRequestNodeMoveLock, onReleaseNodeMoveLock, onNotesChange, onArrowsChange, onCanvasArrowAction, onTagGroupsChange, onRequestCreateTagGroup, onRequestEditTagGroup, onRenameNode,
   graphVariables = [], eventTemplatePaths = [], functionGraphs = [], callableGraphs = functionGraphs, appEmojis = [], mediaAssets = [], onUploadMedia, onLoadMediaContent, nodeDefinitions = BuiltInNodeDefinitions, nodeDefinitionsReady = false, onNodesChange, onConnectionsChange, onOpenPalette, onViewportCenterChange, onSelectedNodeChange, onSelectedNodeCountChange, onOpenLibrary, onOpenVariables,
   onHistoryGroupStart, onHistoryGroupEnd, onNodeDrop, onSaveNodePrefab, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph, remoteActions = [], onCollaborationAction, onNodeMoveCommit,
   graphChatEnabled = false, graphChatBubbles = [], graphChatHistory = [], onSendGraphChat, onMoveGraphChatBubble
@@ -528,6 +534,7 @@ export function NodeCanvas({
   const [draggingNode, setDraggingNode] = useState(null);
   const draggingNodeRef = useRef(draggingNode);
   draggingNodeRef.current = draggingNode;
+  const pendingNodeMoveDragRef = useRef(null);
   const [draggingNote, setDraggingNote] = useState(null);
   const [draggingArrows, setDraggingArrows] = useState(null);
   const [drawingArrow, setDrawingArrow] = useState(null);
@@ -538,6 +545,8 @@ export function NodeCanvas({
   const [graphChatComposerOpen, setGraphChatComposerOpen] = useState(false);
   const [graphChatDraft, setGraphChatDraft] = useState('');
   const [graphChatAnchor, setGraphChatAnchor] = useState(null);
+  const [graphChatHasHiddenAbove, setGraphChatHasHiddenAbove] = useState(false);
+  const [graphChatHasHiddenBelow, setGraphChatHasHiddenBelow] = useState(false);
   const [liveGraphChatMessages, setLiveGraphChatMessages] = useState([]);
   const [graphChatClock, setGraphChatClock] = useState(Date.now());
   const [graphChatHovered, setGraphChatHovered] = useState(false);
@@ -545,6 +554,7 @@ export function NodeCanvas({
   const graphChatOverlayRef = useRef(null);
   const graphChatInputRef = useRef(null);
   const graphChatFeedRef = useRef(null);
+  const pendingGraphChatDraftScrollRef = useRef(null);
   const graphChatWasOpenRef = useRef(false);
   const graphChatHistoryAtBottomRef = useRef(true);
   const graphChatTypingRef = useRef(false);
@@ -579,6 +589,30 @@ export function NodeCanvas({
     }, 200);
     return () => window.clearInterval(timer);
   }, [liveGraphChatMessages.length, settings.keepChatMessagesVisible]);
+  useEffect(() => {
+    const updateHoverState = (hovered) => {
+      if (graphChatHoveredRef.current === hovered) return;
+      graphChatHoveredRef.current = hovered;
+      setGraphChatHovered(hovered);
+      if (hovered) return;
+      const now = Date.now();
+      setGraphChatClock(now);
+      setLiveGraphChatMessages((current) => current.map((bubble) => ({ ...bubble, dimAt: now + 5000, fadeAt: now + 10000, removeAt: now + 11000 })));
+    };
+    const handlePointerMove = (event) => {
+      const bounds = graphChatOverlayRef.current?.getBoundingClientRect();
+      updateHoverState(Boolean(graphChatEnabled && bounds
+        && event.clientX >= bounds.left && event.clientX <= bounds.right
+        && event.clientY >= bounds.top && event.clientY <= bounds.bottom));
+    };
+    const handleWindowBlur = () => updateHoverState(false);
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('blur', handleWindowBlur);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('blur', handleWindowBlur);
+    };
+  }, [graphChatEnabled]);
   const [noteLockClock, setNoteLockClock] = useState(Date.now());
   const focusedNoteRef = useRef(null);
   const noteEditHistoryRef = useRef(null);
@@ -614,6 +648,47 @@ export function NodeCanvas({
     setDrawingArrow(null);
     setDraggingArrows(null);
   }, [graphId, projectId]);
+  useEffect(() => () => {
+    const pending = pendingNodeMoveDragRef.current;
+    if (pending) {
+      pending.cancelled = true;
+      pendingNodeMoveDragRef.current = null;
+    }
+    const activeDrag = draggingNodeRef.current;
+    if (activeDrag) onReleaseNodeMoveLock?.(activeDrag.nodeIds || [activeDrag.id], graphId, projectId);
+  }, [graphId, projectId, onReleaseNodeMoveLock]);
+  useEffect(() => {
+    if (isActive) return;
+    const pending = pendingNodeMoveDragRef.current;
+    if (pending) {
+      pending.cancelled = true;
+      pendingNodeMoveDragRef.current = null;
+    }
+    const activeDrag = draggingNodeRef.current;
+    if (activeDrag) {
+      onReleaseNodeMoveLock?.(activeDrag.nodeIds || [activeDrag.id], graphId, projectId);
+      setDraggingNode(null);
+    }
+  }, [graphId, isActive, onReleaseNodeMoveLock, projectId]);
+  useEffect(() => {
+    if (!draggingNode || !collaborationOnline) return undefined;
+    if (!collaborationReady) {
+      onReleaseNodeMoveLock?.(draggingNode.nodeIds || [draggingNode.id], graphId, projectId);
+      setDraggingNode(null);
+      arcEvents.emit('toast:notify', { title: 'Node movement stopped', message: 'Reconnect to the shared graph before continuing to move this node.', type: 'warning' });
+      return undefined;
+    }
+    const ids = draggingNode.nodeIds || [draggingNode.id];
+    const timer = window.setInterval(() => {
+      Promise.resolve(onRequestNodeMoveLock?.(ids)).then((granted) => {
+        if (granted) return;
+        setDraggingNode((current) => current?.id === draggingNode.id ? null : current);
+        onReleaseNodeMoveLock?.(ids, graphId, projectId);
+        arcEvents.emit('toast:notify', { title: 'Node movement lock lost', message: 'Reconnect before continuing to move this node.', type: 'warning' });
+      });
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [collaborationOnline, collaborationReady, draggingNode?.id, draggingNode?.nodeIds, graphId, onReleaseNodeMoveLock, onRequestNodeMoveLock, projectId]);
   useEffect(() => {
     if (!canvasArrows.length && !localTransientArrows.length) return undefined;
     const timer = window.setInterval(() => {
@@ -700,6 +775,7 @@ export function NodeCanvas({
       feed.scrollTop = feed.scrollHeight;
       graphChatHistoryAtBottomRef.current = true;
     }
+    setGraphChatHasHiddenAbove(feed.scrollTop > 1);
     graphChatWasOpenRef.current = true;
   }, [graphChatComposerOpen, graphChatHistory.length, graphChatHistory[graphChatHistory.length - 1]?.id]);
 
@@ -741,6 +817,11 @@ export function NodeCanvas({
   const [socketLayoutRevision, refreshSocketLayout] = useState(0);
   const [nodeBoundsRevision, refreshNodeBounds] = useState(0);
   const [connectingWire, setConnectingWire] = useState(null);
+  const [pendingPinDragNodeId, setPendingPinDragNodeId] = useState(null);
+  const [autoRevealInputNodeIds, setAutoRevealInputNodeIds] = useState(EMPTY_PIN_SET);
+  useEffect(() => {
+    if (!connectingWire || settings.progressiveSocketReveal === false) setAutoRevealInputNodeIds(EMPTY_PIN_SET);
+  }, [connectingWire, settings.progressiveSocketReveal]);
   canvasInteractionActiveRef.current = Boolean(isPanning || draggingNode || draggingNote || connectingWire || selectionBox);
   const autoQualityInteractionActive = canvasQualityMode === 'auto' && Boolean(isPanning || isWheelPanning || isWheelZooming || draggingNode || draggingNote || connectingWire);
   const autoQualityInteractionActiveRef = useRef(autoQualityInteractionActive);
@@ -1077,7 +1158,7 @@ export function NodeCanvas({
           const visibleIds = [...(containerRef.current?.querySelectorAll('[data-node-card-id]') || [])]
             .filter((card) => {
               const rect = card.getBoundingClientRect();
-              return viewport && rect.right > viewport.left && rect.left < viewport.right && rect.bottom > viewport.top && rect.top < viewport.bottom;
+              return viewport && !isNodeBeingMovedByOther(card.dataset.nodeCardId) && rect.right > viewport.left && rect.left < viewport.right && rect.bottom > viewport.top && rect.top < viewport.bottom;
             })
             .map((card) => card.dataset.nodeCardId);
           selectNodes(visibleIds);
@@ -1097,7 +1178,7 @@ export function NodeCanvas({
           setSelectedArrowIds(visibleArrowIds);
           onCollaborationAction?.({ kind: 'selection', selectedNodeIds: visibleIds, selectedNoteIds: visibleNoteIds, selectedArrowIds: visibleArrowIds });
         } else {
-          const allNodeIds = nodes.map((node) => node.id);
+          const allNodeIds = nodes.filter((node) => !isNodeBeingMovedByOther(node.id)).map((node) => node.id);
           const allNoteIds = notes.map((note) => note.id);
           const allArrowIds = canvasArrows.map((arrow) => arrow.id);
           selectNodes(allNodeIds);
@@ -1910,6 +1991,7 @@ export function NodeCanvas({
   }, [isCompatiblePin, pinFromRow]);
 
   function deleteNode(nodeId) {
+    if (isNodeBeingMovedByOther(nodeId)) return;
     onHistoryGroupStart?.();
     onNodesChange?.(nodes.filter((node) => node.id !== nodeId));
     onConnectionsChange?.(connections.filter((connection) => connection.sourceNodeId !== nodeId && connection.targetNodeId !== nodeId));
@@ -1919,7 +2001,7 @@ export function NodeCanvas({
   }
 
   function deleteSelectedItems(nodeIds = selectedNodeIds, noteIds = selectedNoteIds, confirmed = false, arrowIds = selectedArrowIds) {
-    const uniqueNodeIds = [...new Set(nodeIds)];
+    const uniqueNodeIds = [...new Set(nodeIds)].filter((id) => !isNodeBeingMovedByOther(id));
     const removableNoteIds = [...new Set(noteIds)].filter((id) => {
       const note = notes.find((item) => item.id === id);
       return note && !isNoteBeingEditedByOther(id) && (!note.locked || mayEditNote(note));
@@ -1962,7 +2044,7 @@ export function NodeCanvas({
   }
 
   const selectNodes = (ids, primaryId = ids[ids.length - 1] || null, { preserveNotes = false, preserveArrows = false } = {}) => {
-    const validIds = [...new Set(ids)];
+    const validIds = [...new Set(ids)].filter((id) => !isNodeBeingMovedByOther(id));
     setSelectedNodeIds(validIds);
     setSelectedNodeId(primaryId && validIds.includes(primaryId) ? primaryId : validIds[validIds.length - 1] || null);
     if (!preserveNotes) setSelectedNoteIds([]);
@@ -2168,6 +2250,7 @@ export function NodeCanvas({
   }
 
   function duplicateNode(nodeId) {
+    if (isNodeBeingMovedByOther(nodeId)) return;
     const source = nodes.find((node) => node.id === nodeId);
     if (!source) return;
     copyNodes([nodeId]);
@@ -2183,6 +2266,7 @@ export function NodeCanvas({
   }
 
   const updateNodeData = (nodeId, data, label) => {
+    if (isNodeBeingMovedByOther(nodeId)) return;
     onCollaborationAction?.({ kind: 'node-edit', nodeId });
     const previousNode = nodes.find((node) => node.id === nodeId);
     const migratingFunctionInput = previousNode?.type === 'function_input' && !Array.isArray(previousNode.data?.arguments) && Array.isArray(data?.arguments);
@@ -2244,6 +2328,12 @@ export function NodeCanvas({
         }
         event.preventDefault();
         setIsPanning(false);
+        const pending = pendingNodeMoveDragRef.current;
+        if (pending) {
+          pending.cancelled = true;
+          pendingNodeMoveDragRef.current = null;
+        }
+        if (draggingNode) onReleaseNodeMoveLock?.(draggingNode.nodeIds || [draggingNode.id], graphId, projectId);
         setDraggingNode(null);
         setDraggingNote(null);
         selectionStartRef.current = null;
@@ -2289,6 +2379,9 @@ export function NodeCanvas({
       if (focused instanceof HTMLElement && focused !== document.body && focused !== document.documentElement) focused.blur();
     }
     event.preventDefault();
+    if (isPanning) setPan(viewportRef.current.pan);
+    setIsPanning(false);
+    rightPanOriginRef.current = null;
     selectionStartRef.current = { x: event.clientX, y: event.clientY, additive: event.metaKey || event.ctrlKey };
     setSelectionBox({ x1: event.clientX, y1: event.clientY, x2: event.clientX, y2: event.clientY });
     if (Number.isInteger(event.pointerId)) containerRef.current?.setPointerCapture?.(event.pointerId);
@@ -2299,6 +2392,7 @@ export function NodeCanvas({
     if (!pending || (Number.isInteger(pending.pointerId) && pending.pointerId !== event.pointerId)
       || Math.hypot(event.clientX - pending.x, event.clientY - pending.y) < 4) return false;
     pendingPinDragRef.current = null;
+    setPendingPinDragNodeId(null);
     pinDoubleClickRef.current = null;
     const bounds = canvasGeometryRef.current.bounds;
     if (!bounds) return false;
@@ -2320,6 +2414,12 @@ export function NodeCanvas({
 
   const movePointer = (event) => {
     pointerPositionRef.current = { x: event.clientX, y: event.clientY };
+    const pendingNodeDrag = pendingNodeMoveDragRef.current;
+    if (pendingNodeDrag && pendingNodeDrag.pointerId === event.pointerId) {
+      pendingNodeDrag.lastX = event.clientX;
+      pendingNodeDrag.lastY = event.clientY;
+      return;
+    }
     if (typeof event.altKey === 'boolean' && event.altKey !== altDownRef.current) {
       altDownRef.current = event.altKey;
       setAltHeld(event.altKey);
@@ -2367,6 +2467,11 @@ export function NodeCanvas({
         shiftKey: false
       };
       beginNodeDrag(downEvent, node);
+      if (pendingNodeMoveDragRef.current) {
+        pendingNodeMoveDragRef.current.lastX = event.clientX;
+        pendingNodeMoveDragRef.current.lastY = event.clientY;
+        return;
+      }
       const displayScale = getCanvasDisplayScale(containerRef.current);
       const deltaX = (event.clientX - touchNodeGesture.x) / displayScale / zoom;
       const deltaY = (event.clientY - touchNodeGesture.y) / displayScale / zoom;
@@ -2490,14 +2595,14 @@ export function NodeCanvas({
         onCollaborationAction?.({ kind: 'cursor', cursor, mode, selectedNodeIds });
       }
     }
+    if (selectionStartRef.current) {
+      setSelectionBox((current) => current ? { ...current, x2: event.clientX, y2: event.clientY } : current);
+      return;
+    }
     if (isPanning) {
       if (rightPanOriginRef.current && Math.hypot(event.clientX - rightPanOriginRef.current.x, event.clientY - rightPanOriginRef.current.y) > 4) rightPanMovedRef.current = true;
       const displayScale = getCanvasDisplayScale(containerRef.current);
       applyPanDuringGesture({ x: event.clientX / displayScale - panStartRef.current.x, y: event.clientY / displayScale - panStartRef.current.y });
-      return;
-    }
-    if (selectionStartRef.current) {
-      setSelectionBox((current) => current ? { ...current, x2: event.clientX, y2: event.clientY } : current);
       return;
     }
     if (draggingNode) {
@@ -2536,6 +2641,24 @@ export function NodeCanvas({
     if (connectingWire && containerRef.current) {
       const rect = canvasGeometryRef.current.bounds;
       const displayScale = getCanvasDisplayScale(containerRef.current);
+      if (settings.progressiveSocketReveal !== false) {
+        const nodeRects = [...containerRef.current.querySelectorAll('[data-node-card-id]')].flatMap((card) => {
+          const inputColumn = card.querySelector('.node-pin-inputs');
+          if (!inputColumn?.querySelector('.node-pin-more')) return [];
+          const nodeBounds = card.getBoundingClientRect();
+          if (!(nodeBounds.width > 0 && nodeBounds.height > 0)) return [];
+          return [{ nodeId: card.dataset.nodeCardId, rect: nodeBounds }];
+        });
+        const nextIds = new Set(getNodesNearInputSockets(
+          { x: event.clientX, y: event.clientY },
+          nodeRects,
+          connectingWire.nodeId
+        ));
+        setAutoRevealInputNodeIds((current) => current.size === nextIds.size
+          && [...current].every((nodeId) => nextIds.has(nodeId)) ? current : nextIds);
+      } else {
+        setAutoRevealInputNodeIds((current) => current.size ? EMPTY_PIN_SET : current);
+      }
       const snapTarget = settings.magneticSnap === false ? null : findClosestPin(event.clientX, event.clientY, connectingWire);
       const currentPos = snapTarget
         ? {
@@ -2795,7 +2918,7 @@ export function NodeCanvas({
         const box = { left: Math.min(selectionBox.x1, selectionBox.x2), right: Math.max(selectionBox.x1, selectionBox.x2), top: Math.min(selectionBox.y1, selectionBox.y2), bottom: Math.max(selectionBox.y1, selectionBox.y2) };
         const hitIds = [...(containerRef.current?.querySelectorAll('[data-node-card-id]') || [])].filter((card) => {
           const rect = card.getBoundingClientRect();
-          return rect.right >= box.left && rect.left <= box.right && rect.bottom >= box.top && rect.top <= box.bottom;
+          return !isNodeBeingMovedByOther(card.dataset.nodeCardId) && rect.right >= box.left && rect.left <= box.right && rect.bottom >= box.top && rect.top <= box.bottom;
         }).map((card) => card.dataset.nodeCardId);
         const hitNoteIds = [...(containerRef.current?.querySelectorAll('[data-note-id]') || [])].filter((card) => {
           const rect = card.getBoundingClientRect();
@@ -2805,7 +2928,8 @@ export function NodeCanvas({
           const rect = path.getBoundingClientRect();
           return rect.right >= box.left && rect.left <= box.right && rect.bottom >= box.top && rect.top <= box.bottom;
         }).map((path) => path.dataset.arrowId);
-        finalSelectedNodeIds = marqueeStart.additive ? [...new Set([...selectedNodeIds, ...hitIds])] : hitIds;
+        const availableSelectedNodeIds = selectedNodeIds.filter((id) => !isNodeBeingMovedByOther(id));
+        finalSelectedNodeIds = marqueeStart.additive ? [...new Set([...availableSelectedNodeIds, ...hitIds])] : hitIds;
         finalSelectedNoteIds = marqueeStart.additive ? [...new Set([...selectedNoteIds, ...hitNoteIds])] : hitNoteIds;
         finalSelectedArrowIds = marqueeStart.additive ? [...new Set([...selectedArrowIds, ...hitArrowIds])] : hitArrowIds;
         selectNodes(finalSelectedNodeIds, finalSelectedNodeIds[finalSelectedNodeIds.length - 1] || null, { preserveNotes: true });
@@ -2859,6 +2983,7 @@ export function NodeCanvas({
     }
     if (finalSelectedNodeIds.length || finalSelectedNoteIds.length || finalSelectedArrowIds.length || marqueeStart) onCollaborationAction?.({ kind: 'selection', cursor: finishCursor, selectedNodeIds: finalSelectedNodeIds, selectedNoteIds: finalSelectedNoteIds, selectedArrowIds: finalSelectedArrowIds, nodePositions: finishedNodePositions, notePositions: finishedNotePositions }, true);
     else if (finishCursor) onCollaborationAction?.({ kind: 'cursor', cursor: finishCursor, mode: 'move', selectedNodeIds, nodePositions: finishedNodePositions, notePositions: finishedNotePositions }, true);
+    if (finishedDraggingNode) onReleaseNodeMoveLock?.(finishedDraggingNode.nodeIds || [finishedDraggingNode.id], graphId, projectId);
   };
 
   const finishCanvasPointer = (event) => {
@@ -2868,7 +2993,19 @@ export function NodeCanvas({
     pendingPointerMoveRef.current = null;
     canvasInteractionActiveRef.current = false;
     movePointer(event);
+    const pendingNodeDrag = pendingNodeMoveDragRef.current;
+    if (pendingNodeDrag && pendingNodeDrag.pointerId === event.pointerId) {
+      pendingNodeDrag.cancelled = true;
+      pendingNodeMoveDragRef.current = null;
+      if (event.pointerType === 'touch' && touchNodeGestureRef.current?.pointerId === event.pointerId) {
+        window.clearTimeout(touchNodeGestureRef.current.timer);
+        touchNodeGestureRef.current = null;
+        touchPointersRef.current.delete(event.pointerId);
+      }
+      return;
+    }
     pendingPinDragRef.current = null;
+    setPendingPinDragNodeId(null);
     if (wireCutDragRef.current?.active) {
       wireCutDragRef.current = null;
       suppressWireClickUntilRef.current = Date.now() + 400;
@@ -2880,7 +3017,7 @@ export function NodeCanvas({
       touchNodeGestureRef.current = null;
       if (touchNodeGesture.mode === 'dragging') {
         const node = nodes.find((item) => item.id === touchNodeGesture.nodeId);
-        if (node) {
+        if (node && draggingNodeRef.current) {
           const displayScale = getCanvasDisplayScale(containerRef.current);
           const rawX = node.x + (event.clientX - touchNodeGesture.x) / displayScale / zoom;
           const rawY = node.y + (event.clientY - touchNodeGesture.y) / displayScale / zoom;
@@ -2900,6 +3037,7 @@ export function NodeCanvas({
           selectNodes(movingIds, node.id);
           onNodeMoveCommit?.(finalPositions);
           onCollaborationAction?.({ kind: 'selection', selectedNodeIds: movingIds, nodePositions: collaborationMotionSupported ? finalPositions : undefined }, true);
+          onReleaseNodeMoveLock?.(movingIds, graphId, projectId);
         }
         setDraggingNode(null);
         setDraggingNote(null);
@@ -2921,6 +3059,7 @@ export function NodeCanvas({
       selectionStartRef.current = null;
       setSelectionBox(null);
       setIsPanning(false);
+      if (draggingNode) onReleaseNodeMoveLock?.(draggingNode.nodeIds || [draggingNode.id], graphId, projectId);
       setDraggingNode(null);
       setDraggingNote(null);
       onHistoryGroupEnd?.();
@@ -3088,6 +3227,7 @@ export function NodeCanvas({
           x: event.clientX,
           y: event.clientY
         };
+        setPendingPinDragNodeId(nodeId);
         if (Number.isInteger(event.pointerId)) containerRef.current?.setPointerCapture?.(event.pointerId);
       }
       return;
@@ -3169,9 +3309,56 @@ export function NodeCanvas({
     if (!selectedNodeIds.includes(node.id)) nextIds = [node.id];
     selectNodes(nextIds, node.id);
     const movingIds = nextIds.includes(node.id) ? nextIds : [node.id];
+    if (movingIds.some(isNodeBeingMovedByOther)) return;
     const initialPositions = Object.fromEntries(nodes.filter((item) => movingIds.includes(item.id)).map((item) => [item.id, { x: item.x, y: item.y }]));
-    setDraggingNode({ id: node.id, nodeIds: movingIds, initialPositions, startX: event.clientX, startY: event.clientY, startPan: viewportRef.current.pan, initialX: node.x, initialY: node.y, historyStarted: false, altKey: event.altKey, shiftKey: event.shiftKey });
     containerRef.current?.setPointerCapture?.(event.pointerId);
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startPan = viewportRef.current.pan;
+    const altKey = event.altKey;
+    const shiftKey = event.shiftKey;
+    const startDrag = () => {
+      const drag = { id: node.id, nodeIds: movingIds, initialPositions, startX, startY, startPan, initialX: node.x, initialY: node.y, historyStarted: false, altKey, shiftKey };
+      setDraggingNode(drag);
+      onCollaborationAction?.({ kind: 'node-drag', cursor: collaborationCursorRef.current, nodeIds: movingIds }, true);
+    };
+    if (!collaborationOnline) {
+      startDrag();
+      return;
+    }
+    if (!collaborationReady || typeof onRequestNodeMoveLock !== 'function') {
+      arcEvents.emit('toast:notify', { title: 'Node movement unavailable', message: 'Reconnect to the shared graph before moving nodes.', type: 'warning' });
+      return;
+    }
+    const pending = { pointerId: event.pointerId, nodeIds: movingIds, lastX: startX, lastY: startY, cancelled: false };
+    pendingNodeMoveDragRef.current = pending;
+    let lockRequest;
+    try { lockRequest = onRequestNodeMoveLock(movingIds); }
+    catch (error) {
+      pendingNodeMoveDragRef.current = null;
+      arcEvents.emit('toast:notify', { title: 'Node movement unavailable', message: error?.message || 'Could not reserve this node for movement.', type: 'warning' });
+      return;
+    }
+    Promise.resolve(lockRequest).then((granted) => {
+      if (!granted) {
+        if (pendingNodeMoveDragRef.current === pending) pendingNodeMoveDragRef.current = null;
+        if (!pending.cancelled) arcEvents.emit('toast:notify', { title: 'Node is being moved', message: 'Another collaborator has this node reserved while moving it.', type: 'warning' });
+        return;
+      }
+      if (pending.cancelled || pendingNodeMoveDragRef.current !== pending) {
+        onReleaseNodeMoveLock?.(movingIds, graphId, projectId);
+        return;
+      }
+      pendingNodeMoveDragRef.current = null;
+      startDrag();
+      const scale = getCanvasDisplayScale(containerRef.current);
+      const deltaX = ((pending.lastX - startX) / scale - (viewportRef.current.pan.x - startPan.x)) / viewportRef.current.zoom;
+      const deltaY = ((pending.lastY - startY) / scale - (viewportRef.current.pan.y - startPan.y)) / viewportRef.current.zoom;
+      setDraggingNode((current) => current ? { ...current, deltaX, deltaY } : current);
+    }).catch((error) => {
+      if (pendingNodeMoveDragRef.current === pending) pendingNodeMoveDragRef.current = null;
+      if (!pending.cancelled) arcEvents.emit('toast:notify', { title: 'Node movement unavailable', message: error?.message || 'Could not reserve this node for movement.', type: 'warning' });
+    });
   };
 
   const fitView = () => {
@@ -3447,6 +3634,10 @@ export function NodeCanvas({
   const updateNote = (noteId, patch) => onNotesChange?.(notes.map((note) => note.id === noteId ? { ...note, ...patch, editedAt: new Date().toISOString(), editedBy: currentUser?.username || 'Unknown' } : note));
   const isNoteBeingEditedByOther = (noteId) => {
     const lock = noteEditLocks[noteId];
+    return Boolean(collaborationOnline && lock && (lock.userId !== currentUser?.id || lock.clientId !== collaborationClientId));
+  };
+  const isNodeBeingMovedByOther = (nodeId) => {
+    const lock = nodeMoveLocks[nodeId];
     return Boolean(collaborationOnline && lock && (lock.userId !== currentUser?.id || lock.clientId !== collaborationClientId));
   };
 
@@ -4335,6 +4526,48 @@ const previewOutput = (node, outputId, seen = new Set()) => {
     ? graphChatHistory.filter((bubble) => bubble.projectId === projectId).slice(-60)
     : liveGraphChatMessages.filter((bubble) => bubble.projectId === projectId
       && (settings.keepChatMessagesVisible !== false || bubble.removeAt > graphChatClock)).slice(-5);
+  const hasOlderCompactChatMessages = !graphChatComposerOpen
+    && liveGraphChatMessages.filter((bubble) => bubble.projectId === projectId
+      && (settings.keepChatMessagesVisible !== false || bubble.removeAt > graphChatClock)).length > displayedGraphChatMessages.length;
+
+  useLayoutEffect(() => {
+    const pending = pendingGraphChatDraftScrollRef.current;
+    if (!pending) return;
+    pendingGraphChatDraftScrollRef.current = null;
+    const feed = graphChatFeedRef.current;
+    if (!feed) return;
+    feed.scrollTop = pending.followBottom
+      ? feed.scrollHeight
+      : Math.min(pending.scrollTop, feed.scrollHeight - feed.clientHeight);
+    graphChatHistoryAtBottomRef.current = pending.followBottom;
+    setGraphChatHasHiddenAbove(chatHasHiddenMessagesAbove(feed, graphChatComposerOpen, hasOlderCompactChatMessages));
+    setGraphChatHasHiddenBelow(graphChatComposerOpen && feed.scrollTop + feed.clientHeight < feed.scrollHeight - 1);
+  }, [graphChatDraft, graphChatComposerOpen, hasOlderCompactChatMessages]);
+
+  useLayoutEffect(() => {
+    const feed = graphChatFeedRef.current;
+    if (!feed) {
+      setGraphChatHasHiddenAbove(false);
+      setGraphChatHasHiddenBelow(false);
+      return undefined;
+    }
+    const updateHiddenAbove = () => {
+      const hasHiddenAbove = chatHasHiddenMessagesAbove(feed, graphChatComposerOpen, hasOlderCompactChatMessages);
+      setGraphChatHasHiddenAbove((current) => current === hasHiddenAbove ? current : hasHiddenAbove);
+      const hasHiddenBelow = graphChatComposerOpen && feed.scrollTop + feed.clientHeight < feed.scrollHeight - 1;
+      setGraphChatHasHiddenBelow((current) => current === hasHiddenBelow ? current : hasHiddenBelow);
+    };
+    updateHiddenAbove();
+    const resizeObserver = new ResizeObserver(updateHiddenAbove);
+    resizeObserver.observe(feed);
+    for (const message of feed.children) resizeObserver.observe(message);
+    const mutationObserver = new MutationObserver(updateHiddenAbove);
+    mutationObserver.observe(feed, { childList: true, subtree: true, characterData: true });
+    return () => {
+      resizeObserver.disconnect();
+      mutationObserver.disconnect();
+    };
+  }, [displayedGraphChatMessages.length, displayedGraphChatMessages[displayedGraphChatMessages.length - 1]?.id, graphChatComposerOpen, hasOlderCompactChatMessages]);
 
   return (
     <div
@@ -4369,7 +4602,14 @@ const previewOutput = (node, outputId, seen = new Set()) => {
       onPointerCancel={() => {
         if (pointerMoveFrameRef.current) window.cancelAnimationFrame(pointerMoveFrameRef.current);
         pointerMoveFrameRef.current = 0; pendingPointerMoveRef.current = null; canvasInteractionActiveRef.current = false;
+        const pendingNodeDrag = pendingNodeMoveDragRef.current;
+        if (pendingNodeDrag) {
+          pendingNodeDrag.cancelled = true;
+          pendingNodeMoveDragRef.current = null;
+        }
+        if (draggingNode) onReleaseNodeMoveLock?.(draggingNode.nodeIds || [draggingNode.id], graphId, projectId);
         pendingPinDragRef.current = null;
+        setPendingPinDragNodeId(null);
         if (wireCutDragRef.current?.active) {
           wireCutDragRef.current = null;
           suppressWireClickUntilRef.current = Date.now() + 400;
@@ -4529,24 +4769,42 @@ const previewOutput = (node, outputId, seen = new Set()) => {
           const remoteSelection = remoteVisual.selection;
           const remoteOwner = remoteVisual.owner;
           const remotePosition = remoteNodePositionById.get(node.id);
+          const nodeMoveLock = nodeMoveLocks[node.id];
+          const nodeMoveLocked = isNodeBeingMovedByOther(node.id);
           const localPosition = localNodePositionById?.get(node.id);
           const displayPosition = localPosition || remotePosition || node;
-          const nodeLoadFailed = nodeDefinitionsReady && (!definition || definition.loadFailed);
+          const nodeLoadFailed = nodeDefinitionsReady && (node.pluginUnavailable || !definition || definition.loadFailed);
+          const loadFailureReason = node.pluginId
+            ? node.pluginUnavailable
+              ? `${node.pluginName || node.pluginId} is not installed or available from a trusted source.`
+              : `${node.pluginName || node.pluginId} is installed, but this node is not supported by this ARC Studio version.`
+            : 'This node type is not supported by this ARC Studio version or its plugin is not installed.';
           return (
             <div
-              className={`node-position ${shakingNodeId === node.id ? 'is-shaking' : ''} ${isSelected ? 'is-selected' : ''} ${isFindMatch ? 'is-canvas-find-match' : ''} ${isFindCurrent ? 'is-canvas-find-current' : ''} ${remoteOwner ? 'is-collaborator-active' : ''} ${remoteVisual.dragging ? 'is-collaborator-dragging' : ''} ${remotePosition ? 'is-remote-moving' : ''} ${remoteSelection ? 'is-collaborator-selected' : ''} ${nodeLoadFailed ? 'is-node-load-failed' : ''}`}
+              className={`node-position ${shakingNodeId === node.id ? 'is-shaking' : ''} ${isSelected ? 'is-selected' : ''} ${isFindMatch ? 'is-canvas-find-match' : ''} ${isFindCurrent ? 'is-canvas-find-current' : ''} ${remoteOwner || nodeMoveLocked ? 'is-collaborator-active' : ''} ${remoteVisual.dragging ? 'is-collaborator-dragging' : ''} ${nodeMoveLocked ? 'is-node-move-locked' : ''} ${remotePosition ? 'is-remote-moving' : ''} ${remoteSelection ? 'is-collaborator-selected' : ''} ${nodeLoadFailed ? 'is-node-load-failed' : ''}`}
               key={node.id}
-              style={{ transform: `translate3d(${displayPosition.x}px, ${displayPosition.y}px, 0)`, zIndex: isSelected ? 16 : isWireRelated ? 14 : undefined, '--collaborator-color': remoteOwner?.color }}
+              style={{ transform: `translate3d(${displayPosition.x}px, ${displayPosition.y}px, 0)`, zIndex: isSelected ? 16 : isWireRelated ? 14 : undefined, '--collaborator-color': remoteOwner?.color || nodeMoveLock?.color }}
+              inert={nodeMoveLocked || undefined}
+              title={nodeMoveLocked ? `${nodeMoveLock?.username || 'A collaborator'} is moving this node` : undefined}
+              onPointerDownCapture={nodeMoveLocked ? (event) => { event.preventDefault(); event.stopPropagation(); } : undefined}
+              onClickCapture={nodeMoveLocked ? (event) => { event.preventDefault(); event.stopPropagation(); } : undefined}
+              onContextMenuCapture={nodeMoveLocked ? (event) => { event.preventDefault(); event.stopPropagation(); } : undefined}
               onPointerDown={nodeLoadFailed ? undefined : (event) => beginNodeDrag(event, node)}
             >
               <CanvasNode
                 node={node}
                 definition={definition}
                 loadFailed={nodeLoadFailed}
+                loadFailureReason={loadFailureReason}
                 authToken={authToken}
                 connectedInputIds={connectedInputIds.get(node.id) || EMPTY_PIN_SET}
+                connectedOutputIds={connectionByNodePin.outgoing.get(node.id) || EMPTY_PIN_SET}
+                pinRevealEnabled={settings.progressiveSocketReveal !== false}
+                isConnectingWire={Boolean(connectingWire?.nodeId === node.id || pendingPinDragNodeId === node.id)}
+                autoRevealInputs={autoRevealInputNodeIds.has(node.id)}
                 incomingConnections={connectionByNodePin.incoming.get(node.id)}
                 nodeById={nodeById}
+                nodeDefinitionsById={nodeDefinitionsById}
                 componentsV2SourceConnected={Boolean(connectionByNodePin.incoming.get(node.id)?.get('components') && ['build_components', 'modify_components_v2'].includes(nodeById.get(connectionByNodePin.incoming.get(node.id).get('components').sourceNodeId)?.type))}
                 graphVariables={canvasGraphVariables}
                 eventTemplatePaths={eventTemplatePaths}
@@ -4647,10 +4905,10 @@ const previewOutput = (node, outputId, seen = new Set()) => {
           const definition = definitionsByType.get(peer.action.nodeType);
           if (!definition) return null;
           const node = { id: `remote-preview-${peer.userId}`, type: peer.action.nodeType, label: peer.action.label || definition.label, data: {}, x: 0, y: 0 };
-          return <div key={`remote-library-preview-${peer.userId}`} className="node-position node-drag-preview is-remote" style={{ transform: `translate3d(${peer.action.cursor.x}px, ${peer.action.cursor.y}px, 0)`, '--collaborator-color': peer.color }} aria-hidden="true"><CanvasNode node={node} definition={definition} connectedInputIds={EMPTY_PIN_SET} graphVariables={canvasGraphVariables} callableGraphs={callableGraphs} appEmojis={appEmojis} /></div>;
+          return <div key={`remote-library-preview-${peer.userId}`} className="node-position node-drag-preview is-remote" style={{ transform: `translate3d(${peer.action.cursor.x}px, ${peer.action.cursor.y}px, 0)`, '--collaborator-color': peer.color }} aria-hidden="true"><CanvasNode node={node} definition={definition} connectedInputIds={EMPTY_PIN_SET} pinRevealEnabled={false} graphVariables={canvasGraphVariables} callableGraphs={callableGraphs} appEmojis={appEmojis} /></div>;
         })}
         {libraryDragPreview && <div className="node-position node-drag-preview" style={{ transform: `translate3d(${libraryDragPreview.x}px, ${libraryDragPreview.y}px, 0)` }} aria-hidden="true">
-          <CanvasNode node={libraryDragPreview.node} definition={libraryDragPreview.definition} connectedInputIds={EMPTY_PIN_SET} graphVariables={canvasGraphVariables} callableGraphs={callableGraphs} appEmojis={appEmojis} />
+          <CanvasNode node={libraryDragPreview.node} definition={libraryDragPreview.definition} connectedInputIds={EMPTY_PIN_SET} pinRevealEnabled={false} graphVariables={canvasGraphVariables} callableGraphs={callableGraphs} appEmojis={appEmojis} />
         </div>}
         <div className="canvas-chat-bubble-layer" aria-live="polite">
           {graphChatEnabled && settings.disableChatBubbles !== true && graphChatBubbles.filter((bubble) => bubble.projectId === projectId && bubble.graphId === graphId && bubble.expiresAt > Date.now()).map((bubble) => <GraphChatBubble
@@ -4664,14 +4922,8 @@ const previewOutput = (node, outputId, seen = new Set()) => {
         </div>
       </div>
 
-      {graphChatEnabled && <div ref={graphChatOverlayRef} className={`canvas-chat-overlay${graphChatComposerOpen ? ' is-composing' : ''}`} onMouseEnter={() => { graphChatHoveredRef.current = true; setGraphChatHovered(true); }} onMouseLeave={() => {
-        const now = Date.now();
-        graphChatHoveredRef.current = false;
-        setGraphChatHovered(false);
-        setGraphChatClock(now);
-        setLiveGraphChatMessages((current) => current.map((bubble) => ({ ...bubble, dimAt: now + 5000, fadeAt: now + 10000, removeAt: now + 11000 })));
-      }}>
-        {(graphChatComposerOpen || displayedGraphChatMessages.length > 0) && <div ref={graphChatFeedRef} className={`canvas-chat-feed${graphChatComposerOpen ? ' is-history' : ''}`} aria-live="polite" aria-label={graphChatComposerOpen ? 'Chat history for this session' : 'Recent collaborator messages'} onScroll={(event) => { const feed = event.currentTarget; graphChatHistoryAtBottomRef.current = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 48; }}>
+      {graphChatEnabled && <div ref={graphChatOverlayRef} className={`canvas-chat-overlay${graphChatComposerOpen ? ' is-composing' : ''}${graphChatHovered ? ' is-hovered' : ''}`}>
+        {(graphChatComposerOpen || displayedGraphChatMessages.length > 0) && <div ref={graphChatFeedRef} className={`canvas-chat-feed${graphChatComposerOpen ? ' is-history' : ''}${graphChatHasHiddenAbove ? ' has-hidden-above' : ''}${graphChatHasHiddenBelow ? ' has-hidden-below' : ''}`} aria-live="polite" aria-label={graphChatComposerOpen ? 'Chat history for this session' : 'Recent collaborator messages'} onScroll={(event) => { const feed = event.currentTarget; graphChatHistoryAtBottomRef.current = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 48; setGraphChatHasHiddenAbove(chatHasHiddenMessagesAbove(feed, graphChatComposerOpen, hasOlderCompactChatMessages)); setGraphChatHasHiddenBelow(graphChatComposerOpen && feed.scrollTop + feed.clientHeight < feed.scrollHeight - 1); }}>
           {displayedGraphChatMessages.map((bubble) => {
             const isHistory = graphChatComposerOpen;
             const keepVisible = settings.keepChatMessagesVisible !== false;
@@ -4713,6 +4965,11 @@ const previewOutput = (node, outputId, seen = new Set()) => {
             onBlur={clearGraphChatTyping}
             onChange={(event) => {
               const nextDraft = Array.from(event.target.value).slice(0, 200).join('');
+              const feed = graphChatFeedRef.current;
+              if (feed) pendingGraphChatDraftScrollRef.current = {
+                scrollTop: feed.scrollTop,
+                followBottom: graphChatHistoryAtBottomRef.current
+              };
               updateGraphChatTyping(nextDraft);
               setGraphChatDraft(nextDraft);
               event.currentTarget.style.height = '25px';
@@ -4849,23 +5106,23 @@ const previewOutput = (node, outputId, seen = new Set()) => {
           {(() => {
             const ids = contextMenu.nodeIds?.length ? contextMenu.nodeIds : [contextMenu.nodeId];
             const connected = connections.filter((wire) => ids.includes(wire.sourceNodeId) || ids.includes(wire.targetNodeId));
-            return <button role="menuitem" disabled={isLocked || !connected.length} onClick={() => { const selected = new Set(ids); onConnectionsChange?.(connections.filter((wire) => !selected.has(wire.sourceNodeId) && !selected.has(wire.targetNodeId))); setContextMenu(null); }}>Disconnect all sockets{ids.length > 1 ? ` (${connected.length})` : ''}</button>;
+            return <button role="menuitem" disabled={isLocked || ids.some(isNodeBeingMovedByOther) || !connected.length} onClick={() => { const selected = new Set(ids); onConnectionsChange?.(connections.filter((wire) => !selected.has(wire.sourceNodeId) && !selected.has(wire.targetNodeId))); setContextMenu(null); }}>Disconnect all sockets{ids.length > 1 ? ` (${connected.length})` : ''}</button>;
           })()}
           <button role="menuitem" onClick={() => { copyNodes(contextMenu.nodeIds?.length ? contextMenu.nodeIds : [contextMenu.nodeId]); setContextMenu(null); }}>Copy {contextMenu.nodeIds?.length > 1 ? `${contextMenu.nodeIds.length} nodes` : 'node'} <span className="context-shortcut"><kbd>{shortcutModifier}</kbd><kbd>C</kbd></span></button>
-          <button role="menuitem" disabled={isLocked} onClick={() => { onRenameNode?.(nodes.find((node) => node.id === contextMenu.nodeId)); setContextMenu(null); }}>Rename node <span className="context-shortcut"><kbd>{shortcutModifier}</kbd><kbd>R</kbd></span><span className="context-shortcut"><kbd>F11</kbd></span></button>
-          <button role="menuitem" disabled={isLocked} onClick={() => { onRequestCreateTagGroup?.(contextMenu.nodeIds); setContextMenu(null); }}>Create color section… <span className="context-shortcut"><kbd>Shift</kbd><kbd>G</kbd></span></button>
+          <button role="menuitem" disabled={isLocked || isNodeBeingMovedByOther(contextMenu.nodeId)} onClick={() => { onRenameNode?.(nodes.find((node) => node.id === contextMenu.nodeId)); setContextMenu(null); }}>Rename node <span className="context-shortcut"><kbd>{shortcutModifier}</kbd><kbd>R</kbd></span><span className="context-shortcut"><kbd>F11</kbd></span></button>
+          <button role="menuitem" disabled={isLocked || contextMenu.nodeIds?.some(isNodeBeingMovedByOther)} onClick={() => { onRequestCreateTagGroup?.(contextMenu.nodeIds); setContextMenu(null); }}>Create color section… <span className="context-shortcut"><kbd>Shift</kbd><kbd>G</kbd></span></button>
           {(() => {
             const selectedIds = (contextMenu.nodeIds?.length ? contextMenu.nodeIds : [contextMenu.nodeId]).filter((id) => nodes.some((node) => node.id === id));
             return nearbyTagGroups(selectedIds).map((group) => {
             const groupNodeIds = group.nodeIds || [];
             const removeSelected = selectedIds.length > 0 && selectedIds.every((id) => groupNodeIds.includes(id));
             const actionLabel = selectedIds.length > 1 ? `${removeSelected ? 'Remove selected from' : 'Add selected to'}` : `${removeSelected ? 'Remove from' : 'Add to'}`;
-            return <button key={group.id} role="menuitem" disabled={isLocked} onClick={() => { onTagGroupsChange?.(tagGroups.map((item) => item.id === group.id ? { ...item, nodeIds: removeSelected ? groupNodeIds.filter((id) => !selectedIds.includes(id)) : [...new Set([...groupNodeIds, ...selectedIds])] } : item)); setContextMenu(null); }}>{actionLabel} {group.name}</button>;
+            return <button key={group.id} role="menuitem" disabled={isLocked || selectedIds.some(isNodeBeingMovedByOther)} onClick={() => { onTagGroupsChange?.(tagGroups.map((item) => item.id === group.id ? { ...item, nodeIds: removeSelected ? groupNodeIds.filter((id) => !selectedIds.includes(id)) : [...new Set([...groupNodeIds, ...selectedIds])] } : item)); setContextMenu(null); }}>{actionLabel} {group.name}</button>;
             });
           })()}
-          <button role="menuitem" disabled={isLocked} onClick={() => { onSaveNodePrefab?.(contextMenu.node); setContextMenu(null); }}>Save as node prefab</button>
-          <button role="menuitem" disabled={isLocked} onClick={() => { duplicateNode(contextMenu.nodeId); setContextMenu(null); }}>Duplicate node</button>
-          <button role="menuitem" className="is-danger" disabled={isLocked} onClick={() => { deleteNode(contextMenu.nodeId); setContextMenu(null); }}>Delete node <span className="context-shortcut"><kbd>Delete</kbd></span></button>
+          <button role="menuitem" disabled={isLocked || isNodeBeingMovedByOther(contextMenu.nodeId)} onClick={() => { onSaveNodePrefab?.(contextMenu.node); setContextMenu(null); }}>Save as node prefab</button>
+          <button role="menuitem" disabled={isLocked || isNodeBeingMovedByOther(contextMenu.nodeId)} onClick={() => { duplicateNode(contextMenu.nodeId); setContextMenu(null); }}>Duplicate node</button>
+          <button role="menuitem" className="is-danger" disabled={isLocked || isNodeBeingMovedByOther(contextMenu.nodeId)} onClick={() => { deleteNode(contextMenu.nodeId); setContextMenu(null); }}>Delete node <span className="context-shortcut"><kbd>Delete</kbd></span></button>
         </> : <>
           <button role="menuitem" onClick={() => { onOpenPalette?.(contextMenu.position); setContextMenu(null); }}>Add node <span className="context-shortcut" aria-label="Shift plus A"><kbd>Shift</kbd><kbd>A</kbd></span></button>
           <button role="menuitem" disabled={isLocked} onClick={() => addNote(contextMenu.position)}>Add note <span className="context-shortcut"><kbd>{formatShortcut(settings.shortcuts?.addNote || DEFAULT_SHORTCUTS.addNote, shortcutPlatform)}</kbd></span></button>
