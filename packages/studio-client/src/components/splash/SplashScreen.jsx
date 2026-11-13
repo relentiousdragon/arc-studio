@@ -11,6 +11,7 @@ import { getContrastTextColor } from '../../core/colorContrast.js';
 import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
 import studioPackage from '../../../package.json';
+import { FallingLeaves } from 'falling-leaves/react';
 
 const desktopConfig = window.__ARC_STUDIO_CONFIG__ || {};
 const SETUP_TAGLINE = 'Visualize your Discord bot.';
@@ -21,6 +22,7 @@ const getLocalUsername = () => {
 const isUnsupportedNodeCompatibilityError = (message) => /node registry protocol|unsupported features|node feature(?:s)? this desktop app does not support/i.test(String(message || ''));
 const xmasSnow = (date = new Date()) => date.getMonth() === 11 && date.getDate() >= 20;
 const halloweenFrills = (date = new Date()) => date.getMonth() === 9 && date.getDate() >= 15;
+const fallLeaves = (date = new Date()) => /* !halloweenFrills() && */ date.getMonth() >= 8 && date.getMonth() <= 10;
 //
 export function SplashScreen({
   studioVersion = studioPackage.version,
@@ -126,6 +128,7 @@ export function SplashScreen({
   const [lowPower, setLowPower] = useState(false);
   const [reducedMotion, setReducedMotion] = useState(() => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches || false);
   const [xmas] = useState(() => xmasSnow());
+  const [fall] = useState(() => fallLeaves());
   const [halloween] = useState(() => halloweenFrills());
   const [typedIntro, setTypedIntro] = useState(() => needsSetup ? '' : SETUP_TAGLINE);
   const fieldRefs = useRef({});
@@ -783,6 +786,13 @@ export function SplashScreen({
   return (
     <main className={`auth-screen ${desktopMode ? 'is-desktop' : ''}`} data-release-channel={releaseChannel} data-initial-setup={needsSetup ? 'true' : undefined} data-low-power={lowPower ? 'true' : undefined}>
       <AuthGridCanvas reducedMotion={reducedMotion} />
+      {fall && !reducedMotion && (
+        <FallingLeaves
+          fullScreen
+          shapes={["maple", "birch"]}
+          zIndex={0}
+        />
+      )}
       {xmas && !reducedMotion && <canvas ref={snowCanvasRef} className="splash-snow" aria-hidden="true" />}
       {halloween && <canvas ref={halloweenCanvasRef} className="splash-halloween" aria-hidden="true" />}
       {desktopMode && <div className="auth-window-drag-region" data-tauri-drag-region="true" aria-hidden="true" />}

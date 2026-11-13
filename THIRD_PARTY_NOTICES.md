@@ -31,6 +31,7 @@ client, server, and desktop shell builds.
 | `ws` | 8.22.0 | MIT |
 | `dayjs` | 1.11.23 | MIT |
 | `expr-eval` | 2.0.2 | MIT |
+| `falling-leaves` | 0.1.0 | MIT |
 
 ## Rust packages
 
