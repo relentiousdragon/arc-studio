@@ -1520,7 +1520,14 @@ export function NodeCanvas({
         const connectedIds = nodeConnections.outgoing.map((wire) => wire.sourcePinId);
         const highest = connectedIds.reduce((value, id) => Math.max(value, Number(id.match(/^branch_(\d+)_exec$/)?.[1] || (id === 'branch_a_exec' ? 1 : id === 'branch_b_exec' ? 2 : 0))), 2);
         const outputs = [...(nextDefinition.outputs || [])];
-        for (let index = 3; index <= Math.min(16, highest + 1); index += 1) outputs.push({ id: `branch_${index}_exec`, label: `Branch ${index}`, type: 'exec' });
+        const existingIds = new Set(outputs.map((pin) => pin.id));
+        for (let index = 3; index <= Math.min(16, highest + 1); index += 1) {
+          const pinId = `branch_${index}_exec`;
+          if (!existingIds.has(pinId)) {
+            outputs.push({ id: pinId, label: `Branch ${index}`, type: 'exec' });
+            existingIds.add(pinId);
+          }
+        }
         return { ...nextDefinition, inputs, outputs };
       }
       if (node.type === 'parallel_join') return { ...nextDefinition, inputs };

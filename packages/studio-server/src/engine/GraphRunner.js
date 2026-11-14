@@ -122,7 +122,7 @@ function extractThreadId(payload) {
 function getNodeOutputs(node, connections = []) {
   const schemaPins = resolveDynamicNodePins(NodeDefinitions[node?.type], node, connections);
   const outputs = schemaPins?.outputs || NodeDefinitions[node?.type]?.outputs || [];
-  if (node?.type === 'parallel') {
+  if (node?.type === 'parallel' && !schemaPins?.outputs) {
     const connected = connections.filter((wire) => wire.sourceNodeId === node.id).map((wire) => wire.sourcePinId);
     const highest = connected.reduce((value, id) => Math.max(value, Number(id.match(/^branch_(\d+)_exec$/)?.[1] || (id === 'branch_a_exec' ? 1 : id === 'branch_b_exec' ? 2 : 0))), 2);
     return [...outputs, ...Array.from({ length: Math.max(0, Math.min(16, highest + 1) - 2) }, (_, index) => ({ id: `branch_${index + 3}_exec`, label: `Branch ${index + 3}`, type: 'exec' }))];

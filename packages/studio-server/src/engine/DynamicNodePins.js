@@ -215,5 +215,21 @@ export function resolveDynamicNodePins(definition, node, connections = []) {
     ];
     return { inputs: [...(definition.inputs || []).filter((pin) => pin.type === 'exec' || pin.id === 'value'), ...inputs], outputs };
   }
+  if (rule.kind === 'parallel-branches') {
+    const connected = connections.filter((wire) => wire.sourceNodeId === node.id).map((wire) => wire.sourcePinId);
+    const highest = connected.reduce((value, id) => Math.max(value, Number(id.match(/^branch_(\d+)_exec$/)?.[1] || (id === 'branch_a_exec' ? 1 : id === 'branch_b_exec' ? 2 : 0))), 2);
+    const count = Math.min(rule.max || 16, Math.max(rule.min || 2, highest + 1));
+    const outputs = [
+      { id: 'branch_a_exec', label: 'Branch 1', type: 'exec', description: 'Starts the first concurrent branch.' },
+      { id: 'branch_b_exec', label: 'Branch 2', type: 'exec', description: 'Starts the second concurrent branch.' },
+      ...Array.from({ length: Math.max(0, count - 2) }, (_, index) => ({
+        id: `branch_${index + 3}_exec`,
+        label: `Branch ${index + 3}`,
+        type: 'exec',
+        description: `Starts concurrent branch ${index + 3}.`
+      }))
+    ];
+    return { outputs };
+  }
   return null;
 }

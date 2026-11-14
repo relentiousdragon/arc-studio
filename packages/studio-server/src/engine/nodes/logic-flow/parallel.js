@@ -4,6 +4,12 @@ export default {
   "category": "Logic & Flow",
   "label": "Parallel",
   "color": "#8b5cf6",
+  "dynamicPins": {
+    "kind": "parallel-branches",
+    "prefix": "branch_",
+    "min": 2,
+    "max": 16
+  },
   "inputs": [
     {
       "id": "exec",

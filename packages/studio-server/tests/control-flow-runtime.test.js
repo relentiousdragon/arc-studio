@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { resolveDynamicNodePins } from '../src/engine/DynamicNodePins.js';
 import { GraphRunner } from '../src/engine/GraphRunner.js';
+import { NodeDefinitions } from '../src/engine/NodeRegistry.js';
 import {
   executeCountedLoop,
   executeParallelBranches,
@@ -144,6 +146,26 @@ test('parallel coordinator requires one wire per branch and a shared join', asyn
   await assert.rejects(executeParallelBranches([[], [{}]], async () => ({}), () => {}), /exactly one wire/);
   await assert.rejects(executeParallelBranches([[{}], [{}]], async (branch) => ({ joinId: branch[0].id }), () => {}), /same Join/);
   await assert.rejects(executeParallelBranches([[{ fail: true }], [{}]], async (branch) => branch[0].fail ? ({ error: 'branch failed' }) : ({ joinId: 'join' }), () => {}), /branch failed/);
+});
+
+test('parallel node dynamically resolves extra branch execution pins', () => {
+  const definition = NodeDefinitions.parallel;
+  assert.equal(definition.dynamicPins?.kind, 'parallel-branches');
+  assert.equal(definition.dynamicPins?.max, 16);
+
+  const initial = resolveDynamicNodePins(definition, { id: 'parallel-1', type: 'parallel' }, []);
+  assert.deepEqual(initial.outputs.map((pin) => pin.id), ['branch_a_exec', 'branch_b_exec', 'branch_3_exec']);
+
+  const connectedThree = resolveDynamicNodePins(definition, { id: 'parallel-1', type: 'parallel' }, [
+    { sourceNodeId: 'parallel-1', sourcePinId: 'branch_3_exec' }
+  ]);
+  assert.deepEqual(connectedThree.outputs.map((pin) => pin.id), ['branch_a_exec', 'branch_b_exec', 'branch_3_exec', 'branch_4_exec']);
+
+  const connectedMax = resolveDynamicNodePins(definition, { id: 'parallel-1', type: 'parallel' }, [
+    { sourceNodeId: 'parallel-1', sourcePinId: 'branch_16_exec' }
+  ]);
+  assert.equal(connectedMax.outputs.length, 16);
+  assert.equal(connectedMax.outputs[15].id, 'branch_16_exec');
 });
 
 test('GraphRunner routes selected If and Switch branches and preserves loop outputs', async () => {
