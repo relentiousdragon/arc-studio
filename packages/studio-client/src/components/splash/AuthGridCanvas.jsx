@@ -80,24 +80,49 @@ export function AuthGridCanvas({ reducedMotion = false }) {
 
     let cardRect = null;
     let excludedRects = [];
+    let introMetrics = null;
     const cardRadius = 12;
 
     const updateCardRect = () => {
       const cardEl = document.querySelector('.auth-card, .desktop-server-error');
+      const introEl = document.querySelector('.auth-intro');
+      const canvasRect = canvas.getBoundingClientRect();
+      if (!canvasRect.width || !canvasRect.height) {
+        cardRect = null;
+        excludedRects = [];
+        introMetrics = null;
+        return;
+      }
+      const scaleX = width / canvasRect.width;
+      const scaleY = height / canvasRect.height;
+
+      if (introEl) {
+        const iRect = introEl.getBoundingClientRect();
+        const left = (iRect.left - canvasRect.left) * scaleX;
+        const top = (iRect.top - canvasRect.top) * scaleY;
+        const right = (iRect.right - canvasRect.left) * scaleX;
+        const bottom = (iRect.bottom - canvasRect.top) * scaleY;
+        introMetrics = {
+          cx: (left + right) * 0.5,
+          cy: (top + bottom) * 0.5,
+          rx: Math.max(110, (right - left) * 0.54),
+          ry: Math.max(95, (bottom - top) * 0.60)
+        };
+      } else {
+        introMetrics = {
+          cx: width * 0.28,
+          cy: height * 0.50,
+          rx: width * 0.145,
+          ry: height * 0.210
+        };
+      }
+
       if (!cardEl) {
         cardRect = null;
         excludedRects = [];
         return;
       }
       const cRect = cardEl.getBoundingClientRect();
-      const canvasRect = canvas.getBoundingClientRect();
-      if (!canvasRect.width || !canvasRect.height) {
-        cardRect = null;
-        excludedRects = [];
-        return;
-      }
-      const scaleX = width / canvasRect.width;
-      const scaleY = height / canvasRect.height;
       cardRect = {
         left: (cRect.left - canvasRect.left) * scaleX,
         top: (cRect.top - canvasRect.top) * scaleY,
@@ -157,88 +182,172 @@ export function AuthGridCanvas({ reducedMotion = false }) {
 
     let dots = [];
     let hotspotCount = 4;
-    let ambientMotion = null;
-    const ambientPaths = [
-      (time, phase) => [Math.cos(time + phase), Math.sin(time + phase)],
-      (time, phase) => [Math.sin(time + phase), Math.sin((time + phase) * 2) * 0.5],
-      (time, phase, index) => {
-        const diagonalPosition = Math.sin(time + phase);
-        return [
-          diagonalPosition,
-          diagonalPosition * (index < hotspotCount / 2 ? 1 : -1)
-        ];
+    let ambientPointersState = [];
+    let choreographyState = null;
+
+    const CHOREOGRAPHED_ROUTINES = [
+      //
+      (t, angle, index, count, cx, cy, rx, ry) => {
+        const theta = angle + t * 0.85;
+        const x = cx + Math.cos(theta) * rx;
+        const y = cy + Math.sin(theta) * ry;
+        return { x, y, breathRadius: 1.0, breathIntensity: 1.0 };
       },
-      (time, phase) => [
-        Math.sin(time + phase),
-        Math.sin(time + phase) * Math.cos(time + phase) * 1.5
-      ]
+      //
+      (t, angle, index, count, cx, cy, rx, ry) => {
+        const theta = angle + t * 0.75;
+        const x = cx + Math.sin(theta) * rx;
+        const y = cy + Math.sin(2 * theta) * (ry * 0.75);
+        return { x, y, breathRadius: 1.0, breathIntensity: 1.0 };
+      },
+      //
+      (t, angle, index, count, cx, cy, rx, ry) => {
+        const half = count / 2;
+        const isBottom = index >= half;
+        const slot = (index % half) / Math.max(1, half - 1);
+        const colShift = (slot - 0.5) * 1.1;
+        const direction = isBottom ? -1 : 1;
+        const sweep = Math.sin(t * 1.0) * direction;
+        const x = cx + (sweep * 0.85 + colShift * 0.28) * rx;
+        const y = cy + (isBottom ? 0.60 : -0.60) * ry;
+        return { x, y, breathRadius: 1.0, breathIntensity: 1.0 };
+      },
+      //
+      (t, angle, index, count, cx, cy, rx, ry) => {
+        const stripeNorm = (index / Math.max(1, count - 1) - 0.5) * 2;
+        const sweep = Math.sin(t * 0.95 + stripeNorm * 0.45);
+        const x = cx + (sweep * 0.80 - stripeNorm * 0.45) * rx;
+        const y = cy + (sweep * 0.80 + stripeNorm * 0.45) * ry;
+        return { x, y, breathRadius: 1.0, breathIntensity: 1.0 };
+      },
+      //
+      (t, angle, index, count, cx, cy, rx, ry) => {
+        const isBackslash = index % 2 === 0;
+        const pairOffset = Math.floor(index / 2) % 2 === 1 ? Math.PI : 0;
+        const sweep = Math.sin(t * 0.95 + pairOffset);
+        const x = cx + sweep * rx * 1.05;
+        const y = cy + sweep * ry * 1.05 * (isBackslash ? 1 : -1);
+        return { x, y, breathRadius: 1.0, breathIntensity: 1.0 };
+      },
+      //
+      (t, angle, index, count, cx, cy, rx, ry) => {
+        const isInner = index % 2 === 1;
+        const dir = isInner ? -1 : 1;
+        const shellRx = rx * (isInner ? 0.65 : 1.05);
+        const shellRy = ry * (isInner ? 0.65 : 1.05);
+        const theta = angle + t * 0.80 * dir;
+        const x = cx + Math.cos(theta) * shellRx;
+        const y = cy + Math.sin(theta) * shellRy;
+        return { x, y, breathRadius: 1.0, breathIntensity: 1.0 };
+      }
     ];
-    const evaluateAmbientPath = (motion, elapsed) => {
-      const duration = motion.nextSwitchAt - motion.pathStartedAt;
-      const clampedElapsed = Math.min(elapsed, duration);
-      const progress = clampedElapsed / duration;
-      const boostedElapsed = clampedElapsed
-        + (motion.speedBoost * duration / Math.PI) * (1 - Math.cos(Math.PI * progress));
-      const pathElapsed = boostedElapsed + Math.max(0, elapsed - duration);
-      const path = ambientPaths[motion.pathIndex];
-      const time = pathElapsed * 0.001265;
+
+    const evaluateChoreography = (routineIndex, t, cx, cy, rx, ry, baseRadius) => {
+      const routine = CHOREOGRAPHED_ROUTINES[routineIndex % CHOREOGRAPHED_ROUTINES.length];
       return Array.from({ length: hotspotCount }, (_, index) => {
-        const phase = motion.phaseOffset + index * (Math.PI * 2 / hotspotCount);
-        const [x, y] = path(time, phase, index);
+        const angle = (index * 2 * Math.PI) / hotspotCount;
+        const { x, y, breathRadius, breathIntensity } = routine(t, angle, index, hotspotCount, cx, cy, rx, ry);
         return {
-          x: width * (0.28 + x * 0.22),
-          y: height * (0.5 + y * 0.38)
+          x,
+          y,
+          radius: baseRadius * breathRadius,
+          intensity: breathIntensity
         };
       });
     };
 
-    const getAmbientPointers = (time = 0) => {
+    const getAmbientPointers = (time = 0, delta = 1) => {
       if (hotspotCount === 0 || (isPhoneTouchDevice() && reducedMotion)) return [];
-      if (!ambientMotion) {
-        ambientMotion = {
-          pathIndex: Math.floor(Math.random() * ambientPaths.length),
-          pathStartedAt: time,
-          phaseOffset: Math.random() * Math.PI * 2,
-          nextSwitchAt: time + 2000 + Math.random() * 2000,
-          speedBoost: 0.05 + Math.random() * 0.10,
+      const baseRadius = getAmbientRadius();
+      const t = time * 0.0009;
+
+      const metrics = introMetrics || {
+        cx: width * 0.28,
+        cy: height * 0.50,
+        rx: width * 0.145,
+        ry: height * 0.210
+      };
+
+      const MIN_ROUTINE_MS = 2600;
+      const MAX_ROUTINE_MS = 4600;
+      const TRANSITION_DURATION = 800;
+      const pickDuration = () => MIN_ROUTINE_MS + Math.random() * (MAX_ROUTINE_MS - MIN_ROUTINE_MS);
+
+      if (!choreographyState) {
+        choreographyState = {
+          routineIndex: 0,
+          routineStartedAt: time,
+          nextSwitchAt: time + pickDuration(),
           transitionFrom: null,
           transitionStartedAt: 0
         };
       }
 
-      const getCurrentPositions = (atTime) => {
-        const positions = evaluateAmbientPath(ambientMotion, atTime - ambientMotion.pathStartedAt);
-        if (!ambientMotion.transitionFrom) return positions;
-        const progress = Math.min(1, (atTime - ambientMotion.transitionStartedAt) / 700);
-        const eased = progress * progress * (3 - 2 * progress);
-        return positions.map((position, index) => ({
-          x: ambientMotion.transitionFrom[index].x
-            + (position.x - ambientMotion.transitionFrom[index].x) * eased,
-          y: ambientMotion.transitionFrom[index].y
-            + (position.y - ambientMotion.transitionFrom[index].y) * eased
-        }));
-      };
-
-      if (time >= ambientMotion.nextSwitchAt) {
-        const currentPositions = getCurrentPositions(time);
-        let nextPath = Math.floor(Math.random() * (ambientPaths.length - 1));
-        if (nextPath >= ambientMotion.pathIndex) nextPath++;
-        ambientMotion = {
-          pathIndex: nextPath,
-          pathStartedAt: time,
-          phaseOffset: Math.random() * Math.PI * 2,
-          nextSwitchAt: time + 2000 + Math.random() * 2000,
-          speedBoost: 0.05 + Math.random() * 0.10,
-          transitionFrom: currentPositions,
+      if (time >= choreographyState.nextSwitchAt) {
+        const fromPositions = ambientPointersState.length === hotspotCount
+          ? ambientPointersState.map((p) => ({ ...p }))
+          : evaluateChoreography(
+            choreographyState.routineIndex,
+            t,
+            metrics.cx,
+            metrics.cy,
+            metrics.rx,
+            metrics.ry,
+            baseRadius
+          );
+        const nextIndex = (choreographyState.routineIndex + 1 + Math.floor(Math.random() * (CHOREOGRAPHED_ROUTINES.length - 1))) % CHOREOGRAPHED_ROUTINES.length;
+        choreographyState = {
+          routineIndex: nextIndex,
+          routineStartedAt: time,
+          nextSwitchAt: time + pickDuration(),
+          transitionFrom: fromPositions,
           transitionStartedAt: time
         };
       }
 
-      const positions = getCurrentPositions(time);
-      if (ambientMotion.transitionFrom && time - ambientMotion.transitionStartedAt >= 700) {
-        ambientMotion.transitionFrom = null;
+      const activePointers = evaluateChoreography(
+        choreographyState.routineIndex,
+        t,
+        metrics.cx,
+        metrics.cy,
+        metrics.rx,
+        metrics.ry,
+        baseRadius
+      );
+
+      const blendedPointers = activePointers.map((curr, index) => {
+        let { x, y, radius, intensity } = curr;
+        if (choreographyState.transitionFrom && choreographyState.transitionFrom[index]) {
+          const progress = Math.min(1, (time - choreographyState.transitionStartedAt) / TRANSITION_DURATION);
+          const eased = progress * progress * (3 - 2 * progress);
+          const from = choreographyState.transitionFrom[index];
+          x = from.x + (x - from.x) * eased;
+          y = from.y + (y - from.y) * eased;
+          radius = from.radius + (radius - from.radius) * eased;
+          intensity = from.intensity + (intensity - from.intensity) * eased;
+        }
+
+        if (mouseActive) {
+          const cdx = x - mouseX;
+          const cdy = y - mouseY;
+          const cdist = Math.hypot(cdx, cdy);
+          const pushRadius = 160;
+          if (cdist > 0.001 && cdist < pushRadius) {
+            const pushForce = Math.pow(1 - cdist / pushRadius, 2) * 28;
+            x += (cdx / cdist) * pushForce;
+            y += (cdy / cdist) * pushForce;
+          }
+        }
+
+        return { x, y, radius, intensity };
+      });
+
+      if (choreographyState.transitionFrom && time - choreographyState.transitionStartedAt >= TRANSITION_DURATION) {
+        choreographyState.transitionFrom = null;
       }
-      return positions;
+
+      ambientPointersState = blendedPointers;
+      return ambientPointersState;
     };
 
     const isPhoneTouchDevice = () => {
@@ -280,8 +389,9 @@ export function AuthGridCanvas({ reducedMotion = false }) {
         if (!inCard) {
           for (const pointer of ambientPointers) {
             const distance = Math.hypot(dot.baseX - pointer.x, dot.baseY - pointer.y);
-            if (distance < ambientRadius) {
-              proximity = Math.max(proximity, 1 - distance / ambientRadius);
+            const radius = pointer.radius || ambientRadius;
+            if (distance < radius) {
+              proximity = Math.max(proximity, (1 - distance / radius) * (pointer.intensity || 1));
             }
           }
         }
@@ -326,7 +436,8 @@ export function AuthGridCanvas({ reducedMotion = false }) {
       const offsetY = (height % GRID_SPACING) * 0.5;
 
       updateHotspotCount();
-      ambientMotion = null;
+      choreographyState = null;
+      ambientPointersState = [];
       dots = [];
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
@@ -435,7 +546,8 @@ export function AuthGridCanvas({ reducedMotion = false }) {
     window.addEventListener('orientationchange', onResize);
 
     const scaleObserver = new MutationObserver(() => {
-      ambientMotion = null;
+      choreographyState = null;
+      ambientPointersState = [];
       onResize();
     });
     const appRoot = canvas.closest('.app-root');
@@ -467,7 +579,7 @@ export function AuthGridCanvas({ reducedMotion = false }) {
       cardCtx?.clearRect(0, 0, width, height);
 
       const twoPi = Math.PI * 2;
-      const ambientPointers = getAmbientPointers(now);
+      const ambientPointers = getAmbientPointers(now, delta);
       const ambientRadius = getAmbientRadius();
 
       for (const dot of dots) {
@@ -491,8 +603,9 @@ export function AuthGridCanvas({ reducedMotion = false }) {
             const dx = dot.baseX - pointer.x;
             const dy = dot.baseY - pointer.y;
             const dist = Math.hypot(dx, dy);
-            if (dist < ambientRadius) {
-              ambientProximity = Math.max(ambientProximity, 1 - dist / ambientRadius);
+            const radius = pointer.radius || ambientRadius;
+            if (dist < radius) {
+              ambientProximity = Math.max(ambientProximity, (1 - dist / radius) * (pointer.intensity || 1));
             }
           }
         }
@@ -504,10 +617,10 @@ export function AuthGridCanvas({ reducedMotion = false }) {
 
         const maxLift = isLowPerf ? (inCard ? 4 : 7) : (inCard ? 6.5 : 11);
         dot.targetLift = -Math.pow(proximity, 1.6) * maxLift;
-        const response = proximity > 0.04 ? 0.22 : 0.12;
+        const response = proximity > 0.04 ? 0.20 : 0.12;
         dot.currentLift += (dot.targetLift - dot.currentLift) * response * delta;
         const glowTarget = proximity;
-        dot.glow += (glowTarget - dot.glow) * 0.14 * delta;
+        dot.glow += (glowTarget - dot.glow) * 0.15 * delta;
 
         const drawX = dot.baseX;
         const drawY = dot.baseY + dot.currentLift;
