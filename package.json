@@ -35,7 +35,6 @@
   },
   "dependencies": {
     "dayjs": "^1.11.23",
-    "expr-eval": "^2.0.2",
-    "falling-leaves": "^0.1.0"
+    "expr-eval": "^2.0.2"
   }
 }

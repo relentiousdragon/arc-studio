@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, ArrowLeft, ArrowLeftRight, ArrowRight, Eye, EyeOff, Fingerprint, Globe2, KeyRound, Laptop2, LoaderCircle, LockKeyhole, Moon, Pencil, ShieldCheck, Sun } from 'lucide-react';
 import { arcEvents } from '../../core/ArcEvents.js';
 import { apiUrl, normalizeWorkspaceUrl } from '../../core/api.js';
@@ -23,6 +23,28 @@ const isUnsupportedNodeCompatibilityError = (message) => /node registry protocol
 const xmasSnow = (date = new Date()) => date.getMonth() === 11 && date.getDate() >= 20;
 const halloweenFrills = (date = new Date()) => date.getMonth() === 9 && date.getDate() >= 15;
 const fallLeaves = (date = new Date()) => /* !halloweenFrills() && */ date.getMonth() >= 8 && date.getMonth() <= 10;
+
+const getOptimalLeafCount = ({ halloween = false, lowPower = false } = {}) => {
+  if (typeof window === 'undefined') return 16;
+  const area = window.innerWidth * window.innerHeight;
+  let count = Math.round(area / 60000);
+  count = Math.max(8, Math.min(20, count));
+
+  const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  const saveData = Boolean(connection?.saveData);
+  const lowMemory = typeof navigator.deviceMemory === 'number' && navigator.deviceMemory <= 2;
+  const lowCPU = typeof navigator.hardwareConcurrency === 'number' && navigator.hardwareConcurrency <= 4;
+
+  if (lowPower || saveData || lowMemory || lowCPU) {
+    count = Math.round(count * 0.65);
+  }
+
+  if (halloween) {
+    count = Math.max(6, Math.round(count * 0.6));
+  }
+
+  return count;
+};
 //
 export function SplashScreen({
   studioVersion = studioPackage.version,
@@ -130,6 +152,7 @@ export function SplashScreen({
   const [xmas] = useState(() => xmasSnow());
   const [fall] = useState(() => fallLeaves());
   const [halloween] = useState(() => halloweenFrills());
+  const leafCount = useMemo(() => getOptimalLeafCount({ halloween, lowPower }), [halloween, lowPower]);
   const [typedIntro, setTypedIntro] = useState(() => needsSetup ? '' : SETUP_TAGLINE);
   const fieldRefs = useRef({});
   const lastLocalUsernameRef = useRef('');
@@ -789,8 +812,11 @@ export function SplashScreen({
       {fall && !reducedMotion && (
         <FallingLeaves
           fullScreen
-          shapes={["maple", "birch"]}
-          zIndex={0}
+          shapes={["maple", "birch", "oak"]}
+          count={leafCount}
+          respectReducedMotion
+          zIndex={15}
+          className="splash-falling-leaves"
         />
       )}
       {xmas && !reducedMotion && <canvas ref={snowCanvasRef} className="splash-snow" aria-hidden="true" />}
