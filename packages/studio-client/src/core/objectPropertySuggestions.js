@@ -107,7 +107,7 @@ function objectPropertyGroup(sourceNode, sourcePin, sourcePinDefinition) {
   if (sourceType.includes('channel')) return 'channel';
   if (sourceType.includes('role')) return 'role';
   if (sourceType.includes('guild')) return 'guild';
-  if (sourceType.includes('interaction') || sourceType.includes('button') || sourceType.includes('select')) return 'interaction';
+  if (sourceType.includes('interaction') || sourceType.includes('button') || sourceType.includes('select') || sourceType.includes('slash') || sourceType.includes('modal')) return 'interaction';
   return null;
 }
 
