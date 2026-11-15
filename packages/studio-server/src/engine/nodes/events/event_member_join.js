@@ -29,6 +29,12 @@ export default {
       "id": "guild_id",
       "label": "Guild ID",
       "type": "string",
-      description: "ID of the server where the event occurred."}
+      description: "ID of the server where the event occurred."},
+    {
+      "id": "member",
+      "label": "Member Object",
+      "type": "object",
+      "eventPath": "$",
+      description: "The full guild member object."}
   ]
 };

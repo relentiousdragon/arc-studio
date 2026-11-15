@@ -60,6 +60,12 @@ export default {
       "id": "interaction_token",
       "label": "Interaction Token",
       "type": "string",
-      description: "Token used to respond to the interaction."}
+      description: "Token used to respond to the interaction."},
+    {
+      "id": "interaction",
+      "label": "Interaction Object",
+      "type": "object",
+      "eventPath": "$",
+      description: "The full Discord interaction object."}
   ]
 };

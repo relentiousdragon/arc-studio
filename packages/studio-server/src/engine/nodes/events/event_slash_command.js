@@ -26,6 +26,7 @@ export default {
     { id: 'application_id', label: 'Application ID', type: 'string', description: "ID of the application that received the interaction."},
     { id: 'interaction_id', label: 'Interaction ID', type: 'string', description: "ID of the interaction."},
     { id: 'interaction_token', label: 'Interaction Token', type: 'string', description: "Token used to respond to the interaction."},
+    { id: 'interaction', label: 'Interaction Object', type: 'object', eventPath: '$', description: "The full Discord interaction object."},
     { id: 'options', label: 'Command Arguments', type: 'object', description: "Arguments submitted with the command."}
   ]
 };
