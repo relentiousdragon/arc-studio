@@ -44,6 +44,14 @@ function embedForActivity(entry) {
     : action === 'account.signed_out' ? 0xef4444
       : 0x3b82f6;
   const details = entry?.details && typeof entry.details === 'object' ? entry.details : {};
+  const itemName = details.graphName || details.embedName || details.pluginName || details.snapshotName || details.templateName;
+  const clientDetails = action === 'account.signed_in'
+    ? [details.clientVersion, details.clientPlatform, details.clientArchitecture].filter(Boolean).map((value) => cleanText(value, 64)).join(' · ')
+    : '';
+  const fields = [];
+  if (itemName) fields.push({ name: 'Item', value: cleanText(itemName, 128), inline: true });
+  if (clientDetails) fields.push({ name: 'Client', value: clientDetails, inline: true });
+  const timestamp = new Date(entry?.timestamp || Date.now());
   const projectLabel = String(details.projectName || details.projectId || '').trim();
   const footerPrefix = 'ARC Studio  •  ';
   const maxProjectLength = Math.max(16, 2048 - footerPrefix.length);
