@@ -44,15 +44,13 @@ function embedForActivity(entry) {
     : action === 'account.signed_out' ? 0xef4444
       : 0x3b82f6;
   const details = entry?.details && typeof entry.details === 'object' ? entry.details : {};
-  const projectName = cleanText(details.projectName || details.projectId, 128);
-  const itemName = details.graphName || details.embedName || details.pluginName || details.snapshotName || details.templateName;
-  const clientDetails = action === 'account.signed_in'
-    ? [details.clientVersion, details.clientPlatform, details.clientArchitecture].filter(Boolean).map((value) => cleanText(value, 64)).join(' · ')
-    : '';
-  const fields = [];
-  if (itemName) fields.push({ name: 'Item', value: cleanText(itemName, 128), inline: true });
-  if (clientDetails) fields.push({ name: 'Client', value: clientDetails, inline: true });
-  const timestamp = new Date(entry?.timestamp || Date.now());
+  const projectLabel = String(details.projectName || details.projectId || '').trim();
+  const footerPrefix = 'ARC Studio  •  ';
+  const maxProjectLength = Math.max(16, 2048 - footerPrefix.length);
+  const safeProjectName = projectLabel ? cleanText(projectLabel, maxProjectLength) : '';
+  const footerText = safeProjectName && safeProjectName !== 'Unknown'
+    ? `${footerPrefix}${safeProjectName}`.slice(0, 2048)
+    : 'ARC Studio';
   const authorAvatarUrl = actorAvatarUrl(entry?.actor);
   return {
     author: {
@@ -62,7 +60,7 @@ function embedForActivity(entry) {
     description: cleanText(entry?.summary, 2048),
     color,
     ...(fields.length ? { fields } : {}),
-    footer: { text: projectName === 'Unknown' ? 'ARC Studio' : `ARC Studio  •  ${projectName}` },
+    footer: { text: footerText },
     timestamp: (Number.isNaN(timestamp.getTime()) ? new Date() : timestamp).toISOString()
   };
 }
