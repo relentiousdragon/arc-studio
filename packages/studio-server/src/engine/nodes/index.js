@@ -147,6 +147,9 @@ import node_action_upload_guild_sticker from './discord-actions/action_upload_gu
 import node_action_create_role from './discord-actions/action_create_role.js';
 import node_action_member_role from './discord-actions/action_member_role.js';
 import node_action_moderate_member from './discord-actions/action_moderate_member.js';
+import node_action_set_nickname from './discord-actions/action_set_nickname.js';
+import node_action_modify_server_profile from './discord-actions/action_modify_server_profile.js';
+import node_action_manage_guild_security from './discord-actions/action_manage_guild_security.js';
 import node_action_voice_channel_status from './discord-actions/action_voice_channel_status.js';
 import node_action_voice_state from './discord-actions/action_voice_state.js';
 // Values & Data
@@ -358,6 +361,9 @@ export const nodeDefinitions = [
   node_action_create_role,
   node_action_member_role,
   node_action_moderate_member,
+  node_action_set_nickname,
+  node_action_modify_server_profile,
+  node_action_manage_guild_security,
   node_action_voice_channel_status,
   node_action_voice_state,
   node_value_text,
