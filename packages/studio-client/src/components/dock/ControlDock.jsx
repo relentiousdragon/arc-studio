@@ -159,9 +159,12 @@ function resolveLogNodeTarget(log, activeTabId) {
 
 export function ControlDock({
   logs = [], botStatus = 'DISCONNECTED', discordAuthWarning = null, botMetrics = {}, botProfile, activeTabId, activeProjectId = '', authToken, onEmojisChange, emojiCacheScope = '', networkOnline = true, cachedAppEmojis = [],
-  graphs = [], graphLookup = new Map(), graphValidationReports = [], graphNodes = [], nodeDefinitions = BuiltInNodeDefinitions, isLocked = false, canControlBot = false, consoleOpenRequest = 0, gatewayStartedRequest = 0, commandBrowserRequest = 0, onClearLogs, onStartBot, onStopBot, onEnsureGraphsSaved, onOpenGraph, onTraceLog, onTraceIssue, onIntentSummaryChange, onOpenTextStudio
+  graphs = [], graphLookup = new Map(), graphValidationReports = [], graphNodes = [], nodeDefinitions = BuiltInNodeDefinitions, isLocked = false, canControlBot = false, consoleOpenRequest = 0, gatewayStartedRequest = 0, commandBrowserRequest = 0, onClearLogs, onStartBot, onStopBot, onEnsureGraphsSaved, onOpenGraph, onTraceLog, onTraceIssue, onIntentSummaryChange, onOpenTextStudio, onOpenChange
 }) {
   const [isOpen, setIsOpen] = useState(false);
+  useEffect(() => {
+    onOpenChange?.(isOpen);
+  }, [isOpen, onOpenChange]);
   const [activeTab, setActiveTab] = useState('console');
   const lastConsoleShortcutRequestRef = useRef(consoleOpenRequest);
   const lastGatewayStartedRequestRef = useRef(gatewayStartedRequest);
@@ -1091,7 +1094,22 @@ export function ControlDock({
       </div>
     </div>
     {logFiles.length > 0 && fileContent === null && <div className="archive-strip"><span>Saved logs</span>{logFiles.map((file) => <button key={file.filename} onClick={() => readLogFile(file.filename)}>{file.filename}<small>{file.sizeKb} KB</small></button>)}<button className="archive-close" onClick={() => setLogFiles([])} aria-label="Close saved logs"><X size={14} /></button></div>}
-    {fileContent !== null ? <div className="archive-view"><div className="archive-view-header"><span><FileText size={14} /> {selectedFile}</span><button onClick={() => setFileContent(null)}>Close <X size={13} /></button></div><pre>{fileContent}</pre></div> : <div className="log-lines" ref={logContainerRef} onScroll={handleConsoleScroll}>
+    {fileContent !== null ? (
+      <div className="archive-view">
+        <div className="archive-view-header">
+          <span><FileText size={14} /> {selectedFile}</span>
+          <button onClick={() => setFileContent(null)}>Close <X size={13} /></button>
+        </div>
+        {fileContent && fileContent.trim() ? (
+          <pre>{fileContent}</pre>
+        ) : (
+          <div className="dock-empty">
+            <FileText size={17} />
+            <span>No logs recorded in this file</span>
+          </div>
+        )}
+      </div>
+    ) : <div className="log-lines" ref={logContainerRef} onScroll={handleConsoleScroll}>
       {filteredLogs.length === 0 ? <div className="dock-empty"><Activity size={17} /><span>No output</span></div> : filteredLogs.map((log) => {
         const target = resolveLogNodeTarget(log, activeTabId);
         const isTraceable = Boolean(target?.graphId && target?.nodeId);
