@@ -559,6 +559,25 @@ export class RESTClient {
     return this.request('PATCH', `/guilds/${guildId}/members/${userId}`, { body: changes, headers });
   }
 
+  modifyCurrentMember(guildId, changes, reason) {
+    if (!guildId) throw new TypeError('Guild ID is required.');
+    if (!changes || typeof changes !== 'object' || Array.isArray(changes)) throw new TypeError('Server profile changes must be an object.');
+    const headers = reason ? { 'X-Audit-Log-Reason': encodeURIComponent(String(reason).slice(0, 512)) } : {};
+    return this.request('PATCH', `/guilds/${guildId}/members/@me`, { body: changes, headers });
+  }
+
+  modifyGuildIncidentActions(guildId, changes, reason) {
+    if (!guildId) throw new TypeError('Guild ID is required.');
+    if (!changes || typeof changes !== 'object' || Array.isArray(changes)) throw new TypeError('Incident actions must be an object.');
+    const headers = reason ? { 'X-Audit-Log-Reason': encodeURIComponent(String(reason).slice(0, 512)) } : {};
+    return this.request('PUT', `/guilds/${guildId}/incident-actions`, { body: changes, headers });
+  }
+
+  getGuildIncidentActions(guildId) {
+    if (!guildId) throw new TypeError('Guild ID is required.');
+    return this.request('GET', `/guilds/${guildId}/incident-actions`);
+  }
+
   removeGuildMember(guildId, userId, reason) {
     if (!guildId || !userId) throw new TypeError('Guild and user IDs are required.');
     const headers = reason ? { 'X-Audit-Log-Reason': encodeURIComponent(String(reason).slice(0, 512)) } : {};
