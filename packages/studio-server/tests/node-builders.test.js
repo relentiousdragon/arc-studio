@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { GraphRunner } from '../src/engine/GraphRunner.js';
-import { buildDiscordComponents, buildDiscordModal } from '../src/engine/nodes/runtime/builders.js';
+import { buildDiscordComponents, buildDiscordModal, validateDiscordComponentsV2 } from '../src/engine/nodes/runtime/builders.js';
 //
 test('disabled graphs return without running nodes', async () => {
   let ran = false;
@@ -220,4 +220,40 @@ test('GraphRunner rejects a connected content wire alongside a Components V2 lay
 
   assert.match(result.error, /Components V2 cannot be combined with message content or an embed/);
   assert.deepEqual(calls, []);
+});
+
+test('validateDiscordComponentsV2 rejects more than 10 attachments across file and media gallery blocks', () => {
+  const components = {
+    format: 'arc-components-v2',
+    components: [
+      ...Array.from({ length: 11 }, (_, i) => ({ type: 13, file: { url: `attachment://file_${i}.png` } }))
+    ]
+  };
+  const errors = validateDiscordComponentsV2(components);
+  assert.ok(errors.some((err) => err.includes('at most 10 file attachments')));
+});
+
+test('GraphRunner edit message clears attachments when files pin is connected to empty array', async () => {
+  const calls = [];
+  const graph = {
+    id: 'edit-message-clear-files',
+    nodes: [
+      { id: 'event', type: 'event_message_create' },
+      { id: 'files', type: 'value_array', data: { items: [] } },
+      { id: 'edit', type: 'action_edit_message', data: { channel_id: 'channel-1', message_id: 'message-1', content: 'Updated' } }
+    ],
+    connections: [
+      { sourceNodeId: 'event', sourcePinId: 'exec', targetNodeId: 'edit', targetPinId: 'exec' },
+      { sourceNodeId: 'files', sourcePinId: 'array', targetNodeId: 'edit', targetPinId: 'files' }
+    ]
+  };
+
+  await GraphRunner.execute(graph, 'MESSAGE_CREATE', {}, {
+    mock: true,
+    rest: { editMessage: async (...args) => { calls.push(args); return { id: 'message-1' }; } },
+    log: () => {}
+  });
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0][2], { content: 'Updated', attachments: [] });
 });
