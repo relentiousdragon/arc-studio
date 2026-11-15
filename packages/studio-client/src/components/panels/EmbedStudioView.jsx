@@ -4,7 +4,7 @@ import { AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronLeft, ChevronRight
 import { createEmbedBlock, EmbedNodeBuilder, getEmbedBlocks } from '../nodes/EmbedNodeBuilder.jsx';
 import { CharacterLimit } from '../ui/Inputs.jsx';
 import { createComponentRow, createMessageButton, createStringSelect, MessageComponentsBuilder, renderComponentEmoji, toDiscordComponents } from './MessageComponentsBuilder.jsx';
-import { ComponentsV2Builder, createComponentsV2Block } from './ComponentsV2Builder.jsx';
+import { ComponentsV2Builder, countV2Attachments, createComponentsV2Block } from './ComponentsV2Builder.jsx';
 import { TemplateSyntaxHelp } from '../ui/TemplateSyntaxHelp.jsx';
 import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
@@ -182,12 +182,12 @@ export function renderDiscordFormattedText(text) {
       const inner = isBoldItalic ? raw.slice(3, -3) : raw.startsWith('**') || raw.startsWith('__') || raw.startsWith('~~') || raw.startsWith('||') ? raw.slice(2, -2) : raw.slice(1, -1);
       const child = isBoldItalic ? <strong key={`${key}_${token.index}`}><em>{renderMarkdown(inner, `${key}_${token.index}`)}</em></strong>
         : raw.startsWith('**') ? <strong key={`${key}_${token.index}`}>{renderMarkdown(inner, `${key}_${token.index}`)}</strong>
-        : raw.startsWith('__') ? <u key={`${key}_${token.index}`}>{renderMarkdown(inner, `${key}_${token.index}`)}</u>
-          : raw.startsWith('~~') ? <s key={`${key}_${token.index}`}>{renderMarkdown(inner, `${key}_${token.index}`)}</s>
-            : raw.startsWith('||') ? <span className="discord-spoiler" key={`${key}_${token.index}`}>{renderMarkdown(inner, `${key}_${token.index}`)}</span>
-              : raw.startsWith('`') ? <code key={`${key}_${token.index}`}>{inner}</code>
-                : raw.startsWith('*') ? <em key={`${key}_${token.index}`}>{renderMarkdown(inner, `${key}_${token.index}`)}</em>
-                  : <em key={`${key}_${token.index}`}>{renderMarkdown(inner, `${key}_${token.index}`)}</em>;
+          : raw.startsWith('__') ? <u key={`${key}_${token.index}`}>{renderMarkdown(inner, `${key}_${token.index}`)}</u>
+            : raw.startsWith('~~') ? <s key={`${key}_${token.index}`}>{renderMarkdown(inner, `${key}_${token.index}`)}</s>
+              : raw.startsWith('||') ? <span className="discord-spoiler" key={`${key}_${token.index}`}>{renderMarkdown(inner, `${key}_${token.index}`)}</span>
+                : raw.startsWith('`') ? <code key={`${key}_${token.index}`}>{inner}</code>
+                  : raw.startsWith('*') ? <em key={`${key}_${token.index}`}>{renderMarkdown(inner, `${key}_${token.index}`)}</em>
+                    : <em key={`${key}_${token.index}`}>{renderMarkdown(inner, `${key}_${token.index}`)}</em>;
       nodes.push(child);
       cursor = tokenPattern.lastIndex;
     }
@@ -235,6 +235,7 @@ export function EmbedStudioView({
   isComponentsBuilderNode = false,
   componentsOnly = false,
   assetNameEditable = false,
+  isAssetMode = false,
   initialTab = '',
   isContentWired = false,
   isEmbedWired = false,
@@ -405,6 +406,9 @@ export function EmbedStudioView({
     const movingContainerIntoContainer = (payload?.type === 'container' || sourceBlock?.type === 'container')
       && (marker.placement === 'inside' || marker.containerId);
     if (payload?.scope === 'components-v2' && movingContainerIntoContainer) return { ...marker, id: null, containerId: null, placement: 'end', disabled: true };
+    if (payload?.scope === 'components-v2' && (payload.type === 'file' || payload.type === 'media_gallery') && countV2Attachments(componentsV2Layout) >= 10) {
+      return { ...marker, id: null, containerId: null, placement: 'end', disabled: true, hint: 'A message can have at most 10 file attachments' };
+    }
     if (payload?.kind === 'palette' && payload.scope === 'components' && ['button', 'select'].includes(payload.type) && marker.scope === 'components') {
       const row = components.find((item) => item.id === marker.id);
       const hasSelect = row?.components?.some((item) => ['string_select', 'user_select', 'role_select', 'mentionable_select', 'channel_select'].includes(item.type));
@@ -480,6 +484,8 @@ export function EmbedStudioView({
       const block = createComponentsV2Block(payload.type);
       const containerId = targetMarker.placement === 'inside' ? targetMarker.id : targetMarker.containerId;
       if (block) onComponentsV2LayoutChange?.((current) => {
+        const neededAttachments = block.type === 'file' ? 1 : block.type === 'media_gallery' ? (block.items || []).length : 0;
+        if (neededAttachments > 0 && countV2Attachments(current) + neededAttachments > 10) return current;
         if (containerId) {
           const containerBlock = findV2Block(current, containerId);
           if (!V2_CONTAINER_CHILD_TYPES.has(block.type) || !containerBlock || containerBlock.type !== 'container' || (containerBlock.children || []).length >= 10) return current;
@@ -744,7 +750,7 @@ export function EmbedStudioView({
   const colorWire = colorBlock && wireFor(colorBlock, 'value');
   const color = colorWire ? (items.find((block) => block.type === 'color')?.value || '#5865F2') : colorBlock ? (colorBlock.value || '') : '#5865F2';
   const fields = previewItems.filter((block) => block.type === 'field' && (block.name || block.value));
-  
+
   const textCount = items.reduce((total, block) => {
     if (block.type === 'title' || block.type === 'description') return total + String(block.value || '').length;
     if (block.type === 'field') return total + String(block.name || '').length + String(block.value || '').length;
@@ -904,6 +910,7 @@ export function EmbedStudioView({
     validateV2(componentsV2Layout);
     if (v2ComponentCount > 40) addV2GlobalError('A Components V2 message supports up to 40 components.');
     if (v2TextLength > 4000) addV2GlobalError('Text Display content across the message exceeds 4,000 characters.');
+    if (countV2Attachments(componentsV2Layout) > 10) addV2GlobalError('A message can contain at most 10 file attachments total.');
   }
   const selectedV2BlockId = focusedV2ItemId || focusedV2BlockId;
   const selectedV2Block = selectedV2BlockId ? findV2Block(componentsV2Layout, selectedV2BlockId) : null;
@@ -964,7 +971,7 @@ export function EmbedStudioView({
     const assetId = file?.assetId || file?.id || asset?.id;
     if (!isVideo || !assetId || file?.data || loadedMediaById[assetId]) return;
     let cancelled = false;
-    onLoadMediaContent({ id: assetId }).then((content) => { if (!cancelled) setLoadedMediaById((current) => ({ ...current, [assetId]: content })); }).catch(() => {});
+    onLoadMediaContent({ id: assetId }).then((content) => { if (!cancelled) setLoadedMediaById((current) => ({ ...current, [assetId]: content })); }).catch(() => { });
     return () => { cancelled = true; };
   }, [galleryViewer, componentsV2Layout, attachedFiles, mediaAssets, onLoadMediaContent, loadedMediaById]);
   const attachedImage = attachmentName(image);
@@ -1054,7 +1061,7 @@ export function EmbedStudioView({
     const sectionItem = issue.target === 'accessory' ? { kind: 'accessory' }
       : issue.target === 'text' ? { kind: 'text', index: issue.index ?? 0 }
         : issue.target === 'media' ? { kind: 'media', index: issue.index ?? 0 }
-        : null;
+          : null;
     focusV2Block(issue.blockId, sectionItem);
     const targetId = issue.target === 'block' ? issue.blockId : `${issue.blockId}:${issue.target}${issue.index === null ? '' : `:${issue.index}`}`;
     window.setTimeout(() => {
@@ -1281,7 +1288,7 @@ export function EmbedStudioView({
           if (isVideo) { openGalleryViewer(block.id, index); return; }
           if (event.currentTarget.dataset.galleryImageAvailable !== 'true') return;
           if (item.spoiler || cropped) openGalleryViewer(block.id, index);
-        }}>{isVideo ? <div className="discord-v2-gallery-video-poster">{(file?.preview || asset?.preview) && <img src={file?.preview || asset?.preview} alt="" />}{!file?.preview && !asset?.preview && <FileVideo size={23} />}<span>VIDEO</span></div> : <PreviewImage src={resolvePreviewImageSource(item.url)} className={`discord-v2-gallery-image${item.spoiler && !spoilerRevealed ? ' is-spoiler-hidden' : ''}`} alt={item.description || `Gallery image ${index + 1}`} placeholderText="Image unavailable" title={item.spoiler && !spoilerRevealed ? 'Click to reveal spoiler' : 'Edit gallery image'} onLoad={(event) => { const image = event.currentTarget; const button = image.closest('.discord-v2-gallery-open'); if (button) button.dataset.galleryImageAvailable = 'true'; requestAnimationFrame(() => updateGalleryCropState(button)); }} onError={(event) => { const button = event.currentTarget.closest('.discord-v2-gallery-open'); if (button) { button.dataset.galleryImageAvailable = 'false'; button.dataset.galleryCropped = 'false'; } }} />}<span className="discord-v2-gallery-zoom" aria-hidden="true">{isVideo ? <FileVideo size={18} /> : <ZoomIn size={18} />}</span>{item.spoiler && !spoilerRevealed && <span className="discord-v2-gallery-spoiler-cover" aria-hidden="true">SPOILER</span>}{isOverflowTile && <span className="discord-v2-gallery-overflow-count" aria-hidden="true">+{overflowCount}</span>}</button>{item.description && <figcaption>{item.description}</figcaption>}</figure>;
+        }}>{isVideo ? <div className="discord-v2-gallery-video-poster">{(file?.preview || asset?.preview) && <img src={file?.preview || asset?.preview} alt="" />}{!file?.preview && !asset?.preview && <FileVideo size={23} />}<span>VIDEO</span></div> : <PreviewImage src={resolvePreviewImageSource(item.url)} className={`discord-v2-gallery-image${item.spoiler && !spoilerRevealed ? ' is-spoiler-hidden' : ''}`} alt={item.description || `Gallery image ${index + 1}`} placeholderText="Image unavailable" title={item.spoiler && !spoilerRevealed ? 'Click to reveal spoiler' : 'Edit gallery image'} onLoad={(event) => { const image = event.currentTarget; const button = image.closest('.discord-v2-gallery-open'); if (button) button.dataset.galleryImageAvailable = 'true'; requestAnimationFrame(() => updateGalleryCropState(button)); }} onError={(event) => { const button = event.currentTarget.closest('.discord-v2-gallery-open'); if (button) { button.dataset.galleryImageAvailable = 'false'; button.dataset.galleryCropped = 'false'; } }} />}<span className="discord-v2-gallery-zoom" aria-hidden="true">{isVideo ? <FileVideo size={18} /> : <ZoomIn size={18} />}</span>{item.spoiler && !spoilerRevealed && <span className="discord-v2-gallery-spoiler-cover" aria-hidden="true">SPOILER</span>}{isOverflowTile && <span className="discord-v2-gallery-overflow-count" aria-hidden="true">+{overflowCount}</span>}</button></figure>;
       })}</div>
       : v2EmptyBlock('Empty media gallery');
     if (block.type === 'file') return <div className="discord-v2-file is-interactive" key={key} onClick={() => focusV2Block(block.id)} title="Click to edit attachment"><Upload size={15} /><span>{String(block.url || '').replace(/^attachment:\/\//i, '') || 'File attachment'}</span></div>;
@@ -1293,8 +1300,8 @@ export function EmbedStudioView({
         if (!spoilerRevealed) setRevealedContainerSpoilers((current) => new Set(current).add(block.id));
         else focusV2Block(block.id);
       }} onContextMenu={(event) => openV2ContainerContextMenu(event, block.id)}><PreviewRemoveButton label="container" onClick={() => removePreviewBlock('components-v2', block.id)} />{(block.children || []).length ? block.children.map((child, index) => {
-      const issue = getV2Issue(child.id);
-      return <div className={`studio-preview-nested-block ${previewBlockClass(child.id, 'components-v2')}`} key={child.id || `${key}_${index}`} data-preview-block-id={child.id} data-preview-validation-target={child.id} data-preview-scope="components-v2" data-preview-parent-container-id={block.id} draggable onClick={(event) => { event.stopPropagation(); focusV2Block(child.id); }} onDragStart={(event) => startPreviewMove(event, 'components-v2', child.id)} onDragEnd={endPreviewMove}>{renderV2Block(child, `${key}_${index}`)}<PreviewRemoveButton label={child.type.replaceAll('_', ' ')} warning={issue} onWarningClick={() => focusV2Issue(issue)} onClick={() => removePreviewBlock('components-v2', child.id)} /></div>;
+        const issue = getV2Issue(child.id);
+        return <div className={`studio-preview-nested-block ${previewBlockClass(child.id, 'components-v2')}`} key={child.id || `${key}_${index}`} data-preview-block-id={child.id} data-preview-validation-target={child.id} data-preview-scope="components-v2" data-preview-parent-container-id={block.id} draggable onClick={(event) => { event.stopPropagation(); focusV2Block(child.id); }} onDragStart={(event) => startPreviewMove(event, 'components-v2', child.id)} onDragEnd={endPreviewMove}>{renderV2Block(child, `${key}_${index}`)}<PreviewRemoveButton label={child.type.replaceAll('_', ' ')} warning={issue} onWarningClick={() => focusV2Issue(issue)} onClick={() => removePreviewBlock('components-v2', child.id)} /></div>;
       }) : v2EmptyBlock('Empty container', 'Drag an eligible block here to add it')}</div>;
     }
     if (block.type === 'action_row') return <div className={`discord-action-row ${previewDropTarget?.id === block.id && previewDropTarget?.placement === 'inside' ? 'is-drop-target' : ''}`} key={key}>
@@ -1335,12 +1342,12 @@ export function EmbedStudioView({
           const job = jobs[cursor++];
           const { file, index, id } = job;
           const filename = file.name.replace(/[\\/\0-\x1f]/g, '_').slice(0, 100) || 'attachment.bin';
-        const existingIndex = currentAttachments.findIndex((item) => String(item.filename || '').toLowerCase() === filename.toLowerCase());
+          const existingIndex = currentAttachments.findIndex((item) => String(item.filename || '').toLowerCase() === filename.toLowerCase());
           const maxFileBytes = componentsV2Enabled ? 20 * 1024 * 1024 : 8 * 1024 * 1024;
           if (!componentsV2Enabled && !file.type.startsWith('image/')) { updateStatus(id, { state: 'error', message: 'Choose an image file.' }); continue; }
           if (file.size > maxFileBytes) { updateStatus(id, { state: 'error', message: componentsV2Enabled ? 'File exceeds 20 MB.' : 'Image exceeds 8 MB.' }); continue; }
           if (existingIndex < 0 && currentCount >= 10) { updateStatus(id, { state: 'error', message: 'A message can have up to 10 files.' }); continue; }
-        const replacedSize = existingIndex >= 0 ? (Number(currentAttachments[existingIndex].size) || (String(currentAttachments[existingIndex].data || '').startsWith('data:') ? Math.floor(String(currentAttachments[existingIndex].data).length * 0.75) : 0)) : 0;
+          const replacedSize = existingIndex >= 0 ? (Number(currentAttachments[existingIndex].size) || (String(currentAttachments[existingIndex].data || '').startsWith('data:') ? Math.floor(String(currentAttachments[existingIndex].data).length * 0.75) : 0)) : 0;
           if (currentBytes - replacedSize + file.size > 24 * 1024 * 1024) { updateStatus(id, { state: 'error', message: 'Attachments must total 24 MB or less.' }); continue; }
           updateStatus(id, { state: 'uploading', progress: 0, message: 'Uploading to project media' });
           try {
@@ -1348,16 +1355,16 @@ export function EmbedStudioView({
             if (!asset) throw new Error('The workspace did not return the uploaded file.');
             const attachment = { ...asset, description: '' };
             currentAttachments = [...currentAttachments.filter((item) => item.id !== asset.id && String(item.filename || '').toLowerCase() !== asset.filename.toLowerCase()), attachment];
-          currentBytes = currentBytes - replacedSize + file.size;
-          if (existingIndex < 0) currentCount += 1;
-          setAttachedFiles(currentAttachments);
-          onAttachmentsChange?.(currentAttachments);
-          if (!componentsV2Enabled) {
-            if (!currentBlocks.some((block) => block.type === 'image' && String(block.url || '').toLowerCase() === `attachment://${asset.filename}`.toLowerCase())) {
-              currentBlocks = [...currentBlocks, { id: `image_${Date.now()}_${index}`, type: 'image', url: `attachment://${asset.filename}` }];
-              onBlocksChange?.(currentBlocks);
+            currentBytes = currentBytes - replacedSize + file.size;
+            if (existingIndex < 0) currentCount += 1;
+            setAttachedFiles(currentAttachments);
+            onAttachmentsChange?.(currentAttachments);
+            if (!componentsV2Enabled) {
+              if (!currentBlocks.some((block) => block.type === 'image' && String(block.url || '').toLowerCase() === `attachment://${asset.filename}`.toLowerCase())) {
+                currentBlocks = [...currentBlocks, { id: `image_${Date.now()}_${index}`, type: 'image', url: `attachment://${asset.filename}` }];
+                onBlocksChange?.(currentBlocks);
+              }
             }
-          }
             updateStatus(id, { state: 'success', progress: 100, message: 'Added to message' });
           } catch (error) {
             updateStatus(id, { state: 'error', message: error.message || 'Could not upload this file.' });
@@ -1382,604 +1389,604 @@ export function EmbedStudioView({
 
   return (
     <>
-    <section className="embed-studio" aria-label={componentsV2Enabled || isComponentsBuilderNode ? 'Component Studio' : 'Embed Studio'}>
-      <header className="embed-studio-header">
-        <button className="embed-studio-back" onClick={closeStudio} title="Return to node graph">
-          <ArrowLeft size={15} />
-          <span>Back to graph</span>
-        </button>
+      <section className="embed-studio" aria-label={componentsV2Enabled || isComponentsBuilderNode ? 'Component Studio' : 'Embed Studio'}>
+        <header className="embed-studio-header">
+          <button className="embed-studio-back" onClick={closeStudio} title="Return to node graph">
+            <ArrowLeft size={15} />
+            <span>Back to graph</span>
+          </button>
 
-        <div className="embed-studio-title">
-          <span>{componentsOnly ? (isComponentsBuilderNode ? 'Component Studio' : 'Message Components') : componentsV2Enabled ? 'Component Studio' : 'Embed Studio'}</span>
-          {!componentsOnly && (!componentsV2Enabled || assetNameEditable) && (
-            <>
-              <i>/</i>
-              <CharacterLimit className="is-inline" value={name} maxLength={64}>
-                <input
-                  value={name}
-                  onChange={(event) => onNameChange?.(event.target.value)}
-                  maxLength={64}
-                  aria-label="Embed name"
-                  placeholder="Untitled embed"
-                />
-              </CharacterLimit>
-            </>
-          )}
-        </div>
-
-        {collaborators.length > 0 && <div className="studio-collaborators" title={collaborators.map((peer) => peer.username).join(', ')} aria-label={`Editing with ${collaborators.map((peer) => peer.username).join(', ')}`}>
-          {collaborators.slice(0, 5).map((peer) => <span key={peer.userId} style={{ '--collaborator-color': peer.color }}>{peer.username.slice(0, 1).toUpperCase()}</span>)}
-        </div>}
-
-        <div className="embed-studio-actions">
-          {showSaveAs && (!componentsOnly || componentsV2Enabled) && (
-            <button
-              className={`embed-studio-secondary ${!showSave ? 'is-primary' : ''}`}
-              onClick={componentsV2Enabled ? onSaveComponentsV2As : onSaveAs}
-              disabled={hasValidationErrors}
-              title={saveDisabledTitle}
-            >
-              <Save size={14} />
-              <span>{saveAsLabel}</span>
-            </button>
-          )}
-          {showSave && (
-            <button
-              className="embed-studio-save"
-              onClick={onSave}
-              disabled={hasValidationErrors}
-              title={saveDisabledTitle}
-            >
-              <Check size={15} />
-              <span>{saveLabel}</span>
-            </button>
-          )}
-        </div>
-      </header>
-
-      <div className="embed-studio-body" ref={studioBodyRef} style={{ '--studio-editor-percent': `${visibleEditorPanePercent}%`, '--studio-editor-min-width': `${studioEditorMinimumWidth}px`, '--studio-preview-min-width': `${studioPreviewMinimumWidth}px` }}>
-        <div className="embed-studio-editor">
-          {(!componentsOnly || blocks.length > 0 || componentsV2Enabled) && (
-            <div className="embed-studio-nav-header">
-              <div className="embed-studio-tabs" role="tablist" aria-label="Message sections">
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={activeTab === 'components'}
-                  className={`embed-tab-btn ${activeTab === 'components' ? 'is-active' : ''}`}
-                  onClick={() => selectTab('components')}
-                >
-                  <MessageSquare size={13} />
-                  <span>{isComponentsBuilderNode ? 'Component Studio' : 'Components'}</span>
-                  <span className="embed-tab-badge">{componentsV2Enabled ? `${componentsV2Layout.length} blocks` : `${components.length} rows`}</span>
-                </button>
-                {!isComponentsBuilderNode && !componentsV2Enabled && <button
-                  type="button"
-                  role="tab"
-                  aria-selected={activeTab === 'embed'}
-                  className={`embed-tab-btn ${activeTab === 'embed' ? 'is-active' : ''}`}
-                  onClick={() => selectTab('embed')}
-                >
-                  <Layers size={13} />
-                  <span>Embed Content</span>
-                  <span className={`embed-tab-count ${textCount > 6000 ? 'is-over-limit' : ''}`}>
-                    {textCount.toLocaleString()} / 6,000
-                  </span>
-                </button>}
-              </div>
-              {(!componentsOnly || componentsV2Enabled) && <label className="embed-studio-upload"><Upload size={13} />{uploadingImage ? 'Adding files…' : componentsV2Enabled ? 'Attach files' : 'Choose images'}<input type="file" multiple accept={componentsV2Enabled ? undefined : 'image/avif,image/gif,image/jpeg,image/png,image/webp'} disabled={uploadingImage} onChange={(event) => { addImageAttachments(event.target.files); event.target.value = ''; }} /></label>}
-            </div>
-          )}
-
-          {attachmentStatuses.length > 0 && <section className={`embed-studio-attachment-status ${attachmentStatusesExpanded ? 'is-expanded' : ''}`} aria-label="Attachment upload status">
-            <button type="button" className="embed-studio-attachment-status-toggle" aria-expanded={attachmentStatusesExpanded} disabled={uploadingImage} onClick={() => setAttachmentStatusesExpanded((expanded) => !expanded)}>
-              <span>{attachmentStatuses.length} {attachmentStatuses.length === 1 ? 'attachment' : 'attachments'}</span>
-              <small>{uploadingImage ? `${attachmentStatuses.filter((status) => status.state === 'success' || status.state === 'error').length} of ${attachmentStatuses.length} processed` : 'Upload details'}</small>
-              <ChevronDown size={13} aria-hidden="true" />
-            </button>
-            <div className="embed-studio-attachment-status-list" aria-hidden={!attachmentStatusesExpanded}>
-              {attachmentStatuses.map((status) => <div className={`embed-studio-attachment-status-item is-${status.state}`} key={status.id}>
-                <div><span title={status.name}>{status.name}</span><small>{status.message}</small></div>
-                {status.state === 'uploading' || status.state === 'queued'
-                  ? <progress max="100" value={status.progress} aria-label={`${status.name} progress`} />
-                  : <b>{status.state === 'success' ? 'Added' : 'Failed'}</b>}
-              </div>)}
-              <small>Project media is stored once and linked from this draft.</small>
-            </div>
-          </section>}
-
-
-          {activeTab === 'components' && isComponentsWired && (
-            <div className="embed-wired-notice">
-              <Layers size={14} />
-              <span>Supplied by {componentsSourceLabel || 'a connected node'}. Edit that source node on the canvas.</span>
-            </div>
-          )}
-          {activeTab === 'components' && isContentWired && (
-            <div className="embed-wired-notice">
-              <Layers size={14} />
-              <span>Message content comes from {contentSourceLabel || 'a connected node'}; edit that source node on the canvas.</span>
-            </div>
-          )}
-          {activeTab === 'embed' && isEmbedWired && (
-            <div className="embed-wired-notice">
-              <Layers size={14} />
-              <span>Supplied by {embedSourceLabel || 'a connected node'}. Edit that source node on the canvas.</span>
-            </div>
-          )}
-
-          {activeTab === 'components' && !isComponentsBuilderNode && <div className="components-v2-mode-row">
-            <label className={`components-v2-toggle ${!componentsV2Enabled && !canEnableComponentsV2 ? 'is-disabled' : ''}`} title={!componentsV2Enabled && !canEnableComponentsV2 ? componentsV2DisabledReason : undefined}>
-              <input type="checkbox" checked={componentsV2Enabled} disabled={!componentsV2Enabled && !canEnableComponentsV2} onChange={(event) => { if (event.target.checked) onEnableComponentsV2?.(); }} />
-              <span>Use Components V2</span>
-            </label>
-            {componentsV2Enabled ? <small>Once sent, Discord does not allow this message to switch back to regular content or embeds.</small> : !canEnableComponentsV2 ? <small>{componentsV2DisabledReason}</small> : null}
-          </div>}
-
-          <div className="embed-studio-editor-content" style={((activeTab === 'components' && isComponentsWired) || (activeTab === 'embed' && isEmbedWired)) ? { opacity: 0.5, pointerEvents: 'none', userSelect: 'none' } : undefined}>
-            {activeTab === 'embed' ? (
-              <EmbedNodeBuilder
-                mode="studio"
-                focusedBlockId={focusedEmbedBlockId}
-                focusOnly
-                onFocusBlock={setFocusedEmbedBlockId}
-                data={{ blocks: items }}
-                wiredFields={wiredFields}
-                hasParentNode={hasParentNode}
-                appEmojis={appEmojis}
-                botProfile={botProfile}
-                attachments={attachedFiles}
-                mediaAssets={mediaAssets}
-                onSelectMediaAsset={attachMediaAsset}
-                graphVariables={graphVariables}
-                connectedInputIds={new Set(Object.keys(wiredFields))}
-                templateValuePaths={templateValuePaths}
-                templatePreviewValues={templatePreviewValues}
-                templateSuggestions={templateSuggestions}
-                templateFunctions={templateFunctions}
-                onChange={onBlocksChange}
-                onOpenTextStudio={onOpenTextStudio}
-                validation={validation}
-              />
-            ) : componentsV2Enabled ? (
-              <ComponentsV2Builder value={componentsV2Layout} focusedBlockId={focusedV2BlockId} focusedItemId={focusedV2ItemId} focusedSectionItem={focusedV2SectionItem} focusedComponentId={selectedComponentId} onSelectComponent={setSelectedComponentId} focusOnly onSelectBlock={setFocusedV2BlockId} onChange={onComponentsV2LayoutChange} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} templateFunctions={templateFunctions} appEmojis={appEmojis} botProfile={botProfile} attachments={attachedFiles} mediaAssets={mediaAssets} onSelectMediaAsset={attachMediaAsset} />
-            ) : (
-              <MessageComponentsBuilder
-                rows={components}
-                messageContent={content}
-                onMessageContentChange={onContentChange}
-                isContentWired={isContentWired}
-                appEmojis={appEmojis}
-                graphVariables={graphVariables}
-                templateValuePaths={templateValuePaths}
-                onChange={onComponentsChange}
-                selectedComponentId={selectedComponentId}
-                onSelectComponent={setSelectedComponentId}
-                focusedRowId={focusedComponentRowId}
-                focusOnly
-                onFocusRow={focusComponentRow}
-              />
+          <div className="embed-studio-title">
+            <span>{componentsOnly ? (isComponentsBuilderNode ? 'Component Studio' : 'Message Components') : componentsV2Enabled ? 'Component Studio' : 'Embed Studio'}</span>
+            {(isAssetMode || assetNameEditable || isComponentsBuilderNode || !componentsOnly) && (
+              <>
+                <i>/</i>
+                <CharacterLimit className="is-inline" value={name} maxLength={64}>
+                  <input
+                    value={name}
+                    onChange={(event) => onNameChange?.(event.target.value)}
+                    maxLength={64}
+                    aria-label={componentsV2Enabled || isComponentsBuilderNode ? 'Component name' : 'Embed name'}
+                    placeholder={componentsV2Enabled || isComponentsBuilderNode ? 'Untitled component' : 'Untitled embed'}
+                  />
+                </CharacterLimit>
+              </>
             )}
           </div>
 
-          {((activeTab === 'embed' && !focusedEmbedBlockId) || (activeTab === 'components' && !(componentsV2Enabled ? focusedV2BlockId : focusedComponentRowId))) && (
-            <div className="studio-selection-hint">
-              {activeTab === 'embed' ? 'Select an item in the preview to edit its text, or configure the accent color above.' : 'Select an item in the preview to edit it.'}
-            </div>
-          )}
-
-          {!componentsV2Enabled && componentErrors.length > 0 && (
-            <div className="embed-studio-validation-banner" role="alert">
-              <span className="validation-banner-title">Warning:</span>
-              <span>{componentErrors[0]}</span>
-              {componentErrors.length > 1 && <small> (+{componentErrors.length - 1} more)</small>}
-            </div>
-          )}
-          {(visibleV2ComponentIssues.length > 0 || visibleV2GlobalErrors.length > 0) && <div className="embed-studio-validation-banner is-linked" role="alert">
-            <span className="validation-banner-title">Warning:</span>
-            <div className="embed-studio-validation-messages">
-              {visibleV2ComponentIssues.map((issue, index) => <button type="button" className="embed-studio-validation-link" key={`${issue.blockId}_${issue.target}_${issue.index ?? 'block'}_${index}`} onClick={() => focusV2Issue(issue)}>{issue.message}</button>)}
-              {visibleV2GlobalErrors.map((message, index) => <span key={`global_v2_${index}`}>{message}</span>)}
-            </div>
+          {collaborators.length > 0 && <div className="studio-collaborators" title={collaborators.map((peer) => peer.username).join(', ')} aria-label={`Editing with ${collaborators.map((peer) => peer.username).join(', ')}`}>
+            {collaborators.slice(0, 5).map((peer) => <span key={peer.userId} style={{ '--collaborator-color': peer.color }}>{peer.username.slice(0, 1).toUpperCase()}</span>)}
           </div>}
 
-          {!componentsV2Enabled && Object.keys(validation).length > 0 && (
-            <div className="embed-studio-validation-banner">
-              <span>Please review and fix the highlighted fields in your embed blocks.</span>
-            </div>
-          )}
-          {((activeTab === 'embed' && focusedEmbedBlockId) || (activeTab === 'components' && (componentsV2Enabled ? focusedV2BlockId : focusedComponentRowId))) && <div className="embed-studio-help-footer"><TemplateSyntaxHelp connectedArguments={connectedTemplateArguments} /></div>}
-        </div>
+          <div className="embed-studio-actions">
+            {showSaveAs && (!componentsOnly || componentsV2Enabled) && (
+              <button
+                className={`embed-studio-secondary ${!showSave ? 'is-primary' : ''}`}
+                onClick={componentsV2Enabled ? onSaveComponentsV2As : onSaveAs}
+                disabled={hasValidationErrors}
+                title={saveDisabledTitle}
+              >
+                <Save size={14} />
+                <span>{saveAsLabel}</span>
+              </button>
+            )}
+            {showSave && (
+              <button
+                className="embed-studio-save"
+                onClick={onSave}
+                disabled={hasValidationErrors}
+                title={saveDisabledTitle}
+              >
+                <Check size={15} />
+                <span>{saveLabel}</span>
+              </button>
+            )}
+          </div>
+        </header>
 
-        <div className="embed-studio-resize-handle" role="separator" aria-label="Resize editor and preview" aria-orientation="vertical" aria-valuemin={25} aria-valuemax={75} aria-valuenow={Math.round(editorPanePercent)} tabIndex={0} title="Drag to resize" onPointerDown={onStudioDividerPointerDown} onPointerMove={onStudioDividerPointerMove} onPointerUp={stopStudioResize} onPointerCancel={stopStudioResize} onKeyDown={(event) => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); updateStudioSplitFromKeyboard(event.key === 'ArrowRight' ? 1 : -1); } }} />
-        <aside className={`embed-studio-preview ${previewTheme === 'light' ? 'is-discord-light' : ''} ${previewDropTarget?.placement === 'end' ? 'is-drop-end' : ''}`} data-gallery-shift-held={galleryShiftHeld ? 'true' : undefined} aria-label="Live Discord Message Preview" onClick={(event) => { if (!event.target.closest('[data-preview-block-id], .is-interactive')) clearPreviewSelection(); }} onDragOver={handlePreviewDragOver} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setPreviewDropTarget(null); }} onDrop={handlePreviewDrop}>
-          <div className="embed-studio-preview-heading">
-            <div className="preview-heading-title">
-              <span>PREVIEW</span>
-            </div>
-            <div className="preview-heading-controls">
-              <div className="preview-theme-toggle" role="group" aria-label="Preview theme">
-                <button
-                  type="button"
-                  className={`preview-theme-btn ${previewTheme === 'dark' ? 'is-active' : ''}`}
-                  onClick={() => setPreviewTheme('dark')}
-                  title="Dark mode preview"
-                >
-                  <Moon size={11} />
-                  <span>Dark</span>
-                </button>
-                <button
-                  type="button"
-                  className={`preview-theme-btn ${previewTheme === 'light' ? 'is-active' : ''}`}
-                  onClick={() => setPreviewTheme('light')}
-                  title="Light mode preview"
-                >
-                  <Sun size={11} />
-                  <span>Light</span>
-                </button>
+        <div className="embed-studio-body" ref={studioBodyRef} style={{ '--studio-editor-percent': `${visibleEditorPanePercent}%`, '--studio-editor-min-width': `${studioEditorMinimumWidth}px`, '--studio-preview-min-width': `${studioPreviewMinimumWidth}px` }}>
+          <div className="embed-studio-editor">
+            {(!componentsOnly || blocks.length > 0 || componentsV2Enabled) && (
+              <div className="embed-studio-nav-header">
+                <div className="embed-studio-tabs" role="tablist" aria-label="Message sections">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={activeTab === 'components'}
+                    className={`embed-tab-btn ${activeTab === 'components' ? 'is-active' : ''}`}
+                    onClick={() => selectTab('components')}
+                  >
+                    <MessageSquare size={13} />
+                    <span>{isComponentsBuilderNode ? 'Component Studio' : 'Components'}</span>
+                    <span className="embed-tab-badge">{componentsV2Enabled ? `${componentsV2Layout.length} blocks` : `${components.length} rows`}</span>
+                  </button>
+                  {!isComponentsBuilderNode && !componentsV2Enabled && <button
+                    type="button"
+                    role="tab"
+                    aria-selected={activeTab === 'embed'}
+                    className={`embed-tab-btn ${activeTab === 'embed' ? 'is-active' : ''}`}
+                    onClick={() => selectTab('embed')}
+                  >
+                    <Layers size={13} />
+                    <span>Embed Content</span>
+                    <span className={`embed-tab-count ${textCount > 6000 ? 'is-over-limit' : ''}`}>
+                      {textCount.toLocaleString()} / 6,000
+                    </span>
+                  </button>}
+                </div>
               </div>
+            )}
+
+            {attachmentStatuses.length > 0 && <section className={`embed-studio-attachment-status ${attachmentStatusesExpanded ? 'is-expanded' : ''}`} aria-label="Attachment upload status">
+              <button type="button" className="embed-studio-attachment-status-toggle" aria-expanded={attachmentStatusesExpanded} disabled={uploadingImage} onClick={() => setAttachmentStatusesExpanded((expanded) => !expanded)}>
+                <span>{attachmentStatuses.length} {attachmentStatuses.length === 1 ? 'attachment' : 'attachments'}</span>
+                <small>{uploadingImage ? `${attachmentStatuses.filter((status) => status.state === 'success' || status.state === 'error').length} of ${attachmentStatuses.length} processed` : 'Upload details'}</small>
+                <ChevronDown size={13} aria-hidden="true" />
+              </button>
+              <div className="embed-studio-attachment-status-list" aria-hidden={!attachmentStatusesExpanded}>
+                {attachmentStatuses.map((status) => <div className={`embed-studio-attachment-status-item is-${status.state}`} key={status.id}>
+                  <div><span title={status.name}>{status.name}</span><small>{status.message}</small></div>
+                  {status.state === 'uploading' || status.state === 'queued'
+                    ? <progress max="100" value={status.progress} aria-label={`${status.name} progress`} />
+                    : <b>{status.state === 'success' ? 'Added' : 'Failed'}</b>}
+                </div>)}
+                <small>Project media is stored once and linked from this draft.</small>
+              </div>
+            </section>}
+
+
+            {activeTab === 'components' && isComponentsWired && (
+              <div className="embed-wired-notice">
+                <Layers size={14} />
+                <span>Supplied by {componentsSourceLabel || 'a connected node'}. Edit that source node on the canvas.</span>
+              </div>
+            )}
+            {activeTab === 'components' && isContentWired && (
+              <div className="embed-wired-notice">
+                <Layers size={14} />
+                <span>Message content comes from {contentSourceLabel || 'a connected node'}; edit that source node on the canvas.</span>
+              </div>
+            )}
+            {activeTab === 'embed' && isEmbedWired && (
+              <div className="embed-wired-notice">
+                <Layers size={14} />
+                <span>Supplied by {embedSourceLabel || 'a connected node'}. Edit that source node on the canvas.</span>
+              </div>
+            )}
+
+            {activeTab === 'components' && !isComponentsBuilderNode && <div className="components-v2-mode-row">
+              <label className={`components-v2-toggle ${!componentsV2Enabled && !canEnableComponentsV2 ? 'is-disabled' : ''}`} title={!componentsV2Enabled && !canEnableComponentsV2 ? componentsV2DisabledReason : undefined}>
+                <input type="checkbox" checked={componentsV2Enabled} disabled={!componentsV2Enabled && !canEnableComponentsV2} onChange={(event) => { if (event.target.checked) onEnableComponentsV2?.(); }} />
+                <span>Use Components V2</span>
+              </label>
+              {componentsV2Enabled ? <small>Once sent, Discord does not allow this message to switch back to regular content or embeds.</small> : !canEnableComponentsV2 ? <small>{componentsV2DisabledReason}</small> : null}
+            </div>}
+
+            <div className="embed-studio-editor-content" style={((activeTab === 'components' && isComponentsWired) || (activeTab === 'embed' && isEmbedWired)) ? { opacity: 0.5, pointerEvents: 'none', userSelect: 'none' } : undefined}>
+              {activeTab === 'embed' ? (
+                <EmbedNodeBuilder
+                  mode="studio"
+                  focusedBlockId={focusedEmbedBlockId}
+                  focusOnly
+                  onFocusBlock={setFocusedEmbedBlockId}
+                  data={{ blocks: items }}
+                  wiredFields={wiredFields}
+                  hasParentNode={hasParentNode}
+                  appEmojis={appEmojis}
+                  botProfile={botProfile}
+                  attachments={attachedFiles}
+                  mediaAssets={mediaAssets}
+                  onSelectMediaAsset={attachMediaAsset}
+                  onUploadMedia={onUploadMedia}
+                  graphVariables={graphVariables}
+                  connectedInputIds={new Set(Object.keys(wiredFields))}
+                  templateValuePaths={templateValuePaths}
+                  templatePreviewValues={templatePreviewValues}
+                  templateSuggestions={templateSuggestions}
+                  templateFunctions={templateFunctions}
+                  onChange={onBlocksChange}
+                  onOpenTextStudio={onOpenTextStudio}
+                  validation={validation}
+                />
+              ) : componentsV2Enabled ? (
+                <ComponentsV2Builder value={componentsV2Layout} focusedBlockId={focusedV2BlockId} focusedItemId={focusedV2ItemId} focusedSectionItem={focusedV2SectionItem} focusedComponentId={selectedComponentId} onSelectComponent={setSelectedComponentId} focusOnly onSelectBlock={setFocusedV2BlockId} onChange={onComponentsV2LayoutChange} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} templateFunctions={templateFunctions} appEmojis={appEmojis} botProfile={botProfile} attachments={attachedFiles} mediaAssets={mediaAssets} onSelectMediaAsset={attachMediaAsset} onUploadMedia={onUploadMedia} />
+              ) : (
+                <MessageComponentsBuilder
+                  rows={components}
+                  messageContent={content}
+                  onMessageContentChange={onContentChange}
+                  isContentWired={isContentWired}
+                  appEmojis={appEmojis}
+                  graphVariables={graphVariables}
+                  templateValuePaths={templateValuePaths}
+                  onChange={onComponentsChange}
+                  selectedComponentId={selectedComponentId}
+                  onSelectComponent={setSelectedComponentId}
+                  focusedRowId={focusedComponentRowId}
+                  focusOnly
+                  onFocusRow={focusComponentRow}
+                />
+              )}
             </div>
+
+            {((activeTab === 'embed' && !focusedEmbedBlockId) || (activeTab === 'components' && !(componentsV2Enabled ? focusedV2BlockId : focusedComponentRowId))) && (
+              <div className="studio-selection-hint">
+                {activeTab === 'embed' ? 'Select an item in the preview to edit its text, or configure the accent color above.' : 'Select an item in the preview to edit it.'}
+              </div>
+            )}
+
+            {!componentsV2Enabled && componentErrors.length > 0 && (
+              <div className="embed-studio-validation-banner" role="alert">
+                <span className="validation-banner-title">Warning:</span>
+                <span>{componentErrors[0]}</span>
+                {componentErrors.length > 1 && <small> (+{componentErrors.length - 1} more)</small>}
+              </div>
+            )}
+            {(visibleV2ComponentIssues.length > 0 || visibleV2GlobalErrors.length > 0) && <div className="embed-studio-validation-banner is-linked" role="alert">
+              <span className="validation-banner-title">Warning:</span>
+              <div className="embed-studio-validation-messages">
+                {visibleV2ComponentIssues.map((issue, index) => <button type="button" className="embed-studio-validation-link" key={`${issue.blockId}_${issue.target}_${issue.index ?? 'block'}_${index}`} onClick={() => focusV2Issue(issue)}>{issue.message}</button>)}
+                {visibleV2GlobalErrors.map((message, index) => <span key={`global_v2_${index}`}>{message}</span>)}
+              </div>
+            </div>}
+
+            {!componentsV2Enabled && Object.keys(validation).length > 0 && (
+              <div className="embed-studio-validation-banner">
+                <span>Please review and fix the highlighted fields in your embed blocks.</span>
+              </div>
+            )}
+            {((activeTab === 'embed' && focusedEmbedBlockId) || (activeTab === 'components' && (componentsV2Enabled ? focusedV2BlockId : focusedComponentRowId))) && <div className="embed-studio-help-footer"><TemplateSyntaxHelp connectedArguments={connectedTemplateArguments} /></div>}
           </div>
 
-          <div className="discord-chat-viewport">
-            <div className="discord-message">
-              {/* Bot Avatar */}
-              <div className="discord-avatar" aria-hidden="true">
-                <img
-                  src={botAvatarUrl}
-                  alt={botDisplayName}
-                  className="discord-avatar-img"
-                  onError={(e) => {
-                    e.currentTarget.onerror = null;
-                    e.currentTarget.src = '/arc.png';
-                  }}
-                />
+          <div className="embed-studio-resize-handle" role="separator" aria-label="Resize editor and preview" aria-orientation="vertical" aria-valuemin={25} aria-valuemax={75} aria-valuenow={Math.round(editorPanePercent)} tabIndex={0} title="Drag to resize" onPointerDown={onStudioDividerPointerDown} onPointerMove={onStudioDividerPointerMove} onPointerUp={stopStudioResize} onPointerCancel={stopStudioResize} onKeyDown={(event) => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); updateStudioSplitFromKeyboard(event.key === 'ArrowRight' ? 1 : -1); } }} />
+          <aside className={`embed-studio-preview ${previewTheme === 'light' ? 'is-discord-light' : ''} ${previewDropTarget?.placement === 'end' ? 'is-drop-end' : ''}`} data-gallery-shift-held={galleryShiftHeld ? 'true' : undefined} aria-label="Live Discord Message Preview" onClick={(event) => { if (!event.target.closest('[data-preview-block-id], .is-interactive')) clearPreviewSelection(); }} onDragOver={handlePreviewDragOver} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setPreviewDropTarget(null); }} onDrop={handlePreviewDrop}>
+            <div className="embed-studio-preview-heading">
+              <div className="preview-heading-title">
+                <span>PREVIEW</span>
               </div>
+              <div className="preview-heading-controls">
+                <div className="preview-theme-toggle" role="group" aria-label="Preview theme">
+                  <button
+                    type="button"
+                    className={`preview-theme-btn ${previewTheme === 'dark' ? 'is-active' : ''}`}
+                    onClick={() => setPreviewTheme('dark')}
+                    title="Dark mode preview"
+                  >
+                    <Moon size={11} />
+                    <span>Dark</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`preview-theme-btn ${previewTheme === 'light' ? 'is-active' : ''}`}
+                    onClick={() => setPreviewTheme('light')}
+                    title="Light mode preview"
+                  >
+                    <Sun size={11} />
+                    <span>Light</span>
+                  </button>
+                </div>
+              </div>
+            </div>
 
-              <div className="discord-message-body">
-                <div className="discord-message-header">
-                  <span className="discord-username">{botDisplayName}</span>
-                  <span className="discord-bot-tag">APP</span>
-                  <span className="discord-timestamp">Today at {previewMessageTime}</span>
+            <div className="discord-chat-viewport">
+              <div className="discord-message">
+                {/* Bot Avatar */}
+                <div className="discord-avatar" aria-hidden="true">
+                  <img
+                    src={botAvatarUrl}
+                    alt={botDisplayName}
+                    className="discord-avatar-img"
+                    onError={(e) => {
+                      e.currentTarget.onerror = null;
+                      e.currentTarget.src = '/arc.png';
+                    }}
+                  />
                 </div>
 
-                {componentsV2Enabled && componentsV2Layout.map((block, index) => {
-                  const issue = getV2Issue(block.id);
-                  return <div key={block.id || `v2_${index}`} className={`${previewBlockClass(block.id, 'components-v2')}${block.type === 'separator' ? ' is-separator-block' : ''}`} data-preview-block-id={block.id} data-preview-validation-target={block.id} data-preview-scope="components-v2" draggable onClick={(event) => { if (event.target.closest('button')) return; focusV2Block(block.id); }} onDragStart={(event) => startPreviewMove(event, 'components-v2', block.id)} onDragEnd={endPreviewMove}>{renderV2Block(block, block.id || `v2_${index}`)}{block.type !== 'container' && <PreviewRemoveButton label={block.type.replaceAll('_', ' ')} warning={issue} onWarningClick={() => focusV2Issue(issue)} onClick={() => removePreviewBlock('components-v2', block.id)} />}</div>;
-                })}
-
-                {!componentsV2Enabled && content ? (
-                  <div className="discord-message-content">
-                    {renderDiscordFormattedText(content)}
+                <div className="discord-message-body">
+                  <div className="discord-message-header">
+                    <span className="discord-username">{botDisplayName}</span>
+                    <span className="discord-bot-tag">APP</span>
+                    <span className="discord-timestamp">Today at {previewMessageTime}</span>
                   </div>
-                ) : null}
 
-                {!componentsV2Enabled && hasEmbedContent ? (
-                  <div
-                    className="embed-preview-card"
-                    style={{ '--embed-preview-accent': color || 'transparent' }}
-                  >
-                    {colorWire && <div className="embed-preview-wire-note">Accent color: <code>{colorWire.token}</code></div>}
-                    <div className="embed-preview-content">
-                      <div className="embed-preview-main">
-                        {/* Author */}
-                        {(author?.name || authorUrlWire || authorIconWire) && (
-                          <div
-                            className={`${previewBlockClass(author.id, 'embed')} embed-preview-author is-interactive`}
-                            data-preview-block-id={author.id}
-                            data-preview-scope="embed"
-                            draggable
-                            onDragStart={(event) => startPreviewMove(event, 'embed', author.id)}
-                            onDragEnd={endPreviewMove}
-                            onClick={() => focusEditorBlock(author)}
-                            title="Click to edit author"
-                          >
-                            {!authorIconWire && author.icon && (
-                              <PreviewImage src={resolvePreviewImageSource(author.icon)} alt="Author icon" placeholderText="" className="embed-preview-author-icon" />
-                            )}
-                            {authorLink ? (
-                              <a href={authorLink || undefined} onClick={(e) => { e.preventDefault(); e.stopPropagation(); openEmbedTextEditor(author, 'name', 'Author Name', 256); }}>
-                                {renderDiscordFormattedText(author.name)}
-                              </a>
-                            ) : (
-                              <span onClick={(event) => { event.stopPropagation(); openEmbedTextEditor(author, 'name', 'Author Name', 256); }}>{renderDiscordFormattedText(author.name)}</span>
-                            )}
-                            {authorIconWire && <code className="embed-preview-wire-label">{authorIconWire.token}</code>}
-                            {authorUrlWire && <code className="embed-preview-wire-label">{authorUrlWire.token}</code>}
-                            <PreviewRemoveButton label="author block" disabled={embedBlockHasWires(author.id)} onClick={() => removePreviewBlock('embed', author.id)} />
-                          </div>
-                        )}
+                  {componentsV2Enabled && componentsV2Layout.map((block, index) => {
+                    const issue = getV2Issue(block.id);
+                    return <div key={block.id || `v2_${index}`} className={`${previewBlockClass(block.id, 'components-v2')}${block.type === 'separator' ? ' is-separator-block' : ''}`} data-preview-block-id={block.id} data-preview-validation-target={block.id} data-preview-scope="components-v2" draggable onClick={(event) => { if (event.target.closest('button')) return; focusV2Block(block.id); }} onDragStart={(event) => startPreviewMove(event, 'components-v2', block.id)} onDragEnd={endPreviewMove}>{renderV2Block(block, block.id || `v2_${index}`)}{block.type !== 'container' && <PreviewRemoveButton label={block.type.replaceAll('_', ' ')} warning={issue} onWarningClick={() => focusV2Issue(issue)} onClick={() => removePreviewBlock('components-v2', block.id)} />}</div>;
+                  })}
 
-                        {title && (
-                          <div
-                            className={`${previewBlockClass(previewItems.find((block) => block.type === 'title')?.id, 'embed')} embed-preview-title-wrapper is-interactive`}
-                            data-preview-block-id={previewItems.find((block) => block.type === 'title')?.id}
-                            data-preview-scope="embed"
-                            draggable
-                            onDragStart={(event) => startPreviewMove(event, 'embed', previewItems.find((block) => block.type === 'title')?.id)}
-                            onDragEnd={endPreviewMove}
-                            onClick={() => openEmbedTextEditor(previewItems.find((block) => block.type === 'title'), 'value', 'Title Text', 256)}
-                            title="Click to edit title"
-                          >
-                            {titleLink ? (
-                              <a className="embed-preview-title" href={titleLink || undefined} onClick={(e) => { e.preventDefault(); e.stopPropagation(); openEmbedTextEditor(previewItems.find((block) => block.type === 'title'), 'value', 'Title Text', 256); }}>
-                                {renderDiscordFormattedText(title)}
-                              </a>
-                            ) : (
-                              <strong className="embed-preview-title">{renderDiscordFormattedText(title)}</strong>
-                            )}
-                            <PreviewRemoveButton label="title block" disabled={embedBlockHasWires(previewItems.find((block) => block.type === 'title')?.id)} onClick={() => removePreviewBlock('embed', previewItems.find((block) => block.type === 'title')?.id)} />
-                          </div>
-                        )}
-                        {titleUrlWire && <code className="embed-preview-wire-label is-block">Title URL: {titleUrlWire.token}</code>}
-
-                        {description && (
-                          <div
-                            className={`${previewBlockClass(previewItems.find((block) => block.type === 'description')?.id, 'embed')} embed-preview-description is-interactive`}
-                            data-preview-block-id={previewItems.find((block) => block.type === 'description')?.id}
-                            data-preview-scope="embed"
-                            draggable
-                            onDragStart={(event) => startPreviewMove(event, 'embed', previewItems.find((block) => block.type === 'description')?.id)}
-                            onDragEnd={endPreviewMove}
-                            onClick={() => openEmbedTextEditor(previewItems.find((block) => block.type === 'description'), 'value', 'Message Description', 4096)}
-                            title="Click to edit description"
-                          >
-                            <p>{renderDiscordFormattedText(description)}</p>
-                            <PreviewRemoveButton label="description block" disabled={embedBlockHasWires(previewItems.find((block) => block.type === 'description')?.id)} onClick={() => removePreviewBlock('embed', previewItems.find((block) => block.type === 'description')?.id)} />
-                          </div>
-                        )}
-
-                        {!!fields.length && (
-                          <div className="embed-preview-fields">
-                            {fields.map((field) => (
-                              <div
-                                key={field.id}
-                                className={`${previewBlockClass(field.id, 'embed')} embed-preview-field ${field.inline ? 'is-inline' : 'is-full'} is-interactive`}
-                                data-preview-block-id={field.id}
-                                data-preview-scope="embed"
-                                draggable
-                                onDragStart={(event) => startPreviewMove(event, 'embed', field.id)}
-                                onDragEnd={endPreviewMove}
-                                title="Click to edit field"
-                              >
-                                <b onClick={(event) => { event.stopPropagation(); openEmbedTextEditor(field, 'name', 'Field Name', 256); }}>{renderDiscordFormattedText(field.name || 'Field name')}</b>
-                                <span onClick={(event) => { event.stopPropagation(); openEmbedTextEditor(field, 'value', 'Field Value', 1024); }}>{renderDiscordFormattedText(field.value || 'Field value')}</span>
-                                <PreviewRemoveButton label="field block" disabled={embedBlockHasWires(field.id)} onClick={() => removePreviewBlock('embed', field.id)} />
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-
-                      {thumbnailWire ? <div className="embed-preview-wire-media is-thumbnail">{thumbnailWire.token}</div> : thumbnailBlock ? (
-                        <div className={`${previewBlockClass(thumbnailBlock.id, 'embed')} studio-preview-media-block is-thumbnail`} data-preview-block-id={thumbnailBlock.id} data-preview-scope="embed" draggable onDragStart={(event) => startPreviewMove(event, 'embed', thumbnailBlock.id)} onDragEnd={endPreviewMove}>
-                          <PreviewImage
-                            className="embed-preview-thumbnail is-interactive"
-                            src={resolvePreviewImageSource(thumbnail)}
-                            alt="Thumbnail preview"
-                            placeholderText={thumbnailUrl ? 'Thumbnail unavailable' : 'No thumbnail'}
-                            onClick={() => focusEditorBlock(thumbnailBlock)}
-                            onContextMenu={thumbnailUrl ? (event) => { event.preventDefault(); event.stopPropagation(); setThumbnailContextMenu({ x: event.clientX, y: event.clientY, url: thumbnailUrl }); } : undefined}
-                            title={thumbnailUrl ? 'Click to edit thumbnail · Right-click to open image' : 'Click to edit thumbnail'}
-                          />
-                          <PreviewRemoveButton label="thumbnail block" disabled={embedBlockHasWires(thumbnailBlock.id)} onClick={() => removePreviewBlock('embed', thumbnailBlock.id)} />
-                        </div>
-                      ) : null}
+                  {!componentsV2Enabled && content ? (
+                    <div className="discord-message-content">
+                      {renderDiscordFormattedText(content)}
                     </div>
+                  ) : null}
 
-                    {imageWire ? <div className="embed-preview-wire-media">{imageWire.token}</div> : imageBlock ? <div className={`${previewBlockClass(imageBlock.id, 'embed')} studio-preview-media-block is-image`} data-preview-block-id={imageBlock.id} data-preview-scope="embed" draggable onDragStart={(event) => startPreviewMove(event, 'embed', imageBlock.id)} onDragEnd={endPreviewMove}>
-                      <PreviewImage
-                        className="embed-preview-image is-interactive"
-                        src={resolvePreviewImageSource(image)}
-                        alt="Image preview"
-                        placeholderText={safePreviewUrl(image) ? 'Image unavailable' : 'No image'}
-                        onClick={() => focusEditorBlock(imageBlock)}
-                        title="Click to edit image"
-                      />
-                      <PreviewRemoveButton label="image block" disabled={embedBlockHasWires(imageBlock.id)} onClick={() => removePreviewBlock('embed', imageBlock.id)} />
-                    </div> : null}
+                  {!componentsV2Enabled && hasEmbedContent ? (
+                    <div
+                      className="embed-preview-card"
+                      style={{ '--embed-preview-accent': color || 'transparent' }}
+                    >
+                      {colorWire && <div className="embed-preview-wire-note">Accent color: <code>{colorWire.token}</code></div>}
+                      <div className="embed-preview-content">
+                        <div className="embed-preview-main">
+                          {/* Author */}
+                          {(author?.name || authorUrlWire || authorIconWire) && (
+                            <div
+                              className={`${previewBlockClass(author.id, 'embed')} embed-preview-author is-interactive`}
+                              data-preview-block-id={author.id}
+                              data-preview-scope="embed"
+                              draggable
+                              onDragStart={(event) => startPreviewMove(event, 'embed', author.id)}
+                              onDragEnd={endPreviewMove}
+                              onClick={() => focusEditorBlock(author)}
+                              title="Click to edit author"
+                            >
+                              {!authorIconWire && author.icon && (
+                                <PreviewImage src={resolvePreviewImageSource(author.icon)} alt="Author icon" placeholderText="" className="embed-preview-author-icon" />
+                              )}
+                              {authorLink ? (
+                                <a href={authorLink || undefined} onClick={(e) => { e.preventDefault(); e.stopPropagation(); openEmbedTextEditor(author, 'name', 'Author Name', 256); }}>
+                                  {renderDiscordFormattedText(author.name)}
+                                </a>
+                              ) : (
+                                <span onClick={(event) => { event.stopPropagation(); openEmbedTextEditor(author, 'name', 'Author Name', 256); }}>{renderDiscordFormattedText(author.name)}</span>
+                              )}
+                              {authorIconWire && <code className="embed-preview-wire-label">{authorIconWire.token}</code>}
+                              {authorUrlWire && <code className="embed-preview-wire-label">{authorUrlWire.token}</code>}
+                              <PreviewRemoveButton label="author block" disabled={embedBlockHasWires(author.id)} onClick={() => removePreviewBlock('embed', author.id)} />
+                            </div>
+                          )}
 
-                    {(footer?.text || footerIconWire || timestampLabel) && (
-                      <div
-                        className={`${previewBlockClass(footer?.id, 'embed')} embed-preview-footer is-interactive`}
-                        data-preview-block-id={footer?.id}
-                        data-preview-scope="embed"
-                        draggable={Boolean(footer?.id)}
-                        onDragStart={(event) => footer?.id && startPreviewMove(event, 'embed', footer.id)}
-                        onDragEnd={endPreviewMove}
-                        onClick={() => footer?.id && openEmbedTextEditor(footer, 'text', 'Footer Text', 2048)}
-                        title="Click to edit footer"
-                      >
-                        {!footerIconWire && footer?.icon && (
-                          <PreviewImage src={resolvePreviewImageSource(footer.icon)} alt="Footer icon" placeholderText="" className="embed-preview-footer-icon" />
-                        )}
-                        {footerIconWire && <code className="embed-preview-wire-label">{footerIconWire.token}</code>}
-                        {footer?.text && <span onClick={(event) => { event.stopPropagation(); openEmbedTextEditor(footer, 'text', 'Footer Text', 2048); }}>{renderDiscordFormattedText(footer.text)}</span>}
-                        {footer?.text && timestampLabel && (
-                          <span className="embed-preview-footer-dot">•</span>
-                        )}
-                        {timestampLabel && (
-                          <time dateTime={timestamp && !Number.isNaN(new Date(timestamp).getTime()) ? new Date(timestamp).toISOString() : undefined}>{timestampLabel}</time>
-                        )}
-                        <PreviewRemoveButton label="footer block" disabled={embedBlockHasWires(footer?.id)} onClick={() => removePreviewBlock('embed', footer?.id)} />
+                          {title && (
+                            <div
+                              className={`${previewBlockClass(previewItems.find((block) => block.type === 'title')?.id, 'embed')} embed-preview-title-wrapper is-interactive`}
+                              data-preview-block-id={previewItems.find((block) => block.type === 'title')?.id}
+                              data-preview-scope="embed"
+                              draggable
+                              onDragStart={(event) => startPreviewMove(event, 'embed', previewItems.find((block) => block.type === 'title')?.id)}
+                              onDragEnd={endPreviewMove}
+                              onClick={() => openEmbedTextEditor(previewItems.find((block) => block.type === 'title'), 'value', 'Title Text', 256)}
+                              title="Click to edit title"
+                            >
+                              {titleLink ? (
+                                <a className="embed-preview-title" href={titleLink || undefined} onClick={(e) => { e.preventDefault(); e.stopPropagation(); openEmbedTextEditor(previewItems.find((block) => block.type === 'title'), 'value', 'Title Text', 256); }}>
+                                  {renderDiscordFormattedText(title)}
+                                </a>
+                              ) : (
+                                <strong className="embed-preview-title">{renderDiscordFormattedText(title)}</strong>
+                              )}
+                              <PreviewRemoveButton label="title block" disabled={embedBlockHasWires(previewItems.find((block) => block.type === 'title')?.id)} onClick={() => removePreviewBlock('embed', previewItems.find((block) => block.type === 'title')?.id)} />
+                            </div>
+                          )}
+                          {titleUrlWire && <code className="embed-preview-wire-label is-block">Title URL: {titleUrlWire.token}</code>}
+
+                          {description && (
+                            <div
+                              className={`${previewBlockClass(previewItems.find((block) => block.type === 'description')?.id, 'embed')} embed-preview-description is-interactive`}
+                              data-preview-block-id={previewItems.find((block) => block.type === 'description')?.id}
+                              data-preview-scope="embed"
+                              draggable
+                              onDragStart={(event) => startPreviewMove(event, 'embed', previewItems.find((block) => block.type === 'description')?.id)}
+                              onDragEnd={endPreviewMove}
+                              onClick={() => openEmbedTextEditor(previewItems.find((block) => block.type === 'description'), 'value', 'Message Description', 4096)}
+                              title="Click to edit description"
+                            >
+                              <p>{renderDiscordFormattedText(description)}</p>
+                              <PreviewRemoveButton label="description block" disabled={embedBlockHasWires(previewItems.find((block) => block.type === 'description')?.id)} onClick={() => removePreviewBlock('embed', previewItems.find((block) => block.type === 'description')?.id)} />
+                            </div>
+                          )}
+
+                          {!!fields.length && (
+                            <div className="embed-preview-fields">
+                              {fields.map((field) => (
+                                <div
+                                  key={field.id}
+                                  className={`${previewBlockClass(field.id, 'embed')} embed-preview-field ${field.inline ? 'is-inline' : 'is-full'} is-interactive`}
+                                  data-preview-block-id={field.id}
+                                  data-preview-scope="embed"
+                                  draggable
+                                  onDragStart={(event) => startPreviewMove(event, 'embed', field.id)}
+                                  onDragEnd={endPreviewMove}
+                                  title="Click to edit field"
+                                >
+                                  <b onClick={(event) => { event.stopPropagation(); openEmbedTextEditor(field, 'name', 'Field Name', 256); }}>{renderDiscordFormattedText(field.name || 'Field name')}</b>
+                                  <span onClick={(event) => { event.stopPropagation(); openEmbedTextEditor(field, 'value', 'Field Value', 1024); }}>{renderDiscordFormattedText(field.value || 'Field value')}</span>
+                                  <PreviewRemoveButton label="field block" disabled={embedBlockHasWires(field.id)} onClick={() => removePreviewBlock('embed', field.id)} />
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
+                        {thumbnailWire ? <div className="embed-preview-wire-media is-thumbnail">{thumbnailWire.token}</div> : thumbnailBlock ? (
+                          <div className={`${previewBlockClass(thumbnailBlock.id, 'embed')} studio-preview-media-block is-thumbnail`} data-preview-block-id={thumbnailBlock.id} data-preview-scope="embed" draggable onDragStart={(event) => startPreviewMove(event, 'embed', thumbnailBlock.id)} onDragEnd={endPreviewMove}>
+                            <PreviewImage
+                              className="embed-preview-thumbnail is-interactive"
+                              src={resolvePreviewImageSource(thumbnail)}
+                              alt="Thumbnail preview"
+                              placeholderText={thumbnailUrl ? 'Thumbnail unavailable' : 'No thumbnail'}
+                              onClick={() => focusEditorBlock(thumbnailBlock)}
+                              onContextMenu={thumbnailUrl ? (event) => { event.preventDefault(); event.stopPropagation(); setThumbnailContextMenu({ x: event.clientX, y: event.clientY, url: thumbnailUrl }); } : undefined}
+                              title={thumbnailUrl ? 'Click to edit thumbnail · Right-click to open image' : 'Click to edit thumbnail'}
+                            />
+                            <PreviewRemoveButton label="thumbnail block" disabled={embedBlockHasWires(thumbnailBlock.id)} onClick={() => removePreviewBlock('embed', thumbnailBlock.id)} />
+                          </div>
+                        ) : null}
                       </div>
-                    )}
-                  </div>
-                ) : !componentsV2Enabled && !components.length && !content ? (
-                  <div className="embed-preview-empty-card">
-                    <p>Your message has no content yet.</p>
-                    <span>Add embed blocks or interactive buttons from the editor on the left.</span>
-                  </div>
-                ) : null}
 
-                {!componentsV2Enabled && components.slice(0, 5).map((sourceRow, rowIndex) => {
-                  const row = toDiscordComponents([sourceRow], appEmojis)[0] || { components: [] };
+                      {imageWire ? <div className="embed-preview-wire-media">{imageWire.token}</div> : imageBlock ? <div className={`${previewBlockClass(imageBlock.id, 'embed')} studio-preview-media-block is-image`} data-preview-block-id={imageBlock.id} data-preview-scope="embed" draggable onDragStart={(event) => startPreviewMove(event, 'embed', imageBlock.id)} onDragEnd={endPreviewMove}>
+                        <PreviewImage
+                          className="embed-preview-image is-interactive"
+                          src={resolvePreviewImageSource(image)}
+                          alt="Image preview"
+                          placeholderText={safePreviewUrl(image) ? 'Image unavailable' : 'No image'}
+                          onClick={() => focusEditorBlock(imageBlock)}
+                          title="Click to edit image"
+                        />
+                        <PreviewRemoveButton label="image block" disabled={embedBlockHasWires(imageBlock.id)} onClick={() => removePreviewBlock('embed', imageBlock.id)} />
+                      </div> : null}
 
-                  return (
-                    <div className={`discord-action-row ${previewBlockClass(sourceRow?.id, 'components')} ${previewDropTarget?.id === sourceRow?.id && previewDropTarget?.placement === 'inside' ? 'is-drop-target' : ''}`} key={sourceRow?.id || rowIndex} data-preview-block-id={sourceRow?.id} data-preview-scope="components" draggable={Boolean(sourceRow?.id)} onClick={() => sourceRow?.id && focusComponentRow(sourceRow.id)} onDragStart={(event) => sourceRow?.id && startPreviewMove(event, 'components', sourceRow.id)} onDragEnd={endPreviewMove}>
-                      {!row.components.length && <div className="discord-preview-empty-action-row">
-                        <span>Action row {rowIndex + 1}</span>
-                        <button type="button" className="discord-preview-add-button" onClick={(event) => { event.stopPropagation(); addButtonToRow(sourceRow.id); }}>
-                          <Plus size={13} /> Button
-                        </button>
-                      </div>}
-                      {row.components.map((component, componentIndex) => {
-                        const originalComponent = sourceRow?.components?.[componentIndex];
-                        const componentId = originalComponent?.id || `comp_${rowIndex}_${componentIndex}`;
+                      {(footer?.text || footerIconWire || timestampLabel) && (
+                        <div
+                          className={`${previewBlockClass(footer?.id, 'embed')} embed-preview-footer is-interactive`}
+                          data-preview-block-id={footer?.id}
+                          data-preview-scope="embed"
+                          draggable={Boolean(footer?.id)}
+                          onDragStart={(event) => footer?.id && startPreviewMove(event, 'embed', footer.id)}
+                          onDragEnd={endPreviewMove}
+                          onClick={() => footer?.id && openEmbedTextEditor(footer, 'text', 'Footer Text', 2048)}
+                          title="Click to edit footer"
+                        >
+                          {!footerIconWire && footer?.icon && (
+                            <PreviewImage src={resolvePreviewImageSource(footer.icon)} alt="Footer icon" placeholderText="" className="embed-preview-footer-icon" />
+                          )}
+                          {footerIconWire && <code className="embed-preview-wire-label">{footerIconWire.token}</code>}
+                          {footer?.text && <span onClick={(event) => { event.stopPropagation(); openEmbedTextEditor(footer, 'text', 'Footer Text', 2048); }}>{renderDiscordFormattedText(footer.text)}</span>}
+                          {footer?.text && timestampLabel && (
+                            <span className="embed-preview-footer-dot">•</span>
+                          )}
+                          {timestampLabel && (
+                            <time dateTime={timestamp && !Number.isNaN(new Date(timestamp).getTime()) ? new Date(timestamp).toISOString() : undefined}>{timestampLabel}</time>
+                          )}
+                          <PreviewRemoveButton label="footer block" disabled={embedBlockHasWires(footer?.id)} onClick={() => removePreviewBlock('embed', footer?.id)} />
+                        </div>
+                      )}
+                    </div>
+                  ) : !componentsV2Enabled && !components.length && !content ? (
+                    <div className="embed-preview-empty-card">
+                      <p>Your message has no content yet.</p>
+                      <span>Add embed blocks or interactive buttons from the editor on the left.</span>
+                    </div>
+                  ) : null}
 
-                        if (component.type === 2) {
-                          const styleClass = `is-style-${component.style === 5 ? 'link' : component.style === 1 ? 'primary' : component.style === 3 ? 'success' : component.style === 4 ? 'danger' : 'secondary'}`;
-                          const isLink = component.style === 5;
-                          const buttonEmoji = originalComponent?.emoji || component.emoji;
+                  {!componentsV2Enabled && components.slice(0, 5).map((sourceRow, rowIndex) => {
+                    const row = toDiscordComponents([sourceRow], appEmojis)[0] || { components: [] };
+
+                    return (
+                      <div className={`discord-action-row ${previewBlockClass(sourceRow?.id, 'components')} ${previewDropTarget?.id === sourceRow?.id && previewDropTarget?.placement === 'inside' ? 'is-drop-target' : ''}`} key={sourceRow?.id || rowIndex} data-preview-block-id={sourceRow?.id} data-preview-scope="components" draggable={Boolean(sourceRow?.id)} onClick={() => sourceRow?.id && focusComponentRow(sourceRow.id)} onDragStart={(event) => sourceRow?.id && startPreviewMove(event, 'components', sourceRow.id)} onDragEnd={endPreviewMove}>
+                        {!row.components.length && <div className="discord-preview-empty-action-row">
+                          <span>Action row {rowIndex + 1}</span>
+                          <button type="button" className="discord-preview-add-button" onClick={(event) => { event.stopPropagation(); addButtonToRow(sourceRow.id); }}>
+                            <Plus size={13} /> Button
+                          </button>
+                        </div>}
+                        {row.components.map((component, componentIndex) => {
+                          const originalComponent = sourceRow?.components?.[componentIndex];
+                          const componentId = originalComponent?.id || `comp_${rowIndex}_${componentIndex}`;
+
+                          if (component.type === 2) {
+                            const styleClass = `is-style-${component.style === 5 ? 'link' : component.style === 1 ? 'primary' : component.style === 3 ? 'success' : component.style === 4 ? 'danger' : 'secondary'}`;
+                            const isLink = component.style === 5;
+                            const buttonEmoji = originalComponent?.emoji || component.emoji;
+
+                            return (
+                              <div key={componentId} className={`discord-preview-component-wrap ${selectedComponentId === originalComponent?.id ? 'is-selected' : ''}`}>
+                                <button
+                                  type="button"
+                                  className={`discord-message-btn ${styleClass} ${component.disabled ? 'is-disabled' : ''}`}
+                                  onClick={(event) => { event.stopPropagation(); if (originalComponent?.id) openButtonEditor({ scope: 'standard', rowId: sourceRow.id, buttonId: originalComponent.id }, originalComponent); }}
+                                  onContextMenu={(event) => { event.preventDefault(); if (originalComponent?.id) openButtonEditor({ scope: 'standard', rowId: sourceRow.id, buttonId: originalComponent.id }, originalComponent); }}
+                                  title={originalComponent?.id ? `Configure button "${component.label || 'Button'}"` : undefined}
+                                >
+                                  {buttonEmoji && (
+                                    <span className="discord-btn-emoji">
+                                      {renderComponentEmoji(buttonEmoji, appEmojis)}
+                                    </span>
+                                  )}
+                                  {component.label && <span>{renderDiscordFormattedText(component.label)}</span>}
+                                  {isLink && <ExternalLink size={13} className="discord-btn-link-icon" />}
+                                </button>
+                                <PreviewRemoveButton label="button" onClick={() => removePreviewComponent('components', sourceRow.id, originalComponent?.id, componentIndex)} />
+                              </div>
+                            );
+                          }
+
+                          const isExpanded = expandedSelectMenuId === componentId;
+                          const selectedVal = selectedMenuValues[componentId];
+                          const selectedOption = originalComponent?.options?.find((o) => o.value === selectedVal);
 
                           return (
-                            <div key={componentId} className={`discord-preview-component-wrap ${selectedComponentId === originalComponent?.id ? 'is-selected' : ''}`}>
-                              <button
-                                type="button"
-                                className={`discord-message-btn ${styleClass} ${component.disabled ? 'is-disabled' : ''}`}
-                                onClick={(event) => { event.stopPropagation(); if (originalComponent?.id) openButtonEditor({ scope: 'standard', rowId: sourceRow.id, buttonId: originalComponent.id }, originalComponent); }}
-                                onContextMenu={(event) => { event.preventDefault(); if (originalComponent?.id) openButtonEditor({ scope: 'standard', rowId: sourceRow.id, buttonId: originalComponent.id }, originalComponent); }}
-                                title={originalComponent?.id ? `Configure button "${component.label || 'Button'}"` : undefined}
-                              >
-                                {buttonEmoji && (
-                                  <span className="discord-btn-emoji">
-                                    {renderComponentEmoji(buttonEmoji, appEmojis)}
-                                  </span>
-                                )}
-                                {component.label && <span>{renderDiscordFormattedText(component.label)}</span>}
-                                {isLink && <ExternalLink size={13} className="discord-btn-link-icon" />}
-                              </button>
-                              <PreviewRemoveButton label="button" onClick={() => removePreviewComponent('components', sourceRow.id, originalComponent?.id, componentIndex)} />
-                            </div>
-                          );
-                        }
+                            <div
+                              key={componentId}
+                              className={`discord-message-select ${isExpanded ? 'is-expanded' : ''}`}
+                              onClick={() => setExpandedSelectMenuId((prev) => prev === componentId ? null : componentId)}
+                              title={isExpanded ? 'Click to close menu' : 'Click to preview select menu options'}
+                            >
+                              <div className="discord-select-trigger">
+                                <span className="discord-select-placeholder">
+                                  {selectedOption ? (
+                                    <span className="discord-select-selected-val">
+                                      {selectedOption.emoji && (
+                                        <span className="discord-select-item-emoji">{renderDiscordFormattedText(selectedOption.emoji)}</span>
+                                      )}
+                                      {renderDiscordFormattedText(selectedOption.label || selectedOption.value)}
+                                    </span>
+                                  ) : (
+                                    component.placeholder || 'Select an option…'
+                                  )}
+                                </span>
+                                <span className="discord-select-chevron">{isExpanded ? '⌃' : '⌄'}</span>
+                              </div>
 
-                        const isExpanded = expandedSelectMenuId === componentId;
-                        const selectedVal = selectedMenuValues[componentId];
-                        const selectedOption = originalComponent?.options?.find((o) => o.value === selectedVal);
-
-                        return (
-                          <div
-                            key={componentId}
-                            className={`discord-message-select ${isExpanded ? 'is-expanded' : ''}`}
-                            onClick={() => setExpandedSelectMenuId((prev) => prev === componentId ? null : componentId)}
-                            title={isExpanded ? 'Click to close menu' : 'Click to preview select menu options'}
-                          >
-                            <div className="discord-select-trigger">
-                              <span className="discord-select-placeholder">
-                                {selectedOption ? (
-                                  <span className="discord-select-selected-val">
-                                    {selectedOption.emoji && (
-                                      <span className="discord-select-item-emoji">{renderDiscordFormattedText(selectedOption.emoji)}</span>
-                                    )}
-                                    {renderDiscordFormattedText(selectedOption.label || selectedOption.value)}
-                                  </span>
-                                ) : (
-                                  component.placeholder || 'Select an option…'
-                                )}
-                              </span>
-                              <span className="discord-select-chevron">{isExpanded ? '⌃' : '⌄'}</span>
-                            </div>
-
-                            {isExpanded && (
-                              <div className="discord-preview-select-popover" onClick={(e) => e.stopPropagation()}>
-                                {originalComponent?.options?.length ? (
-                                  originalComponent.options.map((opt, optIdx) => {
-                                    const isOptSelected = selectedVal === opt.value;
-                                    return (
-                                      <div
-                                        key={optIdx}
-                                        className={`discord-preview-select-item ${isOptSelected ? 'is-selected' : ''}`}
+                              {isExpanded && (
+                                <div className="discord-preview-select-popover" onClick={(e) => e.stopPropagation()}>
+                                  {originalComponent?.options?.length ? (
+                                    originalComponent.options.map((opt, optIdx) => {
+                                      const isOptSelected = selectedVal === opt.value;
+                                      return (
+                                        <div
+                                          key={optIdx}
+                                          className={`discord-preview-select-item ${isOptSelected ? 'is-selected' : ''}`}
+                                          onClick={() => {
+                                            setSelectedMenuValues((prev) => ({ ...prev, [componentId]: opt.value }));
+                                            setExpandedSelectMenuId(null);
+                                          }}
+                                        >
+                                          {opt.emoji && (
+                                            <span className="discord-select-item-emoji">{renderDiscordFormattedText(opt.emoji)}</span>
+                                          )}
+                                          <div className="discord-select-item-text">
+                                            <strong className="discord-select-item-label">{renderDiscordFormattedText(opt.label || opt.value)}</strong>
+                                            {opt.description && (
+                                              <span className="discord-select-item-desc">{renderDiscordFormattedText(opt.description)}</span>
+                                            )}
+                                          </div>
+                                          {isOptSelected && <span className="discord-select-item-check">✓</span>}
+                                        </div>
+                                      );
+                                    })
+                                  ) : (
+                                    <div className="discord-preview-select-empty">
+                                      <span>No options configured yet</span>
+                                      <button
+                                        type="button"
+                                        className="discord-preview-add-opt-link"
                                         onClick={() => {
-                                          setSelectedMenuValues((prev) => ({ ...prev, [componentId]: opt.value }));
                                           setExpandedSelectMenuId(null);
+                                          originalComponent?.id && focusComponent(originalComponent.id);
                                         }}
                                       >
-                                        {opt.emoji && (
-                                          <span className="discord-select-item-emoji">{renderDiscordFormattedText(opt.emoji)}</span>
-                                        )}
-                                        <div className="discord-select-item-text">
-                                          <strong className="discord-select-item-label">{renderDiscordFormattedText(opt.label || opt.value)}</strong>
-                                          {opt.description && (
-                                            <span className="discord-select-item-desc">{renderDiscordFormattedText(opt.description)}</span>
-                                          )}
-                                        </div>
-                                        {isOptSelected && <span className="discord-select-item-check">✓</span>}
-                                      </div>
-                                    );
-                                  })
-                                ) : (
-                                  <div className="discord-preview-select-empty">
-                                    <span>No options configured yet</span>
-                                    <button
-                                      type="button"
-                                      className="discord-preview-add-opt-link"
-                                      onClick={() => {
-                                        setExpandedSelectMenuId(null);
-                                        originalComponent?.id && focusComponent(originalComponent.id);
-                                      }}
-                                    >
-                                      Configure in inspector
-                                    </button>
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                      {row.components.length > 0 && row.components.length < 5 && !row.components.some((item) => item.type !== 2) && <button type="button" className="discord-preview-add-button" onClick={(event) => { event.stopPropagation(); addButtonToRow(sourceRow.id); }}><Plus size={13} /> Button</button>}
-                      {previewDropTarget?.id === sourceRow?.id && previewDropTarget?.hint && <span className="discord-preview-drop-hint">{previewDropTarget.hint}</span>}
-                      <PreviewRemoveButton label="component row" onClick={() => removePreviewBlock('components', sourceRow?.id)} />
-                    </div>
-                  );
-                })}
+                                        Configure in inspector
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                        {row.components.length > 0 && row.components.length < 5 && !row.components.some((item) => item.type !== 2) && <button type="button" className="discord-preview-add-button" onClick={(event) => { event.stopPropagation(); addButtonToRow(sourceRow.id); }}><Plus size={13} /> Button</button>}
+                        {previewDropTarget?.id === sourceRow?.id && previewDropTarget?.hint && <span className="discord-preview-drop-hint">{previewDropTarget.hint}</span>}
+                        <PreviewRemoveButton label="component row" onClick={() => removePreviewBlock('components', sourceRow?.id)} />
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             </div>
-          </div>
-        </aside>
-      </div>
-    </section>
-    <Modal isOpen={discardPromptOpen} onClose={() => { setDiscardPromptOpen(false); notifyStudioSwitchCancelled(); }} title="Discard studio changes?" subtitle="These edits have not been applied to the graph." footer={<><Button variant="secondary" onClick={() => { setDiscardPromptOpen(false); notifyStudioSwitchCancelled(); }}>Keep editing</Button><Button variant="danger" onClick={onClose}>Discard changes</Button></>}><p className="close-graph-copy">Your graph stays unchanged until you choose Apply.</p></Modal>
-    {thumbnailContextMenu && createPortal(
-      <div className="canvas-context-menu embed-thumbnail-context-menu" role="menu" style={{ position: 'fixed', left: thumbnailContextMenu.x, top: thumbnailContextMenu.y, zIndex: 10000 }} onPointerDown={(event) => event.stopPropagation()}>
-        <button role="menuitem" onClick={() => { window.open(thumbnailContextMenu.url, '_blank', 'noopener,noreferrer'); setThumbnailContextMenu(null); }}><ExternalLink size={14} /> Open image in browser</button>
-      </div>,
-      document.body
-    )}
-    {v2ContainerContextMenu && createPortal(
-      <div ref={v2ContainerContextMenuRef} className="canvas-context-menu" role="menu" style={{ position: 'fixed', left: v2ContainerContextMenu.x, top: v2ContainerContextMenu.y, zIndex: 10000 }} onPointerDown={(event) => event.stopPropagation()}>
-        <button role="menuitem" onClick={() => { focusV2Block(v2ContainerContextMenu.blockId); setV2ContainerContextMenu(null); }}><Layers size={14} /> Edit container settings</button>
-      </div>,
-      document.body
-    )}
-    {galleryViewer && (() => {
-      const gallery = findV2Block(componentsV2Layout, galleryViewer.blockId);
-      const item = gallery?.items?.[galleryViewer.index];
-      if (!item) return null;
-      const { file, asset } = mediaForUrl(item.url);
-      const assetId = file?.assetId || file?.id || asset?.id;
-      const videoSource = file?.data || loadedMediaById[assetId]?.data || '';
-      const isVideo = String(file?.contentType || asset?.contentType || '').startsWith('video/');
-      const isZoomed = galleryZoom?.blockId === galleryViewer.blockId && galleryZoom?.index === galleryViewer.index;
-      return createPortal(<div className={`discord-gallery-lightbox${galleryClosing ? ' is-closing' : ''}${isZoomed ? ' is-image-zoomed' : ''}`} role="dialog" aria-modal="true" aria-label={`Image ${galleryViewer.index + 1} of ${gallery.items.length}`} onClick={(event) => { if (event.target === event.currentTarget) closeGalleryViewer(); }}>
-        <button type="button" className="discord-gallery-lightbox-close" aria-label="Close image viewer" title="Close image viewer" onClick={closeGalleryViewer}><X size={20} /></button>
-        {gallery.items.length > 1 && <button type="button" className="discord-gallery-lightbox-nav is-previous" aria-label="Previous image" onClick={() => setGalleryViewer((current) => ({ ...current, index: (current.index - 1 + gallery.items.length) % gallery.items.length }))}><ChevronLeft size={26} /></button>}
-        <figure className="discord-gallery-lightbox-content" onClick={(event) => { if (event.target === event.currentTarget) closeGalleryViewer(); }}>
-          {isVideo ? videoSource ? <video className="project-media-viewer-video" src={videoSource} controls playsInline preload="metadata" aria-label={file?.filename || `Video ${galleryViewer.index + 1}`} /> : <div className="discord-gallery-lightbox-image-frame"><span>Loading video…</span></div>
-            : <div className={`discord-gallery-lightbox-image-frame ${galleryZoom?.blockId === galleryViewer.blockId && galleryZoom?.index === galleryViewer.index ? 'is-zoomed' : ''}`} role="button" tabIndex={0} aria-label={galleryZoom?.blockId === galleryViewer.blockId && galleryZoom?.index === galleryViewer.index ? 'Zoom out' : 'Zoom in at pointer'} aria-pressed={galleryZoom?.blockId === galleryViewer.blockId && galleryZoom?.index === galleryViewer.index} title="Click to zoom in or out" onClick={(event) => {
-              if (event.target?.classList?.contains('discord-gallery-lightbox-image')) toggleGalleryZoom(event);
-              else if (isZoomed) setGalleryZoom(null);
-              else closeGalleryViewer();
-            }} onKeyDown={handleGalleryZoomKeyDown}>
-              <PreviewImage src={resolvePreviewImageSource(item.url)} className={`discord-gallery-lightbox-image ${galleryZoom?.blockId === galleryViewer.blockId && galleryZoom?.index === galleryViewer.index ? 'is-zoomed' : ''}`} style={{ transformOrigin: `${galleryZoom?.originX ?? 50}% ${galleryZoom?.originY ?? 50}%` }} alt={item.description || `Gallery image ${galleryViewer.index + 1}`} placeholderText="Image unavailable" />
-            </div>}
-          {item.description && <figcaption>{item.description}</figcaption>}
-          {gallery.items.length > 1 && <small>{galleryViewer.index + 1} / {gallery.items.length}</small>}
-        </figure>
-        {gallery.items.length > 1 && <button type="button" className="discord-gallery-lightbox-nav is-next" aria-label="Next image" onClick={() => setGalleryViewer((current) => ({ ...current, index: (current.index + 1) % gallery.items.length }))}><ChevronRight size={26} /></button>}
-      </div>, document.body);
-    })()}
+          </aside>
+        </div>
+      </section>
+      <Modal isOpen={discardPromptOpen} onClose={() => { setDiscardPromptOpen(false); notifyStudioSwitchCancelled(); }} title="Discard studio changes?" subtitle="These edits have not been applied to the graph." footer={<><Button variant="secondary" onClick={() => { setDiscardPromptOpen(false); notifyStudioSwitchCancelled(); }}>Keep editing</Button><Button variant="danger" onClick={onClose}>Discard changes</Button></>}><p className="close-graph-copy">Your graph stays unchanged until you choose Apply.</p></Modal>
+      {thumbnailContextMenu && createPortal(
+        <div className="canvas-context-menu embed-thumbnail-context-menu" role="menu" style={{ position: 'fixed', left: thumbnailContextMenu.x, top: thumbnailContextMenu.y, zIndex: 10000 }} onPointerDown={(event) => event.stopPropagation()}>
+          <button role="menuitem" onClick={() => { window.open(thumbnailContextMenu.url, '_blank', 'noopener,noreferrer'); setThumbnailContextMenu(null); }}><ExternalLink size={14} /> Open image in browser</button>
+        </div>,
+        document.body
+      )}
+      {v2ContainerContextMenu && createPortal(
+        <div ref={v2ContainerContextMenuRef} className="canvas-context-menu" role="menu" style={{ position: 'fixed', left: v2ContainerContextMenu.x, top: v2ContainerContextMenu.y, zIndex: 10000 }} onPointerDown={(event) => event.stopPropagation()}>
+          <button role="menuitem" onClick={() => { focusV2Block(v2ContainerContextMenu.blockId); setV2ContainerContextMenu(null); }}><Layers size={14} /> Edit container settings</button>
+        </div>,
+        document.body
+      )}
+      {galleryViewer && (() => {
+        const gallery = findV2Block(componentsV2Layout, galleryViewer.blockId);
+        const item = gallery?.items?.[galleryViewer.index];
+        if (!item) return null;
+        const { file, asset } = mediaForUrl(item.url);
+        const assetId = file?.assetId || file?.id || asset?.id;
+        const videoSource = file?.data || loadedMediaById[assetId]?.data || '';
+        const isVideo = String(file?.contentType || asset?.contentType || '').startsWith('video/');
+        const isZoomed = galleryZoom?.blockId === galleryViewer.blockId && galleryZoom?.index === galleryViewer.index;
+        return createPortal(<div className={`discord-gallery-lightbox${galleryClosing ? ' is-closing' : ''}${isZoomed ? ' is-image-zoomed' : ''}`} role="dialog" aria-modal="true" aria-label={`Image ${galleryViewer.index + 1} of ${gallery.items.length}`} onClick={(event) => { if (event.target === event.currentTarget) closeGalleryViewer(); }}>
+          <button type="button" className="discord-gallery-lightbox-close" aria-label="Close image viewer" title="Close image viewer" onClick={closeGalleryViewer}><X size={20} /></button>
+          {gallery.items.length > 1 && <button type="button" className="discord-gallery-lightbox-nav is-previous" aria-label="Previous image" onClick={() => setGalleryViewer((current) => ({ ...current, index: (current.index - 1 + gallery.items.length) % gallery.items.length }))}><ChevronLeft size={26} /></button>}
+          <figure className="discord-gallery-lightbox-content" onClick={(event) => { if (event.target === event.currentTarget) closeGalleryViewer(); }}>
+            {isVideo ? videoSource ? <video className="project-media-viewer-video" src={videoSource} controls playsInline preload="metadata" aria-label={file?.filename || `Video ${galleryViewer.index + 1}`} /> : <div className="discord-gallery-lightbox-image-frame"><span>Loading video…</span></div>
+              : <div className={`discord-gallery-lightbox-image-frame ${galleryZoom?.blockId === galleryViewer.blockId && galleryZoom?.index === galleryViewer.index ? 'is-zoomed' : ''}`} role="button" tabIndex={0} aria-label={galleryZoom?.blockId === galleryViewer.blockId && galleryZoom?.index === galleryViewer.index ? 'Zoom out' : 'Zoom in at pointer'} aria-pressed={galleryZoom?.blockId === galleryViewer.blockId && galleryZoom?.index === galleryViewer.index} title="Click to zoom in or out" onClick={(event) => {
+                if (event.target?.classList?.contains('discord-gallery-lightbox-image')) toggleGalleryZoom(event);
+                else if (isZoomed) setGalleryZoom(null);
+                else closeGalleryViewer();
+              }} onKeyDown={handleGalleryZoomKeyDown}>
+                <PreviewImage src={resolvePreviewImageSource(item.url)} className={`discord-gallery-lightbox-image ${galleryZoom?.blockId === galleryViewer.blockId && galleryZoom?.index === galleryViewer.index ? 'is-zoomed' : ''}`} style={{ transformOrigin: `${galleryZoom?.originX ?? 50}% ${galleryZoom?.originY ?? 50}%` }} alt={item.description || `Gallery image ${galleryViewer.index + 1}`} placeholderText="Image unavailable" />
+              </div>}
+            {item.description && <figcaption>{item.description}</figcaption>}
+            {gallery.items.length > 1 && <small>{galleryViewer.index + 1} / {gallery.items.length}</small>}
+          </figure>
+          {gallery.items.length > 1 && <button type="button" className="discord-gallery-lightbox-nav is-next" aria-label="Next image" onClick={() => setGalleryViewer((current) => ({ ...current, index: (current.index + 1) % gallery.items.length }))}><ChevronRight size={26} /></button>}
+        </div>, document.body);
+      })()}
     </>
   );
 }
