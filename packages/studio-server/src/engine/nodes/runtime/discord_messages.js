@@ -114,7 +114,11 @@ export async function executeDiscordMessageNode(node, {
         payload.components = components;
       }
     }
-    if (files?.length) payload.files = files;
+    if (files?.length) {
+      payload.files = files;
+    } else if (isInputConnected('files')) {
+      payload.attachments = [];
+    }
 
     log(`[Action Edit Message] Editing message ${messageId} in channel ${channelId}`);
     const editedMessage = await rest.editMessage(channelId, messageId, payload);
