@@ -63,10 +63,61 @@ function finishSimulationOverlay(current, payload) {
   };
 }
 function getNextProjectGraphName(graphs) {
-  const existingNames = new Set(graphs.map((graph) => String(graph.name || '').trim().toLowerCase()));
-  let number = 1;
-  while (existingNames.has(`graph ${number}`)) number += 1;
-  return `Graph ${number}`;
+  const allGraphs = Array.isArray(graphs) ? graphs : [];
+  const existingNames = new Set(allGraphs.map((graph) => String(graph?.name || '').trim().toLowerCase()));
+  const usedNumbers = new Set();
+  let maxNumber = 0;
+  for (const graph of allGraphs) {
+    const clean = String(graph?.name || '').trim();
+    const match = clean.match(/^graph[_\s-]?(\d+)$/i);
+    if (match) {
+      const num = parseInt(match[1], 10);
+      if (Number.isFinite(num) && num > 0) {
+        usedNumbers.add(num);
+        if (num > maxNumber) maxNumber = num;
+      }
+    }
+  }
+  let nextNum = maxNumber > 0 ? maxNumber + 1 : 1;
+  while (
+    usedNumbers.has(nextNum) ||
+    existingNames.has(`graph ${nextNum}`) ||
+    existingNames.has(`graph_${nextNum}`) ||
+    existingNames.has(`graph-${nextNum}`) ||
+    existingNames.has(`graph${nextNum}`)
+  ) {
+    nextNum += 1;
+  }
+  return `Graph ${nextNum}`;
+}
+
+function getNextFunctionGraphName(graphs) {
+  const allGraphs = Array.isArray(graphs) ? graphs : [];
+  const existingNames = new Set(allGraphs.map((graph) => String(graph?.name || '').trim().toLowerCase()));
+  const usedNumbers = new Set();
+  let maxNumber = 0;
+  for (const graph of allGraphs) {
+    const clean = String(graph?.name || '').trim();
+    const match = clean.match(/^function[_\s-]?(\d+)$/i);
+    if (match) {
+      const num = parseInt(match[1], 10);
+      if (Number.isFinite(num) && num > 0) {
+        usedNumbers.add(num);
+        if (num > maxNumber) maxNumber = num;
+      }
+    }
+  }
+  let nextNum = maxNumber > 0 ? maxNumber + 1 : 1;
+  while (
+    usedNumbers.has(nextNum) ||
+    existingNames.has(`function_${nextNum}`) ||
+    existingNames.has(`function ${nextNum}`) ||
+    existingNames.has(`function-${nextNum}`) ||
+    existingNames.has(`function${nextNum}`)
+  ) {
+    nextNum += 1;
+  }
+  return `Function_${nextNum}`;
 }
 async function readArcFilePayload(file, contentType) {
   let bytes = null;
@@ -1096,6 +1147,7 @@ export function App() {
   const [paletteNodePosition, setPaletteNodePosition] = useState(null);
   const viewportCenterRef = useRef({ x: 0, y: 0 });
   const [isLibraryOpen, setIsLibraryOpen] = useState(false);
+  const [isControlDockOpen, setIsControlDockOpen] = useState(false);
   const [librarySection, setLibrarySection] = useState('graphs');
   const [sidebarWidths, setSidebarWidths] = useState(readSidebarWidths);
   const [nameDialog, setNameDialog] = useState(null);
@@ -2275,7 +2327,7 @@ export function App() {
   const discordTextStudioOpenForActiveGraph = Boolean(discordTextStudio && discordTextStudio.graphId === activeTabId && discordTextStudio.projectId === activeProjectId);
   const permissionStudioOpenForActiveGraph = Boolean(permissionStudio && permissionStudio.graphId === activeTabId && permissionStudio.projectId === activeProjectId);
   const slashCommandStudioOpenForActiveGraph = Boolean(slashCommandStudio && slashCommandStudio.graphId === activeTabId && slashCommandStudio.projectId === activeProjectId);
-  const modalStudioOpenForActiveGraph = Boolean(modalStudio && modalStudio.graphId === activeTabId && modalStudio.projectId === activeProjectId);
+  const modalStudioOpenForActiveGraph = Boolean(modalStudio && (modalStudio.mode === 'asset' || modalStudio.mode === 'new' ? modalStudio.projectId === activeProjectId : (modalStudio.graphId === activeTabId && modalStudio.projectId === activeProjectId)));
   const embedTemplateSuggestions = useMemo(() => {
     if (!embedStudio?.nodeId) return [];
     const argumentNumbers = new Set(activeConnections
@@ -3092,6 +3144,15 @@ export function App() {
       limiter.queue.shift()?.();
     }
   };
+
+  useEffect(() => {
+    window.__arcUploadProjectMedia = uploadProjectMedia;
+    return () => {
+      if (window.__arcUploadProjectMedia === uploadProjectMedia) {
+        delete window.__arcUploadProjectMedia;
+      }
+    };
+  }, [uploadProjectMedia]);
 
   const downloadProjectMedia = async (asset) => {
     const response = await fetch(apiUrl(`/api/media-assets/${encodeURIComponent(asset.id)}/download`), { headers: { 'x-arc-token': authToken } });
@@ -5036,11 +5097,16 @@ export function App() {
       arcEvents.emit('toast:notify', { title: 'Graph tab limit reached', message: 'Close a tab before duplicating this graph.', type: 'warning' });
       return;
     }
-    const baseName = `${sourceGraph.name || 'Untitled graph'} copy`;
-    const existingNames = new Set([...savedGraphs, ...tabs].map((graph) => String(graph.name || '').toLowerCase()));
+    const isFunction = sourceGraph.graphType === 'function';
+    const baseName = isFunction
+      ? `${sourceGraph.name || 'Function'}_copy`
+      : `${sourceGraph.name || 'Untitled graph'} copy`;
+    const existingNames = new Set([...savedGraphs, ...tabs].map((graph) => String(graph.name || '').trim().toLowerCase()));
     let name = baseName;
     let suffix = 2;
-    while (existingNames.has(name.toLowerCase())) name = `${baseName} ${suffix++}`;
+    while (existingNames.has(name.toLowerCase())) {
+      name = isFunction ? `${baseName}_${suffix++}` : `${baseName} ${suffix++}`;
+    }
     const clone = structuredClone(sourceGraph);
     const id = `graph_${globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
     const nodeIds = new Map((clone.nodes || []).map((node) => [node.id, `node_${globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`}`]));
@@ -5236,13 +5302,11 @@ export function App() {
       return;
     }
     const graphId = createEditorId('function');
-    const usedFunctionNames = new Set(functionGraphs.map((item) => item.name?.toLowerCase()).filter(Boolean));
-    let functionNameIndex = functionGraphs.length + 1;
-    while (usedFunctionNames.has(`function_${functionNameIndex}`.toLowerCase())) functionNameIndex += 1;
+    const functionName = getNextFunctionGraphName([...savedGraphs, ...tabs]);
     const graph = {
       id: graphId,
       graphType: 'function',
-      name: `Function_${functionNameIndex}`,
+      name: functionName,
       variables: [],
       nodes: [
         { id: `${graphId}_input`, type: 'function_input', label: 'Function Input', x: 72, y: 145, data: { arguments: [
@@ -5267,7 +5331,7 @@ export function App() {
     setActiveTabId(graphId);
     rememberUserGraph(graphId);
     setIsLibraryOpen(false);
-  }, [authToken, functionGraphs, needsSetup, rememberUserGraph, tabs.length, workspaceHydrated]);
+  }, [authToken, needsSetup, rememberUserGraph, savedGraphs, tabs, workspaceHydrated]);
 
   const handleSaveGraphTemplate = useCallback(async (graph) => {
     if (!authToken || !graph) return;
@@ -5898,7 +5962,7 @@ export function App() {
     if (isLocked || !canWriteGraphs || activeGraph?.enabled === false) return;
     const requestedTypes = payload?.type === 'multi-node'
       ? payload.nodeTypes || []
-      : [payload?.type === 'graph-call' ? 'function_call' : payload?.type === 'prefab' ? nodePrefabs.find((item) => item.id === payload.prefabId)?.node?.type : payload?.type === 'embed-asset' ? 'build_embed' : payload?.type === 'variable-get' ? 'variable_get' : payload?.nodeType].filter(Boolean);
+      : [payload?.type === 'graph-call' ? 'function_call' : payload?.type === 'prefab' ? nodePrefabs.find((item) => item.id === payload.prefabId)?.node?.type : payload?.type === 'embed-asset' ? 'build_embed' : payload?.type === 'modal-asset' ? 'build_modal' : payload?.type === 'variable-get' ? 'variable_get' : payload?.nodeType].filter(Boolean);
     if (requestedTypes.length && !requestedTypes.some((type) => isNodeTypeSupported(type, supportedWorkspaceNodeTypes, failedWorkspaceNodeTypes))) return;
     const targetGraph = activeGraph || handleAddBlankGraph();
     if (!targetGraph) return;
@@ -5920,7 +5984,7 @@ export function App() {
       return;
     }
     const placement = position || nodeTopLeftAtCenter(
-      payload?.type === 'graph-call' ? 'function_call' : payload?.type === 'prefab' ? nodePrefabs.find((item) => item.id === payload.prefabId)?.node?.type : payload?.type === 'embed-asset' ? 'build_embed' : payload?.nodeType,
+      payload?.type === 'graph-call' ? 'function_call' : payload?.type === 'prefab' ? nodePrefabs.find((item) => item.id === payload.prefabId)?.node?.type : payload?.type === 'embed-asset' ? 'build_embed' : payload?.type === 'modal-asset' ? 'build_modal' : payload?.nodeType,
       viewportCenterRef.current
     );
     let nodesToAdd = [];
@@ -5943,6 +6007,8 @@ export function App() {
       node = makeNode(prefab.node.type, placement, prefab.node.data, prefab.node.label || prefab.name);
     } else if (payload?.type === 'embed-asset') {
       node = makeNode('build_embed', placement, { blocks: structuredClone(payload.blocks || []), components: structuredClone(payload.components || []), attachments: structuredClone(payload.attachments || []), embedName: payload.name || 'Untitled embed' }, payload.name || 'Embed');
+    } else if (payload?.type === 'modal-asset') {
+      node = makeNode('build_modal', placement, { modal: structuredClone(payload.modal || createDefaultModal()) }, payload.name || 'Show Popup Modal');
     } else {
       node = makeNode(payload?.nodeType, placement);
     }
@@ -5953,7 +6019,7 @@ export function App() {
       for (const type of payload.nodeTypes || []) recordLibraryItemUsage(activeProjectId, 'nodes', type);
     } else if (payload?.type === 'graph-call') {
       recordLibraryItemUsage(activeProjectId, 'graphs', payload.graphId);
-    } else if (payload?.type === 'embed-asset') {
+    } else if (payload?.type === 'embed-asset' || payload?.type === 'modal-asset') {
       recordLibraryItemUsage(activeProjectId, 'embeds', payload.id);
     } else if (payload?.nodeType) {
       recordLibraryItemUsage(activeProjectId, 'nodes', payload.nodeType);
@@ -6343,7 +6409,7 @@ export function App() {
       componentsSourceLabel: sourceDescription(componentsWire, compSourceNode),
       contentSourceLabel: sourceDescription(contentWire, contentSourceNode),
       id: null,
-      name: node.data?.embedName || embedSourceNode?.data?.embedName || 'Untitled embed',
+      name: node.data?.componentName || node.data?.embedName || node.label || embedSourceNode?.data?.embedName || (isComponentsBuilderNode ? 'Untitled component' : 'Untitled embed'),
       content: initialContent,
       blocks: isMessageComponentsNode || node.type === 'build_embed' ? initialBlocks : structuredClone(getEmbedBlocks(node.data || {})),
       wiredFields,
@@ -6371,7 +6437,7 @@ export function App() {
 
   const openEmbedAsset = useCallback((asset, routeOverride = null) => {
     const isComponentsV2Asset = asset.kind === 'components-v2';
-    const studio = { graphId: activeTabId, projectId: activeProjectId, collabId: `embed:${activeProjectId}:${activeTabId}:asset:${asset.id}`, mode: 'asset', route: routeOverride || { kind: isComponentsV2Asset ? 'components' : 'embed', mode: 'asset', assetId: asset.id, tab: isComponentsV2Asset ? 'components' : 'embed' }, id: asset.id, kind: asset.kind || 'embed', name: asset.name || 'Untitled embed', blocks: structuredClone(asset.blocks || []), components: structuredClone(asset.components || []), componentsV2Layout: structuredClone(asset.componentsV2Layout || []), componentsV2Enabled: isComponentsV2Asset, attachments: structuredClone(asset.attachments || []), isDirty: false };
+    const studio = { graphId: activeTabId, projectId: activeProjectId, collabId: `embed:${activeProjectId}:${activeTabId}:asset:${asset.id}`, mode: 'asset', route: routeOverride || { kind: isComponentsV2Asset ? 'components' : 'embed', mode: 'asset', assetId: asset.id, tab: isComponentsV2Asset ? 'components' : 'embed' }, id: asset.id, kind: asset.kind || 'embed', name: asset.name || (isComponentsV2Asset ? 'Untitled component' : 'Untitled embed'), blocks: structuredClone(asset.blocks || []), components: structuredClone(asset.components || []), componentsV2Layout: structuredClone(asset.componentsV2Layout || []), componentsV2Enabled: isComponentsV2Asset, attachments: structuredClone(asset.attachments || []), isDirty: false };
     collaborativeEmbedBaseRef.current.set(studio.collabId, collaborativeEmbedDraft(studio));
     requestStudioOpen('embed', () => setEmbedStudio(studio));
   }, [activeProjectId, activeTabId, requestStudioOpen]);
@@ -6408,6 +6474,12 @@ export function App() {
     if (!authToken) throw new Error('Sign in before saving an embed to this workspace.');
     const name = String(studio?.name || '').trim() || 'Untitled embed';
     const id = studio?.id || `embed_asset_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const normalizedName = name.toLowerCase();
+    const duplicate = embedAssets.find((item) => item.id !== id && String(item.name || '').trim().toLowerCase() === normalizedName);
+    if (duplicate) {
+      const typeLabel = duplicate.kind === 'modal' ? 'A popup modal' : duplicate.kind === 'components-v2' ? 'A Components V2 asset' : 'An embed';
+      throw new Error(`${typeLabel} named "${name}" already exists in the library.`);
+    }
     const asset = { id, name, blocks: structuredClone(studio?.blocks || []), components: structuredClone(studio?.components || []), attachments: structuredClone(studio?.attachments || []), updatedAt: new Date().toISOString() };
     const response = await fetch(apiUrl('/api/embeds'), { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken }, body: JSON.stringify(asset) });
     const data = await response.json();
@@ -6420,6 +6492,12 @@ export function App() {
     if (!authToken) throw new Error('Sign in before saving Components V2 to this workspace.');
     const name = String(studio?.name || '').trim() || 'Untitled Components V2';
     const id = studio?.id || `components_v2_asset_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const normalizedName = name.toLowerCase();
+    const duplicate = embedAssets.find((item) => item.id !== id && String(item.name || '').trim().toLowerCase() === normalizedName);
+    if (duplicate) {
+      const typeLabel = duplicate.kind === 'modal' ? 'A popup modal' : duplicate.kind === 'components-v2' ? 'A Components V2 asset' : 'An embed';
+      throw new Error(`${typeLabel} named "${name}" already exists in the library.`);
+    }
     const asset = { id, name, kind: 'components-v2', blocks: [], components: [], componentsV2Layout: structuredClone(studio?.componentsV2Layout || []), attachments: structuredClone(studio?.attachments || []), updatedAt: new Date().toISOString() };
     const response = await fetch(apiUrl('/api/embeds'), { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken }, body: JSON.stringify(asset) });
     const data = await response.json();
@@ -6427,6 +6505,60 @@ export function App() {
     setEmbedAssets(data.embeds || [data.embed, ...embedAssets.filter((item) => item.id !== data.embed?.id)]);
     return data.embed;
   }, [authToken, embedAssets]);
+
+  const openModalAsset = useCallback((asset, routeOverride = null) => {
+    const studio = {
+      graphId: activeTabId,
+      projectId: activeProjectId,
+      collabId: `modal:${activeProjectId}:${activeTabId}:asset:${asset.id}`,
+      mode: 'asset',
+      route: routeOverride || { kind: 'popup-modal', mode: 'asset', assetId: asset.id },
+      id: asset.id,
+      nodeId: null,
+      name: asset.name || 'Untitled modal',
+      modal: structuredClone(asset.modal || createDefaultModal())
+    };
+    requestStudioOpen('popup-modal', () => setModalStudio(studio));
+  }, [activeProjectId, activeTabId, requestStudioOpen]);
+
+  const createModalAsset = useCallback((routeOverride = null) => {
+    const studio = {
+      graphId: activeTabId,
+      projectId: activeProjectId,
+      collabId: `modal:${activeProjectId}:${activeTabId}:new`,
+      mode: 'new',
+      route: routeOverride || { kind: 'popup-modal', mode: 'new' },
+      id: null,
+      nodeId: null,
+      name: 'Untitled modal',
+      modal: createDefaultModal()
+    };
+    requestStudioOpen('popup-modal', () => setModalStudio(studio));
+  }, [activeProjectId, activeTabId, requestStudioOpen]);
+
+  const persistModalAsset = useCallback(async (nameOrStudio, modalData = null) => {
+    if (!authToken) throw new Error('Sign in before saving a modal to this workspace.');
+    const modalPayload = modalData || (typeof nameOrStudio === 'object' && nameOrStudio?.modal ? nameOrStudio.modal : modalStudio?.modal);
+    const providedName = typeof nameOrStudio === 'string' ? nameOrStudio : (typeof nameOrStudio === 'object' && nameOrStudio?.name ? nameOrStudio.name : modalStudio?.name || modalPayload?.title || 'Untitled modal');
+    const name = String(providedName || 'Untitled modal').trim() || 'Untitled modal';
+    const id = (typeof nameOrStudio === 'object' && nameOrStudio?.id) || modalStudio?.id || `modal_asset_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const normalizedName = name.toLowerCase();
+    const duplicate = embedAssets.find((item) => item.id !== id && String(item.name || '').trim().toLowerCase() === normalizedName);
+    if (duplicate) {
+      const typeLabel = duplicate.kind === 'modal' ? 'A popup modal' : duplicate.kind === 'components-v2' ? 'A Components V2 asset' : 'An embed';
+      throw new Error(`${typeLabel} named "${name}" already exists in the library.`);
+    }
+    const asset = { id, name, kind: 'modal', modal: structuredClone(modalPayload), updatedAt: new Date().toISOString() };
+    const response = await fetch(apiUrl('/api/embeds'), { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken }, body: JSON.stringify(asset) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Could not save this modal.');
+    setEmbedAssets(data.embeds || [data.embed, ...embedAssets.filter((item) => item.id !== data.embed?.id)]);
+    if (modalStudio?.mode === 'new') {
+      setModalStudio((current) => current ? { ...current, id: data.embed?.id || id, mode: 'asset', name } : current);
+    }
+    arcEvents.emit('toast:notify', { title: 'Modal saved', message: `${name} saved to library.`, type: 'success' });
+    return data.embed;
+  }, [authToken, embedAssets, modalStudio]);
 
   const handleSaveEmbedStudio = useCallback(async () => {
     if (!embedStudio) return;
@@ -6439,7 +6571,7 @@ export function App() {
             data: {
               ...node.data,
               ...(embedStudio.attachments ? { attachments: structuredClone(embedStudio.attachments) } : {}),
-              ...(isComponentsBuilderNode ? { componentsV2: structuredClone(embedStudio.componentsV2Layout || []) } : {}),
+              ...(isComponentsBuilderNode ? { componentsV2: structuredClone(embedStudio.componentsV2Layout || []), componentName: embedStudio.name.trim() || 'Untitled component' } : {}),
               ...(!isComponentsBuilderNode && embedStudio.componentsV2Enabled ? { componentsV2Enabled: true, componentsV2Layout: structuredClone(embedStudio.componentsV2Layout || []) } : {}),
               ...(embedStudio.mode === 'node' ? { blocks: structuredClone(embedStudio.blocks), embedName: embedStudio.name.trim() || 'Untitled embed' } : {}),
               ...(!embedStudio.isContentWired && ['action_send_message', 'action_reply_interaction', 'action_edit_message', 'action_edit_interaction_reply'].includes(node.type) ? { content: String(embedStudio.content || '') } : {}),
@@ -6524,6 +6656,9 @@ export function App() {
     try {
       const asset = await persistComponentsV2Asset({ ...embedStudio, id: null, name });
       arcEvents.emit('toast:notify', { title: 'Components V2 saved', message: `${asset.name} added to Components V2 in the library.`, type: 'success' });
+      if (embedStudio.mode === 'new') {
+        setEmbedStudio((current) => current ? { ...current, id: asset.id, mode: 'asset', name: asset.name } : current);
+      }
     } catch (error) { arcEvents.emit('toast:notify', { title: 'Components V2 not saved', message: error.message, type: 'error' }); }
   }, [embedStudio, persistComponentsV2Asset, requestPrompt]);
 
@@ -7272,10 +7407,12 @@ export function App() {
     if (['embed', 'components', 'permission', 'arguments', 'popup-modal'].includes(studioRoute.kind)) {
       if (studioRoute.mode === 'asset') {
         const asset = embedAssets.find((item) => item.id === studioRoute.assetId);
-        if (!asset) { finishRestore('The selected embed asset is no longer available.'); return; }
-        openEmbedAsset(asset, studioRoute);
+        if (!asset) { finishRestore(studioRoute.kind === 'popup-modal' ? 'The selected modal asset is no longer available.' : 'The selected embed asset is no longer available.'); return; }
+        if (studioRoute.kind === 'popup-modal') openModalAsset(asset, studioRoute);
+        else openEmbedAsset(asset, studioRoute);
       } else if (studioRoute.mode === 'new') {
-        createEmbedAsset(studioRoute);
+        if (studioRoute.kind === 'popup-modal') createModalAsset(studioRoute);
+        else createEmbedAsset(studioRoute);
       } else {
         if (!node) { finishRestore('The selected node is no longer available.'); return; }
         if (studioRoute.kind === 'embed' || studioRoute.kind === 'components') openEmbedStudioForNode(node, studioRoute);
@@ -8394,7 +8531,8 @@ export function App() {
             componentsV2DisabledReason={embedStudio.componentsV2DisabledReason || ''}
             isComponentsBuilderNode={Boolean(embedStudio.isComponentsBuilderNode)}
             componentsOnly={embedStudio.mode === 'components-node'}
-            assetNameEditable={embedStudio.mode === 'asset' && embedStudio.kind === 'components-v2'}
+            assetNameEditable={['asset', 'new'].includes(embedStudio.mode)}
+            isAssetMode={['asset', 'new'].includes(embedStudio.mode)}
             initialTab={embedStudio.route?.tab}
             isEmbedWired={Boolean(embedStudio.isEmbedWired)}
             isComponentsWired={Boolean(embedStudio.isComponentsWired)}
@@ -8500,7 +8638,11 @@ export function App() {
           /></StudioErrorGuard>}
 
           {modalStudioOpenForActiveGraph && <StudioErrorGuard name="Popup Studio" onRecover={() => setModalStudio(null)}><PopupModalStudioView
-            key={`${modalStudio.projectId}:${modalStudio.graphId}:${modalStudio.nodeId}`}
+            key={modalStudio.collabId || `${modalStudio.projectId}:${modalStudio.graphId}:${modalStudio.nodeId || modalStudio.id || 'new'}`}
+            mode={modalStudio.mode || 'node'}
+            assetName={modalStudio.name || ''}
+            onNameChange={(name) => setModalStudio((current) => current ? { ...current, name } : current)}
+            onSaveAsset={persistModalAsset}
             graphName={activeGraph?.name || 'Untitled graph'}
             nodeName={modalStudio.nodeName}
             theme={theme}
@@ -8508,7 +8650,7 @@ export function App() {
             graphVariables={availableVariables}
             templateValuePaths={getTemplateValuePaths(activeGraph, activeGraph?.nodes?.find((node) => node.id === modalStudio.nodeId), availableVariables, mediaAssets)}
             onDraftChange={updateModalStudioDraft}
-            onApply={applyModalStudio}
+            onApply={modalStudio.mode === 'asset' || modalStudio.mode === 'new' ? () => persistModalAsset(modalStudio.name, modalStudio.modal) : applyModalStudio}
             onClose={() => finishStudioClose('popup-modal', () => setModalStudio(null))}
           /></StudioErrorGuard>}
           </Suspense>
@@ -8642,7 +8784,7 @@ export function App() {
           {isLocked && <div className="canvas-lock-state"><LockKeyhole size={13} /> Locked</div>}
           </div>
 
-          {isLibraryOpen && <Suspense fallback={<LazyFeatureLoading label="Opening Library…" kind="sidebar" isDesktop={desktopMode} width={sidebarWidths.library} />}><GraphLibraryPanel definitions={availableNodeDefinitions} newNodesUserKey={newNodesUserKey} graphActivity={projectCollaboration.projectId === activeProjectId ? projectCollaboration.graphActivity || [] : []} sidebarWidth={sidebarWidths.library} onSidebarResize={(width) => handleSidebarResize('library', width)} activeSection={librarySection} onActiveSectionChange={setLibrarySection} usageScope={activeProjectId} desktopMode={desktopMode} canImportGraph={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} canEditGraphs={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onSetGraphEnabled={setGraphEnabled} onImportGraph={handleImportGraph} graphs={savedGraphs} graphValidationReports={graphValidationReportsMap} templates={graphTemplates} snapshots={graphSnapshots} nodePrefabs={nodePrefabs} embedAssets={embedAssets} mediaAssets={mediaAssets} graphVariables={availableVariables} defaultGraphId={defaultGraphId} activeGraph={activeGraph} openGraphIds={tabs.map((tab) => tab.id)} activeTabId={activeTabId} onClose={() => setIsLibraryOpen(false)} onOpenGraph={handleOpenGraph} onOpenGraphReview={handleOpenGraphReview} onUseTemplate={(template) => handleAddTab(template)} onCreateGraph={handleAddBlankGraph} onCreateFunction={handleAddFunctionGraph} onDeleteGraph={handleDeleteSavedGraph} onDeleteGraphs={handleDeleteSavedGraphs} onDuplicateGraph={handleDuplicateGraph} onRenameGraph={handleRenameGraph} onSaveTemplate={handleSaveGraphTemplate} onDeleteTemplate={handleDeleteGraphTemplate} onSetDefault={handleSetDefaultGraph} onExportGraph={handleExportGraph} onExportBot={handleExportBot} exportInProgress={exportInProgress} onAddNode={handlePlaceNode} onAddPrefab={(prefab) => handleDropNode({ type: 'prefab', prefabId: prefab.id })} onDeletePrefab={handleDeleteNodePrefab} onCreateEmbed={createEmbedAsset} onCreateComponentsV2={createComponentsV2Asset} onOpenEmbed={openEmbedAsset} onDeleteEmbed={handleDeleteEmbedAsset} onManageVariables={() => { setRequestedVariableView('variables'); setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(true); }} onManageMedia={() => { setRequestedVariableView('media'); setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(true); }} onCreateSnapshot={async (graph, name) => {
+          {isLibraryOpen && <Suspense fallback={<LazyFeatureLoading label="Opening Library…" kind="sidebar" isDesktop={desktopMode} width={sidebarWidths.library} />}><GraphLibraryPanel definitions={availableNodeDefinitions} newNodesUserKey={newNodesUserKey} graphActivity={projectCollaboration.projectId === activeProjectId ? projectCollaboration.graphActivity || [] : []} sidebarWidth={sidebarWidths.library} onSidebarResize={(width) => handleSidebarResize('library', width)} activeSection={librarySection} onActiveSectionChange={setLibrarySection} usageScope={activeProjectId} desktopMode={desktopMode} dockOpen={isControlDockOpen} canImportGraph={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} canEditGraphs={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onSetGraphEnabled={setGraphEnabled} onImportGraph={handleImportGraph} graphs={savedGraphs} graphValidationReports={graphValidationReportsMap} templates={graphTemplates} snapshots={graphSnapshots} nodePrefabs={nodePrefabs} embedAssets={embedAssets} mediaAssets={mediaAssets} graphVariables={availableVariables} defaultGraphId={defaultGraphId} activeGraph={activeGraph} openGraphIds={tabs.map((tab) => tab.id)} activeTabId={activeTabId} onClose={() => setIsLibraryOpen(false)} onOpenGraph={handleOpenGraph} onOpenGraphReview={handleOpenGraphReview} onUseTemplate={(template) => handleAddTab(template)} onCreateGraph={handleAddBlankGraph} onCreateFunction={handleAddFunctionGraph} onDeleteGraph={handleDeleteSavedGraph} onDeleteGraphs={handleDeleteSavedGraphs} onDuplicateGraph={handleDuplicateGraph} onRenameGraph={handleRenameGraph} onSaveTemplate={handleSaveGraphTemplate} onDeleteTemplate={handleDeleteGraphTemplate} onSetDefault={handleSetDefaultGraph} onExportGraph={handleExportGraph} onExportBot={handleExportBot} exportInProgress={exportInProgress} onAddNode={handlePlaceNode} onAddPrefab={(prefab) => handleDropNode({ type: 'prefab', prefabId: prefab.id })} onDeletePrefab={handleDeleteNodePrefab} onCreateEmbed={createEmbedAsset} onCreateComponentsV2={createComponentsV2Asset} onCreateModal={createModalAsset} onOpenEmbed={openEmbedAsset} onOpenModal={openModalAsset} onDeleteEmbed={handleDeleteEmbedAsset} onManageVariables={() => { setRequestedVariableView('variables'); setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(true); }} onManageMedia={() => { setRequestedVariableView('media'); setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(true); }} onCreateSnapshot={async (graph, name) => {
             await ensureWorkspaceGraphsSaved();
             const response = await fetch(apiUrl(`/api/graphs/${encodeURIComponent(graph.id)}/snapshots`), { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken }, body: JSON.stringify({ graph, name }) });
             const data = await response.json();
@@ -8774,6 +8916,7 @@ export function App() {
         onTraceLog={traceGraphNode}
         onTraceIssue={traceGraphNode}
         onOpenTextStudio={(label, value, maxLength, applyValue) => openDiscordTextStudio(null, null, label, value, maxLength, applyValue)}
+        onOpenChange={setIsControlDockOpen}
       />
 
       <LazyMountedFeature Component={NodePalette} isOpen={isPaletteOpen} loadingLabel="Opening node palette…" isDesktop={desktopMode} newNodesUserKey={newNodesUserKey} onClose={() => { setIsPaletteOpen(false); setPaletteNodePosition(null); }} onSelectNode={handlePlaceNode} pluginDefinitionsRevision={pluginDefinitionsRevision} definitions={availableNodeDefinitions} />
