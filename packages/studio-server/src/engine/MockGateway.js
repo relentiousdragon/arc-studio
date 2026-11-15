@@ -317,6 +317,44 @@ export class MockGateway extends EventEmitter {
         const permissions = String(contextPayload?.member?.permissions || contextPayload?.permissions || '1071698660929');
         return { permissions };
       },
+      modifyGuildMember: async (guildId, userId, changes, reason) => {
+        outputSink.push({ type: 'MODIFY_GUILD_MEMBER', guildId, userId, changes, reason, timestamp: new Date().toISOString() });
+        return {
+          user: { id: String(userId === '@me' ? '120000000000000099' : userId || '990000000000000001'), username: 'SimulatedUser' },
+          nick: changes.nick ?? 'SimulatedNick',
+          roles: changes.roles || [],
+          communication_disabled_until: changes.communication_disabled_until || null
+        };
+      },
+      modifyCurrentMember: async (guildId, changes, reason) => {
+        outputSink.push({ type: 'MODIFY_CURRENT_MEMBER', guildId, changes, reason, timestamp: new Date().toISOString() });
+        return {
+          user: { id: '120000000000000099', username: 'SimulatedBot' },
+          nick: changes.nick ?? 'SimulatedBotNick',
+          avatar: changes.avatar ? 'mock_avatar_hash' : null,
+          banner: changes.banner ? 'mock_banner_hash' : null,
+          bio: changes.bio ?? 'Simulated bio',
+          roles: []
+        };
+      },
+      modifyGuildIncidentActions: async (guildId, changes, reason) => {
+        outputSink.push({ type: 'MODIFY_INCIDENT_ACTIONS', guildId, changes, reason, timestamp: new Date().toISOString() });
+        return {
+          invites_disabled_until: changes.invites_disabled_until || null,
+          dms_disabled_until: changes.dms_disabled_until || null,
+          dm_spam_detected_at: null,
+          raid_detected_at: null
+        };
+      },
+      getGuildIncidentActions: async (guildId) => {
+        outputSink.push({ type: 'GET_INCIDENT_ACTIONS', guildId, timestamp: new Date().toISOString() });
+        return {
+          invites_disabled_until: null,
+          dms_disabled_until: null,
+          dm_spam_detected_at: null,
+          raid_detected_at: null
+        };
+      },
       getGuild: async (guildId) => {
         return { id: String(guildId || '120000000000000000'), name: 'Simulated Server', owner_id: '990000000000000001', member_count: 42 };
       },
