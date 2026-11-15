@@ -82,6 +82,7 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
       'action_create_thread', 'action_start_thread_from_message',
       'action_create_channel', 'action_edit_channel', 'action_delete_channel',
       'action_create_role', 'action_member_role', 'action_moderate_member',
+      'action_set_nickname', 'action_modify_server_profile', 'action_manage_guild_security',
       'action_voice_channel_status', 'action_voice_state'
     ], 'discord_guild.js']
   ];
