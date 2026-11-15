@@ -47,20 +47,31 @@ export function AnimatedDropdown({
   }, [activeIndex, open, filteredOptions.length]);
 
   useEffect(() => {
+    const handleCloseOthers = (event) => {
+      if (event.detail !== generatedId) {
+        setOpen(false);
+      }
+    };
+    window.addEventListener('arc:close-suggestions', handleCloseOthers);
+    return () => window.removeEventListener('arc:close-suggestions', handleCloseOthers);
+  }, [generatedId]);
+
+  useEffect(() => {
     if (!open) return undefined;
+    window.dispatchEvent(new CustomEvent('arc:close-suggestions', { detail: generatedId }));
     const closeOutside = (event) => {
       if (!rootRef.current?.contains(event.target) && !menuRef.current?.contains(event.target)) setOpen(false);
     };
     const closeOnEscape = (event) => {
       if (event.key === 'Escape') { event.stopPropagation(); setOpen(false); }
     };
-    document.addEventListener('pointerdown', closeOutside);
+    document.addEventListener('pointerdown', closeOutside, true);
     document.addEventListener('keydown', closeOnEscape);
     return () => {
-      document.removeEventListener('pointerdown', closeOutside);
+      document.removeEventListener('pointerdown', closeOutside, true);
       document.removeEventListener('keydown', closeOnEscape);
     };
-  }, [open]);
+  }, [open, generatedId]);
 
   useLayoutEffect(() => {
     if (!open || !triggerRef.current || !menuRef.current) return undefined;
