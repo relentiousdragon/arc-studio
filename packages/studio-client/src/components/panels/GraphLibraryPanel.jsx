@@ -4,7 +4,7 @@ import { getArcUiScale } from '../../core/uiScale.js';
 import { arcEvents } from '../../core/ArcEvents.js';
 import { readAppStorage, writeAppStorage } from '../../core/storage.js';
 import { onPageBlur } from '../../core/pageFocus.js';
-import { AlertCircle, AlertTriangle, AudioLines, BookmarkPlus, Braces, Calculator, ChevronDown, ChevronRight, Clock3, Copy, Database, Download, File, FileCode2, FileImage, FileUp, FileVideo, FolderTree, GitCompare, GripVertical, Layers, MoreHorizontal, PackageOpen, Pencil, Play, Plus, Puzzle, RotateCcw, Save, Search, Sparkles, Star, ToggleLeft, ToggleRight, Trash2, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, AudioLines, BookmarkPlus, Braces, Calculator, ChevronDown, ChevronRight, ChevronUp, Clock3, Copy, Database, Download, File, FileCode2, FileImage, FileUp, FileVideo, FolderTree, GitCompare, GripVertical, Layers, MoreHorizontal, PackageOpen, PanelTop, Pencil, Play, Plus, Puzzle, RotateCcw, Save, Search, Sparkles, Star, ToggleLeft, ToggleRight, Trash2, X } from 'lucide-react';
 import { BuiltInNodeDefinitions, createDefaultNodeData, getVisibleNewNodeDefinitions, isNodeDefinitionHidden, isNodeDefinitionNew, markNewNodeDefinitionsSeen } from '../nodes/nodeDefinitions.js';
 import { NodeTypeIcon } from '../nodes/NodeTypeIcon.jsx';
 import { CharacterLimit, TextInput } from '../ui/Inputs.jsx';
@@ -31,7 +31,8 @@ function readLibraryExpansion() {
 }
 
 export function GraphLibraryPanel({
-  graphs = [], graphValidationReports = new Map(), templates = [], snapshots = [], nodePrefabs = [], embedAssets = [], mediaAssets = [], graphVariables = [], graphActivity = [], definitions = BuiltInNodeDefinitions, newNodesUserKey = 'anonymous', defaultGraphId, activeGraph, openGraphIds = [], activeTabId, usageScope = 'default', desktopMode = false, canImportGraph = true, canEditGraphs = true, sidebarWidth = 320, activeSection: activeSectionProp, onActiveSectionChange, onSidebarResize, onClose, onOpenGraph, onOpenGraphReview, onImportGraph, onUseTemplate, onCreateGraph, onCreateFunction, onDeleteGraph, onDeleteGraphs, onDuplicateGraph, onRenameGraph, onSaveTemplate, onDeleteTemplate, onSetDefault, onExportGraph, onExportBot, onSetGraphEnabled, exportInProgress = false, onAddNode, onAddPrefab, onDeletePrefab, onCreateEmbed, onCreateComponentsV2, onOpenEmbed, onDeleteEmbed, onManageVariables, onManageMedia, onCreateSnapshot, onDeleteSnapshot, onRestoreSnapshot
+  graphs = [], graphValidationReports = new Map(), templates = [], snapshots = [], nodePrefabs = [], embedAssets = [], mediaAssets = [], graphVariables = [], graphActivity = [], definitions = BuiltInNodeDefinitions, newNodesUserKey = 'anonymous', defaultGraphId, activeGraph, openGraphIds = [], activeTabId, usageScope = 'default', desktopMode = false, canImportGraph = true, canEditGraphs = true, sidebarWidth = 320, activeSection: activeSectionProp, onActiveSectionChange, onSidebarResize, onClose, onOpenGraph, onOpenGraphReview, onImportGraph, onUseTemplate, onCreateGraph, onCreateFunction, onDeleteGraph, onDeleteGraphs, onDuplicateGraph, onRenameGraph, onSaveTemplate, onDeleteTemplate, onSetDefault, onExportGraph, onExportBot, onSetGraphEnabled, exportInProgress = false, onAddNode, onAddPrefab, onDeletePrefab, onCreateEmbed, onCreateComponentsV2, onCreateModal, onOpenEmbed, onOpenModal, onDeleteEmbed, onManageVariables, onManageMedia, onCreateSnapshot, onDeleteSnapshot, onRestoreSnapshot,
+  dockOpen = false
 }) {
   const uiScale = getArcUiScale();
   const [query, setQuery] = useState('');
@@ -48,6 +49,24 @@ export function GraphLibraryPanel({
   const [libraryDragEdge, setLibraryDragEdge] = useState(null);
   const [libraryDragGhost, setLibraryDragGhost] = useState(null);
   const [selectedLibraryNodeTypes, setSelectedLibraryNodeTypes] = useState([]);
+  const [isFooterExpanded, setIsFooterExpanded] = useState(false);
+  const footerHoverTimerRef = useRef(null);
+
+  useEffect(() => {
+    return () => clearTimeout(footerHoverTimerRef.current);
+  }, []);
+
+  const handleFooterPointerEnter = () => {
+    clearTimeout(footerHoverTimerRef.current);
+    footerHoverTimerRef.current = setTimeout(() => {
+      setIsFooterExpanded(true);
+    }, 120);
+  };
+
+  const handleFooterPointerLeave = () => {
+    clearTimeout(footerHoverTimerRef.current);
+    setIsFooterExpanded(false);
+  };
   const [selectedGraphKeys, setSelectedGraphKeys] = useState([]);
   const [selectedVariableIds, setSelectedVariableIds] = useState([]);
   const [snapshotName, setSnapshotName] = useState('');
@@ -229,8 +248,9 @@ export function GraphLibraryPanel({
   const compatiblePrefabs = nodePrefabs;
   const filteredPrefabs = search(prefabSearchIndex, compatiblePrefabs);
   const searchedAssets = search(embedSearchIndex, embedAssets);
-  const filteredEmbeds = searchedAssets.filter((asset) => asset.kind !== 'components-v2');
+  const filteredEmbeds = searchedAssets.filter((asset) => asset.kind !== 'components-v2' && asset.kind !== 'modal');
   const filteredComponentsV2 = searchedAssets.filter((asset) => asset.kind === 'components-v2');
+  const filteredModals = searchedAssets.filter((asset) => asset.kind === 'modal');
   const filteredVariables = search(variableSearchIndex, graphVariables);
   const activeSnapshots = snapshots.filter((snapshot) => snapshot.graphId === activeGraph?.id);
   const frequentNodes = rankByUsage(searchNodes, usage.nodes, (node) => node.type, 5);
@@ -347,8 +367,8 @@ export function GraphLibraryPanel({
 
   const ignoreLibraryDrop = (event) => {
     const types = event.dataTransfer.types;
-    const hasPayload = window.__arcNodeDragPayload || window.__arcGraphDragPayload || window.__arcEmbedDragPayload || window.__arcComponentsV2DragPayload
-      || types.includes('application/x-arc-node') || types.includes('application/x-arc-graph-call') || types.includes('application/x-arc-embed-asset') || types.includes('application/x-arc-components-v2-asset')
+    const hasPayload = window.__arcNodeDragPayload || window.__arcGraphDragPayload || window.__arcEmbedDragPayload || window.__arcComponentsV2DragPayload || window.__arcModalDragPayload
+      || types.includes('application/x-arc-node') || types.includes('application/x-arc-graph-call') || types.includes('application/x-arc-embed-asset') || types.includes('application/x-arc-components-v2-asset') || types.includes('application/x-arc-modal-asset')
       || readLibraryTransferText(event.dataTransfer).startsWith('arc-studio:');
     if (!hasPayload) return;
     event.preventDefault();
@@ -358,6 +378,7 @@ export function GraphLibraryPanel({
     window.__arcGraphDragPayload = null;
     window.__arcEmbedDragPayload = null;
     window.__arcComponentsV2DragPayload = null;
+    window.__arcModalDragPayload = null;
     clearLibraryDragPayload();
   };
 
@@ -378,7 +399,15 @@ export function GraphLibraryPanel({
     startLibraryGhost(event, { type: 'build_components', label: asset.name || 'Untitled Components V2', color: '#06b6d4' });
   };
 
-  const finishEmbedDrag = () => { window.__arcEmbedDragPayload = null; window.__arcComponentsV2DragPayload = null; clearLibraryDragPayload(); setLibraryDragGhost(null); };
+  const startModalDrag = (event, asset) => {
+    hideNativeDragImage(event);
+    const payload = { type: 'modal-asset', id: asset.id, name: asset.name || 'Untitled modal', modal: asset.modal || {} };
+    window.__arcModalDragPayload = payload;
+    setLibraryTransferData(event, 'application/x-arc-modal-asset', payload);
+    startLibraryGhost(event, { type: 'build_modal', label: asset.name || 'Untitled modal', color: '#ec4899' });
+  };
+
+  const finishEmbedDrag = () => { window.__arcEmbedDragPayload = null; window.__arcComponentsV2DragPayload = null; window.__arcModalDragPayload = null; clearLibraryDragPayload(); setLibraryDragGhost(null); };
 
   const startGraphDrag = (event, graph) => {
     hideNativeDragImage(event);
@@ -841,14 +870,42 @@ export function GraphLibraryPanel({
           <button className="graph-library-more" onClick={(event) => openEmbedMenu(event, asset)} aria-label={`Actions for ${asset.name || 'Components V2'}`} title="Components V2 actions"><MoreHorizontal size={14} /></button>
         </div>)}
         {!filteredComponentsV2.length && <div className="graph-library-empty">{embedAssets.some((asset) => asset.kind === 'components-v2') ? 'No matching Components V2 assets' : 'No saved Components V2 assets'}</div>}
+        <div className="graph-library-section-heading graph-library-subsection"><span><PanelTop size={13} /> Popup Modals</span><small>{filteredModals.length}</small><button className="graph-library-section-action" onClick={onCreateModal} aria-label="Create modal" title="Create popup modal"><Plus size={13} /></button></div>
+        {filteredModals.map((asset) => <div className={`graph-library-item ${contextMenu?.kind === 'embed' && contextMenu.graph?.id === asset.id ? 'is-context-menu-open' : ''}`} key={asset.id} onContextMenu={(event) => openEmbedMenu(event, asset)}>
+          <button className="graph-library-entry" draggable={!desktopMode} onPointerDown={(event) => beginPointerDrag(event, { type: 'modal-asset', id: asset.id, name: asset.name || 'Untitled modal', modal: asset.modal || {} })} onClickCapture={suppressClickAfterDrag} onDragStart={(event) => startModalDrag(event, asset)} onDragEnd={finishEmbedDrag} onClick={() => { recordUsage('embeds', asset.id); onOpenModal ? onOpenModal(asset) : onOpenEmbed?.(asset); }} title="Open modal or drag it onto the canvas"><PanelTop size={13} /><span>{asset.name || 'Untitled modal'}</span></button>
+          <button className="graph-library-more" onClick={(event) => openEmbedMenu(event, asset)} aria-label={`Actions for ${asset.name || 'modal'}`} title="Modal actions"><MoreHorizontal size={14} /></button>
+        </div>)}
+        {!filteredModals.length && <div className="graph-library-empty">{embedAssets.some((asset) => asset.kind === 'modal') ? 'No matching modals' : 'No saved modals'}</div>}
       </>}
     </div>
-    <footer className="graph-library-footer">
-      <button className="graph-template-button" onClick={onCreateFunction} title="Create a new function graph"><Calculator size={14} /><span>New function</span></button>
-      <button className="graph-template-button" onClick={onCreateEmbed}><Sparkles size={14} /><span>New embed</span></button>
-      <button className="graph-template-button" onClick={() => onSaveTemplate?.(activeGraph)} disabled={!activeGraph}><BookmarkPlus size={14} /><span>Save graph as template</span></button>
-      <button className="graph-template-button" onClick={onCreateComponentsV2}><Layers size={14} /><span>New Component</span></button>
-      <button className="graph-export-button" onClick={() => onExportBot?.()} disabled={exportInProgress || (!graphs.length && !openGraphIds.length)}><PackageOpen size={15} /><span>{exportInProgress ? 'Exporting…' : 'Export app'}</span><kbd>.zip</kbd></button>
+    <footer
+      className={`graph-library-footer is-contracted ${isFooterExpanded ? 'is-expanded' : ''}`}
+      onPointerEnter={handleFooterPointerEnter}
+      onPointerLeave={handleFooterPointerLeave}
+    >
+      <div
+        className="graph-library-footer-contracted-bar"
+        aria-label="Footer actions"
+      >
+        <div className="graph-library-footer-contracted-info">
+          <ChevronUp size={13} className="graph-library-footer-chevron" />
+          <span>Actions</span>
+        </div>
+        <div className="graph-library-footer-mini-badges">
+          <Calculator size={11} />
+          <Sparkles size={11} />
+          <Layers size={11} />
+          <PanelTop size={11} />
+          <PackageOpen size={11} />
+        </div>
+      </div>
+      <div className="graph-library-footer-actions">
+        <button className="graph-template-button" onClick={onCreateFunction} title="Create a new function graph"><Calculator size={14} /><span>New function</span></button>
+        <button className="graph-template-button" onClick={onCreateEmbed}><Sparkles size={14} /><span>New embed</span></button>
+        <button className="graph-template-button" onClick={onCreateComponentsV2}><Layers size={14} /><span>New Component</span></button>
+        <button className="graph-template-button" onClick={onCreateModal} title="Create a new popup modal"><PanelTop size={14} /><span>New modal</span></button>
+        <button className="graph-export-button" onClick={() => onExportBot?.()} disabled={exportInProgress || (!graphs.length && !openGraphIds.length)}><PackageOpen size={15} /><span>{exportInProgress ? 'Exporting…' : 'Export app'}</span><kbd>.zip</kbd></button>
+      </div>
     </footer>
     {contextMenu && createPortal(<div ref={contextMenuRef} className="graph-context-menu" style={{ left: contextMenu.x, top: contextMenu.y, transform: `scale(${uiScale})`, transformOrigin: 'top left' }} onPointerDown={(event) => event.stopPropagation()}>
       {contextMenu.kind === 'graph' ? <>
@@ -885,8 +942,8 @@ export function GraphLibraryPanel({
         <button onClick={() => { onAddPrefab?.(contextMenu.graph); setContextMenu(null); }}><FileCode2 size={14} /> Add to graph</button>
         <button className="is-danger" onClick={() => { onDeletePrefab?.(contextMenu.graph); setContextMenu(null); }}><X size={14} /> Delete saved node</button>
       </> : contextMenu.kind === 'embed' ? <>
-        <button onClick={() => { onOpenEmbed?.(contextMenu.graph); setContextMenu(null); }}><Pencil size={14} /> {contextMenu.graph.kind === 'components-v2' ? 'Edit in Component Studio' : 'Edit in Embed Studio'}</button>
-        <button className="is-danger" onClick={() => { onDeleteEmbed?.(contextMenu.graph); setContextMenu(null); }}><X size={14} /> {contextMenu.graph.kind === 'components-v2' ? 'Delete Components V2' : 'Delete embed'}</button>
+        <button onClick={() => { (contextMenu.graph.kind === 'modal' && onOpenModal) ? onOpenModal(contextMenu.graph) : onOpenEmbed?.(contextMenu.graph); setContextMenu(null); }}><Pencil size={14} /> {contextMenu.graph.kind === 'modal' ? 'Edit in Modal Studio' : contextMenu.graph.kind === 'components-v2' ? 'Edit in Component Studio' : 'Edit in Embed Studio'}</button>
+        <button className="is-danger" onClick={() => { onDeleteEmbed?.(contextMenu.graph); setContextMenu(null); }}><X size={14} /> {contextMenu.graph.kind === 'modal' ? 'Delete modal' : contextMenu.graph.kind === 'components-v2' ? 'Delete Components V2' : 'Delete embed'}</button>
       </> : <>
         <button onClick={() => { onUseTemplate?.(contextMenu.graph); setContextMenu(null); }}><Play size={14} /> Create from template</button>
         <button onClick={() => { onSetDefault?.(contextMenu.graph); setContextMenu(null); }}><Star size={14} fill={defaultGraphId === contextMenu.graph.id ? 'currentColor' : 'none'} /> {defaultGraphId === contextMenu.graph.id ? 'Default for new graphs' : 'Set as new graph default'}</button>
