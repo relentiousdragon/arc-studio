@@ -28,6 +28,7 @@ const DISCORD_GUILD_NODE_TYPES = new Set([
   'action_create_thread', 'action_start_thread_from_message',
   'action_create_channel', 'action_edit_channel', 'action_delete_channel',
   'action_create_role', 'action_member_role', 'action_moderate_member',
+  'action_set_nickname', 'action_modify_server_profile', 'action_manage_guild_security',
   'action_voice_channel_status', 'action_voice_state'
 ]);
 
@@ -1224,6 +1225,7 @@ export class GraphRunner {
       dataCache.set(`${startNode.id}:application_id`, eventPayload.application_id || '');
       dataCache.set(`${startNode.id}:interaction_id`, eventPayload.id || '');
       dataCache.set(`${startNode.id}:interaction_token`, eventPayload.token || '');
+      dataCache.set(`${startNode.id}:interaction`, eventPayload);
       const selectedPath = (eventPayload.data?.options || []).find((option) => [1, 2].includes(Number(option.type)));
       const selectedGroup = Number(selectedPath?.type) === 2 ? selectedPath : null;
       const selectedSubcommand = selectedGroup
@@ -1275,6 +1277,7 @@ export class GraphRunner {
       dataCache.set(`${startNode.id}:application_id`, eventPayload.application_id || '');
       dataCache.set(`${startNode.id}:interaction_id`, eventPayload.id || '');
       dataCache.set(`${startNode.id}:interaction_token`, eventPayload.token || '');
+      dataCache.set(`${startNode.id}:interaction`, eventPayload);
     } else if (eventNodeType === 'event_message_command') {
       const cmdName = eventPayload.data?.name || '';
       const userId = eventPayload.member?.user?.id || eventPayload.user?.id || '';
@@ -1293,6 +1296,7 @@ export class GraphRunner {
       dataCache.set(`${startNode.id}:application_id`, eventPayload.application_id || '');
       dataCache.set(`${startNode.id}:interaction_id`, eventPayload.id || '');
       dataCache.set(`${startNode.id}:interaction_token`, eventPayload.token || '');
+      dataCache.set(`${startNode.id}:interaction`, eventPayload);
     } else if (eventNodeType === 'event_slash_autocomplete') {
       const commandOptions = {};
       let focused = null;
@@ -1313,6 +1317,7 @@ export class GraphRunner {
       dataCache.set(`${startNode.id}:guild_id`, eventPayload.guild_id || '');
       dataCache.set(`${startNode.id}:interaction_id`, eventPayload.id || '');
       dataCache.set(`${startNode.id}:interaction_token`, eventPayload.token || '');
+      dataCache.set(`${startNode.id}:interaction`, eventPayload);
     } else if (eventNodeType === 'event_button_click') {
       dataCache.set(`${startNode.id}:custom_id`, eventPayload.data?.custom_id || '');
       dataCache.set(`${startNode.id}:user_id`, eventPayload.member?.user?.id || eventPayload.user?.id || eventPayload.author?.id || '');
@@ -1323,6 +1328,7 @@ export class GraphRunner {
       dataCache.set(`${startNode.id}:application_id`, eventPayload.application_id || '');
       dataCache.set(`${startNode.id}:interaction_id`, eventPayload.id || '');
       dataCache.set(`${startNode.id}:interaction_token`, eventPayload.token || '');
+      dataCache.set(`${startNode.id}:interaction`, eventPayload);
     } else if (eventNodeType === 'event_select_menu') {
       dataCache.set(`${startNode.id}:custom_id`, eventPayload.data?.custom_id || '');
       dataCache.set(`${startNode.id}:selected_values`, Array.isArray(eventPayload.data?.values) ? eventPayload.data.values.join(',') : (eventPayload.data?.values || ''));
@@ -1334,6 +1340,7 @@ export class GraphRunner {
       dataCache.set(`${startNode.id}:application_id`, eventPayload.application_id || '');
       dataCache.set(`${startNode.id}:interaction_id`, eventPayload.id || '');
       dataCache.set(`${startNode.id}:interaction_token`, eventPayload.token || '');
+      dataCache.set(`${startNode.id}:interaction`, eventPayload);
     } else if (eventNodeType === 'event_modal_submit') {
       dataCache.set(`${startNode.id}:custom_id`, eventPayload.data?.custom_id || '');
       dataCache.set(`${startNode.id}:submitted_values`, eventPayload.data?.components || []);
@@ -1345,10 +1352,12 @@ export class GraphRunner {
       dataCache.set(`${startNode.id}:application_id`, eventPayload.application_id || '');
       dataCache.set(`${startNode.id}:interaction_id`, eventPayload.id || '');
       dataCache.set(`${startNode.id}:interaction_token`, eventPayload.token || '');
+      dataCache.set(`${startNode.id}:interaction`, eventPayload);
     } else if (eventNodeType === 'event_member_join') {
       dataCache.set(`${startNode.id}:user_id`, eventPayload.user?.id || '');
       dataCache.set(`${startNode.id}:username`, eventPayload.user?.username || '');
       dataCache.set(`${startNode.id}:guild_id`, eventPayload.guild_id || '');
+      dataCache.set(`${startNode.id}:member`, eventPayload);
     }
     const eventDefinition = NodeDefinitions[eventNodeType];
     for (const pin of eventDefinition?.outputs || []) {
@@ -1609,6 +1618,7 @@ export class GraphRunner {
           const { executeDiscordGuildNode } = await import('./nodes/runtime/discord_guild.js');
           const result = await executeDiscordGuildNode(targetNode, {
             resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
+            resolveFiles: (files, payload) => resolveMessageFiles(targetNode, files, payload),
             isInputConnected: (pinId) => Boolean(findInputConnection(targetNode.id, pinId)),
             rest: context.rest,
             client: context.client,
