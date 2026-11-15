@@ -17,6 +17,12 @@ export default {
       "defaultValue": "",
       description: "ID of the application that owns the interaction."},
     {
+      "id": "interaction_id",
+      "label": "Interaction ID (Optional)",
+      "type": "string",
+      "defaultValue": "",
+      description: "ID of the interaction being edited."},
+    {
       "id": "interaction_token",
       "label": "Interaction Token",
       "type": "string",
