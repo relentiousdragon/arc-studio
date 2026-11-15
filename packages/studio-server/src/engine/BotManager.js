@@ -1,4 +1,5 @@
 import { Client, CommandStatistics, GatewayIntents, RESTClient } from 'chezcord';
+import { Logger } from './Logger.js';
 import { registerAsyncEventHandler } from './AsyncEventHandler.js';
 import { MockGateway } from './MockGateway.js';
 import { GraphRunner } from './GraphRunner.js';
@@ -155,7 +156,17 @@ export class BotManager {
     this.statisticsStorePath = path.join(directory, 'statistics.json');
     this.projectVariablesPath = path.join(directory, 'project-variables.json');
     this.secretStorePath = path.join(directory, 'secrets.json');
-    this.logger?.setProjectScope(path.join(directory, 'logs'), this.project.logRetentionDays ?? null);
+    const projectLogsDir = path.join(directory, 'logs');
+    if (!this.projectLogger) {
+      this.projectLogger = new Logger({
+        logsDir: projectLogsDir,
+        retentionDays: this.project.logRetentionDays ?? null,
+        filePrefix: 'project-',
+        writeConsole: false
+      });
+    } else {
+      this.projectLogger.setProjectScope(projectLogsDir, this.project.logRetentionDays ?? null, 'project-');
+    }
   }
 
   setProjectLogRetention(retentionDays) {
@@ -163,7 +174,7 @@ export class BotManager {
     const storedProject = this.projectStore.projects.find((item) => item.id === this.project.id);
     if (storedProject) storedProject.logRetentionDays = retentionDays;
     this.projectStore.persist();
-    this.logger?.setProjectScope(path.join(this.projectDir, 'logs'), retentionDays);
+    this.projectLogger?.setProjectScope(path.join(this.projectDir, 'logs'), retentionDays, 'project-');
     return retentionDays ?? (process.env.LOG_RETENTION_DAYS || 7);
   }
 
@@ -593,6 +604,10 @@ export class BotManager {
       this.logs.shift();
     }
 
+    try {
+      this.projectLogger?.log(entry.level, entry.message, entry.meta);
+    } catch {}
+
     this.broadcastWS({
       type: 'LOG_ENTRY',
       payload: entry
@@ -606,6 +621,17 @@ export class BotManager {
   clearLogs() {
     this.logs = [];
     this.broadcastWS({ type: 'LOGS_CLEARED' });
+  }
+
+  listProjectLogFiles() {
+    return this.projectLogger ? this.projectLogger.listLogFiles() : [];
+  }
+
+  readProjectLogFile(filename, maxLines = 500) {
+    if (!this.projectLogger) {
+      throw new Error('Project logger is not initialized');
+    }
+    return this.projectLogger.readLogFile(filename, maxLines);
   }
 
   initDefaultGraphs() {
