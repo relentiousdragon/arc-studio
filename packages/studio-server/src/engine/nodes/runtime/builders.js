@@ -120,6 +120,7 @@ export function validateDiscordComponentsV2(value) {
   const customIds = new Set();
   let count = 0;
   let textLength = 0;
+  let attachmentCount = 0;
   const addId = (component) => {
     const id = String(component?.custom_id ?? '');
     if (!id.trim()) errors.push('Interactive components need a custom ID.');
@@ -168,6 +169,7 @@ export function validateDiscordComponentsV2(value) {
       });
     } else if (component.type === 12) {
       const items = Array.isArray(component.items) ? component.items : [];
+      attachmentCount += items.length;
       if (items.length < 1 || items.length > 10) errors.push(`${location} needs 1 to 10 media items.`);
       items.forEach((item, index) => {
         const url = String(item?.media?.url || '');
@@ -176,6 +178,7 @@ export function validateDiscordComponentsV2(value) {
         if (String(item?.description || '').length > 1024) errors.push(`${location}, media ${index + 1} description exceeds 1,024 characters.`);
       });
     } else if (component.type === 13) {
+      attachmentCount += 1;
       if (!/^attachment:\/\/[^\s?#]{1,100}$/i.test(String(component.file?.url || ''))) errors.push(`${location} needs an attachment:// file URL.`);
       if (String(component.file?.url || '').length > 2048) errors.push(`${location} URL exceeds 2,048 characters.`);
     } else if (component.type === 14) {
@@ -225,6 +228,7 @@ export function validateDiscordComponentsV2(value) {
   root.forEach((component, index) => visit(component, `Block ${index + 1}`));
   if (count > 40) errors.push('A Components V2 message can contain at most 40 components, including nested components.');
   if (textLength > 4000) errors.push('Text Display content across the message exceeds 4,000 characters.');
+  if (attachmentCount > 10) errors.push('A message can contain at most 10 file attachments total.');
   return [...new Set(errors)];
 }
 
