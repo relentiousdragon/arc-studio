@@ -2087,13 +2087,13 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
 
   // Historical Log Files
   router.get('/logs/files', (req, res) => {
-    const files = logger.listLogFiles();
+    const files = botManager.listProjectLogFiles();
     res.json({ files });
   });
 
   router.get('/logs/files/:filename', (req, res) => {
     try {
-      const content = logger.readLogFile(req.params.filename, parseInt(req.query.lines || '500', 10));
+      const content = botManager.readProjectLogFile(req.params.filename, parseInt(req.query.lines || '500', 10));
       res.type('text/plain').send(content);
     } catch (err) {
       res.status(404).json({ error: err.message });
