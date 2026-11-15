@@ -205,19 +205,143 @@ function resolveThreadTypeValue(value, fallback = 11) {
   return /^\d+$/.test(text) ? Number(text) : fallback;
 }
 
-function PropertySuggestInput({ value, onChange, placeholder, ariaLabel, suggestions = [] }) {
+const CRON_SUGGESTIONS = Object.freeze([
+  { key: '* * * * *', label: 'Every minute', desc: 'Fires every 60 seconds' },
+  { key: '*/2 * * * *', label: 'Every 2 minutes', desc: 'Fires every 2 minutes' },
+  { key: '*/5 * * * *', label: 'Every 5 minutes', desc: 'Fires every 5 minutes' },
+  { key: '*/10 * * * *', label: 'Every 10 minutes', desc: 'Fires every 10 minutes' },
+  { key: '*/15 * * * *', label: 'Every 15 minutes', desc: 'Fires every 15 minutes (quarter-hour)' },
+  { key: '*/30 * * * *', label: 'Every 30 minutes', desc: 'Fires every half-hour' },
+  { key: '0 * * * *', label: 'Every hour', desc: 'Fires at minute 0 of every hour' },
+  { key: '0 */2 * * *', label: 'Every 2 hours', desc: 'Fires every 2 hours on the hour' },
+  { key: '0 */6 * * *', label: 'Every 6 hours', desc: 'Fires every 6 hours (4 times a day)' },
+  { key: '0 */12 * * *', label: 'Every 12 hours', desc: 'Fires every 12 hours (twice a day)' },
+  { key: '0 0 * * *', label: 'Every day at midnight', desc: 'Fires once a day at 00:00' },
+  { key: '0 12 * * *', label: 'Every day at noon', desc: 'Fires once a day at 12:00 PM' },
+  { key: '0 9 * * 1-5', label: 'Weekdays at 9:00 AM', desc: 'Fires Mon-Fri at 09:00' },
+  { key: '0 0 * * 0', label: 'Every Sunday at midnight', desc: 'Fires weekly on Sunday' },
+  { key: '0 0 1 * *', label: 'First day of every month', desc: 'Fires monthly at 00:00 on day 1' },
+  { key: '0 0 1 1 *', label: 'First day of every year', desc: 'Fires yearly on Jan 1 at 00:00' }
+]);
+
+function resolveDynamicCron(rawQuery) {
+  const query = String(rawQuery || '').toLowerCase().trim();
+  if (!query) return [];
+  const results = [];
+  const minMatch = query.match(/^(?:every\s+)?(\d+)?\s*(?:mins?|minutes?)$/);
+  if (minMatch) {
+    const num = minMatch[1] ? Number(minMatch[1]) : 1;
+    if (num === 1) results.push({ key: '* * * * *', label: 'Every minute', desc: 'Resolved cron: * * * * *' });
+    else if (num > 1 && num < 60) results.push({ key: `*/${num} * * * *`, label: `Every ${num} minutes`, desc: `Resolved cron: */${num} * * * *` });
+  }
+  const hourMatch = query.match(/^(?:every\s+)?(\d+)?\s*(?:hours?|hrs?)$/) || (query === 'hourly' ? [null, '1'] : null);
+  if (hourMatch) {
+    const num = hourMatch[1] ? Number(hourMatch[1]) : 1;
+    if (num === 1) results.push({ key: '0 * * * *', label: 'Every hour', desc: 'Resolved cron: 0 * * * *' });
+    else if (num > 1 && num < 24) results.push({ key: `0 */${num} * * *`, label: `Every ${num} hours`, desc: `Resolved cron: 0 */${num} * * *` });
+  }
+  if (query === 'daily' || query === 'every day') {
+    results.push({ key: '0 0 * * *', label: 'Every day at midnight', desc: 'Resolved cron: 0 0 * * *' });
+    results.push({ key: '0 12 * * *', label: 'Every day at noon', desc: 'Resolved cron: 0 12 * * *' });
+  }
+  if (query === 'every weekday' || query === 'weekdays' || query === 'weekday') {
+    results.push({ key: '0 9 * * 1-5', label: 'Weekdays at 9:00 AM', desc: 'Resolved cron: 0 9 * * 1-5' });
+    results.push({ key: '0 0 * * 1-5', label: 'Weekdays at midnight', desc: 'Resolved cron: 0 0 * * 1-5' });
+  }
+  if (query === 'weekly' || query === 'every week') {
+    results.push({ key: '0 0 * * 0', label: 'Every Sunday at midnight', desc: 'Resolved cron: 0 0 * * 0' });
+    results.push({ key: '0 0 * * 1', label: 'Every Monday at midnight', desc: 'Resolved cron: 0 0 * * 1' });
+  }
+  if (query === 'monthly' || query === 'every month') {
+    results.push({ key: '0 0 1 * *', label: 'First day of month', desc: 'Resolved cron: 0 0 1 * *' });
+  }
+  return results;
+}
+
+const DATE_FORMAT_SUGGESTIONS = Object.freeze([
+  { key: 'YYYY-MM-DD HH:mm:ss', label: 'ISO Standard Date & Time', desc: '2026-11-15 14:30:00' },
+  { key: 'DD/MM/YYYY - HH:mm:ss', label: 'Day/Month/Year with Time', desc: '15/11/2026 - 14:30:00' },
+  { key: 'MM/DD/YYYY, h:mm:ss A', label: 'US 12-Hour with Seconds', desc: '11/15/2026, 2:30:00 PM' },
+  { key: 'MMMM D, YYYY', label: 'Full Date (Month Day, Year)', desc: 'November 15, 2026' },
+  { key: 'MMMM Do, YYYY', label: 'Ordinal Date (AdvancedFormat)', desc: 'November 15th, 2026' },
+  { key: 'dddd, MMMM Do YYYY, h:mm:ss a', label: 'Day of Week & Full Date Time', desc: 'Sunday, November 15th 2026, 2:30:00 pm' },
+  { key: 'YYYY-MM-DD', label: 'Date Only (ISO)', desc: '2026-11-15' },
+  { key: 'h:mm A', label: 'Short Time (12-Hour)', desc: '2:30 PM' },
+  { key: 'HH:mm:ss', label: '24-Hour Time with Seconds', desc: '14:30:00' },
+  { key: 'HH:mm', label: '24-Hour Time (Hours & Minutes)', desc: '14:30' },
+  { key: 'hh:mm:ss.SSS', label: 'Time with Milliseconds', desc: '02:30:00.123' },
+  { key: 'X', label: 'Unix Timestamp in Seconds (AdvancedFormat)', desc: '1794669000' },
+  { key: 'x', label: 'Unix Timestamp in Milliseconds (AdvancedFormat)', desc: '1794669000000' },
+  { key: 'Q', label: 'Quarter of the Year (AdvancedFormat)', desc: '1..4' },
+  { key: '[Q]Q YYYY', label: 'Quarter with Year (AdvancedFormat)', desc: 'Q4 2026' },
+  { key: 'Do [of] MMMM', label: 'Ordinal Day of Month (AdvancedFormat)', desc: '15th of November' },
+  { key: 'dddd', label: 'Full Day of the Week', desc: 'Sunday' },
+  { key: 'ddd', label: 'Short Day of the Week', desc: 'Sun' },
+  { key: 'MMMM', label: 'Full Month Name', desc: 'November' }
+]);
+
+const DURATION_FORMAT_SUGGESTIONS = Object.freeze([
+  { key: 'HH:mm:ss', label: 'Hours, Minutes, Seconds', desc: '01:23:45' },
+  { key: 'm [minutes], s [seconds]', label: 'Minutes and Seconds', desc: '5 minutes, 30 seconds' },
+  { key: 'D [days], H [hours]', label: 'Days and Hours', desc: '3 days, 4 hours' },
+  { key: 'm:ss', label: 'Timer / Audio Length', desc: '3:45' },
+  { key: 's [seconds]', label: 'Seconds Only', desc: '45 seconds' }
+]);
+
+function resolveDynamicDateFormat(rawQuery) {
+  const query = String(rawQuery || '').toLowerCase().trim();
+  if (!query) return [];
+  const results = [];
+  if (query.includes('ordinal') || query.includes('th') || query.includes('1st')) {
+    results.push({ key: 'MMMM Do, YYYY', label: 'Ordinal Date (AdvancedFormat)', desc: 'November 15th, 2026' });
+    results.push({ key: 'Do [of] MMMM YYYY', label: 'Ordinal Day of Month (AdvancedFormat)', desc: '15th of November 2026' });
+  }
+  if (query.includes('date') && !query.includes('time')) {
+    results.push({ key: 'YYYY-MM-DD', label: 'Date Only (ISO)', desc: '2026-11-15' });
+    results.push({ key: 'MMMM D, YYYY', label: 'Full Date Name', desc: 'November 15, 2026' });
+    results.push({ key: 'DD/MM/YYYY', label: 'Day / Month / Year', desc: '15/11/2026' });
+  }
+  if (query.includes('time') && !query.includes('date')) {
+    results.push({ key: 'HH:mm:ss', label: '24-Hour Time with Seconds', desc: '14:30:00' });
+    results.push({ key: 'h:mm:ss A', label: '12-Hour Time with Seconds & AM/PM', desc: '2:30:00 PM' });
+    results.push({ key: 'h:mm A', label: 'Short 12-Hour Time', desc: '2:30 PM' });
+  }
+  if (query.includes('unix') || query.includes('epoch') || query.includes('timestamp')) {
+    results.push({ key: 'X', label: 'Unix Timestamp in Seconds (AdvancedFormat)', desc: '1794669000' });
+    results.push({ key: 'x', label: 'Unix Timestamp in Milliseconds (AdvancedFormat)', desc: '1794669000000' });
+  }
+  if (query.includes('quarter')) {
+    results.push({ key: '[Q]Q YYYY', label: 'Quarter with Year (AdvancedFormat)', desc: 'Q4 2026' });
+    results.push({ key: 'Q', label: 'Quarter Only (AdvancedFormat)', desc: '1..4' });
+  }
+  if (query.includes('week') || query.includes('day')) {
+    results.push({ key: 'dddd, MMMM Do YYYY', label: 'Day of Week & Date', desc: 'Sunday, November 15th 2026' });
+    results.push({ key: 'dddd', label: 'Day of Week Only', desc: 'Sunday' });
+  }
+  return results;
+}
+
+function PropertySuggestInput({ value, onChange, placeholder, ariaLabel, suggestions = [], onResolveDynamic }) {
   const [open, setOpen] = React.useState(false);
   const [selectedIndex, setSelectedIndex] = React.useState(0);
   const containerRef = React.useRef(null);
   const inputRef = React.useRef(null);
+  const suggestId = React.useId();
 
   const query = String(value ?? '').toLowerCase().trim();
   const filtered = React.useMemo(() => {
-    if (!query) return suggestions.slice(0, 16);
-    return suggestions
+    let list = [...suggestions];
+    if (onResolveDynamic && query) {
+      const dynamicItems = onResolveDynamic(query);
+      if (Array.isArray(dynamicItems) && dynamicItems.length) {
+        list = [...dynamicItems, ...list.filter((item) => !dynamicItems.some((dyn) => dyn.key === item.key))];
+      }
+    }
+    if (!query) return list.slice(0, 16);
+    return list
       .filter((item) => item.key.toLowerCase().includes(query) || (item.label && item.label.toLowerCase().includes(query)) || (item.desc && item.desc.toLowerCase().includes(query)))
       .slice(0, 16);
-  }, [suggestions, query]);
+  }, [suggestions, query, onResolveDynamic]);
 
   const selectItem = (item) => {
     onChange(item.key);
@@ -225,11 +349,27 @@ function PropertySuggestInput({ value, onChange, placeholder, ariaLabel, suggest
     inputRef.current?.focus();
   };
 
+  const openSuggestions = () => {
+    window.dispatchEvent(new CustomEvent('arc:close-suggestions', { detail: suggestId }));
+    setOpen(true);
+    setSelectedIndex(0);
+  };
+
+  React.useEffect(() => {
+    const handleCloseOthers = (event) => {
+      if (event.detail !== suggestId) {
+        setOpen(false);
+      }
+    };
+    window.addEventListener('arc:close-suggestions', handleCloseOthers);
+    return () => window.removeEventListener('arc:close-suggestions', handleCloseOthers);
+  }, [suggestId]);
+
   const handleKeyDown = (event) => {
     if (!open) {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault();
-        setOpen(true);
+        openSuggestions();
       }
       return;
     }
@@ -256,8 +396,8 @@ function PropertySuggestInput({ value, onChange, placeholder, ariaLabel, suggest
         setOpen(false);
       }
     };
-    window.addEventListener('pointerdown', onDocClick);
-    return () => window.removeEventListener('pointerdown', onDocClick);
+    window.addEventListener('pointerdown', onDocClick, true);
+    return () => window.removeEventListener('pointerdown', onDocClick, true);
   }, []);
 
   return (
@@ -267,15 +407,19 @@ function PropertySuggestInput({ value, onChange, placeholder, ariaLabel, suggest
         value={value ?? ''}
         onChange={(e) => {
           onChange(e.target.value);
-          setOpen(true);
-          setSelectedIndex(0);
+          openSuggestions();
         }}
-        onFocus={() => {
-          setOpen(true);
-          setSelectedIndex(0);
+        onFocus={openSuggestions}
+        onBlur={(e) => {
+          if (!containerRef.current?.contains(e.relatedTarget)) {
+            setOpen(false);
+          }
         }}
         onKeyDown={handleKeyDown}
-        onPointerDown={(e) => e.stopPropagation()}
+        onPointerDown={(e) => {
+          e.stopPropagation();
+          openSuggestions();
+        }}
         placeholder={placeholder}
         aria-label={ariaLabel}
         autoCapitalize="off"
@@ -1151,14 +1295,43 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
   if (node.type === 'value_text') {
     return <div className="node-config node-config-stack">{textEditor('value', 'Text value', 2000, 'Hello World')}</div>;
   }
+  if (node.type === 'event_cron') {
+    return (
+      <div className="node-config node-config-stack">
+        <label className="node-config-fallback">
+          <span>Cron Schedule</span>
+          <PropertySuggestInput
+            value={node.data?.cronExpression ?? '*/5 * * * *'}
+            onChange={(val) => update('cronExpression', val)}
+            placeholder="*/5 * * * * or type 'every 5 minutes'"
+            ariaLabel="Cron schedule"
+            suggestions={CRON_SUGGESTIONS}
+            onResolveDynamic={resolveDynamicCron}
+          />
+          <span className="node-config-hint">Select a preset or type natural schedules like "every 5 minutes", "every hour", "daily".</span>
+        </label>
+        <label className="node-config-fallback">
+          <span>Time Zone</span>
+          <input
+            value={node.data?.timeZone ?? 'UTC'}
+            onChange={(event) => update('timeZone', event.target.value)}
+            onPointerDown={(event) => event.stopPropagation()}
+            placeholder="UTC or Asia/Tokyo"
+            aria-label="Cron time zone"
+          />
+        </label>
+      </div>
+    );
+  }
   if (node.type === "data_format_time") {
     const tz = node.data?.timezone ?? getInputDefault(node.type, "timezone");
     const style = node.data?.style ?? getInputDefault(node.type, "style");
+    const isDuration = Boolean(node.data?.duration ?? getInputDefault(node.type, "duration"));
     let isTzValid = !!tz;
     if (isTzValid) try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); } catch { isTzValid = false; }
     return (
       <div className="node-config node-config-stack">
-        {(!isConnected('timezone') && !(node.data?.duration ?? getInputDefault(node.type, "duration"))) && (
+        {(!isConnected('timezone') && !isDuration) && (
           <label className="node-config-fallback">
             <span>Time Zone</span>
             <input value={tz} onChange={(event) => update('timezone', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Time Zone" className={`variable-name ${!isTzValid ? 'is-invalid' : ''}`} />
@@ -1167,12 +1340,19 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
         {!isConnected('style') && (
           <label className="node-config-fallback">
             <span>Date Format</span>
-            <input value={style} onChange={(event) => update('style', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Date Format" />
-            <span className="node-config-hint">See <a href="https://day.js.org/docs/en/parse/string-format#list-of-all-available-parsing-tokens" target="_blank" rel="noopener noreferrer">day.js.org</a> for formatting options.</span>
+            <PropertySuggestInput
+              value={style}
+              onChange={(val) => update('style', val)}
+              placeholder="e.g. MMMM Do, YYYY or type 'ordinal'"
+              ariaLabel="Date Format"
+              suggestions={isDuration ? DURATION_FORMAT_SUGGESTIONS : DATE_FORMAT_SUGGESTIONS}
+              onResolveDynamic={resolveDynamicDateFormat}
+            />
+            <span className="node-config-hint">Choose a format or type keywords like "ordinal", "full date", "12 hour", "unix". Supports Day.js and AdvancedFormat tokens.</span>
           </label>
         )}
         {!isConnected('duration') && (
-          <FallbackCheckbox label="Format as duration" checked={node.data?.duration ?? getInputDefault(node.type, "duration")} onChange={(value) => update('duration', value)} />
+          <FallbackCheckbox label="Format as duration" checked={isDuration} onChange={(value) => update('duration', value)} />
         )}
       </div>
     );
