@@ -28,6 +28,7 @@ function setNativeValue(element, value) {
 }
 
 export const BUILTIN_TEMPLATE_FUNCTIONS = Object.freeze([
+  { name: 'getTime', label: 'getTime(date?)', insert: 'getTime()' },
   { name: 'dateNow', label: 'dateNow()', insert: 'dateNow()' },
   { name: 'dateUnix', label: 'dateUnix()', insert: 'dateUnix()' },
   { name: 'dateIso', label: 'dateIso()', insert: 'dateIso()' },
