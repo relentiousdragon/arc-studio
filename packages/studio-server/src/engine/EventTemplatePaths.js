@@ -122,11 +122,15 @@ const EVENT_PATHS = Object.freeze({
     ...USER_PATHS,
     { path: 'member.nick', label: 'Member nickname' },
     { path: 'interaction.id', label: 'Interaction ID' },
+    { path: 'interaction.application_id', label: 'Application ID' },
+    { path: 'interaction.type', label: 'Interaction type' },
     { path: 'interaction.token', label: 'Interaction token' },
     { path: 'interaction.command_name', label: 'Command name' },
     { path: 'interaction.subcommand_group', label: 'Subcommand group' },
     { path: 'interaction.subcommand', label: 'Subcommand' },
     { path: 'interaction.options', label: 'Command options object' },
+    { path: 'interaction.locale', label: 'User locale' },
+    { path: 'interaction.guild_locale', label: 'Guild locale' },
     { path: 'channel.id', label: 'Channel ID' },
     { path: 'guild.name', label: 'Server name' }
   ],
@@ -512,7 +516,12 @@ function interactionView(payload) {
     subcommand_group: data.options?.find((option) => Number(option?.type) === 2)?.name || '',
     subcommand: data.options?.find((option) => Number(option?.type) === 1)?.name || '',
     options: interactionOptions(data.options),
-    fields: modalFields(data.components)
+    fields: modalFields(data.components),
+    channel_id: payload.channel_id || payload.channel?.id || '',
+    guild_id: payload.guild_id || '',
+    locale: payload.locale || '',
+    guild_locale: payload.guild_locale || '',
+    app_permissions: payload.app_permissions || ''
   };
 }
 
