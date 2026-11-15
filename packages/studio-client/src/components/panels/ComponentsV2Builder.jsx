@@ -47,12 +47,22 @@ function countComponents(components = []) {
   }, 0);
 }
 
-function countTextCharacters(components = []) {
+export function countTextCharacters(components = []) {
   return (components || []).reduce((total, component) => {
     if (!component || typeof component !== 'object') return total;
     if (component.type === 'text_display') return total + String(component.content || '').length;
     if (component.type === 'section') return total + (component.texts || []).reduce((sum, text) => sum + String(text || '').length, 0);
     if (component.type === 'container') return total + countTextCharacters(component.children);
+    return total;
+  }, 0);
+}
+
+export function countV2Attachments(components = []) {
+  return (components || []).reduce((total, component) => {
+    if (!component || typeof component !== 'object') return total;
+    if (component.type === 'file') return total + 1;
+    if (component.type === 'media_gallery') return total + (component.items || []).length;
+    if (component.type === 'container') return total + countV2Attachments(component.children);
     return total;
   }, 0);
 }
@@ -101,14 +111,21 @@ function HexColorField({ label, value = '', onChange, fallback = '#5865F2' }) {
   </label>;
 }
 
-export function ComponentsV2Builder({ value = [], focusedBlockId = null, focusedItemId = null, focusedSectionItem = null, focusedComponentId = null, onSelectComponent, focusOnly = false, onChange, onSelectBlock, graphVariables = [], templateValuePaths = [], templateSuggestions = [], templateFunctions = [], appEmojis = [], botProfile = null, attachments = [], mediaAssets = [], onSelectMediaAsset, componentBudget = 40, textBudget = 4000, maxRootBlocks = 40, insideContainer = false }) {
+export function ComponentsV2Builder({ value = [], focusedBlockId = null, focusedItemId = null, focusedSectionItem = null, focusedComponentId = null, onSelectComponent, focusOnly = false, onChange, onSelectBlock, graphVariables = [], templateValuePaths = [], templateSuggestions = [], templateFunctions = [], appEmojis = [], botProfile = null, attachments = [], mediaAssets = [], onSelectMediaAsset, onUploadMedia, componentBudget = 40, textBudget = 4000, maxRootBlocks = 40, attachmentBudget = 10, insideContainer = false }) {
   const [expandedBlockId, setExpandedBlockId] = React.useState(null);
   const layout = Array.isArray(value) ? value : [];
   const componentCount = countComponents(layout);
   const textCount = countTextCharacters(layout);
+  const attachmentCount = countV2Attachments(layout);
   const hasGlobalCapacity = componentCount < componentBudget;
   const hasRootCapacity = layout.length < maxRootBlocks;
-  const canAddType = (type) => hasRootCapacity && componentCount + countComponents([defaults[type]?.()]) <= componentBudget;
+  const hasAttachmentCapacity = (needed = 1) => attachmentCount + needed <= attachmentBudget;
+  const canAddType = (type) => {
+    if (!hasRootCapacity) return false;
+    if (componentCount + countComponents([defaults[type]?.()]) > componentBudget) return false;
+    if ((type === 'file' || type === 'media_gallery') && !hasAttachmentCapacity(1)) return false;
+    return true;
+  };
   const applyPatch = (block, patch) => Object.fromEntries(Object.entries(patch).map(([key, value]) => (
     [key, typeof value === 'function' ? value(block[key]) : value]
   )));
@@ -165,7 +182,7 @@ export function ComponentsV2Builder({ value = [], focusedBlockId = null, focused
         {maxLength ? <span className={`v2-field-char-count ${count > maxLength ? 'is-over-limit' : ''}`}>{count} / {maxLength}</span> : null}
       </div>
       {attachmentKind
-        ? <AttachmentUrlInput value={val} onChange={update} attachments={attachments} mediaAssets={mediaAssets} botProfile={botProfile} onSelectMediaAsset={onSelectMediaAsset} imageOnly={attachmentKind === 'image'} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} templateFunctions={templateFunctions} appEmojis={appEmojis} maxLength={maxLength} {...inputProps} />
+        ? <AttachmentUrlInput value={val} onChange={update} attachments={attachments} mediaAssets={mediaAssets} botProfile={botProfile} onSelectMediaAsset={onSelectMediaAsset} onUploadMedia={onUploadMedia} imageOnly={attachmentKind === 'image'} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} templateFunctions={templateFunctions} appEmojis={appEmojis} maxLength={maxLength} {...inputProps} />
         : <TextField value={val} onChange={update} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} templateFunctions={templateFunctions} appEmojis={appEmojis} maxLength={maxLength} {...inputProps} />}
     </label>;
   };
@@ -203,7 +220,11 @@ export function ComponentsV2Builder({ value = [], focusedBlockId = null, focused
     <div className="v2-add-blocks" aria-label="Add component block">
       {Object.entries({ text_display: 'Text', section: 'Section', separator: 'Separator', media_gallery: 'Media gallery', file: 'File', action_row: 'Action row', ...(!insideContainer ? { container: 'Container' } : {}) }).map(([type, label]) => {
         const disabled = !canAddType(type);
-        const limitTitle = insideContainer && !hasRootCapacity ? 'Discord containers support at most 10 child components' : 'Discord supports at most 40 total Components V2 components';
+        const limitTitle = (type === 'file' || type === 'media_gallery') && !hasAttachmentCapacity(1)
+          ? 'Discord supports at most 10 file attachments per message'
+          : insideContainer && !hasRootCapacity
+            ? 'Discord containers support at most 10 child components'
+            : 'Discord supports at most 40 total Components V2 components';
         return <button key={type} type="button" disabled={disabled} draggable={!disabled} onDragStart={(event) => { if (disabled) { event.preventDefault(); return; } event.dataTransfer.effectAllowed = 'copy'; event.dataTransfer.setData('application/x-arc-studio-palette', JSON.stringify({ kind: 'palette', scope: 'components-v2', type })); }} onClick={() => addBlock(type)} title={disabled ? limitTitle : `Add ${label.toLowerCase()}`}><Plus size={13} />{label}</button>;
       })}
     </div>
@@ -214,9 +235,9 @@ export function ComponentsV2Builder({ value = [], focusedBlockId = null, focused
       {block.type === 'text_display' && field('Text', block.content, (content) => setBlock(block.id, { content }), { as: 'textarea', rows: 3, maxLength: Math.max(0, Math.min(4000, textBudget - textCount + String(block.content || '').length)), placeholder: 'Write text or use {{variable}}' })}
       {block.type === 'section' && sectionFields(block, (patch) => setBlock(block.id, patch))}
       {block.type === 'separator' && <label className="v2-field"><span>Spacing</span><AnimatedDropdown value={Number(block.spacing) === 2 ? 2 : 1} options={[{ value: 1, label: 'Small' }, { value: 2, label: 'Large' }]} onChange={(spacing) => setBlock(block.id, { spacing: Number(spacing) })} ariaLabel="Separator spacing" /></label>}
-      {block.type === 'media_gallery' && (block.items || []).map((item, itemIndex) => focusedSectionItem?.kind === 'media' && focusedSectionItem.blockId === block.id && focusedSectionItem.index !== itemIndex ? null : <div className="v2-gallery-item" key={`${block.id}_${itemIndex}`}><div className="v2-gallery-item-heading"><strong>Media {itemIndex + 1}</strong><button className="v2-remove-item" type="button" title={`Remove media ${itemIndex + 1}`} aria-label={`Remove media ${itemIndex + 1}`} onClick={() => setBlock(block.id, { items: block.items.filter((_, i) => i !== itemIndex) })}><X size={15} /></button></div>{field('Media URL', item.url, (url) => setBlock(block.id, { items: block.items.map((entry, i) => i === itemIndex ? { ...entry, url } : entry) }), { maxLength: 2048, placeholder: 'https://… or attachment://image.png', attachmentKind: 'image', allowVideo: true, allowMultiple: true, onSelectMediaAssets: (files) => { const currentItems = block.items || []; const available = Math.max(0, 10 - currentItems.length); const additions = files.filter((file) => !currentItems.some((entry) => String(entry.url || '').toLowerCase() === `attachment://${file.filename}`.toLowerCase())).slice(0, available).map((file) => ({ url: `attachment://${file.filename}`, description: '', spoiler: false })); if (additions.length) setBlock(block.id, { items: [...currentItems, ...additions] }); }, validationTarget: `${block.id}:media:${itemIndex}` })}{field('Description', item.description, (description) => setBlock(block.id, { items: block.items.map((entry, i) => i === itemIndex ? { ...entry, description } : entry) }), { maxLength: 1024 })}<label className="v2-check"><input type="checkbox" checked={Boolean(item.spoiler)} onChange={(event) => setBlock(block.id, { items: block.items.map((entry, i) => i === itemIndex ? { ...entry, spoiler: event.target.checked } : entry) })} />Spoiler media</label></div>)}
-      {block.type === 'media_gallery' && <button type="button" disabled={(block.items || []).length >= 10} onClick={() => setBlock(block.id, { items: [...(block.items || []), { url: '', description: '', spoiler: false }] })}>Add media item</button>}        {block.type === 'file' && <>{attachments.length > 0 && <label className="v2-field"><span>Use uploaded file</span><AnimatedDropdown value="" options={[{ value: '', label: 'Choose attachment…' }, ...attachments.map((file) => ({ value: file.filename, label: file.filename }))]} onChange={(filename) => { if (filename) setBlock(block.id, { url: `attachment://${filename}` }); }} ariaLabel="Use uploaded file" /></label>}{field('Attachment URL', block.url, (url) => setBlock(block.id, { url }), { maxLength: 2048, placeholder: 'attachment://filename.zip', attachmentKind: 'file' })}<label className="v2-check"><input type="checkbox" checked={Boolean(block.spoiler)} onChange={(event) => setBlock(block.id, { spoiler: event.target.checked })} />Spoiler file</label><span className="v2-help">Upload a file with the control above, then select it here.</span></>}
-      {block.type === 'container' && <><div className="v2-container-controls"><span>{(block.children || []).length} of 10 blocks</span></div><HexColorField label="Accent color" value={block.accentColor} onChange={(accentColor) => setBlock(block.id, { accentColor })} /><label className="v2-check"><input type="checkbox" checked={Boolean(block.spoiler)} onChange={(event) => setBlock(block.id, { spoiler: event.target.checked })} />Spoiler container</label><ComponentsV2Builder value={block.children || []} insideContainer maxRootBlocks={10} componentBudget={Math.max(0, componentBudget - (componentCount - countComponents(block.children || [])))} textBudget={Math.max(0, textBudget - (textCount - countTextCharacters(block.children || [])))} onChange={(children) => setBlock(block.id, { children })} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} appEmojis={appEmojis} attachments={attachments} mediaAssets={mediaAssets} onSelectMediaAsset={onSelectMediaAsset} /></>}
+      {block.type === 'media_gallery' && (block.items || []).map((item, itemIndex) => focusedSectionItem?.kind === 'media' && focusedSectionItem.blockId === block.id && focusedSectionItem.index !== itemIndex ? null : <div className="v2-gallery-item" key={`${block.id}_${itemIndex}`}><div className="v2-gallery-item-heading"><strong>Media {itemIndex + 1}</strong><button className="v2-remove-item" type="button" title={`Remove media ${itemIndex + 1}`} aria-label={`Remove media ${itemIndex + 1}`} onClick={() => setBlock(block.id, { items: block.items.filter((_, i) => i !== itemIndex) })}><X size={15} /></button></div>{field('Media URL', item.url, (url) => setBlock(block.id, { items: block.items.map((entry, i) => i === itemIndex ? { ...entry, url } : entry) }), { maxLength: 2048, placeholder: 'https://… or attachment://image.png', attachmentKind: 'image', allowVideo: true, allowMultiple: true, onSelectMediaAssets: (files) => { const currentItems = block.items || []; const available = Math.min(Math.max(0, 10 - currentItems.length), Math.max(0, attachmentBudget - attachmentCount + currentItems.length)); const additions = files.filter((file) => !currentItems.some((entry) => String(entry.url || '').toLowerCase() === `attachment://${file.filename}`.toLowerCase())).slice(0, available).map((file) => ({ url: `attachment://${file.filename}`, description: '', spoiler: false })); if (additions.length) setBlock(block.id, { items: [...currentItems, ...additions] }); }, validationTarget: `${block.id}:media:${itemIndex}` })}{field('Description', item.description, (description) => setBlock(block.id, { items: block.items.map((entry, i) => i === itemIndex ? { ...entry, description } : entry) }), { maxLength: 1024 })}<label className="v2-check"><input type="checkbox" checked={Boolean(item.spoiler)} onChange={(event) => setBlock(block.id, { items: block.items.map((entry, i) => i === itemIndex ? { ...entry, spoiler: event.target.checked } : entry) })} />Spoiler media</label></div>)}
+      {block.type === 'media_gallery' && <button type="button" disabled={(block.items || []).length >= 10 || !hasAttachmentCapacity(1)} title={!hasAttachmentCapacity(1) ? 'Discord supports at most 10 file attachments per message' : undefined} onClick={() => setBlock(block.id, { items: [...(block.items || []), { url: '', description: '', spoiler: false }] })}>Add media item</button>}        {block.type === 'file' && <>{attachments.length > 0 && <label className="v2-field"><span>Use uploaded file</span><AnimatedDropdown value="" options={[{ value: '', label: 'Choose attachment…' }, ...attachments.map((file) => ({ value: file.filename, label: file.filename }))]} onChange={(filename) => { if (filename) setBlock(block.id, { url: `attachment://${filename}` }); }} ariaLabel="Use uploaded file" /></label>}{field('Attachment URL', block.url, (url) => setBlock(block.id, { url }), { maxLength: 2048, placeholder: 'attachment://filename.zip', attachmentKind: 'file' })}<label className="v2-check"><input type="checkbox" checked={Boolean(block.spoiler)} onChange={(event) => setBlock(block.id, { spoiler: event.target.checked })} />Spoiler file</label><span className="v2-help">Upload a file with the control above, then select it here.</span></>}
+      {block.type === 'container' && <><div className="v2-container-controls"><span>{(block.children || []).length} of 10 blocks</span></div><HexColorField label="Accent color" value={block.accentColor} onChange={(accentColor) => setBlock(block.id, { accentColor })} /><label className="v2-check"><input type="checkbox" checked={Boolean(block.spoiler)} onChange={(event) => setBlock(block.id, { spoiler: event.target.checked })} />Spoiler container</label><ComponentsV2Builder value={block.children || []} insideContainer maxRootBlocks={10} componentBudget={Math.max(0, componentBudget - (componentCount - countComponents(block.children || [])))} textBudget={Math.max(0, textBudget - (textCount - countTextCharacters(block.children || [])))} attachmentBudget={Math.max(0, attachmentBudget - (attachmentCount - countV2Attachments(block.children || [])))} onChange={(children) => setBlock(block.id, { children })} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} appEmojis={appEmojis} attachments={attachments} mediaAssets={mediaAssets} onSelectMediaAsset={onSelectMediaAsset} onUploadMedia={onUploadMedia} /></>}
       {block.type === 'action_row' && <MessageComponentsBuilder rows={[{ id: block.id, components: block.components || [] }]} selectedComponentId={focusedComponentId} onSelectComponent={onSelectComponent} appEmojis={appEmojis} graphVariables={graphVariables} templateValuePaths={templateValuePaths} allowMultipleRows={false} canAddComponent={hasGlobalCapacity} onChange={(rows) => setBlock(block.id, { components: rows[0]?.components || [] })} />}
       </div>}
     </section>)}</div>
