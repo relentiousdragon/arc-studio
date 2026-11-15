@@ -153,6 +153,7 @@ const MATH = {
   tonumber: (x) => number(x), tostring: (x) => templateText(x),
   datenow: () => Date.now(), dateunix: () => Math.floor(Date.now() / 1000),
   dateiso: (value = Date.now()) => dateValue(value)?.toISOString() || '',
+  gettime: (value) => (value === undefined || value === null || value === '' ? Date.now() : (dateValue(value)?.getTime() ?? Date.now())),
   dateformat: formatDate, datepart: getDatePart
 };
 const TEMPLATE_FILTER_NAMES = new Set([
