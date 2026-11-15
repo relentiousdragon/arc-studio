@@ -158,6 +158,7 @@ export function EmbedNodeBuilder({
   attachments = [],
   mediaAssets = [],
   onSelectMediaAsset,
+  onUploadMedia,
   graphVariables = [],
   templateValuePaths = [],
   templatePreviewValues = {},
@@ -343,6 +344,7 @@ export function EmbedNodeBuilder({
             mediaAssets={mediaAssets}
             botProfile={botProfile}
             onSelectMediaAsset={onSelectMediaAsset}
+            onUploadMedia={onUploadMedia}
             imageOnly
             onChange={(next) => patchBlock(block.id, { [key]: next })}
             onOpenTextEditor={() => openTextEditor(block[key] || '')}
@@ -659,7 +661,6 @@ export function EmbedNodeBuilder({
                   }
                 }}
               />
-              <span className="node-config-hint" style={{ margin: 0 }}>Border color for the embed card</span>
             </div>
           )}
         </div>}
