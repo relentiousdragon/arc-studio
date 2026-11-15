@@ -1844,11 +1844,11 @@ export function NodeCanvas({
     const target = document.elementFromPoint(clientX, clientY);
     if (!target || !container.contains(target)) { setLibraryDragPreview(null); return; }
     const bounds = canvasGeometryRef.current.bounds;
-    const type = payload?.previewNode?.type || payload?.prefabNode?.type || payload?.nodeType || (payload?.type === 'graph-call' ? 'function_call' : payload?.type === 'embed-asset' ? 'build_embed' : payload?.type === 'components-v2-asset' ? 'build_components' : null);
+    const type = payload?.previewNode?.type || payload?.prefabNode?.type || payload?.nodeType || (payload?.type === 'graph-call' ? 'function_call' : payload?.type === 'embed-asset' ? 'build_embed' : payload?.type === 'modal-asset' ? 'build_modal' : payload?.type === 'components-v2-asset' ? 'build_components' : null);
     const definition = definitionsByType.get(type);
     if (!definition) { setLibraryDragPreview(null); return; }
     const targetGraph = payload.type === 'graph-call' ? callableGraphs.find((graph) => graph.id === payload.graphId) : null;
-    const sourceNode = payload.previewNode || payload.prefabNode || (targetGraph ? { type, label: `Call ${targetGraph.name || 'Graph'}`, data: { graphId: targetGraph.id } } : payload.type === 'embed-asset' ? { type, label: payload.name || 'Embed', data: { blocks: payload.blocks || [], embedName: payload.name || 'Untitled embed' } } : payload.type === 'components-v2-asset' ? { type, label: payload.name || 'Components V2', data: { componentsV2: payload.componentsV2Layout || [] } } : null);
+    const sourceNode = payload.previewNode || payload.prefabNode || (targetGraph ? { type, label: `Call ${targetGraph.name || 'Graph'}`, data: { graphId: targetGraph.id } } : payload.type === 'embed-asset' ? { type, label: payload.name || 'Embed', data: { blocks: payload.blocks || [], embedName: payload.name || 'Untitled embed' } } : payload.type === 'modal-asset' ? { type, label: payload.name || 'Modal', data: { modal: payload.modal || {} } } : payload.type === 'components-v2-asset' ? { type, label: payload.name || 'Components V2', data: { componentsV2: payload.componentsV2Layout || [] } } : null);
     const node = sourceNode
       ? { ...sourceNode, id: '__arc_drag_preview__', type, x: 0, y: 0, data: sourceNode.data || {} }
       : { id: '__arc_drag_preview__', type, x: 0, y: 0, data: {} };
@@ -1861,19 +1861,21 @@ export function NodeCanvas({
   }, [definitionsByType, callableGraphs, getNodeDefinition, onCollaborationAction, pan, zoom]);
 
   const updateLibraryDragPreview = (event) => {
-    const activePayload = window.__arcNodeDragPayload || window.__arcGraphDragPayload || window.__arcEmbedDragPayload || window.__arcComponentsV2DragPayload;
+    const activePayload = window.__arcNodeDragPayload || window.__arcGraphDragPayload || window.__arcEmbedDragPayload || window.__arcComponentsV2DragPayload || window.__arcModalDragPayload;
     const raw = readTransferData(event.dataTransfer, 'application/x-arc-node');
     const graphRaw = readTransferData(event.dataTransfer, 'application/x-arc-graph-call');
     const embedRaw = readTransferData(event.dataTransfer, 'application/x-arc-embed-asset');
+    const modalRaw = readTransferData(event.dataTransfer, 'application/x-arc-modal-asset');
     const componentsV2Raw = readTransferData(event.dataTransfer, 'application/x-arc-components-v2-asset');
     const fallback = parseLibraryTransferText(readTransferData(event.dataTransfer, 'text/plain'));
     let payload = activePayload;
     if (!payload && raw) { try { payload = JSON.parse(raw); } catch {} }
     if (!payload && graphRaw) { try { payload = { type: 'graph-call', ...JSON.parse(graphRaw) }; } catch {} }
     if (!payload && embedRaw) { try { payload = JSON.parse(embedRaw); } catch {} }
+    if (!payload && modalRaw) { try { payload = JSON.parse(modalRaw); } catch {} }
     if (!payload && componentsV2Raw) { try { payload = JSON.parse(componentsV2Raw); } catch {} }
     if (!payload && fallback) payload = window.__arcLibraryDragPayloads?.[fallback.token]?.payload;
-    if (!payload || (!payload.previewNode?.type && !payload.nodeType && !payload.prefabNode?.type && payload.type !== 'graph-call' && payload.type !== 'embed-asset' && payload.type !== 'components-v2-asset')) {
+    if (!payload || (!payload.previewNode?.type && !payload.nodeType && !payload.prefabNode?.type && payload.type !== 'graph-call' && payload.type !== 'embed-asset' && payload.type !== 'modal-asset' && payload.type !== 'components-v2-asset')) {
       setLibraryDragPreview(null);
       return;
     }
@@ -1930,6 +1932,11 @@ export function NodeCanvas({
       const targetId = targetElement.closest?.('[data-node-card-id]')?.getAttribute('data-node-card-id');
       const target = nodes.find((node) => node.id === targetId && node.type === 'build_embed');
       if (target) onNodesChange?.(nodes.map((node) => node.id === target.id ? { ...node, data: { ...node.data, blocks: structuredCloneSafe(payload.blocks || []), embedName: payload.name || 'Untitled embed' } } : node));
+      else onNodeDrop?.(payload, position);
+    } else if (payload?.type === 'modal-asset') {
+      const targetId = targetElement.closest?.('[data-node-card-id]')?.getAttribute('data-node-card-id');
+      const target = nodes.find((node) => node.id === targetId && node.type === 'build_modal');
+      if (target) onNodesChange?.(nodes.map((node) => node.id === target.id ? { ...node, data: { ...node.data, modal: structuredCloneSafe(payload.modal || {}) } } : node));
       else onNodeDrop?.(payload, position);
     } else onNodeDrop?.(payload, position);
   }, [applyComponentsV2AssetToTarget, nodes, onNodesChange, onNodeDrop, pan, zoom]);
@@ -4877,24 +4884,28 @@ const previewOutput = (node, outputId, seen = new Set()) => {
         const graphRaw = readTransferData(event.dataTransfer, 'application/x-arc-graph-call');
         const raw = readTransferData(event.dataTransfer, 'application/x-arc-node');
         const embedRaw = readTransferData(event.dataTransfer, 'application/x-arc-embed-asset');
+        const modalRaw = readTransferData(event.dataTransfer, 'application/x-arc-modal-asset');
         const componentsV2Raw = readTransferData(event.dataTransfer, 'application/x-arc-components-v2-asset');
         const fallback = parseLibraryTransferText(readTransferData(event.dataTransfer, 'text/plain'));
         let nodePayload = window.__arcNodeDragPayload;
         let graphPayload = window.__arcGraphDragPayload;
         let embedPayload = window.__arcEmbedDragPayload;
+        let modalPayload = window.__arcModalDragPayload;
         let componentsV2Payload = window.__arcComponentsV2DragPayload;
         if (raw) { try { nodePayload = JSON.parse(raw); } catch {} }
         if (graphRaw) { try { graphPayload = JSON.parse(graphRaw); } catch {} }
         if (embedRaw) { try { embedPayload = JSON.parse(embedRaw); } catch {} }
+        if (modalRaw) { try { modalPayload = JSON.parse(modalRaw); } catch {} }
         if (componentsV2Raw) { try { componentsV2Payload = JSON.parse(componentsV2Raw); } catch {} }
         if (componentsV2Payload?.id && window.__arcComponentsV2DragPayload?.id === componentsV2Payload.id) {
           componentsV2Payload = { ...componentsV2Payload, attachments: window.__arcComponentsV2DragPayload.attachments || [] };
         }
         const fallbackPayload = fallback && window.__arcLibraryDragPayloads?.[fallback.token]?.payload;
-        if (!nodePayload && !graphPayload && !embedPayload && !componentsV2Payload && fallbackPayload) {
+        if (!nodePayload && !graphPayload && !embedPayload && !modalPayload && !componentsV2Payload && fallbackPayload) {
           if (fallback.mimeType === 'application/x-arc-node') nodePayload = fallbackPayload;
           else if (fallback.mimeType === 'application/x-arc-graph-call') graphPayload = fallbackPayload;
           else if (fallback.mimeType === 'application/x-arc-embed-asset') embedPayload = fallbackPayload;
+          else if (fallback.mimeType === 'application/x-arc-modal-asset') modalPayload = fallbackPayload;
           else if (fallback.mimeType === 'application/x-arc-components-v2-asset') componentsV2Payload = fallbackPayload;
         }
         setLibraryDragPreview(null);
@@ -4902,8 +4913,9 @@ const previewOutput = (node, outputId, seen = new Set()) => {
         window.__arcNodeDragPayload = null;
         window.__arcGraphDragPayload = null;
         window.__arcEmbedDragPayload = null;
+        window.__arcModalDragPayload = null;
         window.__arcComponentsV2DragPayload = null;
-        if (!nodePayload && !graphPayload && !embedPayload && !componentsV2Payload) return;
+        if (!nodePayload && !graphPayload && !embedPayload && !modalPayload && !componentsV2Payload) return;
         event.preventDefault();
         event.stopPropagation();
         const bounds = canvasGeometryRef.current.bounds;
@@ -4919,6 +4931,14 @@ const previewOutput = (node, outputId, seen = new Set()) => {
               onNodesChange?.(nodes.map((node) => node.id === target.id ? { ...node, data: { ...node.data, blocks: structuredCloneSafe(embedPayload.blocks || []), embedName: embedPayload.name || 'Untitled embed' } } : node));
             } else {
               onNodeDrop?.(embedPayload, position);
+            }
+          } else if (modalPayload) {
+            const targetId = event.target instanceof Element ? event.target.closest('[data-node-card-id]')?.getAttribute('data-node-card-id') : null;
+            const target = nodes.find((node) => node.id === targetId && node.type === 'build_modal');
+            if (target) {
+              onNodesChange?.(nodes.map((node) => node.id === target.id ? { ...node, data: { ...node.data, modal: structuredCloneSafe(modalPayload.modal || {}) } } : node));
+            } else {
+              onNodeDrop?.(modalPayload, position);
             }
           } else {
             onNodeDrop?.(graphPayload ? { type: 'graph-call', ...graphPayload } : nodePayload, position);
