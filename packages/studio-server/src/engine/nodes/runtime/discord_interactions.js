@@ -202,8 +202,10 @@ export async function executeDiscordInteractionNode(node, {
     return true;
   }
 
-  const applicationId = semanticInput('application_id', node.data?.application_id || state.applicationId || '', 'application_id', 'Application ID');
-  const interactionToken = semanticInput('interaction_token', node.data?.interaction_token || '', 'interaction_token', 'Interaction token');
+  const interactionId = semanticInput('interaction_id', node.data?.interaction_id || eventPayload?.id || state.interactionId || '', 'interaction_id', 'Interaction ID', true);
+  if (interactionId) state.interactionId = interactionId;
+  const applicationId = semanticInput('application_id', node.data?.application_id || eventPayload?.application_id || state.applicationId || rest?.applicationId || rest?.client?.user?.id || '', 'application_id', 'Application ID', true);
+  const interactionToken = semanticInput('interaction_token', node.data?.interaction_token || eventPayload?.token || state.interactionToken || '', 'interaction_token', 'Interaction token');
   const content = String(resolveInput('content', node.data?.content || '')).slice(0, 2000);
   const embed = resolveInput('embed', null) || (Array.isArray(node.data?.blocks) ? buildEmbed() : null);
   const components = resolveComponents();
@@ -221,8 +223,11 @@ export async function executeDiscordInteractionNode(node, {
   } else {
     log('[Edit Interaction Reply] Editing original interaction response.');
     const payload = componentsV2
-      ? { flags: 32768, content: null, embeds: [], components: components.components, ...(files?.length ? { files } : {}) }
-      : buildMessagePayload(content, embed, components, files, isInputConnected('components'));
+      ? { flags: 32768, content: null, embeds: [], components: components.components, ...(files?.length ? { files } : isInputConnected('files') ? { attachments: [] } : {}) }
+      : {
+          ...buildMessagePayload(content, embed, components, files, isInputConnected('components')),
+          ...(isInputConnected('files') && !files?.length ? { attachments: [] } : {})
+        };
     if (typeof rest.editOriginalInteractionResponse !== 'function') throw new Error('This REST connection cannot edit interaction responses.');
     await rest.editOriginalInteractionResponse(applicationId, interactionToken, payload);
     setOutput?.('success', true);
