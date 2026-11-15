@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, Check, Moon, Sun, X } from 'lucide-react';
+import { ArrowLeft, BookmarkPlus, Check, Moon, Save, Sun, X } from 'lucide-react';
 import { ModalNodeBuilder } from '../nodes/ModalNodeBuilder.jsx';
 import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
@@ -65,9 +65,27 @@ function PreviewControl({ field }) {
   return <div className="popup-modal-preview-select">{field.placeholder || selectLabel}<span>⌄</span></div>;
 }
 
-export function PopupModalStudioView({ graphName, nodeName, theme = 'dark', modal, graphVariables = [], templateValuePaths = [], onDraftChange, onApply, onClose }) {
+export function PopupModalStudioView({
+  graphName,
+  nodeName,
+  theme = 'dark',
+  modal,
+  mode = 'node',
+  assetName = '',
+  onNameChange,
+  onSaveAsset,
+  graphVariables = [],
+  templateValuePaths = [],
+  onDraftChange,
+  onApply,
+  onClose
+}) {
+  const isAssetMode = mode === 'asset' || mode === 'new';
   const initialDraft = useRef(JSON.stringify(modal));
+  const [name, setName] = useState(assetName || modal?.title || 'Untitled modal');
   const [discardOpen, setDiscardOpen] = useState(false);
+  const [saveToLibraryOpen, setSaveToLibraryOpen] = useState(false);
+  const [librarySaveName, setLibrarySaveName] = useState(modal?.title || 'Untitled modal');
   const [previewTheme, setPreviewTheme] = useState(theme === 'light' ? 'light' : 'dark');
   const fields = Array.isArray(modal?.components) ? modal.components : [];
   const issue = validateModal(modal);
@@ -77,11 +95,76 @@ export function PopupModalStudioView({ graphName, nodeName, theme = 'dark', moda
   useStudioSwitchClose('popup-modal', requestClose);
   useEffect(() => setPreviewTheme(theme === 'light' ? 'light' : 'dark'), [theme]);
 
+  useEffect(() => {
+    if (assetName) setName(assetName);
+  }, [assetName]);
+
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
+        event.preventDefault();
+        event.stopPropagation();
+        if (issue) return;
+        if (isAssetMode) {
+          onSaveAsset ? onSaveAsset(name, structuredClone(modal)) : onApply?.(structuredClone(modal));
+        } else {
+          onApply?.(structuredClone(modal));
+        }
+      }
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [issue, isAssetMode, modal, name, onApply, onSaveAsset]);
+
   return <section className="popup-modal-studio" aria-label="Popup Modal Builder">
     <header className="popup-modal-studio-header">
       <button type="button" className="embed-studio-back" onClick={requestClose} title="Return to node graph"><ArrowLeft size={15} /><span>Back to graph</span></button>
-      <div className="popup-modal-studio-title"><strong>Popup Modal Builder</strong><span>{graphName || 'Untitled graph'}</span><i>/</i><span>{nodeName || 'Show Popup Modal'}</span></div>
-      <button type="button" className="embed-studio-save" disabled={Boolean(issue)} onClick={() => onApply?.(structuredClone(modal))}><Check size={15} /><span>Apply to node</span></button>
+      <div className="popup-modal-studio-title">
+        <strong>Popup Modal Builder</strong>
+        {isAssetMode ? (
+          <>
+            <i>/</i>
+            <input
+              value={name}
+              onChange={(event) => {
+                const nextName = event.target.value;
+                setName(nextName);
+                onNameChange?.(nextName);
+              }}
+              maxLength={64}
+              aria-label="Modal asset name"
+              placeholder="Untitled modal"
+              style={{ background: 'transparent', border: '1px solid var(--border-subtle, #333)', borderRadius: '4px', padding: '2px 8px', color: 'inherit', fontSize: '13px', outline: 'none' }}
+            />
+          </>
+        ) : (
+          <>
+            <span>{graphName || 'Untitled graph'}</span><i>/</i><span>{nodeName || 'Show Popup Modal'}</span>
+          </>
+        )}
+      </div>
+      {isAssetMode ? (
+        <button type="button" className="embed-studio-save" disabled={Boolean(issue)} onClick={() => onSaveAsset ? onSaveAsset(name, structuredClone(modal)) : onApply?.(structuredClone(modal))}><Save size={15} /><span>Save modal</span></button>
+      ) : (
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          {onSaveAsset && (
+            <button
+              type="button"
+              className="embed-studio-secondary"
+              disabled={Boolean(issue)}
+              onClick={() => {
+                setLibrarySaveName(modal?.title || 'Untitled modal');
+                setSaveToLibraryOpen(true);
+              }}
+              title="Save this modal configuration to library assets"
+            >
+              <BookmarkPlus size={14} />
+              <span>Save to library</span>
+            </button>
+          )}
+          <button type="button" className="embed-studio-save" disabled={Boolean(issue)} onClick={() => onApply?.(structuredClone(modal))}><Check size={15} /><span>Apply to node</span></button>
+        </div>
+      )}
     </header>
     <div className="popup-modal-studio-body">
       <div className="popup-modal-studio-editor">
@@ -103,13 +186,12 @@ export function PopupModalStudioView({ graphName, nodeName, theme = 'dark', moda
       </div>
       <aside className={`popup-modal-studio-preview ${previewTheme === 'light' ? 'is-discord-light' : ''}`} aria-label="Live modal preview">
         <div className="popup-modal-studio-preview-heading">
-          <span>PREVIEW</span>
+          <span className="popup-modal-preview-heading-title">PREVIEW</span>
           <div className="popup-modal-preview-heading-controls">
             <div className="preview-theme-toggle" role="group" aria-label="Preview theme">
               <button type="button" className={`preview-theme-btn ${previewTheme === 'dark' ? 'is-active' : ''}`} onClick={() => setPreviewTheme('dark')} title="Dark mode preview"><Moon size={11} /><span>Dark</span></button>
               <button type="button" className={`preview-theme-btn ${previewTheme === 'light' ? 'is-active' : ''}`} onClick={() => setPreviewTheme('light')} title="Light mode preview"><Sun size={11} /><span>Light</span></button>
             </div>
-            <span>Modal</span>
           </div>
         </div>
         <div className="popup-modal-preview-stage">
@@ -128,6 +210,31 @@ export function PopupModalStudioView({ graphName, nodeName, theme = 'dark', moda
         </div>
       </aside>
     </div>
-    <Modal isOpen={discardOpen} onClose={() => { setDiscardOpen(false); notifyStudioSwitchCancelled(); }} title="Discard modal edits?" subtitle="Your changes have not been applied to the graph." footer={<><Button variant="secondary" onClick={() => { setDiscardOpen(false); notifyStudioSwitchCancelled(); }}>Keep editing</Button><Button variant="danger" onClick={onClose}>Discard</Button></>}><p className="close-graph-copy">Apply the modal to keep these edits in this graph.</p></Modal>
+    <Modal isOpen={discardOpen} onClose={() => { setDiscardOpen(false); notifyStudioSwitchCancelled(); }} title="Discard modal edits?" subtitle={isAssetMode ? "Your changes have not been saved." : "Your changes have not been applied to the graph."} footer={<><Button variant="secondary" onClick={() => { setDiscardOpen(false); notifyStudioSwitchCancelled(); }}>Keep editing</Button><Button variant="danger" onClick={onClose}>Discard</Button></>}><p className="close-graph-copy">{isAssetMode ? "Save the modal to keep these edits in your library." : "Apply the modal to keep these edits in this graph."}</p></Modal>
+    <Modal
+      isOpen={saveToLibraryOpen}
+      onClose={() => setSaveToLibraryOpen(false)}
+      title="Save modal to library"
+      subtitle="Save this modal configuration as a reusable library asset."
+      footer={<>
+        <Button variant="secondary" onClick={() => setSaveToLibraryOpen(false)}>Cancel</Button>
+        <Button variant="primary" onClick={() => {
+          onSaveAsset?.(librarySaveName.trim() || 'Untitled modal', structuredClone(modal));
+          setSaveToLibraryOpen(false);
+        }}>Save to library</Button>
+      </>}
+    >
+      <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
+        <span>Modal asset name</span>
+        <input
+          value={librarySaveName}
+          onChange={(event) => setLibrarySaveName(event.target.value)}
+          maxLength={64}
+          autoFocus
+          placeholder="Untitled modal"
+          style={{ padding: '8px 10px', borderRadius: '6px', border: '1px solid var(--border-subtle, #444)', background: 'var(--bg-input, #1e1e1e)', color: 'inherit' }}
+        />
+      </label>
+    </Modal>
   </section>;
 }
