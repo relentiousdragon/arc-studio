@@ -7,10 +7,14 @@ export class Logger {
    * @param {object} [options]
    * @param {string} [options.logsDir]
    * @param {number|string} [options.retentionDays=7] - 7 default, up to 30 or 'forever' / 0
+   * @param {string} [options.filePrefix='arc-studio-']
+   * @param {boolean} [options.writeConsole=true]
    */
   constructor(options = {}) {
     this.logsDir = options.logsDir || logsDir;
     this.retentionDays = options.retentionDays ?? (process.env.LOG_RETENTION_DAYS || 7);
+    this.filePrefix = options.filePrefix || 'arc-studio-';
+    this.writeConsole = options.writeConsole ?? true;
     this.listeners = new Set();
 
     if (!fs.existsSync(this.logsDir)) {
@@ -21,6 +25,7 @@ export class Logger {
     this.currentDate = this.getDateString();
     this.currentLogPath = this.getLogFilePath(this.currentDate);
     this.writeStream = fs.createWriteStream(this.currentLogPath, { flags: 'a', mode: 0o600 });
+    this.writeStream.on('error', () => {});
 
     this.pruneOldLogs();
   }
@@ -30,21 +35,24 @@ export class Logger {
   }
 
   getLogFilePath(dateStr) {
-    return path.join(this.logsDir, `arc-studio-${dateStr}.log`);
+    return path.join(this.logsDir, `${this.filePrefix}${dateStr}.log`);
   }
 
-  setProjectScope(logsDir, retentionDays = null) {
+  setProjectScope(logsDir, retentionDays = null, filePrefix = null) {
     const nextDir = path.resolve(logsDir);
     const nextRetention = retentionDays ?? (process.env.LOG_RETENTION_DAYS || 7);
-    if (this.logsDir === nextDir && String(this.retentionDays) === String(nextRetention)) return;
+    const nextPrefix = filePrefix || this.filePrefix;
+    if (this.logsDir === nextDir && String(this.retentionDays) === String(nextRetention) && this.filePrefix === nextPrefix) return;
     this.writeStream?.end();
     this.logsDir = nextDir;
     this.retentionDays = nextRetention;
+    this.filePrefix = nextPrefix;
     fs.mkdirSync(this.logsDir, { recursive: true, mode: 0o700 });
     this.redactRetainedMessageContent();
     this.currentDate = this.getDateString();
     this.currentLogPath = this.getLogFilePath(this.currentDate);
     this.writeStream = fs.createWriteStream(this.currentLogPath, { flags: 'a', mode: 0o600 });
+    this.writeStream.on('error', () => {});
     this.pruneOldLogs();
   }
 
@@ -57,6 +65,7 @@ export class Logger {
       }
       this.currentLogPath = this.getLogFilePath(this.currentDate);
       this.writeStream = fs.createWriteStream(this.currentLogPath, { flags: 'a', mode: 0o600 });
+      this.writeStream.on('error', () => {});
       this.pruneOldLogs();
     }
   }
@@ -75,7 +84,8 @@ export class Logger {
   redactRetainedMessageContent() {
     try {
       for (const file of fs.readdirSync(this.logsDir)) {
-        if (!file.startsWith('arc-studio-') || !file.endsWith('.log')) continue;
+        if (!file.endsWith('.log')) continue;
+        if (this.filePrefix && !file.startsWith(this.filePrefix)) continue;
         const filePath = path.join(this.logsDir, file);
         const original = fs.readFileSync(filePath, 'utf8');
         const records = original.split(/(?=^\[[^\r\n]+\]\s+\[[A-Z]+\s*\]\s+)/m);
@@ -118,7 +128,9 @@ export class Logger {
     const timeStr = timestamp.split('T')[1].replace('Z', '');
     const metaStr = meta ? ` ${JSON.stringify(meta)}` : '';
 
-    console.log(`\x1b[90m[${timeStr}]\x1b[0m ${color}[${cleanLevel}]${reset} ${message}${metaStr}`);
+    if (this.writeConsole) {
+      console.log(`\x1b[90m[${timeStr}]\x1b[0m ${color}[${cleanLevel}]${reset} ${message}${metaStr}`);
+    }
 
     const fileLine = `[${timestamp}] [${cleanLevel}] ${message}${metaStr}\n`;
     if (this.writeStream) {
@@ -154,12 +166,15 @@ export class Logger {
     try {
       const files = fs.readdirSync(this.logsDir);
       for (const file of files) {
-        if (!file.startsWith('arc-studio-') || !file.endsWith('.log')) continue;
+        if (!file.endsWith('.log')) continue;
+        if (this.filePrefix && !file.startsWith(this.filePrefix)) continue;
         const filePath = path.join(this.logsDir, file);
         const stats = fs.statSync(filePath);
         if (stats.mtimeMs < cutoffTime) {
           fs.unlinkSync(filePath);
-          console.log(`\x1b[90m[Log Rotation] Pruned expired log file: ${file}\x1b[0m`);
+          if (this.writeConsole) {
+            console.log(`\x1b[90m[Log Rotation] Pruned expired log file: ${file}\x1b[0m`);
+          }
         }
       }
     } catch (err) {
@@ -170,7 +185,7 @@ export class Logger {
   listLogFiles() {
     try {
       const files = fs.readdirSync(this.logsDir)
-        .filter((f) => f.startsWith('arc-studio-') && f.endsWith('.log'))
+        .filter((f) => f.endsWith('.log') && (!this.filePrefix || f.startsWith(this.filePrefix)))
         .map((f) => {
           const stats = fs.statSync(path.join(this.logsDir, f));
           return {
@@ -190,6 +205,9 @@ export class Logger {
 
   readLogFile(filename, maxLines = 500) {
     const safeName = path.basename(filename);
+    if (!safeName.endsWith('.log') || (this.filePrefix && !safeName.startsWith(this.filePrefix))) {
+      throw new Error(`Log file ${safeName} does not exist`);
+    }
     const targetPath = path.join(this.logsDir, safeName);
     if (!fs.existsSync(targetPath)) {
       throw new Error(`Log file ${safeName} does not exist`);
