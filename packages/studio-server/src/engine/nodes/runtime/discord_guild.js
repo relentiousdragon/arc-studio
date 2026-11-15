@@ -9,6 +9,7 @@ const GUILD_NODE_TYPES = new Set([
   'action_create_thread', 'action_start_thread_from_message',
   'action_create_channel', 'action_edit_channel', 'action_delete_channel',
   'action_create_role', 'action_member_role', 'action_moderate_member',
+  'action_set_nickname', 'action_modify_server_profile', 'action_manage_guild_security',
   'action_voice_channel_status', 'action_voice_state'
 ]);
 //
@@ -30,13 +31,38 @@ function resolveChannelOverwrites(node, resolveInput) {
   return overwrites;
 }
 
+async function resolveImageInputToDataUri(input, resolveFiles) {
+  if (!input) return null;
+  if (typeof input === 'string') {
+    const trimmed = input.trim();
+    if (/^data:image\/[^;]+;base64,/i.test(trimmed)) return trimmed;
+    if (/^https?:\/\//i.test(trimmed)) {
+      const response = await fetch(trimmed, { signal: AbortSignal.timeout(10_000) });
+      if (!response.ok) throw new Error(`Could not fetch image from ${trimmed} (status ${response.status})`);
+      const contentType = response.headers.get('content-type') || 'image/png';
+      const arrayBuffer = await response.arrayBuffer();
+      return `data:${contentType};base64,${Buffer.from(arrayBuffer).toString('base64')}`;
+    }
+  }
+  if (typeof resolveFiles === 'function') {
+    const files = await resolveFiles(input);
+    const first = Array.isArray(files) ? files[0] : files;
+    if (first?.data) {
+      if (/^data:image\/[^;]+;base64,/i.test(first.data)) return first.data;
+      return `data:${first.contentType || 'image/png'};base64,${first.data}`;
+    }
+  }
+  return String(input);
+}
+
 export async function executeDiscordGuildNode(node, {
   resolveInput,
   isInputConnected = () => false,
   rest,
   client,
   setOutput,
-  log
+  log,
+  resolveFiles
 }) {
   if (!isDiscordGuildNodeType(node?.type)) return false;
   if (node.type === 'action_fetch_user') {
@@ -478,6 +504,127 @@ export async function executeDiscordGuildNode(node, {
             ? `[Moderation] ${operation} succeeded for ${userId}`
             : `[Moderation] ${operation} failed for ${userId}: ${errorMessage}`);
           return success ? true : 'failure';
+        } else if (node.type === 'action_set_nickname') {
+          const guildId = String(resolveInput('guild_id', node.data?.guild_id || '')).trim();
+          const rawUserId = String(resolveInput('user_id', node.data?.user_id || '')).trim();
+          const nickname = String(resolveInput('nickname', node.data?.nickname ?? '')).slice(0, 32);
+          const reason = String(resolveInput('reason', node.data?.reason || '')).trim().slice(0, 512);
+          if (!guildId) throw new Error('Change Nickname requires a Server ID.');
+          const isSelf = !rawUserId || rawUserId === '@me';
+          const changes = { nick: nickname || null };
+          let updatedMember = null;
+          if (isSelf) {
+            updatedMember = typeof rest.modifyCurrentMember === 'function'
+              ? await rest.modifyCurrentMember(guildId, changes, reason)
+              : await rest.modifyGuildMember(guildId, '@me', changes, reason);
+          } else {
+            if (!/^\d{15,22}$/.test(rawUserId)) throw new TypeError('Change Nickname requires a valid User ID.');
+            updatedMember = await rest.modifyGuildMember(guildId, rawUserId, changes, reason);
+          }
+          const appliedNick = updatedMember?.nick ?? nickname ?? '';
+          setOutput('success', true);
+          setOutput('nickname', appliedNick);
+          if (updatedMember) setOutput('member', updatedMember);
+          log(`[Change Nickname] Updated nickname for ${isSelf ? 'bot' : rawUserId} in guild ${guildId} to "${appliedNick}"`);
+          return true;
+        } else if (node.type === 'action_modify_server_profile') {
+          const guildId = String(resolveInput('guild_id', node.data?.guild_id || '')).trim();
+          if (!guildId) throw new Error('Change Server Profile requires a Server ID.');
+          const nickname = resolveInput('nickname', node.data?.nickname);
+          const avatarInput = resolveInput('avatar', node.data?.avatar);
+          const bannerInput = resolveInput('banner', node.data?.banner);
+          const bio = resolveInput('bio', node.data?.bio);
+          const clearAvatar = Boolean(resolveInput('clear_avatar', node.data?.clear_avatar ?? false));
+          const clearBanner = Boolean(resolveInput('clear_banner', node.data?.clear_banner ?? false));
+          const clearBio = Boolean(resolveInput('clear_bio', node.data?.clear_bio ?? false));
+          const reason = String(resolveInput('reason', node.data?.reason || '')).trim().slice(0, 512);
+
+          const changes = {};
+          if (nickname !== undefined && nickname !== null && String(nickname).trim() !== '') {
+            changes.nick = String(nickname).slice(0, 32);
+          }
+          if (clearAvatar) {
+            changes.avatar = null;
+          } else if (avatarInput) {
+            changes.avatar = await resolveImageInputToDataUri(avatarInput, resolveFiles);
+          }
+          if (clearBanner) {
+            changes.banner = null;
+          } else if (bannerInput) {
+            changes.banner = await resolveImageInputToDataUri(bannerInput, resolveFiles);
+          }
+          if (clearBio) {
+            changes.bio = '';
+          } else if (bio !== undefined && bio !== null && String(bio).trim() !== '') {
+            changes.bio = String(bio).slice(0, 190);
+          }
+
+          let updatedMember = null;
+          if (typeof rest.modifyCurrentMember === 'function') {
+            updatedMember = await rest.modifyCurrentMember(guildId, changes, reason);
+          } else {
+            updatedMember = await rest.modifyGuildMember(guildId, '@me', changes, reason);
+          }
+          setOutput('success', true);
+          if (updatedMember) {
+            setOutput('member', updatedMember);
+            setOutput('nickname', updatedMember.nick || '');
+            setOutput('bio', updatedMember.bio || changes.bio || '');
+            if (updatedMember.avatar) setOutput('avatar_url', `https://cdn.discordapp.com/guilds/${guildId}/users/@me/avatars/${updatedMember.avatar}.png`);
+            if (updatedMember.banner) setOutput('banner_url', `https://cdn.discordapp.com/guilds/${guildId}/users/@me/banners/${updatedMember.banner}.png`);
+          }
+          log(`[Server Profile] Updated bot server profile in guild ${guildId}`);
+          return true;
+        } else if (node.type === 'action_manage_guild_security') {
+          const guildId = String(resolveInput('guild_id', node.data?.guild_id || '')).trim();
+          if (!guildId) throw new Error('Manage Server Security requires a Server ID.');
+          const action = String(resolveInput('action', node.data?.action || 'pause_both')).toLowerCase().trim();
+          const durationMinutes = Math.max(1, Math.min(1440, Math.trunc(Number(resolveInput('duration_minutes', node.data?.duration_minutes ?? 60)) || 60)));
+          const customInvites = resolveInput('invites_disabled_until', node.data?.invites_disabled_until);
+          const customDms = resolveInput('dms_disabled_until', node.data?.dms_disabled_until);
+          const reason = String(resolveInput('reason', node.data?.reason || '')).trim().slice(0, 512);
+
+          const pauseTimestamp = new Date(Date.now() + durationMinutes * 60_000).toISOString();
+          const changes = {};
+          if (action === 'pause_both') {
+            changes.invites_disabled_until = pauseTimestamp;
+            changes.dms_disabled_until = pauseTimestamp;
+          } else if (action === 'pause_invites') {
+            changes.invites_disabled_until = pauseTimestamp;
+          } else if (action === 'pause_dms') {
+            changes.dms_disabled_until = pauseTimestamp;
+          } else if (action === 'resume_both') {
+            changes.invites_disabled_until = null;
+            changes.dms_disabled_until = null;
+          } else if (action === 'resume_invites') {
+            changes.invites_disabled_until = null;
+          } else if (action === 'resume_dms') {
+            changes.dms_disabled_until = null;
+          } else if (action === 'custom') {
+            changes.invites_disabled_until = customInvites ? new Date(customInvites).toISOString() : null;
+            changes.dms_disabled_until = customDms ? new Date(customDms).toISOString() : null;
+          } else {
+            throw new TypeError(`Unknown server security action "${action}".`);
+          }
+
+          let incidentData = null;
+          if (typeof rest.modifyGuildIncidentActions === 'function') {
+            incidentData = await rest.modifyGuildIncidentActions(guildId, changes, reason);
+          }
+          const now = Date.now();
+          const invitesDisabledUntil = incidentData?.invites_disabled_until || changes.invites_disabled_until || '';
+          const dmsDisabledUntil = incidentData?.dms_disabled_until || changes.dms_disabled_until || '';
+          const isInvitesPaused = Boolean(invitesDisabledUntil && new Date(invitesDisabledUntil).getTime() > now);
+          const isDmsPaused = Boolean(dmsDisabledUntil && new Date(dmsDisabledUntil).getTime() > now);
+
+          setOutput('success', true);
+          setOutput('invites_disabled_until', invitesDisabledUntil || '');
+          setOutput('dms_disabled_until', dmsDisabledUntil || '');
+          setOutput('is_invites_paused', isInvitesPaused);
+          setOutput('is_dms_paused', isDmsPaused);
+          if (incidentData) setOutput('incident_data', incidentData);
+          log(`[Server Security] Applied "${action}" for server ${guildId}`);
+          return true;
         } else if (node.type === 'action_voice_channel_status') {
           const channelId = String(resolveInput('channel_id', node.data?.channel_id || '')).trim();
           const status = String(resolveInput('status', node.data?.status || '')).slice(0, 500);
