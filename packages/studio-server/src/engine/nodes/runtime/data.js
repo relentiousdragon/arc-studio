@@ -2,10 +2,12 @@ import dayjs from 'dayjs';
 import duration from 'dayjs/plugin/duration.js';
 import utc from 'dayjs/plugin/utc.js';
 import timezone from 'dayjs/plugin/timezone.js';
+import advancedFormat from 'dayjs/plugin/advancedFormat.js';
 import { PermissionFlagEntries, PermissionFlags } from 'chezcord/constants';
 dayjs.extend(duration);
 dayjs.extend(utc);
 dayjs.extend(timezone);
+dayjs.extend(advancedFormat);
 
 const permissionAliases = Object.freeze(Object.fromEntries(PermissionFlagEntries.flatMap(({ name, legacyName }) => [[name, name], [legacyName, name]])));
 const legacyPermissionFlags = Object.freeze(Object.fromEntries(PermissionFlagEntries.map(({ legacyName, mask }) => [legacyName, mask])));
