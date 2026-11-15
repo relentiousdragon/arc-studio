@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { dataDir } from '../storage.js';
-import { buildDiscordComponentsV2, validateDiscordComponentsV2 } from './nodes/runtime/builders.js';
+import { buildDiscordComponentsV2, validateDiscordComponentsV2, validateDiscordModalPayload } from './nodes/runtime/builders.js';
 
 const embedStorePath = path.join(dataDir, 'embeds.json');
 const MAX_EMBEDS = 1000;
@@ -49,7 +49,11 @@ export class EmbedStore {
   load() {
     try {
       const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf8'));
-      this.embeds = Array.isArray(parsed) ? parsed.filter((item) => item && typeof item.id === 'string' && (Array.isArray(item.blocks) || item.kind === 'components-v2' && Array.isArray(item.componentsV2Layout))).slice(0, MAX_EMBEDS) : [];
+      this.embeds = Array.isArray(parsed) ? parsed.filter((item) => item && typeof item.id === 'string' && (
+        Array.isArray(item.blocks)
+        || (item.kind === 'components-v2' && Array.isArray(item.componentsV2Layout))
+        || (item.kind === 'modal' && item.modal && typeof item.modal === 'object')
+      )).slice(0, MAX_EMBEDS) : [];
     } catch {
       this.embeds = [];
     }
@@ -62,21 +66,35 @@ export class EmbedStore {
   save(input, idOverride = null) {
     if (!input || typeof input !== 'object') throw new TypeError('A library asset is required.');
     const isComponentsV2 = input.kind === 'components-v2';
+    const isModal = input.kind === 'modal';
     if (isComponentsV2) {
       if (!Array.isArray(input.componentsV2Layout) || input.componentsV2Layout.length > MAX_BLOCKS) throw new RangeError(`A Components V2 asset can contain at most ${MAX_BLOCKS} top level blocks.`);
       const validationErrors = validateDiscordComponentsV2(buildDiscordComponentsV2(input.componentsV2Layout));
+      if (validationErrors.length) throw new TypeError(validationErrors.slice(0, 4).join(' '));
+    } else if (isModal) {
+      if (!input.modal || typeof input.modal !== 'object') throw new TypeError('A modal asset must include modal configuration.');
+      const validationErrors = validateDiscordModalPayload(input.modal);
       if (validationErrors.length) throw new TypeError(validationErrors.slice(0, 4).join(' '));
     } else {
       if (!Array.isArray(input.blocks)) throw new TypeError('An embed must include a blocks array.');
       if (input.blocks.length > MAX_BLOCKS) throw new RangeError(`An embed can contain at most ${MAX_BLOCKS} blocks.`);
     }
-    const id = String(idOverride || input.id || `embed_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`).slice(0, 100);
-    const name = String(input.name || 'Untitled embed').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 80) || 'Untitled embed';
-    const asset = isComponentsV2
-      ? { id, name, kind: 'components-v2', blocks: [], components: [], componentsV2Layout: structuredClone(input.componentsV2Layout), attachments: Array.isArray(input.attachments) ? structuredClone(input.attachments) : [], updatedAt: new Date().toISOString() }
-      : { id, name, blocks: structuredClone(input.blocks), components: normalizeComponents(input.components), updatedAt: new Date().toISOString() };
+    const id = String(idOverride || input.id || `${isModal ? 'modal' : isComponentsV2 ? 'components_v2' : 'embed'}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`).slice(0, 100);
+    const defaultName = isModal ? 'Untitled modal' : isComponentsV2 ? 'Untitled Components V2' : 'Untitled embed';
+    const name = String(input.name || defaultName).replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 80) || defaultName;
+    const normalizedName = name.toLowerCase();
+    const duplicate = this.embeds.find((embed) => embed.id !== id && String(embed.name || '').trim().toLowerCase() === normalizedName);
+    if (duplicate) {
+      const typeLabel = duplicate.kind === 'modal' ? 'A popup modal' : duplicate.kind === 'components-v2' ? 'A Components V2 asset' : 'An embed';
+      throw new TypeError(`${typeLabel} named "${name}" already exists in the library.`);
+    }
+    const asset = isModal
+      ? { id, name, kind: 'modal', modal: structuredClone(input.modal), updatedAt: new Date().toISOString() }
+      : isComponentsV2
+        ? { id, name, kind: 'components-v2', blocks: [], components: [], componentsV2Layout: structuredClone(input.componentsV2Layout), attachments: Array.isArray(input.attachments) ? structuredClone(input.attachments) : [], updatedAt: new Date().toISOString() }
+        : { id, name, blocks: structuredClone(input.blocks), components: normalizeComponents(input.components), updatedAt: new Date().toISOString() };
     const assetBytes = Buffer.byteLength(JSON.stringify(asset), 'utf8');
-    if (assetBytes > (isComponentsV2 ? MAX_COMPONENTS_V2_ASSET_BYTES : MAX_ASSET_BYTES)) throw new RangeError(isComponentsV2 ? 'This Components V2 layout and its attachments are too large to save.' : 'This embed is too large to save.');
+    if (assetBytes > (isComponentsV2 ? MAX_COMPONENTS_V2_ASSET_BYTES : MAX_ASSET_BYTES)) throw new RangeError(isComponentsV2 ? 'This Components V2 layout and its attachments are too large to save.' : isModal ? 'This modal is too large to save.' : 'This embed is too large to save.');
     const existingIndex = this.embeds.findIndex((embed) => embed.id === id);
     if (existingIndex < 0 && this.embeds.length >= MAX_EMBEDS) throw new RangeError('The shared embed library is full.');
     const nextEmbeds = [...this.embeds];
