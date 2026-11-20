@@ -1240,10 +1240,19 @@ export class GraphRunner {
         for (const option of options) {
           if (Array.isArray(option.options)) flattenOptions(option.options);
           else if (option.name) {
-            if (Number(option.type) === 11) {
+            const optionType = Number(option.type);
+            if (optionType === 11) {
               const attachmentId = option.value ?? option.attachment;
               commandOptions[option.name] = eventPayload.data?.resolved?.attachments?.[attachmentId]
                 || (option.attachment && typeof option.attachment === 'object' ? option.attachment : null);
+            } else if (optionType === 6 && eventPayload.data?.resolved?.users?.[option.value]) {
+              const userObj = eventPayload.data.resolved.users[option.value];
+              const memberObj = eventPayload.data?.resolved?.members?.[option.value];
+              commandOptions[option.name] = memberObj ? { ...userObj, member: memberObj } : userObj;
+            } else if (optionType === 7 && eventPayload.data?.resolved?.channels?.[option.value]) {
+              commandOptions[option.name] = eventPayload.data.resolved.channels[option.value];
+            } else if (optionType === 8 && eventPayload.data?.resolved?.roles?.[option.value]) {
+              commandOptions[option.name] = eventPayload.data.resolved.roles[option.value];
             } else commandOptions[option.name] = option.value ?? option.user ?? option.channel ?? option.role ?? option.attachment ?? null;
           }
         }
