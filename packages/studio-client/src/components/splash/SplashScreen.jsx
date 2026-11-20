@@ -12,6 +12,7 @@ import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
 import studioPackage from '../../../package.json';
 import { FallingLeaves } from 'falling-leaves/react';
+import { xmasSnow, halloweenFrills, fallLeaves } from '../../core/seasonalEffects.js';
 
 const desktopConfig = window.__ARC_STUDIO_CONFIG__ || {};
 const SETUP_TAGLINE = 'Visualize your Discord bot.';
@@ -20,9 +21,6 @@ const getLocalUsername = () => {
   catch { return desktopConfig.localUsername || 'Admin'; }
 };
 const isUnsupportedNodeCompatibilityError = (message) => /node registry protocol|unsupported features|node feature(?:s)? this desktop app does not support/i.test(String(message || ''));
-const xmasSnow = (date = new Date()) => date.getMonth() === 11 && date.getDate() >= 20;
-const halloweenFrills = (date = new Date()) => date.getMonth() === 9 && date.getDate() >= 15;
-const fallLeaves = (date = new Date()) => /* !halloweenFrills() && */ date.getMonth() >= 8 && date.getMonth() <= 10;
 
 const getOptimalLeafCount = ({ halloween = false, lowPower = false } = {}) => {
   if (typeof window === 'undefined') return 16;
