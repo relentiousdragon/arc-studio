@@ -186,7 +186,17 @@ function evaluate(ast, resolveSlot, options = {}) {
           ? TEMPLATE_SYSTEM_VALUES[ast.root]
           : resolveSlot?.(ast.root, `{{${ast.root}}}`));
       if (value === undefined) return { found: false, value };
-      for (const key of ast.keys) { if (['__proto__', 'prototype', 'constructor'].includes(String(key)) || value == null || !Object.hasOwn(Object(value), key)) return { found: false, value: undefined }; value = value[key]; }
+      for (const key of ast.keys) {
+        if (['__proto__', 'prototype', 'constructor'].includes(String(key)) || value == null || !Object.hasOwn(Object(value), key)) {
+          if (value != null && (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean')) {
+            if (key === 'value') { continue; }
+            if (key === 'name') { value = String(value); continue; }
+            if (key === 'id' && typeof value === 'string') { continue; }
+          }
+          return { found: false, value: undefined };
+        }
+        value = value[key];
+      }
       return { found: true, value };
     }
     case 'member': {
@@ -194,7 +204,14 @@ function evaluate(ast, resolveSlot, options = {}) {
       const keyNode = typeof ast.key === 'object' && ast.key !== null && ast.key.kind ? evaluate(ast.key, resolveSlot, options) : { found: true, value: ast.key };
       if (!base.found || !keyNode.found) return { found: false, value: undefined };
       const key = keyNode.value;
-      if (['__proto__', 'prototype', 'constructor'].includes(String(key)) || base.value == null || !Object.hasOwn(Object(base.value), key)) return { found: false, value: undefined };
+      if (['__proto__', 'prototype', 'constructor'].includes(String(key)) || base.value == null || !Object.hasOwn(Object(base.value), key)) {
+        if (base.value != null && (typeof base.value === 'string' || typeof base.value === 'number' || typeof base.value === 'boolean')) {
+          if (key === 'value') return { found: true, value: base.value };
+          if (key === 'name') return { found: true, value: String(base.value) };
+          if (key === 'id' && typeof base.value === 'string') return { found: true, value: base.value };
+        }
+        return { found: false, value: undefined };
+      }
       return { found: true, value: base.value[key] };
     }
     case 'unary': { const v = evaluate(ast.value, resolveSlot, options); return { found: v.found, value: ast.op === '!' ? !v.value : safeResult(ast.op === '-' ? -number(v.value) : number(v.value)) }; }
