@@ -422,6 +422,19 @@ async function sha256Hex(value) {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
+function getSlashOptionSample(option) {
+  const typeNum = Number(option?.type || 3);
+  const choiceVal = option?.choices?.[0]?.value;
+  const val = choiceVal ?? (typeNum === 4 || typeNum === 10 ? 0 : typeNum === 5 ? true : 'sample_value');
+  const base = { value: val, name: option?.name || 'option' };
+  if (typeNum === 6) return { ...base, id: '123456789012345678', username: 'sample_user', tag: 'sample_user#0000', bot: false };
+  if (typeNum === 7) return { ...base, id: '123456789012345678', name: 'general', type: 0 };
+  if (typeNum === 8) return { ...base, id: '123456789012345678', name: 'role', color: 0 };
+  if (typeNum === 11) return { ...base, id: '123456789012345678', filename: 'attachment.png', url: 'https://cdn.discordapp.com/attachments/...', size: 1024, content_type: 'image/png' };
+  if (typeNum === 9) return { ...base, id: '123456789012345678', username: 'sample_target' };
+  return base;
+}
+
 function getNodeOutputSample(source, pinId, variables, graphNodes) {
   if (!source) return undefined;
   if (source.type === 'variable_get' && pinId === 'value') return variables.find((item) => item.id === source.data?.variableId)?.initialValue;
@@ -434,6 +447,28 @@ function getNodeOutputSample(source, pinId, variables, graphNodes) {
     const fieldId = String(source.data?.custom_id || '');
     const field = graphNodes.flatMap((item) => item.type === 'build_modal' ? item.data?.modal?.components || [] : []).find((item) => item.customId === fieldId);
     return ['string_select', 'user_select', 'role_select', 'mentionable_select', 'channel_select', 'checkbox_group'].includes(field?.type) ? ['selected_value'] : '';
+  }
+  if (source.type === 'event_slash_command' || source.type === 'event_slash_autocomplete') {
+    const commandSource = source.type === 'event_slash_command'
+      ? source
+      : (graphNodes || []).find((node) => node.type === 'event_slash_command');
+    if (pinId === 'options') {
+      const sample = { $subcommand: 'subcommand', $subcommand_group: 'group' };
+      for (const { option, path } of flattenSlashParameters(commandSource?.data?.options)) {
+        if (!path.length || !option?.name) continue;
+        sample[option.name] = getSlashOptionSample(option);
+      }
+      return sample;
+    }
+    if (pinId.startsWith('option_')) {
+      const matched = flattenSlashParameters(commandSource?.data?.options).find((item) => item.pinId === pinId || `option_${item.option?.name}` === pinId);
+      if (matched?.option) return getSlashOptionSample(matched.option);
+    }
+    if (pinId === 'interaction') {
+      return { id: '123456789012345678', token: 'sample_token', command_name: commandSource?.data?.commandName || 'command' };
+    }
+    if (pinId === 'query') return 'search query';
+    if (pinId === 'focused_option') return 'focused_option_name';
   }
   if (source.type === 'value_text' || source.type === 'value_number' || source.type === 'value_boolean') return source.data?.value;
   if (source.type === 'data_array_create' && pinId === 'array') return Object.keys(source.data || {}).filter((key) => /^item_\d+$/.test(key)).sort().map((key) => source.data[key]);
@@ -555,6 +590,64 @@ function getEventTemplatePaths(graph) {
       if (paths.has(key)) continue;
       const label = eventTypes.size > 1 ? `${definition.label || 'Event'} · ${item.label || item.path}` : (item.label || item.path);
       paths.set(key, { path: item.path, label });
+    }
+    if (node?.type === 'event_slash_command') {
+      const slashOptions = flattenSlashParameters(node.data?.options).filter(({ path: p }) => p.every(isValidSlashName));
+      for (const { option, path: optionPath } of slashOptions) {
+        const optionName = option?.name;
+        if (!optionName) continue;
+        const typeNum = Number(option.type || 3);
+        const typeLabel = ({
+          3: 'Text', 4: 'Integer', 5: 'Boolean', 6: 'User', 7: 'Channel', 8: 'Role', 9: 'Mentionable', 10: 'Number', 11: 'Attachment'
+        })[typeNum] || 'Argument';
+        let choiceDesc = '';
+        if (Array.isArray(option.choices) && option.choices.length > 0) {
+          choiceDesc = ` · Choices: ${option.choices.map((c) => c.name || c.value).join(', ')}`;
+        } else if (option.autocomplete) {
+          choiceDesc = ' · Autocomplete';
+        }
+        const optionLabel = `${optionPath.join(' / ')} (${typeLabel})${choiceDesc}`;
+        for (const root of [`interaction.options.${optionName}`, `options.${optionName}`]) {
+          const key = root.toLowerCase();
+          if (!paths.has(key)) paths.set(key, { path: root, label: `Slash Argument · ${optionLabel}` });
+        }
+        let subProps = [
+          { key: 'value', label: 'Value' },
+          { key: 'name', label: 'Name' }
+        ];
+        if (typeNum === 6) subProps.push(...(DISCORD_OBJECT_PROPERTIES.user || []));
+        else if (typeNum === 7) subProps.push(...(DISCORD_OBJECT_PROPERTIES.channel || []));
+        else if (typeNum === 8) subProps.push(...(DISCORD_OBJECT_PROPERTIES.role || []));
+        else if (typeNum === 11) subProps.push({ key: 'id', label: 'Attachment ID' }, { key: 'filename', label: 'Filename' }, { key: 'url', label: 'URL' }, { key: 'content_type', label: 'Content Type' }, { key: 'size', label: 'Size' });
+        else if (typeNum === 9) subProps.push({ key: 'id', label: 'Snowflake ID' }, { key: 'username', label: 'Username' });
+        for (const prop of subProps) {
+          for (const root of [`interaction.options.${optionName}.${prop.key}`, `options.${optionName}.${prop.key}`]) {
+            const key = root.toLowerCase();
+            if (!paths.has(key)) paths.set(key, { path: root, label: `Slash Argument · ${optionName}.${prop.label || prop.key}` });
+          }
+        }
+      }
+    }
+    if (node?.type === 'function_input') {
+      const args = getFunctionInputArguments(node);
+      for (const arg of args) {
+        const name = arg.name;
+        if (!name) continue;
+        for (const root of [`args.${name}`, name]) {
+          const key = root.toLowerCase();
+          if (!paths.has(key)) paths.set(key, { path: root, label: `Function Argument · ${name} (${arg.valueType})` });
+        }
+        let subProps = [];
+        if (arg.valueType === 'user_id' || /(^|_)user(_|$)|author|member/i.test(name)) subProps = DISCORD_OBJECT_PROPERTIES.user || [];
+        else if (arg.valueType === 'channel_id' || arg.valueType === 'thread_id' || /(^|_)channel(_|$)|thread/i.test(name)) subProps = DISCORD_OBJECT_PROPERTIES.channel || [];
+        else if (arg.valueType === 'role_id' || /(^|_)role(_|$)/i.test(name)) subProps = DISCORD_OBJECT_PROPERTIES.role || [];
+        for (const prop of subProps) {
+          for (const root of [`args.${name}.${prop.key}`, `${name}.${prop.key}`]) {
+            const key = root.toLowerCase();
+            if (!paths.has(key)) paths.set(key, { path: root, label: `Function Argument · ${name}.${prop.label || prop.key}` });
+          }
+        }
+      }
     }
   }
   return [...paths.values()];
