@@ -1,7 +1,7 @@
 const SNOWFLAKE_FIELDS = new Set(['application_id', 'channel_id', 'thread_id', 'guild_id', 'user_id', 'message_id', 'interaction_id', 'role_id']);
 //
 export function isValidDiscordSnowflake(value) {
-  const text = String(value ?? '').trim();
+  const text = String(typeof value === 'object' && value !== null && typeof value.id === 'string' ? value.id : (value ?? '')).trim();
   if (!/^\d{1,20}$/.test(text)) return false;
   try {
     const snowflake = BigInt(text);
@@ -10,7 +10,7 @@ export function isValidDiscordSnowflake(value) {
 }
 
 export function validateDiscordSemanticValue(value, semanticType, label = 'Discord value', { simulation = false, allowEmpty = false } = {}) {
-  const text = String(value ?? '').trim();
+  const text = String(typeof value === 'object' && value !== null && typeof value.id === 'string' ? value.id : (value ?? '')).trim();
   if (!text && allowEmpty) return text;
   if (!text) throw new Error(`${label} is required.`);
   if (semanticType === 'interaction_token') {
