@@ -472,12 +472,28 @@ function channelView(type, payload, cached) {
   return { ...merged, id: String(id), name: String(name || '') };
 }
 
-function interactionOptions(options = []) {
+function interactionOptions(options = [], resolved = {}) {
   const result = {};
   const walk = (items) => {
     for (const item of Array.isArray(items) ? items : []) {
       if ([1, 2].includes(Number(item?.type))) walk(item.options);
-      else if (item?.name) result[item.name] = item.value ?? item.options ?? '';
+      else if (item?.name) {
+        const optionType = Number(item?.type);
+        const val = item.value ?? item.options ?? '';
+        if (optionType === 11 && resolved?.attachments?.[val]) {
+          result[item.name] = resolved.attachments[val];
+        } else if (optionType === 6 && resolved?.users?.[val]) {
+          const userObj = resolved.users[val];
+          const memberObj = resolved?.members?.[val];
+          result[item.name] = memberObj ? { ...userObj, member: memberObj } : userObj;
+        } else if (optionType === 7 && resolved?.channels?.[val]) {
+          result[item.name] = resolved.channels[val];
+        } else if (optionType === 8 && resolved?.roles?.[val]) {
+          result[item.name] = resolved.roles[val];
+        } else {
+          result[item.name] = val;
+        }
+      }
     }
   };
   walk(options);
@@ -515,7 +531,7 @@ function interactionView(payload) {
     focused_value: focused?.value ?? '',
     subcommand_group: data.options?.find((option) => Number(option?.type) === 2)?.name || '',
     subcommand: data.options?.find((option) => Number(option?.type) === 1)?.name || '',
-    options: interactionOptions(data.options),
+    options: interactionOptions(data.options, data.resolved || payload.resolved),
     fields: modalFields(data.components),
     channel_id: payload.channel_id || payload.channel?.id || '',
     guild_id: payload.guild_id || '',
@@ -565,6 +581,7 @@ export function buildEventTemplateValues(type, payload, directory = {}) {
     message: MESSAGE_EVENTS.has(type) ? safePayload : asObject(safePayload.message),
     thread: THREAD_EVENTS.has(type) ? safePayload : asObject(safePayload.thread),
     interaction: isInteraction ? interactionView(safePayload) : null,
+    options: isInteraction ? interactionOptions(safePayload.data?.options, safePayload.data?.resolved || safePayload.resolved) : null,
     role: ROLE_EVENTS.has(type)
       ? asObject(safePayload.role) || (type === 'event_role_delete' ? { id: safePayload.role_id || '' } : safePayload)
       : asObject(safePayload.role),
