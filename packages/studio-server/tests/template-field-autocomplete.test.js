@@ -96,3 +96,24 @@ test('suggests connected arg object properties after typing the arg prefix', () 
   });
   assert.deepEqual(suggestions.map((item) => item.insert), ['arg1.name}}', 'arg1.permission_overwrites}}']);
 });
+
+test('suggests subproperties like value and name when typing options.profile.', () => {
+  const suggestions = templateFieldSuggestions('options.profile.', {
+    paths: [
+      { path: 'options.profile.value', label: 'Value' },
+      { path: 'options.profile.name', label: 'Name' },
+      { path: 'options.other.value', label: 'Other Value' }
+    ]
+  });
+  assert.deepEqual(suggestions.map((item) => item.insert), ['options.profile.value}}', 'options.profile.name}}']);
+});
+
+test('suggests subproperties like value and name when typing arg1.profile.', () => {
+  const suggestions = templateFieldSuggestions('arg1.profile.', {
+    paths: [
+      { path: 'arg1.profile.value', label: 'Value' },
+      { path: 'arg1.profile.name', label: 'Name' }
+    ]
+  });
+  assert.deepEqual(suggestions.map((item) => item.insert), ['arg1.profile.value}}', 'arg1.profile.name}}']);
+});
