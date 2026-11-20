@@ -55,6 +55,26 @@ it('prints an escaped template literally without the backslash', () => {
   assert.equal(render('\\\\{{VAR}}', { VAR: 'x' }), '\\{{VAR}}');
   assert.deepEqual(warnings, []);
 });
+
+it('resolves value and name subproperties on options and connected arg values', () => {
+  const values = {
+    options: {
+      profile: 'red',
+      count: 5
+    },
+    arg1: {
+      profile: 'blue',
+      user: { id: '123', username: 'ada' }
+    }
+  };
+  const render = (template) => renderTextTemplate(template, (name) => values[name]);
+  assert.equal(render('{{options.profile.value}}'), 'red');
+  assert.equal(render('{{options.profile.name}}'), 'red');
+  assert.equal(render('{{options.count.value}}'), '5');
+  assert.equal(render('{{arg1.profile.value}}'), 'blue');
+  assert.equal(render('{{arg1.user.username}}'), 'ada');
+  assert.equal(render('{{arg1.user.id}}'), '123');
+});
 //
 describe('template inputs and streaming presence', () => {
   it('does not create dynamic references from quoted string literals', () => {
