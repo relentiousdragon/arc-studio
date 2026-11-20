@@ -111,6 +111,14 @@ export function recordAutoCanvasFrame(controller, interval, now = performance.no
   return null;
 }
 
+export function getEffectiveCanvasQuality({ mode = 'auto', performanceReduced = false, zoom = 1, visibleNodeCount = 0, visibleWireCount = 0 } = {}) {
+  if (mode === 'quality' || performanceReduced === false) return 'quality';
+  if (visibleNodeCount >= 80 && visibleWireCount >= 100 && zoom <= 0.55) {
+    return mode === 'auto' ? 'fast' : mode;
+  }
+  return 'quality';
+}
+
 export function commitPendingAutoCanvasQuality(controller, now = performance.now(), force = false) {
   const nextPreset = controller.pendingPreset;
   if (!nextPreset || nextPreset === controller.preset) return null;
