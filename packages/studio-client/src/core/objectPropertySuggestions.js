@@ -1,4 +1,6 @@
 import { DISCORD_OBJECT_PROPERTIES } from 'chezcord';
+import { flattenSlashParameters } from '../../../studio-server/src/engine/SlashCommandOptions.js';
+import { getFunctionInputArguments, functionArgumentPinId } from '../../../studio-server/src/engine/FunctionGraphContract.js';
 
 const OBJECT_PROPERTY_GROUPS = Object.freeze({
   attachment: [
@@ -9,6 +11,56 @@ const OBJECT_PROPERTY_GROUPS = Object.freeze({
     { key: 'size', label: 'Size', desc: 'File size in bytes' }
   ]
 });
+
+function getSlashOptionTypeProperties(type, prefix = '', option = null) {
+  const typeNum = Number(type);
+  let choiceDesc = '';
+  if (Array.isArray(option?.choices) && option.choices.length > 0) {
+    choiceDesc = ` · Choices: ${option.choices.map((c) => `${c.name || c.value} (${JSON.stringify(c.value)})`).join(', ')}`;
+  } else if (option?.autocomplete) {
+    choiceDesc = ' · Autocomplete';
+  }
+  const baseProps = [
+    { key: 'value', label: 'Value', desc: `The value of the ${prefix || 'argument'}${choiceDesc}` },
+    { key: 'name', label: 'Name', desc: `The parameter name of the ${prefix || 'argument'}` }
+  ];
+
+  let specificProps = [];
+  if (typeNum === 6) {
+    specificProps = DISCORD_OBJECT_PROPERTIES.user || [];
+  } else if (typeNum === 7) {
+    specificProps = DISCORD_OBJECT_PROPERTIES.channel || [];
+  } else if (typeNum === 8) {
+    specificProps = DISCORD_OBJECT_PROPERTIES.role || [];
+  } else if (typeNum === 11) {
+    specificProps = OBJECT_PROPERTY_GROUPS.attachment || [];
+  } else if (typeNum === 9) {
+    const combined = [...(DISCORD_OBJECT_PROPERTIES.user || []), ...(DISCORD_OBJECT_PROPERTIES.role || [])];
+    const seen = new Set();
+    specificProps = combined.filter((p) => {
+      if (seen.has(p.key)) return false;
+      seen.add(p.key);
+      return true;
+    });
+  }
+
+  const allProps = [...baseProps, ...specificProps];
+  const uniqueProps = [];
+  const seenKeys = new Set();
+  for (const p of allProps) {
+    if (!seenKeys.has(p.key)) {
+      seenKeys.add(p.key);
+      uniqueProps.push(p);
+    }
+  }
+
+  if (!prefix) return uniqueProps;
+  return uniqueProps.map((p) => ({
+    key: `${prefix}.${p.key}`,
+    label: `${prefix}.${p.label || p.key}`,
+    desc: p.desc
+  }));
+}
 
 function getSlashCommandProperties(sourceNode) {
   const properties = new Map();
@@ -32,11 +84,21 @@ function getSlashCommandProperties(sourceNode) {
           10: 'Number',
           11: 'Attachment'
         })[type] || 'Argument';
+        let desc = String(option.description || '').trim() || `Slash command ${typeLabel.toLowerCase()} argument`;
+        if (Array.isArray(option.choices) && option.choices.length > 0) {
+          const choicesText = option.choices.map((c) => `${c.name || c.value} (${JSON.stringify(c.value)})`).join(', ');
+          desc = desc ? `${desc} · Choices: ${choicesText}` : `Choices: ${choicesText}`;
+        }
         properties.set(key, {
           key,
           label: typeLabel,
-          desc: String(option.description || '').trim() || `Slash command ${typeLabel.toLowerCase()} argument`
+          desc
         });
+        for (const child of getSlashOptionTypeProperties(type, key, option)) {
+          if (!properties.has(child.key)) {
+            properties.set(child.key, child);
+          }
+        }
       }
     }
   };
@@ -121,12 +183,76 @@ export function resolveInferredObjectProperties(pinIds, incomingConnections, nod
   if (!wire) return [];
 
   const sourceNode = nodeById?.get?.(wire.sourceNodeId);
+  if (!sourceNode) return [];
+
+  if (sourceNode.type === 'event_slash_command' || sourceNode.type === 'event_slash_autocomplete') {
+    const commandNode = sourceNode.type === 'event_slash_command'
+      ? sourceNode
+      : [...(nodeById?.values?.() || [])].find((n) => n.type === 'event_slash_command');
+    if (wire.sourcePinId === 'options') {
+      return commandNode ? getSlashCommandProperties(commandNode) : [];
+    }
+    if (commandNode) {
+      const params = flattenSlashParameters(commandNode.data?.options);
+      const matchedParam = params.find((item) => item.pinId === wire.sourcePinId || `option_${item.option?.name}` === wire.sourcePinId);
+      if (matchedParam?.option) {
+        const opt = matchedParam.option;
+        return getSlashOptionTypeProperties(opt.type, '', opt);
+      }
+    }
+  }
+
+  if (sourceNode.type === 'function_input') {
+    const args = getFunctionInputArguments(sourceNode);
+    const arg = args.find((item) => (
+      item.legacy
+        ? wire.sourcePinId === 'value'
+        : functionArgumentPinId(item) === wire.sourcePinId
+          || item.paramId === wire.sourcePinId
+          || `arg_${item.paramId}` === wire.sourcePinId
+          || wire.sourcePinId.endsWith(item.paramId)
+    ));
+    if (arg) {
+      const name = String(arg.name || '').toLowerCase();
+      const valType = String(arg.valueType || '').toLowerCase();
+      if (valType === 'user_id' || /(^|_)user(_|$)|author|member/i.test(name)) {
+        return DISCORD_OBJECT_PROPERTIES.user || [];
+      }
+      if (valType === 'channel_id' || valType === 'thread_id' || /(^|_)channel(_|$)|thread/i.test(name)) {
+        return DISCORD_OBJECT_PROPERTIES.channel || [];
+      }
+      if (valType === 'role_id' || /(^|_)role(_|$)/i.test(name)) {
+        return DISCORD_OBJECT_PROPERTIES.role || [];
+      }
+      if (valType === 'guild_id' || /(^|_)guild(_|$)|server/i.test(name)) {
+        return DISCORD_OBJECT_PROPERTIES.guild || [];
+      }
+      if (valType === 'message_id' || /(^|_)message(_|$)/i.test(name)) {
+        return DISCORD_OBJECT_PROPERTIES.message || [];
+      }
+      if (valType === 'interaction_id' || /(^|_)interaction(_|$)/i.test(name)) {
+        return DISCORD_OBJECT_PROPERTIES.interaction || [];
+      }
+      let defaultVal = arg.defaultValue;
+      if (typeof defaultVal === 'string' && (defaultVal.trim().startsWith('{') || defaultVal.trim().startsWith('['))) {
+        try { defaultVal = JSON.parse(defaultVal); } catch {}
+      }
+      if (defaultVal && typeof defaultVal === 'object') {
+        return getStaticValueProperties(defaultVal, `Property from default value of ${arg.name}`);
+      }
+    }
+  }
+
   const sourceDefinition = nodeDefinitionsById?.get?.(wire.sourceNodeId);
   const sourcePinDefinition = sourceDefinition?.outputs?.find((pin) => pin.id === wire.sourcePinId);
-  if (!sourceNode || !sourcePinDefinition) return [];
+  if (!sourcePinDefinition) return [];
 
-  if (sourceNode.type === 'event_slash_command' && wire.sourcePinId === 'options') {
-    return getSlashCommandProperties(sourceNode);
+  if (sourceNode.type === 'data_parse_prefix_command' && wire.sourcePinId === 'arguments') {
+    return [
+      { key: 'length', label: 'Length', desc: 'Number of parsed arguments' },
+      { key: '[0]', label: 'First Argument', desc: 'First parsed command argument' },
+      { key: '[1]', label: 'Second Argument', desc: 'Second parsed command argument' }
+    ];
   }
 
   const outputType = sourcePinDefinition.colorType || sourcePinDefinition.type;
