@@ -91,7 +91,95 @@ test('suggests slash command option fields beneath a connected arg socket', () =
   const definitions = new Map([[sourceNode.id, { outputs: NodeDefinitions[sourceNode.type].outputs }]]);
   const paths = getConnectedTemplateInputPaths([{ id: 'arg_1' }], incoming, nodes, definitions);
   assert.ok(paths.some((item) => item.path === 'arg1.target'));
+  assert.ok(paths.some((item) => item.path === 'arg1.target.value'));
+  assert.ok(paths.some((item) => item.path === 'arg1.target.name'));
+  assert.ok(paths.some((item) => item.path === 'arg1.target.username'));
+  assert.ok(paths.some((item) => item.path === 'arg1.target.id'));
   assert.ok(paths.some((item) => item.path === 'arg1.reason'));
+  assert.ok(paths.some((item) => item.path === 'arg1.reason.value'));
+  assert.ok(paths.some((item) => item.path === 'arg1.reason.name'));
+
+  const autoNode = { id: 'auto-event', type: 'event_slash_autocomplete' };
+  const autoIncoming = new Map([['arg_1', { sourceNodeId: autoNode.id, sourcePinId: 'options' }]]);
+  const autoNodes = new Map([[sourceNode.id, sourceNode], [autoNode.id, autoNode]]);
+  const autoDefinitions = new Map([[sourceNode.id, { outputs: NodeDefinitions[sourceNode.type].outputs }], [autoNode.id, { outputs: NodeDefinitions[autoNode.type].outputs }]]);
+  const autoPaths = getConnectedTemplateInputPaths([{ id: 'arg_1' }], autoIncoming, autoNodes, autoDefinitions);
+  assert.ok(autoPaths.some((item) => item.path === 'arg1.reason.value'));
+});
+
+test('infers properties from individual slash command option pins', () => {
+  const sourceNode = {
+    id: 'slash-event',
+    type: 'event_slash_command',
+    data: {
+      options: [
+        { name: 'target', type: 6 },
+        { name: 'channel', type: 7 },
+        { name: 'role', type: 8 },
+        { name: 'attachment', type: 11 },
+        { name: 'color', type: 3, choices: [{ name: 'Red', value: 'red' }, { name: 'Blue', value: 'blue' }] },
+        { name: 'query', type: 3, autocomplete: true }
+      ]
+    }
+  };
+  const userProps = infer(sourceNode, 'option_target');
+  assert.ok(keys(userProps).includes('value'));
+  assert.ok(keys(userProps).includes('name'));
+  assert.ok(keys(userProps).includes('username'));
+  assert.ok(keys(userProps).includes('id'));
+  assert.ok(keys(userProps).includes('avatar'));
+
+  const channelProps = infer(sourceNode, 'option_channel');
+  assert.ok(keys(channelProps).includes('value'));
+  assert.ok(keys(channelProps).includes('name'));
+  assert.ok(keys(channelProps).includes('type'));
+
+  const roleProps = infer(sourceNode, 'option_role');
+  assert.ok(keys(roleProps).includes('value'));
+  assert.ok(keys(roleProps).includes('name'));
+  assert.ok(keys(roleProps).includes('color'));
+
+  const attachmentProps = infer(sourceNode, 'option_attachment');
+  assert.ok(keys(attachmentProps).includes('value'));
+  assert.ok(keys(attachmentProps).includes('name'));
+  assert.ok(keys(attachmentProps).includes('filename'));
+  assert.ok(keys(attachmentProps).includes('url'));
+
+  const choiceProps = infer(sourceNode, 'option_color');
+  assert.ok(keys(choiceProps).includes('value'));
+  assert.ok(keys(choiceProps).includes('name'));
+  assert.ok(!keys(choiceProps).includes('red'));
+  assert.ok(!keys(choiceProps).includes('blue'));
+
+  const autoProps = infer(sourceNode, 'option_query');
+  assert.ok(keys(autoProps).includes('value'));
+  assert.ok(keys(autoProps).includes('name'));
+  assert.match(autoProps.find((p) => p.key === 'value')?.desc || '', /Autocomplete/);
+});
+
+test('infers properties from function input arguments', () => {
+  const functionNode = {
+    id: 'fn-input',
+    type: 'function_input',
+    data: {
+      arguments: [
+        { name: 'author_user', valueType: 'user_id' },
+        { name: 'target_channel', valueType: 'channel_id' },
+        { name: 'config', valueType: 'object', defaultValue: '{"theme":"dark","retries":3}' }
+      ]
+    }
+  };
+  const userProps = infer(functionNode, 'fn-input_argument_1');
+  assert.ok(keys(userProps).includes('username'));
+  assert.ok(keys(userProps).includes('id'));
+
+  const channelProps = infer(functionNode, 'fn-input_argument_2');
+  assert.ok(keys(channelProps).includes('name'));
+  assert.ok(keys(channelProps).includes('type'));
+
+  const configProps = infer(functionNode, 'fn-input_argument_3');
+  assert.ok(keys(configProps).includes('theme'));
+  assert.ok(keys(configProps).includes('retries'));
 });
 
 test('suggests keys from the initial value of a connected object variable', () => {
