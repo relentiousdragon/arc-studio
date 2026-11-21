@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { AlertTriangle, Download, ExternalLink, Github, Keyboard, RotateCcw, Scale } from 'lucide-react';
+import { AlertTriangle, Download, ExternalLink, Github, Keyboard, RefreshCw, RotateCcw, Scale } from 'lucide-react';
 import { Modal } from '../ui/Modal.jsx';
 import { Toggle, SelectInput, TextInput } from '../ui/Inputs.jsx';
 import { Button } from '../ui/Button.jsx';
@@ -61,7 +61,7 @@ function openDiscordInvite() {
   window.open(DISCORD_INVITE_URL, '_blank', 'noopener,noreferrer');
 }
 
-export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSettings, onAutoLayout, onExportGraph, onResetLocalData, themeChoice = 'system', onThemeChange, desktopMode = false, localWorkspace = false, externalWorkspace = false, passkeysSupported = false, canResetLocalWorkspace = false, canManageClientAccess = false, platform = '', appUpdate = null, serverUpdate = null, stableUpdateReady = null, downloadedUpdateReady = null, updateInstalling = false, releaseChannel = 'stable', onOpenStudioUpdate, networkOnline = true, authToken = '', activeProjectId = '', workspaceOrigin = '', canManageLogRetention = false, canManageActivityWebhook = false, idleDisconnectMinutes = 15, canManageIdleDisconnect = false, onSetIdleDisconnectMinutes }) {
+export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSettings, onAutoLayout, onExportGraph, onResetLocalData, themeChoice = 'system', onThemeChange, desktopMode = false, localWorkspace = false, externalWorkspace = false, passkeysSupported = false, canResetLocalWorkspace = false, canManageClientAccess = false, platform = '', appUpdate = null, serverUpdate = null, stableUpdateReady = null, downloadedUpdateReady = null, updateInstalling = false, checkingForUpdates = false, releaseChannel = 'stable', onOpenStudioUpdate, onCheckForUpdates, networkOnline = true, authToken = '', activeProjectId = '', workspaceOrigin = '', canManageLogRetention = false, canManageActivityWebhook = false, idleDisconnectMinutes = 15, canManageIdleDisconnect = false, onSetIdleDisconnectMinutes }) {
   const [activeTab, setActiveTab] = useState('canvas');
   const [recording, setRecording] = useState(null);
   const [shortcutCaptureError, setShortcutCaptureError] = useState('');
@@ -389,16 +389,16 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
         </div>
       </div>
       <p className="settings-about-disclaimer">ARC Studio is an independent, open source project. It is not affiliated with, endorsed by, or sponsored by Discord Inc. Discord and its logo are trademarks of Discord Inc.</p>
-      <section className="settings-about-section" aria-labelledby="about-updates-heading">
-        <h3 id="about-updates-heading">Updates{serverUpdate && <span className="update-indicator-dot" aria-label="Server update available" />}</h3>
+      <section className="settings-about-section" aria-label="Updates">
         <Toggle label="Check for updates automatically" description={desktopMode ? 'Checks for ARC Studio releases when you’re online.' : undefined} checked={settings.autoUpdateChecks !== false} onChange={(value) => update('autoUpdateChecks', value)} />
+        {desktopMode && localWorkspace && <button type="button" className="settings-about-update-button" disabled={checkingForUpdates || !networkOnline} onClick={onCheckForUpdates}><RefreshCw size={14} className={checkingForUpdates ? 'is-spinning' : ''} /><span>{checkingForUpdates ? 'Checking for updates…' : 'Check for updates now'}</span></button>}
         {desktopMode && <><div className="settings-about-credit"><strong>Release channel</strong><span>{releaseChannel === 'nightly' ? 'Nightly' : 'Stable'}</span></div></>}
         {serverUpdate && <a href={serverUpdate.url} target="_blank" rel="noreferrer" onClick={openExternal}><Download size={14} /><span>ARC Studio Server update · v{serverUpdate.version}</span><ExternalLink size={12} /></a>}
         {(downloadedUpdateReady || stableUpdateReady) && <div className="settings-update-explainer"><strong>ARC Studio v{downloadedUpdateReady?.version || stableUpdateReady.version} is ready</strong><span>It will be applied the next time you launch the app.</span></div>}
         {appUpdate?.native
           ? <button type="button" className="settings-about-update-button" disabled={updateInstalling} onClick={() => onOpenStudioUpdate?.(appUpdate.url)}><Download size={14} /><span>{updateInstalling ? 'Downloading update…' : `Install update · v${appUpdate.version}`}</span></button>
           : appUpdate ? <a href={appUpdate.url} target="_blank" rel="noreferrer" onClick={openExternal}><Download size={14} /><span>{`${appUpdate.kind === 'major' ? 'Major' : appUpdate.kind === 'feature' ? 'Feature' : 'Maintenance'} update · v${appUpdate.version}`}</span><ExternalLink size={12} /></a>
-          : !serverUpdate && !stableUpdateReady && !downloadedUpdateReady && <div className="settings-about-credit"><strong>{networkOnline ? 'No updates available' : 'Update check when online'}</strong></div>}
+          : null}
       </section>
         {!desktopMode
           ? <></>
@@ -427,6 +427,8 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
       <section className="settings-about-section" aria-labelledby="about-credits-heading">
         <h3 id="about-credits-heading">Credits</h3>
         <a href="https://github.com/relentiousdragon" target="_blank" rel="noreferrer" onClick={openExternal}><span className="settings-about-credit-name">@relentiousdragon</span><ExternalLink size={12} /></a>
+        <a href="https://github.com/zerofoil" target="_blank" rel="noreferrer" onClick={openExternal}><span className="settings-about-credit-name">@zerofoil</span><ExternalLink size={12} /></a>
+        <a href="https://github.com/paccman-0" target="_blank" rel="noreferrer" onClick={openExternal}><span className="settings-about-credit-name">@paccman-0</span><ExternalLink size={12} /></a>
         <a href="https://github.com/relentiousdragon/arc-studio/graphs/contributors" target="_blank" rel="noreferrer" onClick={openExternal}><span>View Contributors</span><ExternalLink size={12} /></a>
       </section>
       <a className="settings-about-license" href="https://github.com/relentiousdragon/arc-studio/blob/main/LICENSE" target="_blank" rel="noreferrer" onClick={openExternal}>
