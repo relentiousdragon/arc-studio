@@ -278,7 +278,7 @@ export class BotManager {
       if (this.discordUnauthorizedCount === 3 && !this.discordAuthWarning) {
         this.discordAuthWarning = {
           title: 'Discord rejected the bot token',
-          message: 'Discord returned HTTP 401 Unauthorized on three consecutive authenticated API requests using this project’s bot token. Check the token configured for this project. This warning does not block Gateway startup or command deployment review.'
+          message: 'Discord returned HTTP 401 Unauthorized on three consecutive authenticated API requests using this project’s bot token. Check the token configured for this project.'
         };
         this.log('WARN', this.discordAuthWarning.message);
         this.broadcastWS({ type: 'BOT_STATUS', payload: { status: this.status, discordAuthWarning: this.discordAuthWarning } });
