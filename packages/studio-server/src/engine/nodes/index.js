@@ -113,6 +113,8 @@ import node_action_console_warn from './logic-flow/action_console_warn.js';
 import node_action_console_error from './logic-flow/action_console_error.js';
 // Discord Actions
 import node_action_send_message from './discord-actions/action_send_message.js';
+import node_action_add_reaction from './discord-actions/action_add_reaction.js';
+import node_action_remove_reaction from './discord-actions/action_remove_reaction.js';
 import node_action_edit_message from './discord-actions/action_edit_message.js';
 import node_action_reply_interaction from './discord-actions/action_reply_interaction.js';
 import node_action_await_interaction from './discord-actions/action_await_interaction.js';
@@ -328,6 +330,8 @@ export const nodeDefinitions = [
   node_action_console_warn,
   node_action_console_error,
   node_action_send_message,
+  node_action_add_reaction,
+  node_action_remove_reaction,
   node_action_edit_message,
   node_action_reply_interaction,
   node_action_await_interaction,
