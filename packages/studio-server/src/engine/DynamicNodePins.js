@@ -67,7 +67,7 @@ export function resolveDynamicNodePins(definition, node, connections = []) {
   if (!rule || !node) return null;
   if (rule.kind === 'array-combine') return { inputs: getArrayCombinePins(node, connections) };
   if (rule.kind === 'slash-options') {
-    const types = { 4: 'number', 5: 'boolean', 10: 'number', 11: 'object' };
+    const types = { 4: 'number', 5: 'boolean', 6: 'object', 7: 'object', 8: 'object', 9: 'object', 10: 'number', 11: 'object' };
     const parameterPins = flattenSlashParameters(node.data?.options).filter(({ path }) => path.every(isValidSlashName));
     const options = parameterPins.map(({ option, path, pinId }) => ({
       id: pinId,
