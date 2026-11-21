@@ -1,6 +1,7 @@
 import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AlertCircle, AppWindow, Bot, Braces, ChevronDown, CircleHelp, Database, Download, FileCode2, FileUp, Folder, FolderTree, LayoutGrid, LoaderCircle, LockKeyhole, MoreHorizontal, PackageOpen, Plus, Save, Search, ShieldCheck, SlidersHorizontal, Sparkles, Ticket, TrendingUp, Trash2, Users, X } from 'lucide-react';
+import { DISCORD_OBJECT_PROPERTIES } from 'chezcord';
 import { TopBar } from './components/navigation/TopBar.jsx';
 import { NodeCanvas } from './components/canvas/NodeCanvas.jsx';
 import { ControlDock } from './components/dock/ControlDock.jsx';
@@ -1020,6 +1021,7 @@ export function App() {
   const [workspaceRevision, setWorkspaceRevision] = useState(0);
   const [networkOnline, setNetworkOnline] = useState(() => navigator.onLine !== false);
   const [appUpdate, setAppUpdate] = useState(null);
+  const [desktopUpdateChecking, setDesktopUpdateChecking] = useState(false);
   const [serverUpdate, setServerUpdate] = useState(null);
   const [downloadedUpdateReady, setDownloadedUpdateReady] = useState(null);
   const [releaseNotesNotice, setReleaseNotesNotice] = useState(null);
@@ -1029,6 +1031,7 @@ export function App() {
   const [updatePermissionHelpOpen, setUpdatePermissionHelpOpen] = useState(false);
   const [updateInstalling, setUpdateInstalling] = useState(false);
   const updateRef = useRef(null);
+  const desktopUpdateCheckRef = useRef(null);
   const stableAutoDownloadVersionRef = useRef('');
   const startupStagedUpdateCheckedRef = useRef(false);
   const autoInstallStagedUpdateOnLaunchRef = useRef(false);
@@ -1800,7 +1803,11 @@ export function App() {
       return undefined;
     }
     let active = true;
-    const checkForDesktopUpdate = async () => {
+    let checkInFlight = false;
+    const checkForDesktopUpdate = async (manual = false) => {
+      if (checkInFlight) return;
+      checkInFlight = true;
+      if (manual) setDesktopUpdateChecking(true);
       try {
         const invoke = window.__TAURI_INTERNALS__?.invoke;
         if (typeof invoke !== 'function') return;
@@ -1817,7 +1824,7 @@ export function App() {
           return;
         }
         setDownloadedUpdateReady(null);
-        if (settings.autoUpdateChecks === false || !networkOnline) {
+        if (!manual && (settings.autoUpdateChecks === false || !networkOnline)) {
           setAppUpdate(null);
           return;
         }
@@ -1839,19 +1846,33 @@ export function App() {
           url: `https://github.com/relentiousdragon/arc-studio/releases/tag/v${encodeURIComponent(version)}`
         });
       } catch (error) {
-        if (active) console.warn('ARC Studio update check failed:', error);
+        if (active) {
+          console.warn('ARC Studio update check failed:', error);
+          if (manual) arcEvents.emit('toast:notify', { title: 'Update check failed', message: error?.message || 'ARC Studio could not check for updates.', type: 'error' });
+        }
+      } finally {
+        checkInFlight = false;
+        if (manual && active) setDesktopUpdateChecking(false);
       }
     };
+    desktopUpdateCheckRef.current = () => checkForDesktopUpdate(true);
     checkForDesktopUpdate();
     const interval = window.setInterval(checkForDesktopUpdate, 6 * 60 * 60 * 1000);
     return () => {
       active = false;
       window.clearInterval(interval);
+      desktopUpdateCheckRef.current = null;
+      setDesktopUpdateChecking(false);
       const update = updateRef.current;
       updateRef.current = null;
       update?.close().catch(() => {});
     };
   }, [desktopMode, networkOnline, settings.autoUpdateChecks, studioVersion, desktopReleaseChannel]);
+
+  const handleManualDesktopUpdateCheck = useCallback(() => {
+    if (!desktopMode || workspaceMode !== 'local' || !networkOnline) return;
+    void desktopUpdateCheckRef.current?.();
+  }, [desktopMode, networkOnline, workspaceMode]);
 
   useEffect(() => {
     const detected = appUpdate?.version
@@ -8604,6 +8625,8 @@ export function App() {
         appUpdate={appUpdate}
         downloadedUpdateReady={downloadedUpdateReady}
         updateInstalling={updateInstalling}
+        checkingForUpdates={desktopUpdateChecking}
+        onCheckForUpdates={handleManualDesktopUpdateCheck}
         onOpenStudioUpdate={handleOpenStudioUpdate}
         onStartBot={handleStartBot}
         onStopBot={handleStopBot}
