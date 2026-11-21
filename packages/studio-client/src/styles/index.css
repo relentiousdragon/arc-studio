@@ -1359,6 +1359,31 @@ kbd {
   line-height: 1.55;
 }
 
+.project-sidebar-connection {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 7px;
+  margin: 0 10px 2px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--line));
+  border-radius: 5px;
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--accent) 7%, var(--panel));
+  font-size: calc((9px) * var(--arc-font-scale, 1));
+}
+
+.project-sidebar-connection svg {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.project-sidebar-connection.is-blocked {
+  border-color: color-mix(in srgb, var(--warning) 30%, var(--line));
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 7%, var(--panel));
+}
+
 .project-sidebar-search {
   display: flex;
   flex: 0 0 auto;
@@ -1663,6 +1688,17 @@ kbd {
   color: var(--text);
   background: var(--field);
   font: inherit;
+  outline: 0;
+  transition: border-color .18s ease, box-shadow .18s ease, background-color .18s ease;
+}
+
+.project-limit-control input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.project-limit-control input:focus-visible {
+  outline: none;
 }
 
 .project-limit-control button {
@@ -13776,11 +13812,17 @@ body:has(.control-dock.is-resizing) .canvas-collaborator-navigation-layer {
   }
 }
 
-.auth-theme-toggle {
+.auth-top-controls {
   position: absolute;
   top: 16px;
   right: 17px;
   z-index: 10;
+  display: flex;
+  gap: 6px;
+}
+
+.auth-theme-toggle,
+.auth-seasonal-toggle {
   display: grid;
   place-items: center;
   width: 34px;
@@ -13793,9 +13835,16 @@ body:has(.control-dock.is-resizing) .canvas-collaborator-navigation-layer {
   transition: .16s ease;
 }
 
-.auth-theme-toggle:hover {
+.auth-theme-toggle:hover,
+.auth-seasonal-toggle:hover {
   color: var(--text);
   border-color: var(--line-strong);
+}
+
+.auth-seasonal-toggle[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent) 44%, var(--line));
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--chrome));
 }
 
 .auth-layout {
@@ -14220,10 +14269,11 @@ body:has(.control-dock.is-resizing) .canvas-collaborator-navigation-layer {
   overflow-wrap: anywhere;
 }
 
-.workspace-switcher button.is-active {
+.workspace-switcher button.is-active,
+.workspace-switcher button[aria-selected="true"] {
   color: var(--text);
-  border-color: var(--line);
-  background: var(--chrome-raised);
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--line));
+  background: color-mix(in srgb, var(--accent) 11%, var(--chrome-raised));
   box-shadow: 0 1px 3px rgba(0, 0, 0, .12);
 }
 
