@@ -1,10 +1,11 @@
 export function regexRiskWarning(pattern) {
   const source = String(pattern ?? '');
-  if (/\([^)]*(?:[*+]|\{\d+,?\d*\}|\|)[^)]*\)(?:[*+]|\{\d+,?\d*\})/.test(source)) {
-    return 'This pattern repeats a group with repetition or alternatives. Matching is time limited, so complex inputs may return a timeout.';
+  if (/\([^)]*(?:[*+]|\{\d+,?\d*\})[^)]*\)(?:[*+]|\{\d+,?\d*\})/.test(source)) {
+    return 'This pattern nests repetitions, which can cause heavy backtracking on some inputs. Matching stops after 1,000 ms.';
   }
-  if (/(?:\.\*|\.\+|\[[^\]]+\][*+]|\\[wds][*+]){2,}/i.test(source)) {
-    return 'This pattern has multiple broad repetitions. Matching is time limited, so complex inputs may return a timeout.';
+  const broadWildcards = source.match(/\.\*|\.\+|\[\\s\\S\][*+]|\[\^\][*+]/g) || [];
+  if (broadWildcards.length > 1) {
+    return 'This pattern has multiple wildcard repetitions, which can cause heavy backtracking on long inputs. Matching stops after 1,000 ms.';
   }
   return '';
 }
