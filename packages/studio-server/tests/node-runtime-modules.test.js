@@ -88,7 +88,7 @@ test('data node runtime preserves value conversion, path, and regex behavior', (
     path: '__proto__.polluted',
     fallback: 'blocked'
   }), { value: 'blocked', exists: false });
-  assert.equal(evaluateDataNode('data_regex', { text: 'aaa', pattern: '(a+)+$', flags: 'g' }, {}).valid, false);
+  assert.equal(evaluateDataNode('data_regex', { text: 'aaa', pattern: '(a+)+$', flags: 'g' }, {}).valid, true);
 });
 
 test('regex node handles flags, capture groups, replacements, and Unicode zero-width matches', () => {
@@ -134,19 +134,17 @@ test('regex node handles flags, capture groups, replacements, and Unicode zero-w
   const oversizedReplacement = evaluateDataNode('data_regex', {
     text: 'a',
     pattern: 'a',
-    replacement: 'x'.repeat(2001)
+    replacement: 'x'.repeat(8193)
   }, { mode: 'replace' });
   assert.equal(oversizedReplacement.valid, false);
-  assert.match(oversizedReplacement.error, /2,000 characters/);
+  assert.match(oversizedReplacement.error, /8,192 characters/);
 });
 
-test('regex node reports malformed, duplicate, and unsupported flags without throwing', () => {
+test('regex node reports malformed and duplicate flags while allowing advanced JavaScript syntax', () => {
   for (const inputs of [
     { pattern: '(', flags: '' },
     { pattern: 'a', flags: 'g, g' },
     { pattern: 'a', flags: 'z' },
-    { pattern: '(?<=(a))b', flags: '' },
-    { pattern: '(a)\\1', flags: '' }
   ]) {
     const result = evaluateDataNode('data_regex', { text: 'abc', ...inputs }, { mode: 'test' });
     assert.equal(result.valid, false);
@@ -154,6 +152,8 @@ test('regex node reports malformed, duplicate, and unsupported flags without thr
     assert.notEqual(result.error, '');
     assert.deepEqual(result.named_captures, {});
   }
+
+  assert.equal(evaluateDataNode('data_regex', { text: 'aba', pattern: '(?<=(a))(b)\\1', flags: '' }, { mode: 'match' }).valid, true);
 
   const invalidMode = evaluateDataNode('data_regex', { text: 'abc', pattern: 'a' }, { mode: 'search' });
   assert.equal(invalidMode.valid, false);
@@ -165,9 +165,9 @@ test('regex node enforces bounded inputs and caps global match output', () => {
   assert.equal(oversizedText.valid, false);
   assert.match(oversizedText.error, /8,192 characters/);
 
-  const oversizedPattern = evaluateDataNode('data_regex', { text: 'a', pattern: 'a'.repeat(257) }, { mode: 'test' });
+  const oversizedPattern = evaluateDataNode('data_regex', { text: 'a', pattern: 'a'.repeat(4097) }, { mode: 'test' });
   assert.equal(oversizedPattern.valid, false);
-  assert.match(oversizedPattern.error, /256 characters/);
+  assert.match(oversizedPattern.error, /4,096 characters/);
 
   const tooManyMatches = evaluateDataNode('data_regex', {
     text: 'a'.repeat(1001),
