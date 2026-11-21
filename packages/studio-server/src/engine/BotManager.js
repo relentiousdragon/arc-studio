@@ -4,7 +4,7 @@ import { registerAsyncEventHandler } from './AsyncEventHandler.js';
 import { MockGateway } from './MockGateway.js';
 import { GraphRunner } from './GraphRunner.js';
 import { isReservedTemplateRoot, isReservedTemplateVariableName, validateTemplateFunctionName } from './TemplateExpressions.js';
-import { getFunctionInputArguments } from './FunctionGraphContract.js';
+import { getFunctionInputArguments, isFunctionGraphNodeType } from './FunctionGraphContract.js';
 import { GraphWebSocketManager } from './nodes/runtime/websocket.js';
 import { closeGraphWebServers, closeProjectWebServers } from './nodes/runtime/web_server.js';
 import { startCronScheduler } from './CronSchedule.js';
@@ -37,7 +37,7 @@ function isDiscordVerifiedBot(user) {
   return Number.isSafeInteger(flags) && flags >= 0 && (flags & VERIFIED_BOT_FLAG) !== 0;
 }
 function isFunctionGraph(graph) {
-  return graph?.graphType === 'function' || (graph?.nodes || []).some((node) => ['function_input', 'function_return'].includes(node?.type));
+  return graph?.graphType === 'function' || (graph?.nodes || []).some((node) => isFunctionGraphNodeType(node?.type));
 }
 
 function redactSecret(message, secret) {
