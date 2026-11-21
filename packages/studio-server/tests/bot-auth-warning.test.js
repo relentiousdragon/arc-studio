@@ -48,8 +48,7 @@ test('warns once after three consecutive authenticated Discord 401 responses', a
   assert.equal(manager.discordAuthWarning, null);
   await requestUnauthorized(rest);
 
-  assert.match(manager.discordAuthWarning.message, /401 Unauthorized on three consecutive authenticated API requests/);
-  assert.match(manager.discordAuthWarning.message, /does not block Gateway startup or command deployment review/);
+  assert.equal(manager.discordAuthWarning.message, 'Discord returned HTTP 401 Unauthorized on three consecutive authenticated API requests using this project’s bot token. Check the token configured for this project.');
   assert.equal(manager.discordUnauthorizedCount, 3);
   assert.equal(messages.length, 1);
   assert.equal(messages[0].payload.discordAuthWarning, manager.discordAuthWarning);
