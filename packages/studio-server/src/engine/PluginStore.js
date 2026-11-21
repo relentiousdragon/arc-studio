@@ -789,9 +789,14 @@ function validatePack(pack, entry) {
         const returnNames = new Set();
         for (const value of returnValues) {
           if (!/^[A-Za-z0-9_-]{1,64}$/.test(value.returnId) || returnIds.has(value.returnId)) throw new Error(`Function ${functionId} contains an invalid or duplicate return ID.`);
-          if (!String(value.name || '').trim() || returnNames.has(value.name.toLowerCase())) throw new Error(`Function ${functionId} contains a missing or duplicate return name.`);
+          const outputName = String(value.name || '');
+          if (!outputName.trim() || returnNames.has(outputName.trim().toLowerCase())
+            || ['func.success', 'func.error'].includes(outputName.trim().toLowerCase())
+            || !/^(?=.{1,32}$)[A-Za-z0-9]+(?:_+[A-Za-z0-9]+|-[A-Za-z0-9]+)*$/.test(outputName)) {
+            throw new Error(`Function ${functionId} contains an invalid, reserved, or duplicate return name.`);
+          }
           returnIds.add(value.returnId);
-          returnNames.add(value.name.toLowerCase());
+          returnNames.add(outputName.trim().toLowerCase());
         }
       }
       if (node.type === 'function_call') {
