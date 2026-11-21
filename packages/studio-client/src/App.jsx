@@ -10661,7 +10661,7 @@ function graphPin(node, direction, pinId, variables, graphLookup = null, connect
   }
   if (node.type === 'event_slash_command' && direction === 'outputs' && pinId.startsWith('option_')) {
     const option = flattenSlashParameters(node.data?.options).find((item) => item.pinId === pinId)?.option;
-    if (option) return { id: pinId, type: ({ 4: 'number', 10: 'number', 5: 'boolean', 11: 'object' })[Number(option.type)] || 'string' };
+    if (option) return { id: pinId, type: ({ 4: 'number', 10: 'number', 5: 'boolean', 6: 'object', 7: 'object', 8: 'object', 9: 'object', 11: 'object' })[Number(option.type)] || 'string' };
   }
   const variablePinType = (variable) => ['array', 'object', 'attachment'].includes(variable?.type) ? 'object' : variable?.type || 'string';
   const resolveReferencedVariable = (target, seen = new Set()) => {
