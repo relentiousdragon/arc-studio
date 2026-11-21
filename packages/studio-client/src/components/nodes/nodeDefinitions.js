@@ -1,5 +1,5 @@
 import { getTemplateReferences, renderTextTemplate, validateTemplateFunctionName } from '../../../../studio-server/src/engine/TemplateExpressions.js';
-import { functionArgumentPinId, functionInputPinType, functionReturnInputPinId, functionReturnOutputPinId, getFunctionGraphArguments, getFunctionGraphReturnValues, getFunctionInputArguments, getFunctionReturnValues } from '../../../../studio-server/src/engine/FunctionGraphContract.js';
+import { functionArgumentPinId, functionInputPinType, functionReturnInputPinId, functionReturnOutputPinId, getFunctionGraphArguments, getFunctionGraphControlOutputs, getFunctionGraphReturnValues, getFunctionInputArguments, getFunctionReturnValues } from '../../../../studio-server/src/engine/FunctionGraphContract.js';
 import { getNodeArgumentPins, MAX_NODE_ARGUMENTS, NODE_SCHEMA_VERSION, resolveDynamicNodePins } from '../../../../studio-server/src/engine/DynamicNodePins.js';
 import {
   CLIENT_PROTOCOL_VERSION, NODE_REGISTRY_PROTOCOL_VERSION, SUPPORTED_NODE_REGISTRY_FEATURES, getNodeRegistryCompatibility, validateNodeRegistryPayload
@@ -32,6 +32,7 @@ export const isConvertiblePinPair = (sourceType, targetType) => (
 
 export { getNodeArgumentPins, MAX_NODE_ARGUMENTS, resolveDynamicNodePins };
 export { functionArgumentPinId, functionInputPinType, functionReturnInputPinId, functionReturnOutputPinId, getFunctionGraphArguments, getFunctionGraphReturnValues, getFunctionInputArguments, getFunctionReturnValues };
+export { getFunctionGraphControlOutputs };
 
 export function getTextTemplateSlots(template) {
   const slots = new Set();
