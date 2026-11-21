@@ -60,6 +60,7 @@ import node_variable_set from './variables/variable_set.js';
 // Functions
 import node_function_input from './functions/function_input.js';
 import node_function_return from './functions/function_return.js';
+import node_function_return_exec from './functions/function_return_exec.js';
 import node_function_call from './functions/function_call.js';
 // Logic & Flow
 import node_execute_graph from './logic-flow/execute_graph.js';
@@ -278,6 +279,7 @@ export const nodeDefinitions = [
   node_variable_set,
   node_function_input,
   node_function_return,
+  node_function_return_exec,
   node_function_call,
   node_execute_graph,
   node_math_eval,
