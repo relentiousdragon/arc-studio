@@ -2,6 +2,7 @@ export { Client } from './client/Client.js';
 export { InteractionCollector, MessageCollector } from './client/Collectors.js';
 export { RESTClient, DiscordAPIError, InteractionAlreadyAcknowledgedError } from './rest/RESTClient.js';
 export { RateLimiter } from './rest/RateLimiter.js';
+export { DISCORD_ERROR_CODES, getDiscordErrorGuidance } from './rest/DiscordErrors.js';
 export { InteractionSecurity } from './rest/InteractionSecurity.js';
 export { GatewayShard, ShardStatus } from './gateway/GatewayShard.js';
 export { EmbedBuilder } from './builders/EmbedBuilder.js';
