@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { CanvasNode } from '../nodes/CanvasNode.jsx';
-import { BuiltInNodeDefinitions, functionArgumentPinId, functionInputPinType, functionReturnInputPinId, functionReturnOutputPinId, getFunctionGraphArguments, getFunctionGraphReturnValues, getFunctionInputArguments, getFunctionReturnValues, getNodeArgumentPins, getNodeTemplateInputPins, isConvertiblePinPair, PinColors, getTextTemplateSlots, resolveDynamicNodePins } from '../nodes/nodeDefinitions.js';
+import { BuiltInNodeDefinitions, functionArgumentPinId, functionInputPinType, functionReturnInputPinId, functionReturnOutputPinId, getFunctionGraphArguments, getFunctionGraphControlOutputs, getFunctionGraphReturnValues, getFunctionInputArguments, getFunctionReturnValues, getNodeArgumentPins, getNodeTemplateInputPins, isConvertiblePinPair, PinColors, getTextTemplateSlots, resolveDynamicNodePins } from '../nodes/nodeDefinitions.js';
 import { ChevronDown, ChevronUp, FastForward, FileCode2, FolderTree, Hand, Link2, LockKeyhole, LockOpen, Maximize, Minus, MousePointer2, Plus, Scissors, Search, StepForward, Type, X } from 'lucide-react';
 import { embedBlockPins, getEmbedBlocks, getEmbedFieldSocketLabels } from '../nodes/EmbedNodeBuilder.jsx';
 import { getArcUiScale } from '../../core/uiScale.js';
@@ -370,11 +370,11 @@ export function NodeCanvas({
   const functionGraphDefinitionViews = useMemo(() => {
     const availableFunctionGraphs = Array.isArray(functionGraphs) ? functionGraphs : [];
     const availableCallableGraphs = Array.isArray(callableGraphs) ? callableGraphs : [];
-    const source = availableFunctionGraphs.length ? availableFunctionGraphs : availableCallableGraphs.filter((graph) => graph.graphType === 'function');
+    const source = availableFunctionGraphs.length ? availableFunctionGraphs : availableCallableGraphs.filter((graph) => graph.graphType === 'function' || (graph.nodes || []).some((node) => ['function_input', 'function_return', 'function_return_exec'].includes(node.type)));
     const signatureData = source.map((graph) => ({
       id: graph.id,
       name: graph.name,
-      nodes: (graph.nodes || []).filter((node) => node.type === 'function_input' || node.type === 'function_return').map((node) => node.type === 'function_input'
+      nodes: (graph.nodes || []).filter((node) => ['function_input', 'function_return', 'function_return_exec'].includes(node.type)).map((node) => node.type === 'function_input'
         ? [node.id, node.type, getFunctionInputArguments(node)]
         : [node.id, node.type, getFunctionReturnValues(node)])
     }));
@@ -385,7 +385,7 @@ export function NodeCanvas({
       id: graph.id,
       name: graph.name,
       graphType: 'function',
-      nodes: (graph.nodes || []).filter((node) => node.type === 'function_input' || node.type === 'function_return')
+      nodes: (graph.nodes || []).filter((node) => ['function_input', 'function_return', 'function_return_exec'].includes(node.type))
     }));
     functionGraphDefinitionViewsRef.current = { signature, value };
     return value;
@@ -1710,7 +1710,8 @@ export function NodeCanvas({
             label: value.name || 'Result',
             type: functionInputPinType(value),
             ...(value.valueType.endsWith('_id') || value.valueType === 'interaction_token' ? { semanticType: value.valueType } : {})
-          }))
+          })),
+          ...getFunctionGraphControlOutputs(target).map(({ id, label, type }) => ({ id, label, type }))
         ]
       });
     }
@@ -3138,6 +3139,7 @@ export function NodeCanvas({
     canvasInteractionActiveRef.current = false;
     movePointer(event);
     const pendingNodeDrag = pendingNodeMoveDragRef.current;
+    if (pendingNodeDrag && pendingNodeDrag.pointerId !== event.pointerId) return;
     if (pendingNodeDrag && pendingNodeDrag.pointerId === event.pointerId) {
       if (!pendingNodeDrag.granted) {
         if (!draggingNodeRef.current?.historyStarted) {
@@ -3157,8 +3159,8 @@ export function NodeCanvas({
             target: event.target
           };
           pendingNodeDrag.drag = { ...draggingNodeRef.current, released: true };
-          draggingNodeRef.current = pendingNodeDrag.drag;
-          setDraggingNode(pendingNodeDrag.drag);
+          draggingNodeRef.current = null;
+          setDraggingNode(null);
           setNodeMovePending(false);
           if (event.pointerType === 'touch' && touchNodeGestureRef.current?.pointerId === event.pointerId) {
             window.clearTimeout(touchNodeGestureRef.current.timer);
@@ -3994,7 +3996,8 @@ const previewOutput = (node, outputId, seen = new Set()) => {
   };
   if (node.type.startsWith('math_')) {
     const a = Number(input('a', 0)); const b = Number(input('b', 0)); const value = Number(input('value', 0));
-    const operations = { math_add: a + b, math_subtract: a - b, math_multiply: a * b, math_divide: b ? a / b : 0, math_modulo: b ? a % b : 0, math_power: a ** b, math_min: Math.min(a, b), math_max: Math.max(a, b), math_abs: Math.abs(value), math_sqrt: value >= 0 ? Math.sqrt(value) : 0, math_round: Number(value.toFixed(Math.max(0, Math.min(12, Number(data.precision) || 0)))), math_floor: Math.floor(value), math_ceil: Math.ceil(value), math_sin: Math.sin(value), math_cos: Math.cos(value), math_tan: Math.tan(value), math_asin: Math.asin(value), math_acos: Math.acos(value), math_atan: Math.atan(value), math_log: value > 0 ? Math.log(value) : 0, math_log10: value > 0 ? Math.log10(value) : 0, math_exp: Math.exp(value), math_sign: Math.sign(value), math_clamp: Math.min(Number(input('max', 1)), Math.max(Number(input('min', 0)), value)), math_lerp: Number(input('a', 0)) + (Number(input('b', 1)) - Number(input('a', 0))) * Number(input('t', 0.5)), math_compare: ({ less_than: a < b, less_or_equal: a <= b, equal: a === b, not_equal: a !== b, greater_or_equal: a >= b, greater_than: a > b }[data.operation || 'less_than']) };
+    const listValues = (definition.inputs || []).filter((pin) => ['a', 'b', 'c', 'd'].includes(pin.id) || /^value_\d+$/.test(pin.id)).map((pin) => Number(input(pin.id, 0)) || 0);
+    const operations = { math_add: listValues.reduce((sum, item) => sum + item, 0), math_subtract: listValues.slice(1).reduce((total, item) => total - item, listValues[0] || 0), math_sum: listValues.reduce((sum, item) => sum + item, 0), math_average: listValues.length ? listValues.reduce((sum, item) => sum + item, 0) / listValues.length : 0, math_multiply: a * b, math_divide: b ? a / b : 0, math_modulo: b ? a % b : 0, math_power: a ** b, math_min: Math.min(a, b), math_max: Math.max(a, b), math_abs: Math.abs(value), math_sqrt: value >= 0 ? Math.sqrt(value) : 0, math_round: Number(value.toFixed(Math.max(0, Math.min(12, Number(data.precision) || 0)))), math_floor: Math.floor(value), math_ceil: Math.ceil(value), math_sin: Math.sin(value), math_cos: Math.cos(value), math_tan: Math.tan(value), math_asin: Math.asin(value), math_acos: Math.acos(value), math_atan: Math.atan(value), math_log: value > 0 ? Math.log(value) : 0, math_log10: value > 0 ? Math.log10(value) : 0, math_exp: Math.exp(value), math_sign: Math.sign(value), math_clamp: Math.min(Number(input('max', 1)), Math.max(Number(input('min', 0)), value)), math_lerp: Number(input('a', 0)) + (Number(input('b', 1)) - Number(input('a', 0))) * Number(input('t', 0.5)), math_compare: ({ less_than: a < b, less_or_equal: a <= b, equal: a === b, not_equal: a !== b, greater_or_equal: a >= b, greater_than: a > b }[data.operation || 'less_than']) };
     if (node.type === 'math_constant') return ({ pi: Math.PI, tau: Math.PI * 2, e: Math.E, golden_ratio: (1 + Math.sqrt(5)) / 2, sqrt_two: Math.SQRT2 }[data.constant || 'pi']);
     const result = operations[node.type];
     return Number.isFinite(result) ? result : undefined;
