@@ -4,6 +4,9 @@ import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { serverConfig } from '../config.js';
 import { dataDir } from '../storage.js';
+
+const RESERVED_HOSTED_USERNAMES = new Set(['bl0b']);
+const isReservedHostedUsername = (username) => RESERVED_HOSTED_USERNAMES.has(String(username ?? '').trim().toLowerCase());
 //
 export const RolePermissions = Object.freeze({
   admin: ['*'],
@@ -205,6 +208,9 @@ export class UserStore extends EventEmitter {
     if (cleanUser.length < 2 || cleanUser.length > 32 || /[\u0000-\u001f\u007f]/.test(cleanUser)) {
       throw new Error('Username must be 2 to 32 characters and cannot contain control characters.');
     }
+    if (!serverConfig.desktopMode && isReservedHostedUsername(cleanUser)) {
+      throw new Error('This username is reserved and cannot be used.');
+    }
     const matchingDesktopUser = serverConfig.desktopMode
       ? this.users.find((user) => String(user.username || '').toLowerCase() === cleanUser)
       : null;
@@ -254,6 +260,9 @@ export class UserStore extends EventEmitter {
     }
 
     const cleanUser = username.trim().toLowerCase();
+    if (isReservedHostedUsername(cleanUser)) {
+      throw new Error('This username is reserved and cannot be used.');
+    }
     if (this.users.some((u) => u.username.toLowerCase() === cleanUser)) {
       throw new Error(`User "${cleanUser}" already exists.`);
     }
@@ -529,6 +538,9 @@ export class UserStore extends EventEmitter {
     const cleanUser = String(username ?? '').trim().toLowerCase();
     if (cleanUser.length < 2 || cleanUser.length > 32 || /[\u0000-\u001f\u007f]/.test(cleanUser)) {
       throw new Error('Username must be 2 to 32 characters and cannot contain control characters.');
+    }
+    if (!serverConfig.desktopMode && cleanUser !== String(user.username || '').toLowerCase() && isReservedHostedUsername(cleanUser)) {
+      throw new Error('This username is reserved and cannot be used.');
     }
     if (this.users.some((item) => item.id !== user.id && String(item.username || '').toLowerCase() === cleanUser)) {
       throw new Error(`Username "${cleanUser}" is already in use.`);
