@@ -222,7 +222,8 @@ import { isReservedTemplateRoot, isReservedTemplateVariableName, isTemplateEnvir
 import { createEmbedBlock, embedBlockPins, getEmbedBlocks } from './components/nodes/EmbedNodeBuilder.jsx';
 import { createDefaultModal } from './components/nodes/ModalNodeBuilder.jsx';
 import { evaluateMathNode } from '../../studio-server/src/engine/MathOperations.js';
-import { FUNCTION_ARGUMENT_VALUE_TYPES, functionArgumentPinId, functionInputPinType, functionReturnInputPinId, functionReturnOutputPinId, getFunctionGraphArguments, getFunctionGraphReturnValues, getFunctionInputArguments, getFunctionReturnValues, migrateFunctionGraphEntry } from '../../studio-server/src/engine/FunctionGraphContract.js';
+import { regexRiskWarning, validateRegexConfiguration } from '../../studio-server/src/engine/nodes/runtime/RegexConfiguration.js';
+import { FUNCTION_ARGUMENT_VALUE_TYPES, functionArgumentPinId, functionInputPinType, functionReturnInputPinId, functionReturnOutputPinId, getFunctionGraphArguments, getFunctionGraphControlOutputs, getFunctionGraphReturnValues, getFunctionInputArguments, getFunctionReturnValues, isFunctionGraphNodeType, migrateFunctionGraphEntry } from '../../studio-server/src/engine/FunctionGraphContract.js';
 import { validateDiscordSemanticValue } from '../../studio-server/src/engine/DiscordValueValidation.js';
 import { hasImportableTextContent } from '../../studio-server/src/storage/ImportContentReview.js';
 //
@@ -435,8 +436,15 @@ function getSlashOptionSample(option) {
   return base;
 }
 
-function getNodeOutputSample(source, pinId, variables, graphNodes) {
+function getNodeOutputSample(source, pinId, variables, graphNodes, callableGraphs = []) {
   if (!source) return undefined;
+  if (source.type === 'function_call') {
+    const called = callableGraphs.find((item) => item.id === source.data?.graphId);
+    const returned = getFunctionGraphReturnValues(called).find((item) => functionReturnOutputPinId(item) === pinId);
+    if (returned) return returned.defaultValue;
+    const control = getFunctionGraphControlOutputs(called).find((item) => item.id === pinId);
+    if (control) return control.defaultValue;
+  }
   if (source.type === 'variable_get' && pinId === 'value') return variables.find((item) => item.id === source.data?.variableId)?.initialValue;
   if (source.type === 'event_modal_submit' && pinId === 'submitted_values') return [{ type: 1, components: [{ custom_id: 'field_id', value: 'text value', values: ['selected_value'] }] }];
   if (source.type === 'build_modal' && pinId === 'modal') {
@@ -653,7 +661,7 @@ function getEventTemplatePaths(graph) {
   return [...paths.values()];
 }
 
-function getTemplateValuePaths(graph, node, variables, mediaAssets = []) {
+function getTemplateValuePaths(graph, node, variables, mediaAssets = [], callableGraphs = []) {
   const paths = TEMPLATE_SYSTEM_PATHS.map((item) => ({ path: item.path, label: item.label || item.path }));
   for (const asset of mediaAssets) {
     if (!asset?.filename || /[{}]/.test(asset.filename)) continue;
@@ -670,8 +678,22 @@ function getTemplateValuePaths(graph, node, variables, mediaAssets = []) {
     const slot = /^slot_(.+)$/.exec(wire.targetPinId);
     if (!argument && !slot) continue;
     const root = argument ? `arg${argument[1]}` : slot[1];
-    const sample = getNodeOutputSample(nodeById.get(wire.sourceNodeId), wire.sourcePinId, variables, graph.nodes || []);
+    const sample = getNodeOutputSample(nodeById.get(wire.sourceNodeId), wire.sourcePinId, variables, graph.nodes || [], callableGraphs);
     collectTemplateValuePaths(sample, root, 0, paths);
+  }
+  for (const called of callableGraphs) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(called?.name || '') || isReservedTemplateRoot(called.name)) continue;
+    const prefix = `${called.name}()`;
+    for (const output of getFunctionGraphReturnValues(called)) {
+      const outputName = output.legacy ? '' : String(output.name || output.returnId);
+      if (!outputName || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(outputName)) continue;
+      paths.push({ path: `${prefix}.${outputName}`, label: `${called.name} · ${outputName}` });
+      collectTemplateValuePaths(output.defaultValue, `${prefix}.${outputName}`, 0, paths);
+    }
+    if (getFunctionGraphControlOutputs(called).length) {
+      paths.push({ path: `${prefix}.func.success`, label: `${called.name} · func.success` });
+      paths.push({ path: `${prefix}.func.error`, label: `${called.name} · func.error` });
+    }
   }
   for (const item of getEventTemplatePaths(graph)) {
     const root = item.path.split(/[.[]/)[0].toLowerCase();
@@ -2445,8 +2467,8 @@ export function App() {
   }, [activeConnections, activeNodes, discordTextStudio?.nodeId, embedStudio?.nodeId]);
   const embedTemplateValuePaths = useMemo(() => {
     if (!embedStudio?.nodeId) return [];
-    return getTemplateValuePaths(activeGraph, activeGraph?.nodes?.find((node) => node.id === embedStudio.nodeId), availableVariables, mediaAssets);
-  }, [activeGraph, availableVariables, embedStudio?.nodeId, mediaAssets]);
+    return getTemplateValuePaths(activeGraph, activeGraph?.nodes?.find((node) => node.id === embedStudio.nodeId), availableVariables, mediaAssets, callableGraphs);
+  }, [activeGraph, availableVariables, callableGraphs, embedStudio?.nodeId, mediaAssets]);
   const anyStudioOpenForActiveGraph = embedStudioOpenForActiveGraph || discordTextStudioOpenForActiveGraph || permissionStudioOpenForActiveGraph || slashCommandStudioOpenForActiveGraph || modalStudioOpenForActiveGraph;
   const activeStudioKind = modalStudioOpenForActiveGraph ? 'popup-modal'
     : slashCommandStudioOpenForActiveGraph ? 'arguments'
@@ -5238,13 +5260,13 @@ export function App() {
     if (isReservedTemplateRoot(name)) { setNameDialogError('“chezcord” is reserved for the system template namespace.'); return; }
     const graph = tabs.find((tab) => tab.id === nameDialog?.graphId) || savedGraphs.find((item) => item.id === nameDialog?.graphId);
     if (!graph) { setNameDialog(null); setNameDialogError(''); return; }
-    const isFunctionGraph = graph.graphType === 'function' || (graph.nodes || []).some((node) => ['function_input', 'function_return'].includes(node.type));
+    const isFunctionGraph = graph.graphType === 'function' || (graph.nodes || []).some((node) => isFunctionGraphNodeType(node.type));
     const previouslySavedGraph = savedGraphs.find((item) => item.id === graph.id);
     if (isFunctionGraph && (!previouslySavedGraph || previouslySavedGraph.name !== name)) {
       const nameError = validateTemplateFunctionName(name);
       if (nameError) { setNameDialogError(nameError); return; }
       const duplicate = [...savedGraphs, ...tabs].some((item) => item.id !== graph.id
-        && (item.graphType === 'function' || (item.nodes || []).some((node) => ['function_input', 'function_return'].includes(node.type)))
+        && (item.graphType === 'function' || (item.nodes || []).some((node) => isFunctionGraphNodeType(node.type)))
         && item.name?.toLowerCase() === name.toLowerCase());
       if (duplicate) { setNameDialogError(`A function graph named “${name}” already exists.`); return; }
     }
@@ -6021,7 +6043,7 @@ export function App() {
     const targetGraph = activeGraph || handleAddBlankGraph();
     if (!targetGraph) return;
     const graphNodes = targetGraph.nodes || [];
-    const isFunctionGraph = targetGraph.graphType === 'function' || graphNodes.some((item) => ['function_input', 'function_return'].includes(item.type));
+    const isFunctionGraph = targetGraph.graphType === 'function' || graphNodes.some((item) => isFunctionGraphNodeType(item.type));
     if (type === 'function_input') {
       if (!isFunctionGraph && graphNodes.some((item) => String(item.type || '').startsWith('event_'))) {
         arcEvents.emit('toast:notify', { title: 'Function Input cannot use event graphs', message: 'Remove the event trigger first, or create a Function graph.', type: 'warning' });
@@ -6036,6 +6058,13 @@ export function App() {
     if (type === 'function_return' && (targetGraph.graphType !== 'function' || (targetGraph.nodes || []).some((item) => item.type === 'function_return'))) {
       arcEvents.emit('toast:notify', { title: 'Return Value unavailable', message: 'A function graph has one Return Value node. Add multiple outputs to that node instead.', type: 'warning' });
       return;
+    }
+    if (type === 'function_return_exec' && !isFunctionGraph) {
+      if (graphNodes.some((item) => String(item.type || '').startsWith('event_'))) {
+        arcEvents.emit('toast:notify', { title: 'RETURN cannot use event graphs', message: 'Create a Function graph to add a RETURN node.', type: 'warning' });
+        return;
+      }
+      setTabs((previous) => previous.map((tab) => tab.id === targetGraph.id ? { ...tab, graphType: 'function', isDirty: true } : tab));
     }
     const center = position || paletteNodePosition || viewportCenterRef.current;
     const node = makeNode(type, nodeTopLeftAtCenter(type, center));
@@ -6060,7 +6089,7 @@ export function App() {
     const targetGraph = activeGraph || handleAddBlankGraph();
     if (!targetGraph) return;
     const graphNodes = targetGraph.nodes || [];
-    const isFunctionGraph = targetGraph.graphType === 'function' || graphNodes.some((item) => ['function_input', 'function_return'].includes(item.type));
+    const isFunctionGraph = targetGraph.graphType === 'function' || graphNodes.some((item) => isFunctionGraphNodeType(item.type));
     if (requestedTypes.includes('function_input')) {
       if (!isFunctionGraph && (graphNodes.some((item) => String(item.type || '').startsWith('event_')) || requestedTypes.some((item) => String(item || '').startsWith('event_')))) {
         arcEvents.emit('toast:notify', { title: 'Function Input cannot use event graphs', message: 'Remove the event trigger first, or create a Function graph.', type: 'warning' });
@@ -6075,6 +6104,13 @@ export function App() {
     if (requestedTypes.includes('function_return') && (targetGraph.graphType !== 'function' || (targetGraph.nodes || []).some((item) => item.type === 'function_return') || requestedTypes.filter((type) => type === 'function_return').length > 1)) {
       arcEvents.emit('toast:notify', { title: 'Return Value unavailable', message: 'A function graph has one Return Value node. Add multiple outputs to that node instead.', type: 'warning' });
       return;
+    }
+    if (requestedTypes.includes('function_return_exec') && !isFunctionGraph) {
+      if (graphNodes.some((item) => String(item.type || '').startsWith('event_')) || requestedTypes.some((type) => String(type || '').startsWith('event_'))) {
+        arcEvents.emit('toast:notify', { title: 'RETURN cannot use event graphs', message: 'Create a Function graph to add a RETURN node.', type: 'warning' });
+        return;
+      }
+      setTabs((previous) => previous.map((tab) => tab.id === targetGraph.id ? { ...tab, graphType: 'function', isDirty: true } : tab));
     }
     const placement = position || nodeTopLeftAtCenter(
       payload?.type === 'graph-call' ? 'function_call' : payload?.type === 'prefab' ? nodePrefabs.find((item) => item.id === payload.prefabId)?.node?.type : payload?.type === 'embed-asset' ? 'build_embed' : payload?.type === 'modal-asset' ? 'build_modal' : payload?.nodeType,
@@ -6180,14 +6216,14 @@ export function App() {
       value: initialText,
       localDraft: initialText,
       maxLength,
-      templateValuePaths: getTemplateValuePaths(activeGraph, node, availableVariables, mediaAssets),
+      templateValuePaths: getTemplateValuePaths(activeGraph, node, availableVariables, mediaAssets, callableGraphs),
       templatePreviewValues: getTemplatePreviewInputs(previewGraph, previewNode, availableVariables),
       templateSuggestions: getTemplateSocketSuggestions(activeGraph, node).filter((item) => !availableVariables.some((variable) => variable.name?.toLowerCase() === item.name.toLowerCase())),
       applyValue,
       parentBlockContext
     };
     requestStudioOpen('text', () => setDiscordTextStudio(studio), Boolean(parentStudioId));
-  }, [activeGraph, activeConnections, activeNodes, activeProjectId, availableVariables, embedStudio, mediaAssets, requestStudioOpen]);
+  }, [activeGraph, activeConnections, activeNodes, activeProjectId, availableVariables, callableGraphs, embedStudio, mediaAssets, requestStudioOpen]);
 
   const openVariableTextEditor = useCallback((variable, scope, isReadOnly = false) => {
     const targetGraphId = activeTabId;
@@ -8741,7 +8777,7 @@ export function App() {
             theme={theme}
             modal={modalStudio.modal}
             graphVariables={availableVariables}
-            templateValuePaths={getTemplateValuePaths(activeGraph, activeGraph?.nodes?.find((node) => node.id === modalStudio.nodeId), availableVariables, mediaAssets)}
+            templateValuePaths={getTemplateValuePaths(activeGraph, activeGraph?.nodes?.find((node) => node.id === modalStudio.nodeId), availableVariables, mediaAssets, callableGraphs)}
             onDraftChange={updateModalStudioDraft}
             onApply={modalStudio.mode === 'asset' || modalStudio.mode === 'new' ? () => persistModalAsset(modalStudio.name, modalStudio.modal) : applyModalStudio}
             onClose={() => finishStudioClose('popup-modal', () => setModalStudio(null))}
@@ -9645,7 +9681,7 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
   const connections = Array.isArray(graph.connections) ? graph.connections.filter((connection) => connection && typeof connection === 'object') : [];
   const nodeIds = new Set(nodes.map((node) => node.id));
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
-  const isFunction = graph.graphType === 'function' || nodes.some((node) => node.type === 'function_input' || node.type === 'function_return');
+  const isFunction = graph.graphType === 'function' || nodes.some((node) => isFunctionGraphNodeType(node.type));
   const functionInputs = nodes.filter((node) => node.type === 'function_input');
   const functionArguments = getFunctionGraphArguments(graph);
   const declaredGraphVariables = Array.isArray(graph.variables) ? graph.variables : [];
@@ -9925,10 +9961,12 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
     if (!returnValues.length) errors.push('Return Value must have at least one output.');
     if (returnValues.length > 50) errors.push('Return Value can have at most 50 outputs.');
     for (const returned of returnValues) {
-      const name = String(returned.name || '').trim();
+      const name = String(returned.name || '');
       if (!name) errors.push('Function return outputs must have a name.');
-      else if (returnNames.has(name.toLowerCase())) errors.push(`Function return output “${name}” is duplicated. Output names must be unique.`);
-      returnNames.add(name.toLowerCase());
+      else if (returnNames.has(name.trim().toLowerCase())) errors.push(`Function return output “${name}” is duplicated. Output names must be unique.`);
+      else if (['func.success', 'func.error'].includes(name.trim().toLowerCase())) errors.push(`Function return output “${name}” is reserved for the RETURN node.`);
+      else if (!/^(?=.{1,32}$)[A-Za-z0-9]+(?:_+[A-Za-z0-9]+|-[A-Za-z0-9]+)*$/.test(name)) errors.push(`Function return output “${name}” must use 1–32 letters, numbers, underscores, or hyphens, and cannot contain spaces.`);
+      returnNames.add(name.trim().toLowerCase());
       if (!/^[A-Za-z0-9_-]{1,64}$/.test(returned.returnId) || returnIds.has(returned.returnId)) errors.push(`Function return output “${name || 'Output'}” has an invalid or duplicate ID.`);
       returnIds.add(returned.returnId);
       if (!FUNCTION_ARGUMENT_VALUE_TYPES.includes(returned.valueType)) errors.push(`Function return output “${name || 'Output'}” has an unsupported value type.`);
@@ -9936,7 +9974,36 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
   }
   const hasFunctionEffect = nodes.some((node) => String(node.type).startsWith('action_'))
     || nodes.some((node) => node.type === 'function_call' && functionGraphHasEffects(graphLookup?.get(node.data?.graphId), graphLookup));
-  if (isFunction && !nodes.some((node) => node.type === 'function_return') && !hasFunctionEffect) errors.push('Add a Return Value node or a Discord action to give this function a result or an effect.');
+  const hasExecFunctionReturn = nodes.some((node) => node.type === 'function_return_exec');
+  if (isFunction && !nodes.some((node) => node.type === 'function_return') && !hasExecFunctionReturn && !hasFunctionEffect) errors.push('Add a Return Value node, a RETURN node, or a Discord action to give this function a result or an effect.');
+  if (isFunction && hasExecFunctionReturn) {
+    const returnsFrom = (nodeId, visited = new Set()) => {
+      if (visited.has(nodeId)) return new Set();
+      const node = nodeById.get(nodeId);
+      if (!node) return new Set();
+      if (node.type === 'function_return_exec') return new Set([node.id]);
+      const nextVisited = new Set(visited).add(nodeId);
+      const execPins = (definitions.get(node.type)?.outputs || []).filter((pin) => pin.type === 'exec');
+      let best = new Set();
+      for (const pin of execPins) {
+        const found = new Set();
+        for (const wire of connections.filter((item) => item.sourceNodeId === nodeId && item.sourcePinId === pin.id)) {
+          for (const id of returnsFrom(wire.targetNodeId, nextVisited)) found.add(id);
+        }
+        if (found.size > best.size) best = found;
+      }
+      return best;
+    };
+    for (const source of nodes) {
+      const execPins = (definitions.get(source.type)?.outputs || []).filter((pin) => pin.type === 'exec');
+      for (const pin of execPins) {
+        const wires = connections.filter((wire) => wire.sourceNodeId === source.id && wire.sourcePinId === pin.id);
+        if (wires.length < 2) continue;
+        const reachable = new Set(wires.flatMap((wire) => [...returnsFrom(wire.targetNodeId)]));
+        if (reachable.size > 1) addWarning(`${source.label || definitions.get(source.type)?.label || source.type}: this execution output can reach multiple RETURN nodes, so the returned result may depend on execution order.`, source.id);
+      }
+    }
+  }
   if (isFunction) {
     const inputNames = new Set();
     const inputIds = new Set();
@@ -10003,6 +10070,26 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
       }
     }
     if (!definitions.has(node.type)) addError(`${node.label || node.type}: node type is unavailable.`, node.id);
+    if (node.type === 'data_regex') {
+      const patternConnected = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'pattern');
+      const flagsConnected = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'flags');
+      if (!patternConnected) {
+        const pattern = String(node.data?.pattern ?? '');
+        if (!pattern) addWarning(`${node.label || 'Regular Expression'}: enter a pattern. An empty pattern matches every position.`, node.id);
+        else {
+          const issue = validateRegexConfiguration(pattern, '');
+          if (issue) addWarning(`${node.label || 'Regular Expression'}: ${issue}`, node.id);
+          else {
+            const risk = regexRiskWarning(pattern);
+            if (risk) addWarning(`${node.label || 'Regular Expression'}: ${risk}`, node.id);
+          }
+        }
+      }
+      if (!flagsConnected) {
+        const flagsIssue = validateRegexConfiguration('', node.data?.flags);
+        if (flagsIssue) addWarning(`${node.label || 'Regular Expression'}: ${flagsIssue}`, node.id);
+      }
+    }
     if (node.type === 'action_web_server_start') {
       const port = Number(node.data?.port ?? 3001);
       const host = String(node.data?.host ?? '127.0.0.1').trim() || '127.0.0.1';
@@ -10255,7 +10342,7 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
       const called = graphLookup?.get(node.data?.graphId);
       if (!called) addError(`${node.label || 'Call Graph'}: select a saved graph.`, node.id);
       else {
-        if (!called.nodes?.some((item) => item.type === 'function_return') && !functionGraphHasEffects(called, graphLookup)) addWarning(`${node.label || 'Call Graph'}: the target graph has no Return Value, so this node produces no result.`, node.id);
+        if (!called.nodes?.some((item) => ['function_return', 'function_return_exec'].includes(item.type)) && !functionGraphHasEffects(called, graphLookup)) addWarning(`${node.label || 'Call Graph'}: the target graph has no return node, so this node produces no result.`, node.id);
         for (const parameter of getFunctionGraphArguments(called).filter((item) => item.optional === false)) {
           const connected = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === functionArgumentPinId(parameter));
           if (!connected) addError(`${node.label || 'Call Graph'}: connect the required “${parameter.name || 'Input'}” input.`, node.id);
@@ -10623,6 +10710,8 @@ function graphPin(node, direction, pinId, variables, graphLookup = null, connect
     } else if (direction === 'outputs') {
       const returned = getFunctionGraphReturnValues(called).find((item) => functionReturnOutputPinId(item) === pinId);
       if (returned) return { id: pinId, type: functionInputPinType(returned), semanticType: returned.valueType.endsWith('_id') || returned.valueType === 'interaction_token' ? returned.valueType : undefined };
+      const controlOutput = getFunctionGraphControlOutputs(called).find((item) => item.id === pinId);
+      if (controlOutput) return { id: pinId, type: controlOutput.type };
     }
   }
   if (direction === 'inputs') {
