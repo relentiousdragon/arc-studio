@@ -1,6 +1,6 @@
 import { NodeDefinitions } from './NodeRegistry.js';
 import { getNodeArgumentPins, resolveDynamicNodePins } from './DynamicNodePins.js';
-import { defaultValueForFunctionType, functionArgumentPinId, functionInputPinType, functionReturnInputPinId, functionReturnOutputPinId, getFunctionGraphArguments, getFunctionGraphReturnValues, getFunctionInputArguments, getFunctionReturnValues } from './FunctionGraphContract.js';
+import { defaultValueForFunctionType, FUNCTION_LEGACY_RESULT, functionArgumentPinId, functionInputPinType, functionReturnInputPinId, functionReturnOutputPinId, getFunctionGraphArguments, getFunctionGraphControlOutputs, getFunctionGraphReturnValues, getFunctionInputArguments, getFunctionReturnValues, isFunctionGraphNodeType } from './FunctionGraphContract.js';
 import { flattenSlashParameters, slashOptionPinId } from './SlashCommandOptions.js';
 import { evaluateDataNode } from './nodes/runtime/data.js';
 import { evaluateLogicNode } from './nodes/runtime/logic.js';
@@ -13,7 +13,7 @@ import {
 import { PluginStore } from './PluginStore.js';
 import { CDN, EmbedBuilder, parseEmoji } from 'chezcord';
 import { evaluateMathNode } from './MathOperations.js';
-import { getTemplateReferences, isReservedTemplateVariableName, isTemplateEnvironmentNameAllowed, renderTextTemplate } from './TemplateExpressions.js';
+import { getTemplateReferences, isReservedTemplateVariableName, isTemplateEnvironmentNameAllowed, renderTextTemplate, TEMPLATE_SCALAR_VALUE } from './TemplateExpressions.js';
 import { buildEventTemplateValues } from './EventTemplatePaths.js';
 import { fieldLimitWarning } from './FieldLimits.js';
 import fs from 'node:fs';
@@ -41,6 +41,14 @@ function resolveFunctionReturnResult(returnNode, resolveInput) {
     value.returnId,
     resolveInput(returnNode, functionReturnInputPinId(value), value.defaultValue)
   ]));
+}
+
+function addFunctionControlResult(result, node, resolveInput) {
+  const output = result && typeof result === 'object' && !Array.isArray(result) ? { ...result } : {};
+  if (result !== undefined && (result === null || typeof result !== 'object')) Object.defineProperty(output, FUNCTION_LEGACY_RESULT, { value: result });
+  output['func.success'] = Boolean(resolveInput(node, 'func.success', true));
+  output['func.error'] = String(resolveInput(node, 'func.error', '') ?? '');
+  return output;
 }
 
 function evaluateTextComparison(node, resolveInput) {
@@ -458,7 +466,7 @@ export class GraphRunner {
     };
     const resolveTemplateGraphFunction = (name, values, callStack = [graph.id]) => {
       const targetGraph = context.resolveFunctionGraphByName?.(name);
-      const isFunction = targetGraph?.graphType === 'function' || (targetGraph?.nodes || []).some((node) => ['function_input', 'function_return'].includes(node?.type));
+      const isFunction = targetGraph?.graphType === 'function' || (targetGraph?.nodes || []).some((node) => isFunctionGraphNodeType(node?.type));
       if (!targetGraph || !isFunction || callStack.length >= 24 || callStack.includes(targetGraph.id)) return undefined;
       const parameters = getFunctionGraphArguments(targetGraph);
       if (values.length > parameters.length || parameters.some((parameter, index) => parameter.optional === false && values[index] === undefined)) return undefined;
@@ -474,15 +482,27 @@ export class GraphRunner {
           resolveTemplateFunction: (nestedName, nestedValues, _nestedGraph, nestedStack) => resolveTemplateGraphFunction(nestedName, nestedValues, nestedStack)
         }, callStack);
         const returns = getFunctionGraphReturnValues(targetGraph);
-        if (returns.length === 1) return returns[0].legacy ? result : result?.[returns[0].returnId];
-        if (!returns.length || !result || typeof result !== 'object') return undefined;
         const output = {};
+        const controlOutputs = getFunctionGraphControlOutputs(targetGraph);
+        const controlResult = result && typeof result === 'object' ? result : {};
+        let firstValue;
         for (const item of returns) {
-          const value = result[item.returnId];
+          const value = item.legacy ? (controlResult[FUNCTION_LEGACY_RESULT] ?? result) : controlResult[item.returnId];
+          if (firstValue === undefined) firstValue = value;
           for (const key of [item.name, item.returnId]) {
             if (key && !['__proto__', 'prototype', 'constructor'].includes(key)) Object.defineProperty(output, key, { value, enumerable: true, configurable: true, writable: true });
           }
         }
+        if (controlOutputs.length) {
+          const success = controlResult['func.success'] ?? true;
+          const error = String(controlResult['func.error'] || '');
+          output.func = { success: Boolean(success), error };
+          Object.defineProperty(output, TEMPLATE_SCALAR_VALUE, { value: firstValue !== undefined ? firstValue : (error || Boolean(success)) });
+          return output;
+        }
+        if (returns.length === 1 && returns[0].legacy) return result;
+        if (!returns.length) return controlOutputs.length ? (controlResult['func.error'] || Boolean(controlResult['func.success'])) : undefined;
+        if (!result || typeof result !== 'object') return undefined;
         return output;
       } catch {
         return undefined;
@@ -1554,6 +1574,13 @@ export class GraphRunner {
             dataCache.set(`${targetNode.id}:${functionReturnInputPinId(returnValue)}`, value);
           }
           log(`[Function Return] Returned ${getFunctionReturnValues(targetNode).length} value${getFunctionReturnValues(targetNode).length === 1 ? '' : 's'}.`);
+        } else if (targetNode.type === 'function_return_exec') {
+          const valueNode = nodes.find((item) => item.type === 'function_return');
+          const valueResult = valueNode ? resolveFunctionReturnResult(valueNode, resolveDataInput) : functionReturnValue;
+          functionReturnValue = addFunctionControlResult(valueResult, targetNode, resolveDataInput);
+          dataCache.set(`${targetNode.id}:func.success`, functionReturnValue['func.success']);
+          dataCache.set(`${targetNode.id}:func.error`, functionReturnValue['func.error']);
+          log('[RETURN] Function execution path returned.');
         } else if (targetNode.type === 'function_call') {
           const targetGraph = context.resolveFunctionGraph?.(targetNode.data?.graphId);
           if (!targetGraph) throw new Error('Call Function node requires a valid function graph selected.');
@@ -1581,9 +1608,10 @@ export class GraphRunner {
           if (nestedResult.error) throw Object.assign(new Error(nestedResult.error), context.signal?.aborted ? { name: 'AbortError' } : {});
           if (Array.isArray(nestedResult.executedNodeIds)) executedNodeIds.push(...nestedResult.executedNodeIds);
           for (const returnValue of getFunctionGraphReturnValues(targetGraph)) {
-            const value = returnValue.legacy ? nestedResult.result : nestedResult.result?.[returnValue.returnId];
+            const value = returnValue.legacy ? nestedResult.result?.[FUNCTION_LEGACY_RESULT] ?? nestedResult.result : nestedResult.result?.[returnValue.returnId];
             dataCache.set(`${targetNode.id}:${functionReturnOutputPinId(returnValue)}`, value);
           }
+          for (const output of getFunctionGraphControlOutputs(targetGraph)) dataCache.set(`${targetNode.id}:${output.id}`, nestedResult.result?.[output.id] ?? output.defaultValue);
           currentExecWires.push(...findExecContinuation(targetNode.id, wire.targetPinId));
         } else if (targetNode.type === 'execute_graph') {
           const targetGraph = context.resolveFunctionGraph?.(targetNode.data?.graphId);
@@ -1971,7 +1999,7 @@ function evaluateFunctionGraph(graph, argumentValues, context, callStack) {
       const connected = wire ? resolveOutput(findNode(wire.sourceNodeId), wire.sourcePinId) : null;
       result = connected?.__arcVariableRef ? connected : { __arcVariableRef: true, variableId: node.data?.variableId, scope: node.data?.scope || 'graph' };
     } else if (node.type.startsWith('data_')) {
-      const inputs = Object.fromEntries(getNodeInputs(node, connections, [...graphVariables, ...projectVariables]).map((pin) => [pin.id, resolveInput(node, pin.id, pin.defaultValue)]));
+      const inputs = Object.fromEntries(getNodeInputs(node, connections, [...(graph.variables || []), ...(context.projectVariables || [])]).map((pin) => [pin.id, resolveInput(node, pin.id, pin.defaultValue)]));
       const values = evaluateDataNode(node.type, inputs, node.data || {});
       for (const [id, value] of Object.entries(values)) cache.set(`${node.id}:${id}`, value);
       result = values[pinId];
@@ -1987,7 +2015,7 @@ function evaluateFunctionGraph(graph, argumentValues, context, callStack) {
             : operation === 'modulo' ? (b === 0 ? 0 : a % b) : a + b;
       if (!Number.isFinite(result)) result = 0;
     } else if (node.type.startsWith('math_')) {
-      const inputs = Object.fromEntries((NodeDefinitions[node.type]?.inputs || []).map((pin) => [pin.id, resolveInput(node, pin.id, pin.defaultValue)]));
+      const inputs = Object.fromEntries(getNodeInputs(node, connections, [...(graph.variables || []), ...(context.projectVariables || [])]).map((pin) => [pin.id, resolveInput(node, pin.id, pin.defaultValue)]));
       result = evaluateMathNode(node.type, inputs, node.data || {});
     } else if (node.type.startsWith('logic_')) {
       const inputs = Object.fromEntries((NodeDefinitions[node.type]?.inputs || []).map((pin) => [pin.id, Boolean(resolveInput(node, pin.id, pin.defaultValue))]));
@@ -2013,7 +2041,8 @@ function evaluateFunctionGraph(graph, argumentValues, context, callStack) {
       const nestedGraph = context.resolveFunctionGraph?.(node.data?.graphId);
       if (nestedGraph) {
         const returnValue = getFunctionGraphReturnValues(nestedGraph).find((item) => functionReturnOutputPinId(item) === pinId);
-        if (!returnValue) return undefined;
+        const controlOutput = getFunctionGraphControlOutputs(nestedGraph).find((item) => item.id === pinId);
+        if (!returnValue && !controlOutput) return undefined;
         let functionResult;
         if (functionCallResultCache.has(node.id)) functionResult = functionCallResultCache.get(node.id);
         else {
@@ -2027,7 +2056,8 @@ function evaluateFunctionGraph(graph, argumentValues, context, callStack) {
           functionResult = evaluateFunctionGraph(nestedGraph, nestedValues, context, nextStack);
           functionCallResultCache.set(node.id, functionResult);
         }
-        result = returnValue.legacy ? functionResult : functionResult?.[returnValue.returnId];
+        result = controlOutput ? functionResult?.[controlOutput.id]
+          : returnValue.legacy ? functionResult?.[FUNCTION_LEGACY_RESULT] ?? functionResult : functionResult?.[returnValue.returnId];
       }
     }
     cache.set(key, result);
@@ -2044,7 +2074,36 @@ function evaluateFunctionGraph(graph, argumentValues, context, callStack) {
   }
 
   const returnNode = nodes.find((node) => node.type === 'function_return');
-  return returnNode ? resolveFunctionReturnResult(returnNode, resolveInput) : undefined;
+  const outgoing = (nodeId, pinId) => connections.filter((wire) => wire.sourceNodeId === nodeId && wire.sourcePinId === pinId);
+  const entry = nodes.find((node) => node.type === 'function_input');
+  const pendingExec = entry ? outgoing(entry.id, 'exec').map((wire) => wire.targetNodeId) : [];
+  const visitedExec = new Set();
+  let controlReturn;
+  let reachedValueReturn;
+  while (pendingExec.length && visitedExec.size < 1000) {
+    const nodeId = pendingExec.shift();
+    if (visitedExec.has(nodeId)) continue;
+    visitedExec.add(nodeId);
+    const node = findNode(nodeId);
+    if (!node) continue;
+    if (node.type === 'function_return_exec') { controlReturn = node; break; }
+    if (node.type === 'function_return') { reachedValueReturn = node; break; }
+    let outputIds = (NodeDefinitions[node.type]?.outputs || []).filter((pin) => pin.type === 'exec').map((pin) => pin.id);
+    if (node.type === 'branch_if') outputIds = [selectIfBranch(resolveInput(node, 'condition', false)).branchPin];
+    else if (node.type === 'branch_switch') outputIds = [selectSwitchBranch(resolveInput(node, 'value', ''), (index) => resolveInput(node, `case_${index}`, '')).branchPin];
+    else if (!outputIds.includes('exec') && outputIds.includes('exec_out')) outputIds = ['exec_out'];
+    else if (!outputIds.includes('exec')) outputIds = outputIds.slice(0, 1);
+    for (const outputId of outputIds) pendingExec.push(...outgoing(node.id, outputId).map((wire) => wire.targetNodeId));
+  }
+  if (reachedValueReturn) {
+    const result = resolveFunctionReturnResult(reachedValueReturn, resolveInput);
+    return getFunctionGraphControlOutputs(graph).length
+      ? addFunctionControlResult(result, { data: { 'func.success': true, 'func.error': '' } }, resolveInput)
+      : result;
+  }
+  if (!controlReturn && !entry) controlReturn = nodes.find((node) => node.type === 'function_return_exec');
+  const result = returnNode ? resolveFunctionReturnResult(returnNode, resolveInput) : undefined;
+  return controlReturn ? addFunctionControlResult(result, controlReturn, resolveInput) : result;
 }
 
 function defaultValueForType(type) {
