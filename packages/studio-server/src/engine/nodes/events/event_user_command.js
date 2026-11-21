@@ -11,6 +11,9 @@ export default {
   defaultData: {
     commandName: ''
   },
+  editorControls: [
+    { key: 'commandName', label: 'Command Name', type: 'text', maxLength: 32, placeholder: 'User Info' }
+  ],
   inputs: [],
   outputs: [
     { id: 'exec', label: 'Exec', type: 'exec', description: "Runs when an app user context menu command is invoked on a user."},
