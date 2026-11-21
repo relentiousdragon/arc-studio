@@ -68,7 +68,7 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
     [['action_websocket_connect', 'action_websocket_send', 'action_websocket_close'], 'websocket.js'],
     [['action_web_server_start', 'action_web_server_route', 'action_web_server_response', 'action_web_server_static_file', 'action_web_server_stop_one', 'action_web_server_stop'], 'web_server.js'],
     [['action_set_presence'], 'discord_presence.js'],
-    [['action_send_message', 'action_edit_message', 'action_delete_message'], 'discord_messages.js'],
+    [['action_send_message', 'action_edit_message', 'action_delete_message', 'action_add_reaction', 'action_remove_reaction'], 'discord_messages.js'],
     [['action_bulk_delete_messages', 'action_upload_guild_emoji', 'action_upload_application_emoji', 'action_upload_guild_sticker'], 'discord_assets.js'],
     [[
       'action_reply_interaction', 'action_defer_reply', 'action_defer_update', 'action_await_interaction',
