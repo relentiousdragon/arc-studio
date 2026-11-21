@@ -1269,6 +1269,12 @@ export class GraphRunner {
               const userObj = eventPayload.data.resolved.users[option.value];
               const memberObj = eventPayload.data?.resolved?.members?.[option.value];
               commandOptions[option.name] = memberObj ? { ...userObj, member: memberObj } : userObj;
+            } else if (optionType === 9) {
+              const resolved = eventPayload.data?.resolved || {};
+              const userObj = resolved.users?.[option.value];
+              const memberObj = resolved.members?.[option.value];
+              const roleObj = resolved.roles?.[option.value];
+              commandOptions[option.name] = userObj ? (memberObj ? { ...userObj, member: memberObj } : userObj) : roleObj || option.value || null;
             } else if (optionType === 7 && eventPayload.data?.resolved?.channels?.[option.value]) {
               commandOptions[option.name] = eventPayload.data.resolved.channels[option.value];
             } else if (optionType === 8 && eventPayload.data?.resolved?.roles?.[option.value]) {
@@ -1858,7 +1864,11 @@ export class GraphRunner {
           const { executeConsoleLogNode } = await import('./nodes/runtime/console_log.js');
           executeConsoleLogNode(targetNode, {
             resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
-            log
+            log: (message, level) => log(`[${graph.name || graph.id}] ${message}`, level, {
+              graphId: graph.id,
+              nodeId: targetNode.id,
+              nodeLabel: targetNode.label || targetNode.type
+            })
           });
           currentExecWires.push(...findExecContinuation(targetNode.id, wire.targetPinId));
         } else if (targetNode.type === 'action_set_custom_status') {
