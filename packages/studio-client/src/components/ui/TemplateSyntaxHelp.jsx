@@ -25,6 +25,8 @@ export function TemplateSyntaxHelp({ connectedArguments = [] }) {
         <p>Put a backslash before the braces to print the template as written. The backslash is removed and the braces stay in the output, so the token is never resolved.</p>
         <pre>{'\\{{username}}'}</pre>
         <p>That prints <code>{'{{username}}'}</code>. The backslash only affects the token directly after it.</p>
+        <p>Use the same escape inside an expression string to keep those braces literal while unescaped nested templates still resolve.</p>
+        <pre>{String.raw`{{test > 1 ? "\{{test}}" : "{{crap}}"}}`}</pre>
         <h3>Expressions</h3>
         <p>Expressions use a safe, built-in evaluator. Use parentheses to make the order clear, division or remainder by zero returns 0.</p>
         <pre>{'{{1 + 1}}\n{{score + bonus}}\n{{round((score + bonus) / 3, 2)}}\n{{toString(round(toNumber(score), 2))}}'}</pre>
