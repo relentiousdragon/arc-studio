@@ -205,6 +205,33 @@ describe('Client & RESTClient', () => {
     }
   });
 
+  test('adds and removes reactions through encoded Discord message routes', async () => {
+    const originalFetch = globalThis.fetch;
+    const calls = [];
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url: String(url), method: init.method });
+      return new Response(null, { status: 204 });
+    };
+    try {
+      const rest = new RESTClient({ token: 'test-token', apiBase: 'https://discord.test/api/v10' });
+      await rest.addMessageReaction('channel-1', 'message-1', '🔥');
+      await rest.removeOwnMessageReaction('channel-1', 'message-1', '<:party:123456789012345678>');
+      await rest.removeUserMessageReaction('channel-1', 'message-1', 'party:123456789012345678', 'user-1');
+      await rest.removeAllMessageReactionsForEmoji('channel-1', 'message-1', '🔥');
+      await rest.removeAllMessageReactions('channel-1', 'message-1');
+      assert.deepEqual(calls.map(({ url, method }) => [method, new URL(url).pathname]), [
+        ['PUT', '/api/v10/channels/channel-1/messages/message-1/reactions/%F0%9F%94%A5/@me'],
+        ['DELETE', '/api/v10/channels/channel-1/messages/message-1/reactions/party%3A123456789012345678/@me'],
+        ['DELETE', '/api/v10/channels/channel-1/messages/message-1/reactions/party%3A123456789012345678/user-1'],
+        ['DELETE', '/api/v10/channels/channel-1/messages/message-1/reactions/%F0%9F%94%A5'],
+        ['DELETE', '/api/v10/channels/channel-1/messages/message-1/reactions']
+      ]);
+      assert.throws(() => rest.removeUserMessageReaction('channel-1', 'message-1', '🔥', ''), /user ID is required/i);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test('gets guild and channel member and role permissions', async () => {
     const originalFetch = globalThis.fetch;
     const calls = [];
