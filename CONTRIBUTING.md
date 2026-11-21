@@ -2,6 +2,8 @@
 
 Thanks for helping build ARC Studio, This page holds the rules contributors must follow when working inside this repository.
 
+Everyone taking part in ARC Studio spaces should follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
 Join the [ARC Studio Community Discord Server](https://discord.gg/FMv3T6XSyq) to learn more about the current state of the project.
 
 ## set up
