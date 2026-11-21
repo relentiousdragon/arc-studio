@@ -1670,7 +1670,7 @@ export class GraphRunner {
             log
           });
           if (result !== false) currentExecWires.push(...(result === 'failure' ? findExecOutputs(targetNode.id, 'failure_exec') : findExecContinuation(targetNode.id, wire.targetPinId)));
-        } else if (['action_send_message', 'action_edit_message', 'action_delete_message'].includes(targetNode.type)) {
+        } else if (['action_send_message', 'action_edit_message', 'action_delete_message', 'action_add_reaction', 'action_remove_reaction'].includes(targetNode.type)) {
           const { executeDiscordMessageNode } = await import('./nodes/runtime/discord_messages.js');
           await executeDiscordMessageNode(targetNode, {
             resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
@@ -1864,7 +1864,7 @@ export class GraphRunner {
           const { executeConsoleLogNode } = await import('./nodes/runtime/console_log.js');
           executeConsoleLogNode(targetNode, {
             resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
-            log: (message, level) => log(`[${graph.name || graph.id}] ${message}`, level, {
+            log: (message, level) => log(`${level === 'WARN' || level === 'ERROR' ? `[${graph.name || graph.id}] ` : ''}${message}`, level, {
               graphId: graph.id,
               nodeId: targetNode.id,
               nodeLabel: targetNode.label || targetNode.type
