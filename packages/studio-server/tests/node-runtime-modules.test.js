@@ -598,8 +598,8 @@ test('console log flow nodes emit their message at the matching level', async ()
   assert.equal(result.error, null);
   assert.deepEqual(logs.filter((entry) => entry.level !== 'EXECUTION'), [
     { message: 'Started', level: 'INFO' },
-    { message: 'Check this', level: 'WARN' },
-    { message: 'Failed', level: 'ERROR' }
+    { message: '[console-flow] Check this', level: 'WARN' },
+    { message: '[console-flow] Failed', level: 'ERROR' }
   ]);
 });
 
