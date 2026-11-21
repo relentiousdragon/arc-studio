@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { normalizeSlashCommandOptions, flattenSlashParameters, validateSlashCommandOptions } from '../src/engine/SlashCommandOptions.js';
 import { GraphRunner } from '../src/engine/GraphRunner.js';
+import { resolveDynamicNodePins } from '../src/engine/DynamicNodePins.js';
+import slashCommandNode from '../src/engine/nodes/events/event_slash_command.js';
 
 const argument = (name, type = 3, extra = {}) => ({ type, name, description: `Configure ${name}`, ...extra });
 const subcommand = (name, options = []) => ({ type: 1, name, description: `Run ${name}`, options });
@@ -72,7 +74,8 @@ test('slash event outputs the selected subcommand, group, and only its configure
       options: [{ name: 'moderation', type: 2, options: [{ name: 'ban', type: 1, options: [
         { name: 'target', type: 6, value: 'user-1' },
         { name: 'reason', type: 3, value: 'spamming' }
-      ] }] }]
+      ] }] }],
+      resolved: { users: { 'user-1': { id: 'user-1', username: 'target-user', global_name: 'Target User' } }, members: { 'user-1': { nick: 'Target' } } }
     }
   }, { debug: true, onDebugStep: (step) => steps.push(step) });
 
@@ -80,15 +83,23 @@ test('slash event outputs the selected subcommand, group, and only its configure
   const outputs = new Map(steps[0].outputs.map(({ pinId, value }) => [pinId, value]));
   assert.equal(outputs.get('subcommand_group_name'), 'moderation');
   assert.equal(outputs.get('subcommand_name'), 'ban');
-  assert.equal(outputs.get('option_path_moderation.ban.target'), 'user-1');
+  assert.deepEqual(outputs.get('option_path_moderation.ban.target'), {
+    id: 'user-1', username: 'target-user', global_name: 'Target User', member: { nick: 'Target' }
+  });
   assert.equal(outputs.get('option_path_moderation.ban.reason'), 'spamming');
   assert.equal(outputs.has('option_path_lookup.query'), false);
   assert.deepEqual(outputs.get('options'), {
-    target: 'user-1',
+    target: { id: 'user-1', username: 'target-user', global_name: 'Target User', member: { nick: 'Target' } },
     reason: 'spamming',
     $subcommand: 'ban',
     $subcommand_group: 'moderation'
   });
+});
+
+test('user option pins use object types so selected user properties can be read', () => {
+  const node = { id: 'slash-event', type: 'event_slash_command', data: { options: [argument('target', 6)] } };
+  const pins = resolveDynamicNodePins(slashCommandNode, node).outputs;
+  assert.equal(pins.find((pin) => pin.id === 'option_target')?.type, 'object');
 });
 
 test('slash event outputs a direct subcommand and its arguments without a group', async () => {
