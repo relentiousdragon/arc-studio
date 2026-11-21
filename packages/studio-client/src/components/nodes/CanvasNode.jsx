@@ -1288,7 +1288,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       {!patternIssue && flagsIssue && <span className="node-config-warning" role="status"><AlertTriangle size={12} /> {flagsIssue}</span>}
       {!patternIssue && !flagsIssue && patternRisk && <span className="node-config-warning" role="status"><AlertTriangle size={12} /> {patternRisk}</span>}
       {mode === 'replace' && templateInput('replacement', 'Replacement', { multiline: true, maxLength: 2000, placeholder: 'Replacement text' })}
-      <span className="node-config-hint">Native JavaScript regex syntax and flags. Patterns have a 4,096-character limit and run with a 250 ms time limit. Use Valid and Error to handle invalid or timed out patterns.</span>
+      <span className="node-config-hint">Native JavaScript regex syntax and flags. Patterns have a 4,096-character limit and run with a 1,000 ms time limit. Use Valid and Error to handle invalid or timed out patterns.</span>
     </div>;
   }
   if (node.type === 'data_check_value') {
