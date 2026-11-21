@@ -4,6 +4,7 @@ export default {
   "category": "Math",
   "label": "Add (+)",
   "color": "#38bdf8",
+  "dynamicPins": { "kind": "math-list", "baseIds": ["a", "b"], "extraPrefix": "value_", "extraLabel": "Value", "type": "number", "defaultValue": 0, "min": 2, "max": 50 },
   "inputs": [
     {
       "id": "a",
