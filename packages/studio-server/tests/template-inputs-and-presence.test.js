@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { GraphRunner } from '../src/engine/GraphRunner.js';
-import { getTemplateReferences, isReservedTemplateRoot, renderTextTemplate, TEMPLATE_SYSTEM_PATHS, validateTemplateFunctionName } from '../src/engine/TemplateExpressions.js';
+import { getTemplateReferences, isReservedTemplateRoot, isTemplateEnvironmentNameAllowed, renderTextTemplate, TEMPLATE_SYSTEM_PATHS, validateTemplateFunctionName } from '../src/engine/TemplateExpressions.js';
 
 it('resolves Discord permissions through the system chezcord namespace', () => {
   const render = (template) => renderTextTemplate(template, () => undefined);
@@ -54,6 +54,61 @@ it('prints an escaped template literally without the backslash', () => {
   assert.equal(render('\\{{VAR}} and {{NAME}}', { NAME: 'Ada' }), '{{VAR}} and Ada');
   assert.equal(render('\\\\{{VAR}}', { VAR: 'x' }), '\\{{VAR}}');
   assert.deepEqual(warnings, []);
+});
+
+it('evaluates nested duration arithmetic and respects escaped template braces in quoted strings', () => {
+  const duration = '{{floor(arg1 / 86400000) == 0 ? "" : "D [days] "}}{{floor((arg1 % 86400000) / 3600000) == 0 ? "" : "H [hours] "}}{{floor((arg1 % 3600000) / 60000) == 0 ? "" : "m [minutes] "}}{{floor((arg1 % 60000) / 1000) == 0 ? "" : "s [seconds]"}}';
+  const renderDuration = (milliseconds) => renderTextTemplate(duration, (name) => name === 'arg1' ? milliseconds : undefined);
+  assert.equal(renderDuration(0), '');
+  assert.equal(renderDuration(999), '');
+  assert.equal(renderDuration(1000), 's [seconds]');
+  assert.equal(renderDuration(60_000), 'm [minutes] ');
+  assert.equal(renderDuration(3_600_000), 'H [hours] ');
+  assert.equal(renderDuration(86_400_000), 'D [days] ');
+  assert.equal(renderDuration(90_061_000), 'D [days] H [hours] m [minutes] s [seconds]');
+
+  const quoted = String.raw`{{test > 1 ? "\{{test}}" : "{{crap}}"}}`;
+  const renderQuoted = (test) => renderTextTemplate(quoted, (name) => ({ test, crap: 'resolved' })[name]);
+  assert.equal(renderQuoted(2), '{{test}}');
+  assert.equal(renderQuoted(1), 'resolved');
+});
+
+it('does not re-evaluate template syntax supplied by untrusted runtime values', () => {
+  const secrets = { SECRET: 'do-not-leak' };
+  const resolve = (name) => ({ content: '{{env:SECRET}}', arg1: '{{env:SECRET}}' })[name];
+  const options = { resolveEnvironment: (name) => secrets[name] };
+  assert.equal(renderTextTemplate('{{content}}', resolve, [], null, options), '{{env:SECRET}}');
+  assert.equal(renderTextTemplate('{{content.name}}', resolve, [], null, options), '{{env:SECRET}}');
+  assert.equal(renderTextTemplate('{{arg1 | upper}}', resolve, [], null, options), '{{ENV:SECRET}}');
+  assert.equal(renderTextTemplate('{{content}} {{env:SECRET}}', resolve, [], null, options), '{{env:SECRET}} do-not-leak');
+});
+
+it('blocks ARC-prefixed environment names from exported template lookups', () => {
+  assert.equal(isTemplateEnvironmentNameAllowed('ARC_PRIVATE_VALUE'), false);
+  assert.equal(isTemplateEnvironmentNameAllowed('DISCORD_BOT_TOKEN'), false);
+  assert.equal(isTemplateEnvironmentNameAllowed('PUBLIC_LABEL'), true);
+});
+
+it('resolves nested duration arithmetic from a connected Text Builder argument at runtime', async () => {
+  const duration = '{{floor(arg1 / 86400000) == 0 ? "" : "D [days] "}}{{floor((arg1 % 86400000) / 3600000) == 0 ? "" : "H [hours] "}}{{floor((arg1 % 3600000) / 60000) == 0 ? "" : "m [minutes] "}}{{floor((arg1 % 60000) / 1000) == 0 ? "" : "s [seconds]"}}';
+  const graph = {
+    id: 'duration-template',
+    name: 'Duration Template',
+    nodes: [
+      { id: 'event', type: 'event_message_create' },
+      { id: 'builder', type: 'format_text', data: { template: duration } },
+      { id: 'logger', type: 'action_console_log' }
+    ],
+    connections: [
+      { sourceNodeId: 'event', sourcePinId: 'exec', targetNodeId: 'logger', targetPinId: 'exec' },
+      { sourceNodeId: 'event', sourcePinId: 'content', targetNodeId: 'builder', targetPinId: 'arg_1' },
+      { sourceNodeId: 'builder', sourcePinId: 'text', targetNodeId: 'logger', targetPinId: 'message' }
+    ]
+  };
+  const logs = [];
+  const result = await GraphRunner.execute(graph, 'MESSAGE_CREATE', { content: '90061000' }, { log: (message) => logs.push(message) });
+  assert.equal(result.error, null);
+  assert.ok(logs.some((message) => message.includes('D [days] H [hours] m [minutes] s [seconds]')));
 });
 
 it('resolves value and name subproperties on options and connected arg values', () => {
