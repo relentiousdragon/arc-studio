@@ -57,6 +57,7 @@ const icons = {
   variable_set: Database,
   function_input: LogIn,
   function_return: LogOut,
+  function_return_exec: LogOut,
   function_call: Workflow,
   branch_if: GitBranch,
   branch_switch: GitBranch,
