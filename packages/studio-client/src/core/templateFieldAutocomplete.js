@@ -161,16 +161,18 @@ export function templatePathSuggestions(query, paths = [], limit = MAX_SUGGESTIO
   };
   if (dotIndex >= 0) {
     const typedPrefix = text.slice(0, dotIndex + 1);
+    const normalizedPrefix = typedPrefix.replace(/([A-Za-z_$][A-Za-z0-9_$]*)\([^()]*\)/g, '$1()');
     const partial = text.slice(dotIndex + 1).toLowerCase();
     for (const item of paths) {
       const candidate = String(typeof item === 'string' ? item : item?.path || '');
-      if (candidate.length <= typedPrefix.length) continue;
-      if (candidate.slice(0, typedPrefix.length).toLowerCase() !== typedPrefix.toLowerCase()) continue;
-      const remainder = candidate.slice(typedPrefix.length);
+      const candidatePrefix = normalizedPrefix;
+      if (candidate.length <= candidatePrefix.length) continue;
+      if (candidate.slice(0, candidatePrefix.length).toLowerCase() !== candidatePrefix.toLowerCase()) continue;
+      const remainder = candidate.slice(candidatePrefix.length);
       const segment = /^([A-Za-z0-9_$]+|\[[^\]]*\])/.exec(remainder)?.[0];
       if (!segment) continue;
       if (partial && !segment.toLowerCase().startsWith(partial)) continue;
-      const canonical = candidate.slice(0, typedPrefix.length + segment.length);
+      const canonical = `${typedPrefix}${segment}`;
       push(canonical, segment);
     }
     return list.slice(0, limit);
