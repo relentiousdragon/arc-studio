@@ -118,6 +118,14 @@ function applicationCommandKey(command) {
   return `${Number(command?.type || 1)}:${String(command?.name || '').toLowerCase()}`;
 }
 
+function normalizeReactionEmoji(value) {
+  const emoji = String(value ?? '').trim();
+  const custom = /^<a?:([A-Za-z0-9_]{2,32}):(\d{17,20})>$/.exec(emoji);
+  const normalized = custom ? `${custom[1]}:${custom[2]}` : emoji;
+  if (!normalized) throw new TypeError('An emoji is required for this reaction action.');
+  return normalized;
+}
+
 export class DiscordAPIError extends Error {
   constructor(message, status, code, rawError) {
     super(message);
@@ -651,6 +659,29 @@ export class RESTClient {
     const headers = {};
     if (reason) headers['X-Audit-Log-Reason'] = encodeURIComponent(String(reason));
     return this.request('DELETE', `/channels/${channelId}/messages/${messageId}`, { headers });
+  }
+
+  addMessageReaction(channelId, messageId, emoji) {
+    return this.request('PUT', `/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(normalizeReactionEmoji(emoji))}/@me`);
+  }
+
+  removeOwnMessageReaction(channelId, messageId, emoji) {
+    return this.request('DELETE', `/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(normalizeReactionEmoji(emoji))}/@me`);
+  }
+
+  removeUserMessageReaction(channelId, messageId, emoji, userId, reason) {
+    if (!userId) throw new TypeError('A user ID is required to remove another user’s reaction.');
+    const headers = {};
+    if (reason) headers['X-Audit-Log-Reason'] = encodeURIComponent(String(reason));
+    return this.request('DELETE', `/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(normalizeReactionEmoji(emoji))}/${userId}`, { headers });
+  }
+
+  removeAllMessageReactions(channelId, messageId) {
+    return this.request('DELETE', `/channels/${channelId}/messages/${messageId}/reactions`);
+  }
+
+  removeAllMessageReactionsForEmoji(channelId, messageId, emoji) {
+    return this.request('DELETE', `/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(normalizeReactionEmoji(emoji))}`);
   }
 
   bulkDeleteMessages(channelId, messageIds, reason) {
