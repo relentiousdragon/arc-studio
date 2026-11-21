@@ -5990,6 +5990,13 @@ body.is-resizing-sidebar .slash-command-studio {
   resize: vertical;
 }
 
+.node-config textarea[data-fallback-multiline="true"] {
+  min-height: 28px;
+  max-height: 80px;
+  overflow-wrap: anywhere;
+  resize: none;
+}
+
 .node-config textarea::-webkit-resizer {
   border: 0;
   border-radius: 0 0 4px 0;
