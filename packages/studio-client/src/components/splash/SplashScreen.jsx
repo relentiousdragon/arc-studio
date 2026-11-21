@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, ArrowLeft, ArrowLeftRight, ArrowRight, Eye, EyeOff, Fingerprint, Globe2, KeyRound, Laptop2, LoaderCircle, LockKeyhole, Moon, Pencil, ShieldCheck, Sun } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, ArrowLeftRight, ArrowRight, Eye, EyeOff, Fingerprint, Globe2, KeyRound, Laptop2, LoaderCircle, LockKeyhole, Moon, Pencil, ShieldCheck, Sparkles, Sun } from 'lucide-react';
 import { arcEvents } from '../../core/ArcEvents.js';
 import { apiUrl, normalizeWorkspaceUrl } from '../../core/api.js';
 import { getClientBuildInfo } from '../../core/clientBuildInfo.js';
@@ -12,7 +12,7 @@ import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
 import studioPackage from '../../../package.json';
 import { FallingLeaves } from 'falling-leaves/react';
-import { xmasSnow, halloweenFrills, fallLeaves } from '../../core/seasonalEffects.js';
+import { getSplashSeasonalState, setSplashSeasonalEffectsEnabled } from '../../core/seasonalEffects.js';
 
 const desktopConfig = window.__ARC_STUDIO_CONFIG__ || {};
 const SETUP_TAGLINE = 'Visualize your Discord bot.';
@@ -147,15 +147,33 @@ export function SplashScreen({
   const [remoteUrl, setRemoteUrl] = useState(remoteWorkspaceUrl);
   const [lowPower, setLowPower] = useState(false);
   const [reducedMotion, setReducedMotion] = useState(() => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches || false);
-  const [xmas] = useState(() => xmasSnow());
-  const [fall] = useState(() => fallLeaves());
-  const [halloween] = useState(() => halloweenFrills());
-  const leafCount = useMemo(() => getOptimalLeafCount({ halloween, lowPower }), [halloween, lowPower]);
+  const [seasonalEffects, setSeasonalEffects] = useState(() => getSplashSeasonalState());
+  const { fall, halloween, snow: xmas, enabled: seasonalEffectsEnabled } = seasonalEffects;
+  const leafCount = useMemo(() => getOptimalLeafCount({ halloween: halloween && seasonalEffectsEnabled, lowPower }), [halloween, lowPower, seasonalEffectsEnabled]);
   const [typedIntro, setTypedIntro] = useState(() => needsSetup ? '' : SETUP_TAGLINE);
   const fieldRefs = useRef({});
   const lastLocalUsernameRef = useRef('');
   const snowCanvasRef = useRef(null);
   const halloweenCanvasRef = useRef(null);
+
+  useEffect(() => {
+    const synchronizeSeasonalEffects = () => {
+      const schedule = getSplashSeasonalState(new Date(), null);
+      setSeasonalEffects((current) => {
+        if (current.seasonId !== schedule.seasonId) return getSplashSeasonalState();
+        if (current.fall === schedule.fall && current.halloween === schedule.halloween && current.snow === schedule.snow) return current;
+        return { ...current, fall: schedule.fall, halloween: schedule.halloween, snow: schedule.snow };
+      });
+    };
+    const timer = window.setInterval(synchronizeSeasonalEffects, 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const toggleSeasonalEffects = () => {
+    const enabled = !seasonalEffectsEnabled;
+    setSplashSeasonalEffectsEnabled(seasonalEffects.seasonId, enabled);
+    setSeasonalEffects((current) => ({ ...current, enabled }));
+  };
 
   const credentialOrigin = (() => { try { return normalizeWorkspaceUrl(remoteUrl); } catch { return ''; } })();
   const usernameStorageKey = credentialOrigin ? `arc_remote_username:${credentialOrigin}` : '';
@@ -785,7 +803,7 @@ export function SplashScreen({
   const resetPassRequested = !desktopMode && (resetPassParams.get('reset_pass') === 'true' || resetPassParams.get('resetPass') === 'true');
   const showMasterPasswordReset = !desktopMode && !needsSetup && canResetPrimaryAdminWithMasterKey
     && (resetPassRequested || Boolean(ownerResetPromptForUsername && ownerResetPromptForUsername === username.trim().toLowerCase()));
-  const remotePending = desktopMode && workspaceChoice === 'remote';
+  const remotePending = desktopMode && workspaceChoice === 'remote' && showWorkspaceUrl;
   const startupError = desktopMode && workspaceMode === 'local' ? desktopConfig.startupError : null;
   const documentsPermissionRequired = String(startupError || '').startsWith('ARC_DOCUMENTS_PERMISSION_REQUIRED:');
   const startupErrorMessage = documentsPermissionRequired ? String(startupError).slice('ARC_DOCUMENTS_PERMISSION_REQUIRED:'.length) : startupError;
@@ -807,7 +825,7 @@ export function SplashScreen({
   return (
     <main className={`auth-screen ${desktopMode ? 'is-desktop' : ''}`} data-release-channel={releaseChannel} data-initial-setup={needsSetup ? 'true' : undefined} data-low-power={lowPower ? 'true' : undefined}>
       <AuthGridCanvas reducedMotion={reducedMotion} />
-      {fall && !reducedMotion && (
+      {fall && seasonalEffectsEnabled && !reducedMotion && (
         <FallingLeaves
           fullScreen
           shapes={["maple", "birch", "oak"]}
@@ -817,13 +835,16 @@ export function SplashScreen({
           className="splash-falling-leaves"
         />
       )}
-      {xmas && !reducedMotion && <canvas ref={snowCanvasRef} className="splash-snow" aria-hidden="true" />}
-      {halloween && <canvas ref={halloweenCanvasRef} className="splash-halloween" aria-hidden="true" />}
+      {xmas && seasonalEffectsEnabled && !reducedMotion && <canvas ref={snowCanvasRef} className="splash-snow" aria-hidden="true" />}
+      {halloween && seasonalEffectsEnabled && <canvas ref={halloweenCanvasRef} className="splash-halloween" aria-hidden="true" />}
       {desktopMode && <div className="auth-window-drag-region" data-tauri-drag-region="true" aria-hidden="true" />}
       <div className="auth-backdrop" aria-hidden="true"><span /><span /><span /></div>
       {needsSetup && !desktopServerError && <SetupNetworkWires reducedMotion={reducedMotion} />}
       {needsSetup && !desktopServerError && <div className="setup-vignette" aria-hidden="true" />}
-      <button className="auth-theme-toggle" onClick={onToggleTheme} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}>{theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}</button>
+      <div className="auth-top-controls">
+        {(halloween || !reducedMotion && (fall || xmas)) && <button className="auth-seasonal-toggle" type="button" onClick={toggleSeasonalEffects} aria-pressed={seasonalEffectsEnabled} title={`${seasonalEffectsEnabled ? 'Disable' : 'Enable'} seasonal splash effects`} aria-label={`${seasonalEffectsEnabled ? 'Disable' : 'Enable'} seasonal splash effects`}><Sparkles size={16} /></button>}
+        <button className="auth-theme-toggle" type="button" onClick={onToggleTheme} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}>{theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}</button>
+      </div>
       {desktopServerError ? <section className="desktop-server-error" role="alert" aria-labelledby="desktop-server-error-title">
         <div className="desktop-server-error-icon" aria-hidden="true">💩</div>
         <span className="auth-kicker">ARC STUDIO</span>
@@ -844,14 +865,14 @@ export function SplashScreen({
           </div>}
           {desktopMode && !networkOnline && <p className="workspace-offline-note" role="status">Offline. You can continue with the Local Workspace.</p>}
           {desktopMode && (compatibilityNotice || workspaceCompatibilityNotice) && <p className="workspace-compatibility-note" role="status">{compatibilityNotice || workspaceCompatibilityNotice}</p>}
-          {!needsProjectOnboarding && desktopMode && workspaceChoice === 'remote' && <form className="workspace-connect" noValidate onSubmit={handleConnectWorkspace}>
+          {!needsProjectOnboarding && desktopMode && workspaceChoice === 'remote' && showWorkspaceUrl && <form className="workspace-connect" noValidate onSubmit={handleConnectWorkspace}>
             <label className="field-label" htmlFor="workspace-url">Workspace URL</label>
             <div ref={(element) => { fieldRefs.current.remoteUrl = element; }} className={`auth-input-wrap ${(connectError || workspaceError) && !unsupportedNodeCompatibilityError ? 'has-error' : ''}`}><Globe2 size={15} /><input id="workspace-url" type="url" autoComplete="url" autoCapitalize="none" autoCorrect="off" spellCheck="false" value={remoteUrl} onChange={(event) => { setRemoteUrl(event.target.value); setConnectError(''); setCompatibilityNotice(''); }} placeholder="https://studio.example.com" aria-invalid={Boolean((connectError || workspaceError) && !unsupportedNodeCompatibilityError)} /></div>
             {trustedWorkspaces.length > 0 && <div className="saved-workspaces" aria-label="Saved workspaces"><span>Saved workspaces</span>{trustedWorkspaces.map((workspace) => <button key={workspace} type="button" onClick={() => { setRemoteUrl(workspace); setConnectError(''); }}>{workspace}</button>)}</div>}
             {(connectError || workspaceError) && (isUnsupportedNodeCompatibilityError(connectError || workspaceError)
               ? <div className="workspace-connect-warning" role="alert"><AlertTriangle size={15} aria-hidden="true" /><span>{compatibilityDetailsLink(connectError || workspaceError)}</span></div>
               : renderInlineError(connectError || workspaceError))}
-            <button className="workspace-connect-button" type="submit" disabled={!networkOnline || connecting || !remoteUrl.trim()}>{connecting ? <><LoaderCircle size={14} className="is-spinning" /> Connecting</> : <>Continue <ArrowRight size={14} /></>}</button>
+            <button className="workspace-connect-button" type="submit" disabled={!networkOnline || connecting || !remoteUrl.trim()}>{connecting ? <><LoaderCircle size={14} className="is-spinning" /> Connecting</> : <>Connect <ArrowRight size={14} /></>}</button>
           </form>}
 
           {!needsProjectOnboarding && desktopMode && workspaceMode === 'remote' && !showWorkspaceUrl && <button className="auth-back workspace-change-server" type="button" onClick={() => { setShowWorkspaceUrl(true); setConnectError(''); setError(''); }}>Change workspace URL</button>}
