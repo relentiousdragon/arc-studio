@@ -2,6 +2,20 @@ export const FUNCTION_ARGUMENT_VALUE_TYPES = Object.freeze([
   'number', 'string', 'boolean', 'object', 'channel_id', 'thread_id', 'message_id',
   'interaction_id', 'application_id', 'guild_id', 'user_id', 'role_id', 'interaction_token'
 ]);
+export const FUNCTION_LEGACY_RESULT = Symbol.for('arc.function.legacyResult');
+
+export const FUNCTION_CONTROL_OUTPUTS = Object.freeze([
+  { id: 'func.success', name: 'success', label: 'func.success', type: 'boolean', defaultValue: true },
+  { id: 'func.error', name: 'error', label: 'func.error', type: 'string', defaultValue: '' }
+]);
+
+export function hasFunctionControlReturns(graph) {
+  return (graph?.nodes || []).some((node) => node?.type === 'function_return_exec');
+}
+
+export function isFunctionGraphNodeType(type) {
+  return ['function_input', 'function_return', 'function_return_exec'].includes(type);
+}
 
 export function getFunctionInputArguments(node) {
   if (!node || node.type !== 'function_input') return [];
@@ -61,6 +75,10 @@ export function getFunctionReturnValues(node) {
 export function getFunctionGraphReturnValues(graph) {
   const returnNodes = (graph?.nodes || []).filter((node) => node?.type === 'function_return');
   return returnNodes.length === 1 ? getFunctionReturnValues(returnNodes[0]) : [];
+}
+
+export function getFunctionGraphControlOutputs(graph) {
+  return hasFunctionControlReturns(graph) ? FUNCTION_CONTROL_OUTPUTS : [];
 }
 
 export function functionReturnInputPinId(value) {
