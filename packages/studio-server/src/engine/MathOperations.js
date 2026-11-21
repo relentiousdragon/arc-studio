@@ -9,10 +9,12 @@ const number = (value) => {
 export function evaluateMathNode(type, inputs, data = {}) {
   const a = number(inputs.a);
   const b = number(inputs.b);
+  const extraValues = Object.keys(inputs).filter((key) => /^value_\d+$/.test(key)).sort((left, right) => Number(left.slice(6)) - Number(right.slice(6))).map((key) => number(inputs[key]));
+  const listValues = [inputs.a, inputs.b, inputs.c, inputs.d, ...extraValues].filter((value) => value !== undefined).map(number);
   let result;
   switch (type) {
-    case 'math_add': result = a + b; break;
-    case 'math_subtract': result = a - b; break;
+    case 'math_add': result = listValues.reduce((total, value) => total + value, 0); break;
+    case 'math_subtract': result = listValues.slice(1).reduce((total, value) => total - value, listValues[0] ?? 0); break;
     case 'math_multiply': result = a * b; break;
     case 'math_divide': result = b === 0 ? 0 : a / b; break;
     case 'math_modulo': result = b === 0 ? 0 : a % b; break;
@@ -46,13 +48,11 @@ export function evaluateMathNode(type, inputs, data = {}) {
       break;
     }
     case 'math_sum': {
-      const values = [...'abcd'].map((key) => inputs[key]).concat(Array.from({ length: 46 }, (_, index) => inputs[`value_${index + 5}`]));
-      result = values.reduce((total, value) => total + number(value), 0);
+      result = listValues.reduce((total, value) => total + value, 0);
       break;
     }
     case 'math_average': {
-      const values = [...'abcd'].map((key) => inputs[key]).concat(Array.from({ length: 46 }, (_, index) => inputs[`value_${index + 5}`])).filter((value) => value !== undefined);
-      result = values.length ? values.reduce((total, value) => total + number(value), 0) / values.length : 0;
+      result = listValues.length ? listValues.reduce((total, value) => total + value, 0) / listValues.length : 0;
       break;
     }
     case 'math_lerp': result = number(inputs.a) + (number(inputs.b) - number(inputs.a)) * Math.max(0, Math.min(1, number(inputs.t))); break;
