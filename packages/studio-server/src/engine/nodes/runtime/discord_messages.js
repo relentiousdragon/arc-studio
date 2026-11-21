@@ -1,6 +1,6 @@
 import { validateDiscordSemanticValue } from '../../DiscordValueValidation.js';
 
-const MESSAGE_NODE_TYPES = new Set(['action_send_message', 'action_edit_message', 'action_delete_message']);
+const MESSAGE_NODE_TYPES = new Set(['action_send_message', 'action_edit_message', 'action_delete_message', 'action_add_reaction', 'action_remove_reaction']);
 //
 export function isDiscordMessageNodeType(type) {
   return MESSAGE_NODE_TYPES.has(type);
@@ -30,6 +30,44 @@ export async function executeDiscordMessageNode(node, {
       await rest.deleteMessage(channelId, messageId, reason || undefined);
       setOutput?.('success', true);
       log(`[Action Delete Message] Deleted message ${messageId} from channel ${channelId}`);
+    }
+    return true;
+  }
+
+  if (node.type === 'action_add_reaction' || node.type === 'action_remove_reaction') {
+    const channelId = validateDiscordSemanticValue(resolveInput('channel_id', node.data?.channel_id || ''), 'channel_id', 'Channel ID', { simulation, allowEmpty: true });
+    const messageId = validateDiscordSemanticValue(resolveInput('message_id', node.data?.message_id || ''), 'message_id', 'Message ID', { simulation, allowEmpty: true });
+    const target = String(resolveInput('target', node.data?.target || 'own'));
+    const emoji = String(resolveInput('emoji', node.data?.emoji || '')).trim();
+    const userId = validateDiscordSemanticValue(resolveInput('user_id', node.data?.user_id || ''), 'user_id', 'User ID', { simulation, allowEmpty: true });
+    const reason = String(resolveInput('reason', node.data?.reason || '')).trim();
+    if (!channelId || !messageId || (node.type === 'action_add_reaction' && !emoji)
+      || (node.type === 'action_remove_reaction' && ['own', 'user', 'emoji'].includes(target) && !emoji)
+      || (node.type === 'action_remove_reaction' && target === 'user' && !userId)) {
+      setOutput?.('success', false);
+      log(`[${node.type === 'action_add_reaction' ? 'Add Reaction' : 'Remove Reaction'}] Missing required channel, message, emoji, or user input.`);
+    } else if (node.type === 'action_add_reaction') {
+      await rest.addMessageReaction(channelId, messageId, emoji);
+      setOutput?.('success', true);
+      log(`[Add Reaction] Added ${emoji} to message ${messageId}.`);
+    } else if (target === 'own') {
+      await rest.removeOwnMessageReaction(channelId, messageId, emoji);
+      setOutput?.('success', true);
+      log(`[Remove Reaction] Removed the bot’s ${emoji} reaction from message ${messageId}.`);
+    } else if (target === 'user') {
+      await rest.removeUserMessageReaction(channelId, messageId, emoji, userId, reason || undefined);
+      setOutput?.('success', true);
+      log(`[Remove Reaction] Removed ${userId}’s ${emoji} reaction from message ${messageId}.`);
+    } else if (target === 'emoji') {
+      await rest.removeAllMessageReactionsForEmoji(channelId, messageId, emoji);
+      setOutput?.('success', true);
+      log(`[Remove Reaction] Removed all ${emoji} reactions from message ${messageId}.`);
+    } else if (target === 'all') {
+      await rest.removeAllMessageReactions(channelId, messageId);
+      setOutput?.('success', true);
+      log(`[Remove Reaction] Removed all reactions from message ${messageId}.`);
+    } else {
+      throw new TypeError('Choose a valid reaction removal option.');
     }
     return true;
   }
