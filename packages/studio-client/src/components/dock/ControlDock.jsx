@@ -847,7 +847,6 @@ export function ControlDock({
         temporary.remove();
         if (!copied) throw new Error('Clipboard access is unavailable.');
       }
-      arcEvents.emit('toast:notify', { title: 'Copied to clipboard', type: 'success' });
     } catch {
       arcEvents.emit('toast:notify', { title: 'Could not copy', message: 'Clipboard access is unavailable.', type: 'error' });
     }
