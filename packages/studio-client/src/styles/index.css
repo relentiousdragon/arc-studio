@@ -10471,7 +10471,8 @@ body:has(.control-dock.is-resizing) .canvas-collaborator-navigation-layer {
 }
 
 .dialog-scrim:has(.modal-editor-settings),
-.dialog-scrim:has(.modal-team-access) {
+.dialog-scrim:has(.modal-team-access),
+.dialog-scrim:has(.modal-bot-settings) {
   backdrop-filter: none;
 }
 
