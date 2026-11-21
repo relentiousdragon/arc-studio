@@ -172,7 +172,7 @@ export function templatePathSuggestions(query, paths = [], limit = MAX_SUGGESTIO
       const segment = /^([A-Za-z0-9_$]+|\[[^\]]*\])/.exec(remainder)?.[0];
       if (!segment) continue;
       if (partial && !segment.toLowerCase().startsWith(partial)) continue;
-      const canonical = `${typedPrefix}${segment}`;
+      const canonical = `${candidate.slice(0, candidatePrefix.length)}${segment}`;
       push(canonical, segment);
     }
     return list.slice(0, limit);
