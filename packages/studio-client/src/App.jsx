@@ -1,6 +1,6 @@
 import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertCircle, AppWindow, Bot, Braces, ChevronDown, CircleHelp, Database, Download, FileCode2, FileUp, Folder, FolderTree, LayoutGrid, LockKeyhole, MoreHorizontal, PackageOpen, Plus, Save, Search, ShieldCheck, SlidersHorizontal, Sparkles, Ticket, TrendingUp, Trash2, Users, X } from 'lucide-react';
+import { AlertCircle, AppWindow, Bot, Braces, ChevronDown, CircleHelp, Database, Download, FileCode2, FileUp, Folder, FolderTree, LayoutGrid, LoaderCircle, LockKeyhole, MoreHorizontal, PackageOpen, Plus, Save, Search, ShieldCheck, SlidersHorizontal, Sparkles, Ticket, TrendingUp, Trash2, Users, X } from 'lucide-react';
 import { TopBar } from './components/navigation/TopBar.jsx';
 import { NodeCanvas } from './components/canvas/NodeCanvas.jsx';
 import { ControlDock } from './components/dock/ControlDock.jsx';
@@ -1164,6 +1164,8 @@ export function App() {
   const [projectNameShakeKey, setProjectNameShakeKey] = useState(0);
   const [projectError, setProjectError] = useState('');
   const [projectBusy, setProjectBusy] = useState(false);
+  const projectWorkspaceConnected = localDesktopWorkspace || collaborationSocketStatus === 'connected';
+  const projectActionsDisabled = projectBusy || !projectWorkspaceConnected;
   const [exportInProgress, setExportInProgress] = useState(false);
   const [exportReview, setExportReview] = useState(null);
   const [exportReviewSections, setExportReviewSections] = useState({});
@@ -7051,7 +7053,7 @@ export function App() {
   const handleCreateProject = async (event) => {
     event?.preventDefault?.();
     const name = newProjectName.trim();
-    if (projectBusy) return;
+    if (projectActionsDisabled) return;
     if (!name) {
       setProjectNameInvalid(true);
       setProjectNameShakeKey((key) => key + 1);
@@ -7078,7 +7080,7 @@ export function App() {
   };
 
   const handleCreateProjectFromTemplate = async () => {
-    if (projectBusy || !newProjectName.trim()) return;
+    if (projectActionsDisabled || !newProjectName.trim()) return;
     setProjectBusy(true);
     setProjectError('');
     try {
@@ -7096,7 +7098,7 @@ export function App() {
   };
 
   const handleExportProject = async (project) => {
-    if (!project || projectBusy) return;
+    if (!project || projectActionsDisabled) return;
     setProjectBusy(true);
     try {
       if (project.id === activeProjectId) await ensureWorkspaceGraphsSaved();
@@ -7188,7 +7190,7 @@ export function App() {
   };
 
   const handleImportProject = async () => {
-    if (!projectImportFile || projectImportAnalysisStatus !== 'ready' || !projectImportTrusted || projectBusy || projectImportSharingWarning && !projectImportSharingApproved || projectImportPlugins.length && !projectImportPluginsApproved || projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && !projectImportOldVersionApproved) return;
+    if (!projectWorkspaceConnected || !projectImportFile || projectImportAnalysisStatus !== 'ready' || !projectImportTrusted || projectBusy || projectImportSharingWarning && !projectImportSharingApproved || projectImportPlugins.length && !projectImportPluginsApproved || projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && !projectImportOldVersionApproved) return;
     setProjectBusy(true);
     setProjectImportError('');
     try {
@@ -7331,7 +7333,7 @@ export function App() {
   }, [activeProjectId, desktopMode, handleAddBlankGraph, handleAddTab, handleExportGraph, handleExportProject, handleImportGraph, handleRedo, handleSaveGraph, handleUndo, isLibraryOpen, projects]);
 
   const handleSetProjectLimit = async (value) => {
-    if (localDesktopWorkspace) return;
+    if (localDesktopWorkspace || !projectWorkspaceConnected) return;
     try {
       const response = await fetch(apiUrl('/api/projects/settings'), {
         method: 'PATCH', headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
@@ -7357,7 +7359,7 @@ export function App() {
   };
 
   const handleActivateProject = async (projectId, allowWhileBusy = false) => {
-    if (!projectId || projectId === activeProjectId || projectBusy && !allowWhileBusy) return;
+    if ((!projectWorkspaceConnected && !allowWhileBusy) || !projectId || projectId === activeProjectId || projectBusy && !allowWhileBusy) return;
     setProjectBusy(true);
     setProjectError('');
     try {
@@ -7645,6 +7647,7 @@ export function App() {
   };
 
   const openProjectMenu = (event, project, anchor = null) => {
+    if (!projectWorkspaceConnected) return;
     event.preventDefault?.();
     event.stopPropagation();
     const root = document.querySelector('.app-root');
@@ -7662,7 +7665,7 @@ export function App() {
   };
 
   const handleDeleteProject = async () => {
-    if (!projectDelete || projectBusy) return;
+    if (!projectDelete || projectActionsDisabled) return;
     setProjectBusy(true);
     setProjectDeleteError('');
     try {
@@ -7706,7 +7709,7 @@ export function App() {
   };
 
   const attemptDeleteProject = () => {
-    if (!projectDelete || projectBusy) return;
+    if (!projectDelete || projectActionsDisabled) return;
     if (projectDeleteName.trim() !== projectDelete.name) {
       setProjectDeletePromptError('Enter the exact project name to confirm.');
       setProjectDeleteFieldShake(false);
@@ -8905,7 +8908,7 @@ export function App() {
                 ? <button type="button" className="canvas-context-validation" onClick={handleValidateGraph} aria-label={`Open graph review with ${graphValidation.errors.length ? `${graphValidation.errors.length} issues` : `${graphValidation.warnings.length} warnings`}`}>{graphValidation.errors.length ? `${graphValidation.errors.length} issues` : 'Review'}</button>
                 : 'Ready'}</>
               : 'Open a graph to run checks.'}
-            {(!desktopMode || !localDesktopWorkspace) && collaborationSocketStatus !== 'connected' && <span className={`collaboration-connection is-reconnecting ${collaborationSocketStatus === 'blocked' ? 'is-blocked' : ''}`} role="status" aria-live="polite">{collaborationSocketStatus === 'incompatible' ? `Update ARC Studio to ${minimumRequiredClientVersion} or newer to connect.` : collaborationSocketStatus === 'blocked' ? 'This client is not allowed by the workspace owner.' : collaborationSocketStatus === 'connecting' ? 'Connecting…' : 'Reconnecting…'}</span>}
+            {(!desktopMode || !localDesktopWorkspace) && collaborationSocketStatus !== 'connected' && <span className={`collaboration-connection is-reconnecting ${collaborationSocketStatus === 'blocked' ? 'is-blocked' : ''}`} role="status" aria-live="polite">{collaborationSocketStatus === 'incompatible' ? `Update ARC Studio to ${minimumRequiredClientVersion} or newer to connect.` : collaborationSocketStatus === 'blocked' ? 'This client is not allowed by the workspace owner.' : 'Connecting…'}</span>}
             {activeGraph && (!desktopMode || !localDesktopWorkspace) && collaborationSocketStatus === 'connected' && collaborationConnectionFlaky && <span className="collaboration-connection is-flaky" role="status" aria-live="polite">Flaky connection</span>}
             {activeGraph && collaborators.length > 0 && <span className="canvas-collaborators" title={collaborators.slice(0, 8).map((person) => person.username).concat(collaborators.length > 8 ? [`…and ${collaborators.length - 8} more`] : []).join('\n')}><span className="context-separator">·</span> {collaborators.slice(0, 2).map((person) => person.username).join(', ')}{collaborators.length > 2 ? ` …and ${collaborators.length - 2} more` : ''}</span>}
             {(isAutoSavingActiveGraph || savingGraphIds.includes(activeTabId)) && <span className="canvas-saving-status" role="status" aria-live="polite">Saving…</span>}
@@ -8939,6 +8942,9 @@ export function App() {
               <span><Folder size={14} />Projects <small>{projects.length}</small></span>
               <button className="icon-button compact" type="button" aria-label="Close projects" onClick={() => { if (!projectBusy) setIsProjectsOpen(false); }} disabled={projectBusy}><X size={14} /></button>
             </header>
+            {!localDesktopWorkspace && collaborationSocketStatus !== 'connected' && <div className={`project-sidebar-connection${['blocked', 'incompatible'].includes(collaborationSocketStatus) ? ' is-blocked' : ''}`} role="status" aria-live="polite">
+              {!['blocked', 'incompatible'].includes(collaborationSocketStatus) ? <><LoaderCircle size={13} className="is-spinning" aria-hidden="true" /><span>Connecting…</span></> : <span>{collaborationSocketStatus === 'incompatible' ? `Update ARC Studio to ${minimumRequiredClientVersion} or newer to connect.` : 'This client is not allowed by the workspace owner.'}</span>}
+            </div>}
             <p className="project-sidebar-description">Switch between bot projects or create a new one. {!localDesktopWorkspace && (maxProjects === null ? 'No project limit.' : `${projects.length} of ${maxProjects} projects.`)}</p>
             {projects.length > 10 && <label className="project-sidebar-search"><Search size={14} /><input type="search" value={projectSearch} onChange={(event) => setProjectSearch(event.target.value)} placeholder="Search projects" aria-label="Search projects" /></label>}
             <div className={`project-switcher-list ${projects.length ? '' : 'is-empty'}`}>
@@ -8948,7 +8954,7 @@ export function App() {
                   className="project-switcher-item"
                   title={projectUsers[project.id]?.length ? `Online: ${projectUsers[project.id].map((user) => user.username).join(', ')}` : projectLastSeen[project.id]?.username ? `Last here: ${projectLastSeen[project.id].username} · ${formatCompactLastSeen(projectLastSeen[project.id].updatedAt)}` : 'No recent activity'}
                   onClick={() => handleActivateProject(project.id)}
-                  disabled={projectBusy || project.id === activeProjectId}
+                  disabled={projectActionsDisabled || project.id === activeProjectId}
                   aria-current={project.id === activeProjectId ? 'page' : undefined}
                 >
                   <span className="project-switcher-copy"><strong>{project.name}</strong>{projectUsers[project.id]?.length > 0 && <small className="project-online-users">Online · {projectUsers[project.id].map((user) => user.username).join(', ')}</small>}{projectLastSeen[project.id]?.username && <small className="project-last-seen">Last here · {projectLastSeen[project.id].username} · {formatCompactLastSeen(projectLastSeen[project.id].updatedAt)}</small>}{!projectUsers[project.id]?.length && !projectLastSeen[project.id]?.username && <small className="project-last-seen">No recent activity</small>}</span>
@@ -8957,7 +8963,7 @@ export function App() {
                 <button type="button" className="project-more-button" aria-label={`More actions for ${project.name}`} title="Project options" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => {
                   const rect = event.currentTarget.getBoundingClientRect();
                   openProjectMenu(event, project, { x: rect.right, y: rect.bottom });
-                }}><MoreHorizontal size={15} /></button>
+                }} disabled={projectActionsDisabled}><MoreHorizontal size={15} /></button>
               </div>)}
               {!projects.length && <div className="project-switcher-empty">
                 <FolderTree size={19} aria-hidden="true" />
@@ -8974,30 +8980,30 @@ export function App() {
               <TextInput key={projectNameShakeKey} id="new-project-name" label="New project" placeholder="e.g. Moderation bot" value={newProjectName} maxLength={64} error={projectNameInvalid ? 'Enter a project name.' : undefined} wrapperClassName={projectNameInvalid ? 'project-name-invalid-shake' : ''} onChange={(event) => { setNewProjectName(event.target.value); setProjectNameInvalid(false); setProjectError(''); }} />
               {projectError && <p className="field-error">{projectError}</p>}
               <div className="project-create-actions">
-                <Button type="submit" icon={Plus} onContextMenu={(event) => openProjectMenu(event, null)} disabled={projectBusy || maxProjects !== null && projects.length >= maxProjects} loading={projectBusy}>Create project</Button>
-                <button className="project-import-button" type="button" disabled={projectBusy || maxProjects !== null && projects.length >= maxProjects} onClick={() => { document.getElementById('project-import-file')?.click(); }}><FileUp size={14} />Import project file</button>
+                <Button type="submit" icon={Plus} onContextMenu={(event) => openProjectMenu(event, null)} disabled={projectActionsDisabled || maxProjects !== null && projects.length >= maxProjects} loading={projectBusy}>Create project</Button>
+                <button className="project-import-button" type="button" disabled={projectActionsDisabled || maxProjects !== null && projects.length >= maxProjects} onClick={() => { document.getElementById('project-import-file')?.click(); }}><FileUp size={14} />Import project file</button>
               </div>
               <input id="project-import-file" type="file" accept=".arcproject,application/zip" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) { setProjectImportFile(file); setProjectImportTrusted(false); setProjectImportError(''); setProjectImportSharingWarning(null); setProjectImportSharingApproved(false); setProjectImportCompatibility(null); setProjectImportOldVersionApproved(false); } event.target.value = ''; }} />
               {!localDesktopWorkspace && currentUser?.role === 'admin' && <div className="project-limit-disclosure">
-                <button type="button" className="project-limit-toggle" aria-expanded={projectLimitExpanded} aria-controls="project-limit-panel" onClick={() => setProjectLimitExpanded((expanded) => !expanded)}><ChevronDown size={12} aria-hidden="true" />{projectLimitExpanded ? 'Show less' : 'Show more'}</button>
+                <button type="button" className="project-limit-toggle" aria-expanded={projectLimitExpanded} aria-controls="project-limit-panel" onClick={() => setProjectLimitExpanded((expanded) => !expanded)} disabled={projectActionsDisabled}><ChevronDown size={12} aria-hidden="true" />{projectLimitExpanded ? 'Show less' : 'Show more'}</button>
                 <div id="project-limit-panel" className={`project-limit-panel${projectLimitExpanded ? ' is-expanded' : ''}`} aria-hidden={!projectLimitExpanded} inert={!projectLimitExpanded}>
                   <div className="project-limit-panel-inner">
-                    <label className="project-limit-control"><span>Project limit</span><div><input aria-label="Maximum projects" type="number" min="1" step="1" value={maxProjects ?? ''} placeholder="Unlimited" onChange={(event) => { const next = event.target.value; if (next === '') setMaxProjects(null); else if (/^\d+$/.test(next)) setMaxProjects(Number(next)); }} onBlur={(event) => handleSetProjectLimit(event.target.value === '' ? 'unlimited' : Number(event.target.value))} /><button type="button" onClick={() => handleSetProjectLimit('unlimited')}>Unlimited</button></div></label>
+                    <label className="project-limit-control"><span>Project limit</span><div><input aria-label="Maximum projects" type="number" min="1" step="1" value={maxProjects ?? ''} placeholder="Unlimited" disabled={projectActionsDisabled} onChange={(event) => { const next = event.target.value; if (next === '') setMaxProjects(null); else if (/^\d+$/.test(next)) setMaxProjects(Number(next)); }} onBlur={(event) => handleSetProjectLimit(event.target.value === '' ? 'unlimited' : Number(event.target.value))} /><button type="button" onClick={() => handleSetProjectLimit('unlimited')} disabled={projectActionsDisabled}>Unlimited</button></div></label>
                   </div>
                 </div>
               </div>}
             </form>
           </aside>}
           {projectMenu && <div className="project-context-menu" role="menu" style={{ left: projectMenu.x, top: projectMenu.y }} onPointerDown={(event) => event.stopPropagation()}>
-            {projectMenu.kind === 'create' ? <button type="button" role="menuitem" className="project-context-export" disabled={projectBusy || maxProjects !== null && projects.length >= maxProjects} onClick={() => { setProjectMenu(null); setNewProjectTemplate('ticket'); setNewProjectName('Ticket Bot'); setProjectNameManuallyEdited(false); setProjectError(''); setProjectTemplateDialog(true); }}><FileCode2 size={14} />Create from template</button> : <>
-            <button type="button" role="menuitem" className="project-context-export" disabled={projectBusy} onClick={() => { const project = projectMenu.project; setProjectMenu(null); handleExportProject(project); }}><Download size={14} />Export project</button>
-            <button type="button" role="menuitem" className="project-context-export" disabled={exportInProgress} onClick={() => {
+            {projectMenu.kind === 'create' ? <button type="button" role="menuitem" className="project-context-export" disabled={projectActionsDisabled || maxProjects !== null && projects.length >= maxProjects} onClick={() => { setProjectMenu(null); setNewProjectTemplate('ticket'); setNewProjectName('Ticket Bot'); setProjectNameManuallyEdited(false); setProjectError(''); setProjectTemplateDialog(true); }}><FileCode2 size={14} />Create from template</button> : <>
+            <button type="button" role="menuitem" className="project-context-export" disabled={projectActionsDisabled} onClick={() => { const project = projectMenu.project; setProjectMenu(null); handleExportProject(project); }}><Download size={14} />Export project</button>
+            <button type="button" role="menuitem" className="project-context-export" disabled={exportInProgress || projectActionsDisabled} onClick={() => {
               const projectId = projectMenu.project.id;
               setProjectMenu(null);
               handleExportBot(projectId);
             }}><Download size={14} />Export bot</button>
-            {desktopMode && localDesktopWorkspace && <button type="button" role="menuitem" className="project-context-export" disabled={projectBusy} onClick={() => { const project = projectMenu.project; setProjectMenu(null); void handleOpenProjectInNewWindow(project); }}><AppWindow size={14} />Open in new window</button>}
-            <button type="button" role="menuitem" className="project-context-delete" disabled={projects.length <= 1 || projectBusy} onClick={() => {
+            {desktopMode && localDesktopWorkspace && <button type="button" role="menuitem" className="project-context-export" disabled={projectActionsDisabled} onClick={() => { const project = projectMenu.project; setProjectMenu(null); void handleOpenProjectInNewWindow(project); }}><AppWindow size={14} />Open in new window</button>}
+            <button type="button" role="menuitem" className="project-context-delete" disabled={projects.length <= 1 || projectActionsDisabled} onClick={() => {
               setProjectDelete(projectMenu.project);
               setProjectDeletePromptError('');
               setProjectDeleteError('');
@@ -9242,7 +9248,7 @@ export function App() {
         title="Delete project?"
         subtitle="This permanently removes the project and its saved data."
         icon={Trash2}
-        footer={<><Button variant="secondary" disabled={projectBusy} onClick={() => { setProjectDelete(null); setProjectDeleteName(''); setProjectDeleteError(''); setProjectDeletePromptError(''); }}>Cancel</Button><Button variant="danger" loading={projectBusy} disabled={projectBusy || projectDeleteName.trim() !== projectDelete?.name} onClick={handleDeleteProject}>Delete project</Button></>}
+        footer={<><Button variant="secondary" disabled={projectBusy} onClick={() => { setProjectDelete(null); setProjectDeleteName(''); setProjectDeleteError(''); setProjectDeletePromptError(''); }}>Cancel</Button><Button variant="danger" loading={projectBusy} disabled={projectActionsDisabled || projectDeleteName.trim() !== projectDelete?.name} onClick={handleDeleteProject}>Delete project</Button></>}
       >
         <p className="project-delete-copy">Type <strong>{projectDelete?.name}</strong> to confirm.</p>
         <TextInput inputRef={projectDeleteInputRef} label="Project name" placeholder={projectDelete?.name || ''} value={projectDeleteName} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} autoFocus error={projectDeleteError} wrapperClassName={projectDeleteFieldShake ? 'field-shake project-delete-entry-flash' : ''} onChange={(event) => { setProjectDeleteName(event.target.value); setProjectDeleteError(''); setProjectDeletePromptError(''); }} />
@@ -9254,7 +9260,7 @@ export function App() {
         title="Import project file?"
         subtitle={projectImportFile?.name || ''}
         icon={ShieldCheck}
-        footer={<><Button variant="secondary" disabled={projectBusy} onClick={cancelProjectImport}>Cancel</Button><Button icon={FileUp} loading={projectBusy} disabled={projectImportAnalysisStatus !== 'ready' || !projectImportTrusted || projectBusy || projectImportSharingWarning && !projectImportSharingApproved || projectImportPlugins.length > 0 && !projectImportPluginsApproved || !projectImportCompatibility && projectImportEncrypted && projectImportPassword.length < 12 || projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' || projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && !projectImportOldVersionApproved} onClick={handleImportProject}>{projectImportAnalysisStatus === 'checking' ? 'Checking file…' : projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' ? 'Newer ARC Studio required' : projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' ? 'Import older project' : projectImportPlugins.length > 0 && projectImportPluginsApproved ? 'Import with plugins' : projectImportPlugins.length > 0 ? 'Review plugin requirements' : projectImportSharingWarning ? 'Import project' : projectImportTrusted ? 'Trust and import' : 'Review and trust'}</Button></>}
+        footer={<><Button variant="secondary" disabled={projectBusy} onClick={cancelProjectImport}>Cancel</Button><Button icon={FileUp} loading={projectBusy} disabled={!projectWorkspaceConnected || projectImportAnalysisStatus !== 'ready' || !projectImportTrusted || projectBusy || projectImportSharingWarning && !projectImportSharingApproved || projectImportPlugins.length > 0 && !projectImportPluginsApproved || !projectImportCompatibility && projectImportEncrypted && projectImportPassword.length < 12 || projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' || projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && !projectImportOldVersionApproved} onClick={handleImportProject}>{projectImportAnalysisStatus === 'checking' ? 'Checking file…' : projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' ? 'Newer ARC Studio required' : projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' ? 'Import older project' : projectImportPlugins.length > 0 && projectImportPluginsApproved ? 'Import with plugins' : projectImportPlugins.length > 0 ? 'Review plugin requirements' : projectImportSharingWarning ? 'Import project' : projectImportTrusted ? 'Trust and import' : 'Review and trust'}</Button></>}
       >
         <div className="project-import-warning">
           <strong>Only import a project from someone you trust.</strong>
@@ -9300,7 +9306,7 @@ export function App() {
           {projectImportError && <p className="field-error" role="alert">{projectImportError}</p>}
         </div>
       </Modal>
-      <Modal isOpen={projectTemplateDialog} onClose={() => { if (!projectBusy) { setProjectTemplateDialog(false); setProjectError(''); } }} title="Create from template" subtitle="Pick a starter project and give it a name." footer={<><Button variant="secondary" disabled={projectBusy} onClick={() => setProjectTemplateDialog(false)}>Cancel</Button><Button icon={Plus} loading={projectBusy} disabled={!newProjectName.trim() || projectBusy} onClick={handleCreateProjectFromTemplate}>Create project</Button></>}>
+      <Modal isOpen={projectTemplateDialog} onClose={() => { if (!projectBusy) { setProjectTemplateDialog(false); setProjectError(''); } }} title="Create from template" subtitle="Pick a starter project and give it a name." footer={<><Button variant="secondary" disabled={projectBusy} onClick={() => setProjectTemplateDialog(false)}>Cancel</Button><Button icon={Plus} loading={projectBusy} disabled={!newProjectName.trim() || projectActionsDisabled} onClick={handleCreateProjectFromTemplate}>Create project</Button></>}>
         <div className="project-template-dialog-form">
           <TextInput label="Project name" placeholder="e.g. Community bot" value={newProjectName} maxLength={64} autoFocus onChange={(event) => { setNewProjectName(event.target.value); setProjectNameManuallyEdited(true); setProjectNameInvalid(false); setProjectError(''); }} />
           <span className="field-label">Choose a starting point</span>
