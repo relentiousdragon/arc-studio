@@ -1,5 +1,5 @@
 export default {
-  "description": "Tests, extracts, or replaces text with a JavaScript regular expression. Inputs are bounded and risky regex structures are rejected.",
+  "description": "Tests, extracts, or replaces text with native JavaScript regular expressions. Each match runs in an isolated process with a time limit.",
   "type": "data_regex",
   "category": "Values & Data",
   "label": "Regular Expression",
@@ -24,21 +24,21 @@ export default {
       "label": "Pattern",
       "type": "string",
       "defaultValue": "",
-      description: "JavaScript regular expression pattern."
+      description: "Native JavaScript regular expression pattern, including lookarounds and backreferences."
     },
     {
       "id": "flags",
       "label": "Flags",
       "type": "string",
       "defaultValue": "",
-      description: "Regular expression flags. Separate flags with commas or spaces, such as g, i."
+      description: "JavaScript regular expression flags. Separate flags with commas or spaces, such as g, i, and s."
     },
     {
       "id": "replacement",
       "label": "Replacement",
       "type": "string",
       "defaultValue": "",
-      description: "Text placed in place of each match, limited to 2,000 characters."
+      description: "Text placed in place of each match, limited to 8,192 characters."
     }
   ],
   "outputs": [
@@ -94,7 +94,7 @@ export default {
       "id": "error",
       "label": "Error",
       "type": "string",
-      description: "Error details when the pattern is invalid or rejected."
+      description: "Error details when the pattern is invalid or a match reaches its time limit."
     }
   ]
 };
