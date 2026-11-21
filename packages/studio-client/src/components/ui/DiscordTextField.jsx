@@ -268,6 +268,15 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
           return;
         }
 
+        const functionPathMatch = /([A-Za-z_$][A-Za-z0-9_$]*\([^()]*\)(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*)\.([A-Za-z_$][A-Za-z0-9_$]*)?$/.exec(expression);
+        if (functionPathMatch) {
+          const query = `${functionPathMatch[1]}.${functionPathMatch[2] || ''}`;
+          const closingBrace = event.target.value.indexOf('}}', caret);
+          const end = closingBrace >= 0 && closingBrace === caret ? closingBrace + 2 : caret;
+          setMatch({ kind: 'template', start: caret - query.length, end, query, filterStage: false, pathStage: true, isLone: false });
+          return;
+        }
+
         const tokenMatch = /([A-Za-z_$][A-Za-z0-9_$.]*)$/.exec(expression);
         const query = tokenMatch ? tokenMatch[1] : '';
         const pathStage = query.includes('.');
