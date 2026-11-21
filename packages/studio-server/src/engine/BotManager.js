@@ -883,6 +883,24 @@ export class BotManager {
     const permissions = new Set();
     const enabledGraphs = graphs.filter((graph) => graph?.enabled !== false);
     for (const graph of enabledGraphs) for (const node of graph.nodes || []) {
+      const definition = NodeDefinitions[node.type];
+      const dynamicPermissions = node.type === 'action_send_message'
+        ? new Set(['Send Messages in Threads'])
+        : node.type === 'action_create_thread'
+          ? new Set(['Create Public Threads', 'Create Private Threads'])
+          : node.type === 'action_moderate_member'
+            ? new Set(['Moderate Members', 'Kick Members', 'Ban Members'])
+            : new Set();
+      for (const permission of definition?.inferredPermissions || []) {
+        if (!dynamicPermissions.has(permission)) permissions.add(permission);
+      }
+      for (const rule of definition?.inferredPermissionRules || []) {
+        const inputIsWired = graph.connections?.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === rule.input);
+        const selected = node.data?.[rule.input] ?? definition.defaultData?.[rule.input];
+        if (inputIsWired || rule.values?.includes(String(selected ?? ''))) {
+          for (const permission of rule.permissions || []) permissions.add(permission);
+        }
+      }
       if (['action_send_message', 'action_edit_message'].includes(node.type)) {
         permissions.add('View Channels');
         permissions.add('Send Messages');
@@ -903,6 +921,17 @@ export class BotManager {
       }
       if (node.type === 'action_start_thread_from_message') {
         for (const permission of ['View Channels', 'Send Messages', 'Create Public Threads']) permissions.add(permission);
+      }
+      if (node.type === 'action_moderate_member') {
+        const operationIsWired = graph.connections?.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'operation');
+        const operation = String(node.data?.operation || definition?.inputs?.find((pin) => pin.id === 'operation')?.defaultValue || 'timeout').toLowerCase();
+        const operationPermissions = {
+          timeout: ['Moderate Members'],
+          kick: ['Kick Members'],
+          ban: ['Ban Members'],
+          unban: ['Ban Members']
+        };
+        for (const permission of operationIsWired ? ['Moderate Members', 'Kick Members', 'Ban Members'] : operationPermissions[operation] || []) permissions.add(permission);
       }
     }
     if (enabledGraphs.some((graph) => (graph.nodes || []).some((node) => ['action_send_message', 'action_edit_message'].includes(node.type) && graph.connections?.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'embed')))) permissions.add('Embed Links');
