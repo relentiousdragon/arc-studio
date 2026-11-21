@@ -34,8 +34,10 @@ export function isTemplateEnvironmentNameAllowed(name = '') {
   if (RESERVED_TEMPLATE_ENVIRONMENT_NAMES.has(upper)) return false;
   return true;
 }
+export const TEMPLATE_SCALAR_VALUE = Symbol.for('arc.template.scalarValue');
 function templateText(value) {
   if (value == null) return '';
+  if (typeof value === 'object' && Object.hasOwn(value, TEMPLATE_SCALAR_VALUE)) return templateText(value[TEMPLATE_SCALAR_VALUE]);
   if (typeof value === 'object') { try { return JSON.stringify(value); } catch { return ''; } }
   return String(value);
 }
