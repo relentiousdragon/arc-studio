@@ -10,9 +10,11 @@ export function TemplateVariableHints({ value, graphVariables = [], inputSlots =
     for (const block of blocks) {
       if (block.unclosed) continue;
       const expression = block.content.trim();
-      const name = getTemplateReferences(expression)[0];
-      if (name && !name.toLowerCase().startsWith('e_') && !/^arg\d+$/i.test(name) && !map.has(block.raw)) {
-        map.set(block.raw, { name, token: block.raw, expression, pipeline: expression.includes('|') ? ` | ${expression.split('|').slice(1).join('|').trim()}` : '' });
+      for (const name of getTemplateReferences(expression)) {
+        const key = `${block.raw}:${name.toLowerCase()}`;
+        if (name && !name.toLowerCase().startsWith('e_') && !/^arg\d+$/i.test(name) && !map.has(key)) {
+          map.set(key, { name, token: key, expression, pipeline: expression.includes('|') ? ` | ${expression.split('|').slice(1).join('|').trim()}` : '' });
+        }
       }
     }
     return Array.from(map.values());
