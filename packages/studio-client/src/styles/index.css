@@ -10466,14 +10466,8 @@ body:has(.control-dock.is-resizing) .canvas-collaborator-navigation-layer {
   justify-content: center;
   padding: max(22px, env(safe-area-inset-top)) max(22px, env(safe-area-inset-right)) max(22px, env(safe-area-inset-bottom)) max(22px, env(safe-area-inset-left));
   background: rgba(8, 10, 14, .56);
-  backdrop-filter: blur(8px);
-  animation: scrimIn .16s ease both;
-}
-
-.dialog-scrim:has(.modal-editor-settings),
-.dialog-scrim:has(.modal-team-access),
-.dialog-scrim:has(.modal-bot-settings) {
   backdrop-filter: none;
+  animation: scrimIn .16s ease both;
 }
 
 @keyframes scrimIn {
@@ -24908,7 +24902,7 @@ body.is-resizing-dock .popup-modal-studio {
 .project-media-viewer .discord-gallery-lightbox-caption small { display: block; margin-top: 3px; }
 .attachment-url-browse { display: inline-flex; align-items: center; gap: 4px; margin-top: 4px; padding: 3px 5px; border: 1px solid transparent; border-radius: 5px; color: var(--muted); background: transparent; font: inherit; font-size: 9px; cursor: pointer; }
 .attachment-url-browse:hover { border-color: var(--line); color: var(--accent); background: var(--panel-raised); }
-.project-asset-picker-backdrop { position: fixed; inset: 0; z-index: 10030; display: grid; place-items: center; padding: 24px; background: rgba(0, 0, 0, .64); backdrop-filter: blur(8px); }
+.project-asset-picker-backdrop { position: fixed; inset: 0; z-index: 10030; display: grid; place-items: center; padding: 24px; background: rgba(0, 0, 0, .64); }
 .project-asset-picker { position: relative; display: flex; width: min(720px, 94vw); max-height: min(680px, 86vh); flex-direction: column; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 12px; color: var(--text); background: var(--panel); box-shadow: var(--shadow); animation: modal-enter 160ms var(--ease) both; }
 .project-asset-picker.is-file-drag-over { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft), var(--shadow); }
 .project-asset-picker > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--line-soft); }
