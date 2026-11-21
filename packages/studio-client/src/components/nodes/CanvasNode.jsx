@@ -21,6 +21,7 @@ import { isReservedTemplateRoot, TEMPLATE_FUNCTION_NAMES, TEMPLATE_SYSTEM_PATHS,
 import { attachTemplateAutocomplete, BUILTIN_TEMPLATE_FUNCTIONS } from '../../core/templateFieldAutocomplete.js';
 import { MODIFY_COMPONENT_STYLE_OPTIONS, DISCORD_OBJECT_PROPERTIES } from 'chezcord';
 import { getVisibleNodeSockets } from '../../core/nodeSocketVisibility.js';
+import { regexRiskWarning, validateRegexConfiguration } from '../../../../studio-server/src/engine/nodes/runtime/RegexConfiguration.js';
 import { getConnectedTemplateInputPaths, resolveInferredObjectProperties } from '../../core/objectPropertySuggestions.js';
 //
 const slashCommandNamePattern = /^[-_'\p{L}\p{N}\p{sc=Deva}\p{sc=Thai}]{1,32}$/u;
@@ -1155,17 +1156,44 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       returns: values.map(({ returnId, name, valueType, defaultValue }) => ({ returnId, name, valueType, defaultValue })),
       valueType: values[0]?.valueType || 'number'
     });
-    const updateReturnValue = (index, patch) => writeReturnValues(returnValues.map((value, valueIndex) => valueIndex === index ? { ...value, ...patch } : value));
+    const updateReturnValue = (index, patch) => {
+      if (typeof patch.name === 'string') {
+        const name = patch.name.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 32);
+        if (returnValues.some((value, valueIndex) => valueIndex !== index && value.name.toLowerCase() === name.toLowerCase())) return;
+        patch = { ...patch, name };
+      }
+      writeReturnValues(returnValues.map((value, valueIndex) => valueIndex === index ? { ...value, ...patch } : value));
+    };
     return <div className="node-config node-config-stack function-node-config">
       {returnValues.map((value, index) => <section className="function-input-argument" key={value.returnId}>
         <div className="function-input-name-row">
-          <CharacterLimit value={value.name || ''} maxLength={32}><input value={value.name || ''} maxLength={32} onChange={(event) => updateReturnValue(index, { name: event.target.value })} onPointerDown={(event) => event.stopPropagation()} placeholder={`Output ${index + 1}`} aria-label={`Return output ${index + 1} name`} /></CharacterLimit>
+          <CharacterLimit value={value.name || ''} maxLength={32}><input value={value.name || ''} maxLength={32} onChange={(event) => updateReturnValue(index, { name: event.target.value })} onPointerDown={(event) => event.stopPropagation()} placeholder={`Output ${index + 1}`} aria-label={`Return output ${index + 1} name`} className={!/^(?=.{1,32}$)[A-Za-z0-9]+(?:_+[A-Za-z0-9]+|-[A-Za-z0-9]+)*$/.test(value.name || '') || ['func.success', 'func.error'].includes(String(value.name || '').toLowerCase()) ? 'is-invalid' : ''} /></CharacterLimit>
           <button type="button" className="icon-button compact is-danger" onPointerDown={(event) => event.stopPropagation()} onClick={() => writeReturnValues(returnValues.filter((_item, valueIndex) => valueIndex !== index))} disabled={returnValues.length <= 1 || connectedInputIds.has(functionReturnInputPinId(value))} aria-label={`Remove return output ${index + 1}`} title={connectedInputIds.has(functionReturnInputPinId(value)) ? 'Disconnect this output first' : 'Remove return output'}><Trash2 size={12} /></button>
         </div>
         {!value.name.trim() && <span className="node-config-warning" role="status"><AlertTriangle size={11} /><span>Name required</span></span>}
+        {value.name.trim() && ['func.success', 'func.error'].includes(value.name.toLowerCase()) && <span className="node-config-warning" role="status"><AlertTriangle size={11} /><span>This name is reserved for RETURN.</span></span>}
+        {value.name.trim() && !['func.success', 'func.error'].includes(value.name.toLowerCase()) && !/^(?=.{1,32}$)[A-Za-z0-9]+(?:_+[A-Za-z0-9]+|-[A-Za-z0-9]+)*$/.test(value.name) && <span className="node-config-warning" role="status"><AlertTriangle size={11} /><span>Use up to 32 letters, numbers, underscores, or hyphens without spaces.</span></span>}
+        {returnValues.some((other, otherIndex) => otherIndex !== index && other.name.trim().toLowerCase() === value.name.trim().toLowerCase()) && <span className="node-config-warning" role="status"><AlertTriangle size={11} /><span>Output names must be unique.</span></span>}
         <AnimatedDropdown value={value.valueType} options={functionArgumentTypes} onChange={(nextType) => updateReturnValue(index, { valueType: nextType, defaultValue: defaultValueForType(functionInputPinType({ valueType: nextType })) })} onPointerDown={(event) => event.stopPropagation()} ariaLabel={`Type for ${value.name || `Output ${index + 1}`}`} className="node-select" />
+        {!connectedInputIds.has(functionReturnInputPinId(value)) && (value.valueType === 'boolean'
+          ? <FallbackCheckbox label={`Fallback · ${value.name || `Output ${index + 1}`}`} checked={Boolean(value.defaultValue)} onChange={(defaultValue) => updateReturnValue(index, { defaultValue })} />
+          : value.valueType === 'object'
+            ? <FallbackField label={`Fallback · ${value.name || `Output ${index + 1}`}`}><VariableJSONFallback type="object" value={value.defaultValue} onChange={(defaultValue) => updateReturnValue(index, { defaultValue })} /></FallbackField>
+            : <FallbackField label={`Fallback · ${value.name || `Output ${index + 1}`}`}>{value.valueType === 'number'
+              ? <NodeNumberInput step="any" value={value.defaultValue ?? 0} onChange={(event) => updateReturnValue(index, { defaultValue: numericNodeInputValue(event.target.value, { fallback: 0 }) })} onPointerDown={(event) => event.stopPropagation()} aria-label={`Fallback for ${value.name || 'output'}`} />
+              : <input value={value.defaultValue ?? ''} onChange={(event) => updateReturnValue(index, { defaultValue: event.target.value })} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label={`Fallback for ${value.name || 'output'}`} />}</FallbackField>)}
       </section>)}
-      <button type="button" className="node-config-action" onPointerDown={(event) => event.stopPropagation()} onClick={() => writeReturnValues([...returnValues, { returnId: `output_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, name: `Output ${returnValues.length + 1}`, valueType: 'string', defaultValue: '' }])} disabled={returnValues.length >= 50}><Plus size={12} /> Add output</button>
+      <button type="button" className="node-config-action" onPointerDown={(event) => event.stopPropagation()} onClick={() => {
+        let suffix = returnValues.length + 1;
+        while (returnValues.some((value) => value.name.toLowerCase() === `output_${suffix}`)) suffix += 1;
+        writeReturnValues([...returnValues, { returnId: `output_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, name: `Output_${suffix}`, valueType: 'string', defaultValue: '' }]);
+      }} disabled={returnValues.length >= 50}><Plus size={12} /> Add output</button>
+    </div>;
+  }
+  if (node.type === 'function_return_exec') {
+    return <div className="node-config node-config-stack function-node-config">
+      {!isConnected('func.success') && <FallbackCheckbox label="func.success" checked={node.data?.['func.success'] ?? true} onChange={(value) => update('func.success', value)} />}
+      {!isConnected('func.error') && <FallbackField label="func.error"><input value={node.data?.['func.error'] ?? ''} onChange={(event) => update('func.error', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Optional error message" aria-label="func.error fallback" /></FallbackField>}
     </div>;
   }
   if (node.type === 'function_call') {
@@ -1175,6 +1203,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     const optionalCount = parameters.length - requiredCount;
     const returnValues = getFunctionGraphReturnValues(target);
     const returnCount = (target?.nodes || []).filter((item) => item.type === 'function_return').length;
+    const hasControlReturn = (target?.nodes || []).some((item) => item.type === 'function_return_exec');
     return <div className="node-config node-config-stack function-node-config">
       <AnimatedDropdown value={node.data?.graphId || ''} options={callableGraphs.map((graph) => ({ value: graph.id, label: graph.name || 'Untitled graph' }))} onChange={(value) => {
         const selectedGraph = callableGraphs.find((graph) => graph.id === value);
@@ -1183,6 +1212,8 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       {target && <span className="node-config-hint">{parameters.length ? `${requiredCount} required · ${optionalCount} optional input${parameters.length === 1 ? '' : 's'}` : 'No inputs'}</span>}
       {target && returnValues.length
         ? <span className="node-config-hint">Returns {returnValues.map((value) => value.name || 'Output').join(', ')}</span>
+        : target && hasControlReturn
+          ? <span className="node-config-hint">Returns func.success and func.error</span>
         : target && returnCount > 1
           ? <span className="node-config-warning" role="status"><AlertTriangle size={12} /> Keep one Return Value node</span>
           : target && <span className="node-config-warning" role="status"><AlertTriangle size={12} /> This graph has no Return Value</span>}
@@ -1245,13 +1276,19 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
   }
   if (node.type === 'data_regex') {
     const mode = ['test', 'match', 'replace'].includes(node.data?.mode) ? node.data.mode : 'test';
+    const patternIssue = !isConnected('pattern') ? validateRegexConfiguration(node.data?.pattern, '') : '';
+    const flagsIssue = !isConnected('flags') ? validateRegexConfiguration('', node.data?.flags) : '';
+    const patternRisk = !patternIssue && !isConnected('pattern') ? regexRiskWarning(node.data?.pattern) : '';
     return <div className="node-config node-config-stack">
       <FallbackField label="Operation"><AnimatedDropdown value={mode} options={[{ value: 'test', label: 'Test for a match' }, { value: 'match', label: 'Extract a match' }, { value: 'replace', label: 'Replace matches' }]} onChange={(value) => update('mode', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Regex operation" className="node-select" /></FallbackField>
       {!isConnected('text') && <FallbackField label="Text"><textarea rows={2} maxLength={8192} value={node.data?.text ?? ''} onChange={(event) => update('text', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Regex input text" /></FallbackField>}
-      {!isConnected('pattern') && <FallbackField label="Pattern"><input maxLength={256} value={node.data?.pattern ?? ''} onChange={(event) => update('pattern', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="e.g. (\\d+)" aria-label="Regular expression pattern" /></FallbackField>}
-      {!isConnected('flags') && <FallbackField label="Flags"><input maxLength={32} value={node.data?.flags ?? ''} onChange={(event) => update('flags', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="g, i, m, s, u, y" aria-label="Regular expression flags" /></FallbackField>}
+      {!isConnected('pattern') && <FallbackField label="Pattern"><input maxLength={4096} value={node.data?.pattern ?? ''} onChange={(event) => update('pattern', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="e.g. (?<=\\$)\\d+(?:\\.\\d{2})?" aria-label="Regular expression pattern" /></FallbackField>}
+      {!isConnected('flags') && <FallbackField label="Flags"><input maxLength={48} value={node.data?.flags ?? ''} onChange={(event) => update('flags', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="d, g, i, m, s, u, v, y" aria-label="Regular expression flags" /></FallbackField>}
+      {patternIssue && <span className="node-config-warning" role="status"><AlertTriangle size={12} /> {patternIssue}</span>}
+      {!patternIssue && flagsIssue && <span className="node-config-warning" role="status"><AlertTriangle size={12} /> {flagsIssue}</span>}
+      {!patternIssue && !flagsIssue && patternRisk && <span className="node-config-warning" role="status"><AlertTriangle size={12} /> {patternRisk}</span>}
       {mode === 'replace' && templateInput('replacement', 'Replacement', { multiline: true, maxLength: 2000, placeholder: 'Replacement text' })}
-      <span className="node-config-hint">Separate flags with commas or spaces. Limits: 256-character pattern, 8,192-character input. Use Valid and Error to handle invalid patterns safely.</span>
+      <span className="node-config-hint">Native JavaScript regex syntax and flags. Patterns have a 4,096-character limit and run with a 250 ms time limit. Use Valid and Error to handle invalid or timed out patterns.</span>
     </div>;
   }
   if (node.type === 'data_check_value') {
@@ -1819,10 +1856,13 @@ function FallbackField({ label, children }) {
       || children.type === DiscordTextField)
     && !['checkbox', 'color', 'file', 'hidden', 'radio', 'range', 'reset', 'submit', 'button'].includes(children.props.type);
   if (!isTextField) return <label className="node-config-fallback"><span>{label}</span>{children}</label>;
+  const multilineField = children.type === 'input' && (!children.props.type || children.props.type === 'text')
+    ? React.createElement('textarea', { ...children.props, rows: 1, 'data-fallback-multiline': 'true' })
+    : children;
   const longTextEditor = typeof children.props.onOpenTextEditor === 'function'
     ? { label, maxLength: children.props.maxLength, rows: 14 }
     : null;
-  return <label className="node-config-fallback"><span>{label}</span><DraftedTextField field={children} longTextEditor={longTextEditor} /></label>;
+  return <label className="node-config-fallback"><span>{label}</span><DraftedTextField field={multilineField} longTextEditor={longTextEditor} /></label>;
 }
 
 function DraftedTextField({ field, showCharacterLimit = false, longTextEditor = null }) {
@@ -1849,6 +1889,11 @@ function DraftedTextField({ field, showCharacterLimit = false, longTextEditor = 
 
   const onChange = (event) => {
     const value = event.target.value;
+    if (event.target.matches?.('[data-fallback-multiline="true"]')) {
+      event.target.style.height = 'auto';
+      event.target.style.height = `${Math.min(event.target.scrollHeight, 80)}px`;
+      event.target.style.overflowY = event.target.scrollHeight > 80 ? 'auto' : 'hidden';
+    }
     draftRef.current = value;
     setDraft(value);
     if (!composingRef.current) writerRef.current.schedule(value);
