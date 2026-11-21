@@ -31,7 +31,7 @@ export function isTemplateEnvironmentNameAllowed(name = '') {
   const normalized = String(name || '').trim();
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(normalized)) return false;
   const upper = normalized.toUpperCase();
-  if (RESERVED_TEMPLATE_ENVIRONMENT_NAMES.has(upper)) return false;
+  if (upper.startsWith('ARC_') || RESERVED_TEMPLATE_ENVIRONMENT_NAMES.has(upper)) return false;
   return true;
 }
 export const TEMPLATE_SCALAR_VALUE = Symbol.for('arc.template.scalarValue');
@@ -67,7 +67,17 @@ function tokenize(source) {
     if (number) { tokens.push({ type: 'literal', value: Number(number[0]) }); i += number[0].length; continue; }
     if (source[i] === '"' || source[i] === "'") {
       const quote = source[i++]; let value = ''; let closed = false;
-      while (i < source.length) { const c = source[i++]; if (c === quote) { closed = true; break; } if (c === '\\' && i < source.length) { const next = source[i++]; value += next === 'n' ? '\n' : next === 't' ? '\t' : next; } else value += c; }
+      while (i < source.length) {
+        const c = source[i++];
+        if (c === quote) { closed = true; break; }
+        if (c === '\\' && source[i] === '{' && source[i + 1] === '{') {
+          value += '\\{{';
+          i += 2;
+        } else if (c === '\\' && i < source.length) {
+          const next = source[i++];
+          value += next === 'n' ? '\n' : next === 't' ? '\t' : next;
+        } else value += c;
+      }
       if (!closed) throw new Error('Unclosed string.'); tokens.push({ type: 'literal', value }); continue;
     }
     const identifier = /^[A-Za-z_$][A-Za-z0-9_$-]*/.exec(rest);
@@ -179,7 +189,7 @@ export function validateTemplateFunctionName(value) {
 function safeResult(value) { return typeof value === 'number' && !Number.isFinite(value) ? 0 : value; }
 function evaluate(ast, resolveSlot, options = {}) {
   switch (ast.kind) {
-    case 'literal': return { found: true, value: ast.value };
+    case 'literal': return { found: true, value: ast.value, tainted: false };
     case 'path': {
       const runtimeSystemValue = options.systemTemplateValues?.[ast.root];
       let value = runtimeSystemValue && TEMPLATE_SYSTEM_VALUES[ast.root]
@@ -187,7 +197,7 @@ function evaluate(ast, resolveSlot, options = {}) {
         : runtimeSystemValue ?? (Object.hasOwn(TEMPLATE_SYSTEM_VALUES, ast.root)
           ? TEMPLATE_SYSTEM_VALUES[ast.root]
           : resolveSlot?.(ast.root, `{{${ast.root}}}`));
-      if (value === undefined) return { found: false, value };
+      if (value === undefined) return { found: false, value, tainted: !Object.hasOwn(TEMPLATE_SYSTEM_VALUES, ast.root) };
       for (const key of ast.keys) {
         if (['__proto__', 'prototype', 'constructor'].includes(String(key)) || value == null || !Object.hasOwn(Object(value), key)) {
           if (value != null && (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean')) {
@@ -199,48 +209,52 @@ function evaluate(ast, resolveSlot, options = {}) {
         }
         value = value[key];
       }
-      return { found: true, value };
+      return { found: true, value, tainted: !runtimeSystemValue && !Object.hasOwn(TEMPLATE_SYSTEM_VALUES, ast.root) };
     }
     case 'member': {
       const base = evaluate(ast.object, resolveSlot, options);
       const keyNode = typeof ast.key === 'object' && ast.key !== null && ast.key.kind ? evaluate(ast.key, resolveSlot, options) : { found: true, value: ast.key };
-      if (!base.found || !keyNode.found) return { found: false, value: undefined };
+      if (!base.found || !keyNode.found) return { found: false, value: undefined, tainted: Boolean(base.tainted || keyNode.tainted) };
       const key = keyNode.value;
       if (['__proto__', 'prototype', 'constructor'].includes(String(key)) || base.value == null || !Object.hasOwn(Object(base.value), key)) {
         if (base.value != null && (typeof base.value === 'string' || typeof base.value === 'number' || typeof base.value === 'boolean')) {
-          if (key === 'value') return { found: true, value: base.value };
-          if (key === 'name') return { found: true, value: String(base.value) };
-          if (key === 'id' && typeof base.value === 'string') return { found: true, value: base.value };
+          if (key === 'value') return { found: true, value: base.value, tainted: Boolean(base.tainted || keyNode.tainted) };
+          if (key === 'name') return { found: true, value: String(base.value), tainted: Boolean(base.tainted || keyNode.tainted) };
+          if (key === 'id' && typeof base.value === 'string') return { found: true, value: base.value, tainted: Boolean(base.tainted || keyNode.tainted) };
         }
-        return { found: false, value: undefined };
+        return { found: false, value: undefined, tainted: Boolean(base.tainted || keyNode.tainted) };
       }
-      return { found: true, value: base.value[key] };
+      return { found: true, value: base.value[key], tainted: Boolean(base.tainted || keyNode.tainted) };
     }
-    case 'unary': { const v = evaluate(ast.value, resolveSlot, options); return { found: v.found, value: ast.op === '!' ? !v.value : safeResult(ast.op === '-' ? -number(v.value) : number(v.value)) }; }
+    case 'unary': { const v = evaluate(ast.value, resolveSlot, options); return { found: v.found, value: ast.op === '!' ? !v.value : safeResult(ast.op === '-' ? -number(v.value) : number(v.value)), tainted: v.tainted }; }
     case 'conditional': { const test = evaluate(ast.test, resolveSlot, options); return evaluate(test.value ? ast.yes : ast.no, resolveSlot, options); }
     case 'call': {
-      if (ast.args.length > 50 || Object.hasOwn(TEMPLATE_SYSTEM_VALUES, ast.name)) return { found: false, value: undefined };
-      const args = ast.args.map((arg) => evaluate(arg, resolveSlot, options)); if (args.some((arg) => !arg.found)) return { found: false, value: undefined };
+      if (ast.args.length > 50 || Object.hasOwn(TEMPLATE_SYSTEM_VALUES, ast.name)) return { found: false, value: undefined, tainted: false };
+      const args = ast.args.map((arg) => evaluate(arg, resolveSlot, options)); if (args.some((arg) => !arg.found)) return { found: false, value: undefined, tainted: args.some((arg) => arg.tainted) };
       const values = args.map((arg) => arg.value);
       const fn = MATH[ast.name];
-      if (fn) return { found: true, value: safeResult(fn(...values)) };
+      if (fn) return { found: true, value: safeResult(fn(...values)), tainted: args.some((arg) => arg.tainted) };
       const result = options.resolveFunction?.(ast.name, values);
-      return result === undefined ? { found: false, value: undefined } : { found: true, value: safeResult(result) };
+      return result === undefined ? { found: false, value: undefined, tainted: args.some((arg) => arg.tainted) } : { found: true, value: safeResult(result), tainted: args.some((arg) => arg.tainted) };
     }
     case 'binary': {
       const a = evaluate(ast.left, resolveSlot, options); if (!a.found) return a;
-      if (ast.op === '&&' && !a.value) return { found: true, value: a.value };
-      if (ast.op === '||' && a.value) return { found: true, value: a.value };
-      const b = evaluate(ast.right, resolveSlot, options); if (!b.found) return b; const x = a.value, y = b.value;
+      if (ast.op === '&&' && !a.value) return { found: true, value: a.value, tainted: a.tainted };
+      if (ast.op === '||' && a.value) return { found: true, value: a.value, tainted: a.tainted };
+      const b = evaluate(ast.right, resolveSlot, options); if (!b.found) return { ...b, tainted: Boolean(a.tainted || b.tainted) }; const x = a.value, y = b.value;
       const result = ast.op === '+' ? (typeof x === 'string' || typeof y === 'string' ? templateText(x) + templateText(y) : number(x) + number(y))
         : ast.op === '-' ? number(x) - number(y) : ast.op === '*' ? number(x) * number(y) : ast.op === '/' ? number(y) === 0 ? 0 : number(x) / number(y)
           : ast.op === '%' ? number(y) === 0 ? 0 : number(x) % number(y) : ['^', '**'].includes(ast.op) ? number(x) ** number(y)
             : ast.op === '==' || ast.op === '===' ? x === y : ast.op === '!=' || ast.op === '!==' ? x !== y : ast.op === '>' ? x > y : ast.op === '>=' ? x >= y : ast.op === '<' ? x < y : ast.op === '<=' ? x <= y
               : ast.op === '&&' ? y : y;
-      return { found: true, value: safeResult(result) };
+      return { found: true, value: safeResult(result), tainted: Boolean(a.tainted || b.tainted) };
     }
     default: return { found: false, value: undefined };
   }
+}
+
+function escapeNestedTemplateTokens(value) {
+  return String(value).replace(/(?<!\\)\{\{/g, '\\{{');
 }
 
 function splitArguments(source) {
@@ -464,7 +478,7 @@ export function renderTextTemplate(template, resolveSlot, appEmojis = [], onUnde
           nextResult += block.raw;
           continue;
         }
-        nextResult += applyTemplateTransforms(externalValue, parts);
+        nextResult += escapeNestedTemplateTokens(applyTemplateTransforms(externalValue, parts));
         changed = true;
         continue;
       }
@@ -499,7 +513,7 @@ export function renderTextTemplate(template, resolveSlot, appEmojis = [], onUnde
       }
 
       const transformed = applyTemplateTransforms(evaluated.value, parts);
-      nextResult += transformed;
+      nextResult += evaluated.tainted ? escapeNestedTemplateTokens(transformed) : transformed;
       changed = true;
     }
     nextResult += result.slice(lastIndex);
