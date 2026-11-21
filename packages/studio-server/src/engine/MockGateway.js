@@ -195,6 +195,26 @@ export class MockGateway extends EventEmitter {
           ...record.payload
         };
       },
+      addMessageReaction: async (channelId, messageId, emoji) => {
+        outputSink.push({ type: 'ADD_MESSAGE_REACTION', channelId, messageId, emoji, timestamp: new Date().toISOString() });
+        return { success: true };
+      },
+      removeOwnMessageReaction: async (channelId, messageId, emoji) => {
+        outputSink.push({ type: 'REMOVE_OWN_MESSAGE_REACTION', channelId, messageId, emoji, timestamp: new Date().toISOString() });
+        return { success: true };
+      },
+      removeUserMessageReaction: async (channelId, messageId, emoji, userId, reason) => {
+        outputSink.push({ type: 'REMOVE_USER_MESSAGE_REACTION', channelId, messageId, emoji, userId, reason, timestamp: new Date().toISOString() });
+        return { success: true };
+      },
+      removeAllMessageReactionsForEmoji: async (channelId, messageId, emoji) => {
+        outputSink.push({ type: 'REMOVE_ALL_MESSAGE_REACTIONS_FOR_EMOJI', channelId, messageId, emoji, timestamp: new Date().toISOString() });
+        return { success: true };
+      },
+      removeAllMessageReactions: async (channelId, messageId) => {
+        outputSink.push({ type: 'REMOVE_ALL_MESSAGE_REACTIONS', channelId, messageId, timestamp: new Date().toISOString() });
+        return { success: true };
+      },
       createInteractionResponse: async (interactionId, interactionToken, responseData, { withResponse = false } = {}) => {
         const safeResponse = responseData && typeof responseData === 'object' ? structuredClone(responseData) : responseData;
         let responseFiles = safeResponse?.data?.files;
