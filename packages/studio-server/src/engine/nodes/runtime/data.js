@@ -4,6 +4,8 @@ import utc from 'dayjs/plugin/utc.js';
 import timezone from 'dayjs/plugin/timezone.js';
 import advancedFormat from 'dayjs/plugin/advancedFormat.js';
 import { PermissionFlagEntries, PermissionFlags } from 'chezcord/constants';
+import { validateRegexConfiguration } from './RegexConfiguration.js';
+import { executeRegexIsolated } from './RegexExecution.js';
 dayjs.extend(duration);
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -11,86 +13,6 @@ dayjs.extend(advancedFormat);
 
 const permissionAliases = Object.freeze(Object.fromEntries(PermissionFlagEntries.flatMap(({ name, legacyName }) => [[name, name], [legacyName, name]])));
 const legacyPermissionFlags = Object.freeze(Object.fromEntries(PermissionFlagEntries.map(({ legacyName, mask }) => [legacyName, mask])));
-
-function regexSafetyError(pattern) {
-  if (pattern.length > 256) return 'Regex pattern is limited to 256 characters.';
-  if (/\\(?:[1-9]|k<)/.test(pattern)) return 'Regex backreferences are disabled because they can cause very slow matches.';
-  if (/\(\?<([=!])/.test(pattern)) return 'Regex lookbehind is not supported.';
-  const stack = [{ hasQuantifier: false, hasUnboundedQuantifier: false, hasAlternation: false }];
-  let inClass = false;
-  let unboundedCount = 0;
-  let quantifierCount = 0;
-  for (let index = 0; index < pattern.length; index += 1) {
-    const char = pattern[index];
-    if (char === '\\') { index += 1; continue; }
-    if (inClass) { if (char === ']') inClass = false; continue; }
-    if (char === '[') { inClass = true; continue; }
-    if (char === '(') {
-      let headerEnd = index;
-      if (pattern[index + 1] === '?') {
-        if (pattern[index + 2] === ':' || pattern[index + 2] === '=' || pattern[index + 2] === '!') headerEnd = index + 2;
-        else if (pattern[index + 2] === '<') headerEnd = pattern.indexOf('>', index + 3);
-      }
-      stack.push({ hasQuantifier: false, hasUnboundedQuantifier: false, hasAlternation: false });
-      index = Math.max(index, headerEnd);
-      continue;
-    }
-    if (char === '|') { stack.at(-1).hasAlternation = true; continue; }
-    if (char === ')') {
-      if (stack.length === 1) continue;
-      const group = stack.pop();
-      const next = pattern[index + 1];
-      const quantified = next === '*' || next === '+' || next === '?' || next === '{' && /^\{\d+(?:,\d*)?\}/.test(pattern.slice(index + 1));
-      const repetition = next === '{' ? /^\{(\d+)(?:,(\d*))?\}/.exec(pattern.slice(index + 1)) : null;
-      const repetitionMax = next === '*' || next === '+' || repetition?.[2] === '' ? Infinity : next === '?' ? 1 : Number(repetition?.[2] ?? repetition?.[1] ?? 0);
-      const groupRepeatIsUnbounded = next === '*' || next === '+' || Boolean(repetition && repetition[2] === '');
-      if (quantified && (group.hasUnboundedQuantifier || group.hasQuantifier && groupRepeatIsUnbounded || group.hasAlternation && (groupRepeatIsUnbounded || repetitionMax > 10))) return 'Regex groups with nested repetition or repeated alternatives are not supported.';
-      const parent = stack.at(-1);
-      parent.hasQuantifier ||= group.hasQuantifier || quantified;
-      parent.hasUnboundedQuantifier ||= group.hasUnboundedQuantifier || groupRepeatIsUnbounded;
-      parent.hasAlternation ||= group.hasAlternation;
-      if (quantified) {
-        quantifierCount += 1;
-        if (quantifierCount > 32) return 'Regex patterns are limited to 32 repetition operators.';
-        if (next === '{') {
-          const repetition = /^\{(\d+)(?:,(\d*))?\}/.exec(pattern.slice(index + 1));
-          const maximum = repetition?.[2] === '' ? Infinity : Number(repetition?.[2] ?? repetition?.[1]);
-          if (maximum > 1000) return 'Regex repetition counts are limited to 1,000.';
-        }
-      }
-      if (quantified && (next === '*' || next === '+' || next === '{' && /^\{\d+,\}/.test(pattern.slice(index + 1)))) unboundedCount += 1;
-      continue;
-    }
-    const quantifier = char === '*' || char === '+' || char === '?' || char === '{' && /^\{\d+(?:,\d*)?\}/.test(pattern.slice(index));
-    if (quantifier) {
-      quantifierCount += 1;
-      if (quantifierCount > 32) return 'Regex patterns are limited to 32 repetition operators.';
-      if (char === '{') {
-        const repetition = /^\{(\d+)(?:,(\d*))?\}/.exec(pattern.slice(index));
-        const maximum = repetition?.[2] === '' ? Infinity : Number(repetition?.[2] ?? repetition?.[1]);
-        if (maximum > 1000) return 'Regex repetition counts are limited to 1,000.';
-      }
-      stack.at(-1).hasQuantifier = true;
-      const unbounded = char === '*' || char === '+' || char === '{' && /^\{\d+,\}/.test(pattern.slice(index));
-      if (unbounded) {
-        stack.at(-1).hasUnboundedQuantifier = true;
-        unboundedCount += 1;
-      }
-      if (char === '{') index += (pattern.slice(index).match(/^\{\d+(?:,\d*)?\}/)?.[0].length || 1) - 1;
-    }
-  }
-  if (unboundedCount > 4) return 'Regex patterns can use at most four unbounded repetitions.';
-  return '';
-}
-
-function advanceRegexIndex(text, index, unicode) {
-  if (!unicode || index + 1 >= text.length) return index + 1;
-  const first = text.charCodeAt(index);
-  const second = text.charCodeAt(index + 1);
-  return first >= 0xD800 && first <= 0xDBFF && second >= 0xDC00 && second <= 0xDFFF
-    ? index + 2
-    : index + 1;
-}
 
 function readDataPath(source, path) {
   const text = String(path || '').trim();
@@ -319,46 +241,13 @@ export function evaluateDataNode(type, inputs = {}, data = {}) {
     const invalid = (error) => ({ text, matched: false, match: '', matches: [], captures: [], named_captures: {}, index: -1, valid: false, error });
     if (!['test', 'match', 'replace'].includes(mode)) return invalid('Choose Test, Extract, or Replace as the regex operation.');
     if (text.length > 8192) return invalid('Regex input is limited to 8,192 characters.');
-    if (pattern.length > 256) return invalid('Regex pattern is limited to 256 characters.');
-    if (rawFlags.length > 32 || flags.length > 6 || !/^[gimsuy]*$/.test(flags)) return invalid('Use the supported JavaScript regex flags: g, i, m, s, u, y.');
-    if (new Set(flags).size !== flags.length) return invalid('Each regex flag can only be used once.');
-    const safetyError = regexSafetyError(pattern);
-    if (safetyError) return invalid(safetyError);
+    const configurationError = validateRegexConfiguration(pattern, rawFlags);
+    if (configurationError) return invalid(configurationError);
     const replacement = mode === 'replace' ? String(inputs.replacement ?? '') : '';
-    if (replacement.length > 2000) return invalid('Regex replacement is limited to 2,000 characters.');
-    try {
-      const expression = new RegExp(pattern, flags);
-      const results = [];
-      if (expression.global) {
-        let result;
-        while ((result = expression.exec(text)) && results.length < 1000) {
-          results.push(result);
-          if (result[0] === '') expression.lastIndex = advanceRegexIndex(text, expression.lastIndex, expression.unicode);
-        }
-      } else {
-        const result = expression.exec(text);
-        if (result) results.push(result);
-      }
-      const first = results[0];
-      let outputText = text;
-      if (mode === 'replace') {
-        outputText = text.replace(expression, replacement);
-        if (outputText.length > 10000) return invalid('Regex output is limited to 10,000 characters.');
-      }
-      return {
-        text: outputText,
-        matched: Boolean(first),
-        match: first?.[0] ?? '',
-        matches: results.map((result) => result[0]).slice(0, 1000),
-        captures: first ? first.slice(1).map((value) => value ?? '') : [],
-        named_captures: first?.groups
-          ? Object.fromEntries(Object.entries(first.groups).map(([name, value]) => [name, value ?? '']))
-          : {},
-        index: first?.index ?? -1,
-        valid: true,
-        error: ''
-      };
-    } catch (error) { return invalid(error?.message || 'Invalid regular expression.'); }
+    if (replacement.length > 8192) return invalid('Regex replacement is limited to 8,192 characters.');
+    const result = executeRegexIsolated({ text, pattern, flags, mode, replacement });
+    if (result.error) return invalid(result.error);
+    return { ...result, valid: true, error: '' };
   }
   if (type === 'data_array_create') {
     const array = Array.from({ length: 50 }, (_, index) => inputs[`item_${index + 1}`]).filter((value) => value !== undefined && value !== null);
