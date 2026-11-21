@@ -12,6 +12,8 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   RateLimiter,
+  DISCORD_ERROR_CODES,
+  getDiscordErrorGuidance,
   RESTClient,
   InteractionAlreadyAcknowledgedError,
   InteractionSecurity,
@@ -143,6 +145,13 @@ describe('RateLimiter', () => {
 });
 
 describe('Client & RESTClient', () => {
+  test('includes Discord documented JSON API error codes with a future-code fallback', () => {
+    assert.ok(DISCORD_ERROR_CODES.size > 200);
+    assert.equal(getDiscordErrorGuidance(50013)?.includes('role hierarchy'), true);
+    assert.equal(getDiscordErrorGuidance(520001), 'The poll has expired.');
+    assert.equal(getDiscordErrorGuidance(987654321), null);
+  });
+
   test('instantiates Client without errors', () => {
     const client = new Client();
     assert.ok(client.rest instanceof RESTClient);
@@ -226,6 +235,29 @@ describe('Client & RESTClient', () => {
       assert.equal(new URL(calls[3].url).searchParams.get('implicit'), 'true');
       assert.throws(() => rest.getGuildMemberPermissions('', 'user-1'), /IDs are required/);
       assert.throws(() => rest.getChannelRolePermissions('channel-1', ''), /IDs are required/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('adds actionable guidance to permission errors and preserves the raw response', async () => {
+    const originalFetch = globalThis.fetch;
+    const rawError = { message: 'Missing Permissions', code: 50013, errors: { permissions: 'denied' } };
+    globalThis.fetch = async () => new Response(JSON.stringify(rawError), {
+      status: 403,
+      headers: { 'content-type': 'application/json' }
+    });
+    try {
+      const rest = new RESTClient({ token: 'test-token', apiBase: 'https://discord.test/api/v10' });
+      await assert.rejects(rest.getUser('user-1'), (error) => {
+        assert.equal(error.name, 'DiscordAPIError');
+        assert.match(error.message, /role may be below the target member’s highest role/);
+        assert.match(error.message, /Discord’s response: Missing Permissions/);
+        assert.equal(error.discordMessage, 'Missing Permissions');
+        assert.deepEqual(error.rawError, rawError);
+        assert.deepEqual(error.raw, rawError);
+        return true;
+      });
     } finally {
       globalThis.fetch = originalFetch;
     }
