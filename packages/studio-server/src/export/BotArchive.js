@@ -61,7 +61,7 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
   const projectAuthor = String(exportOptions.projectAuthor || 'Unknown').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 32) || 'Unknown';
   const statisticsSettings = exportOptions.statisticsSettings || { enabled: true, retentionDays: 30, commandUsage: true, uniqueUsers: true, returningUsers: true };
   const usedTypes = new Set(enabledGraphs.flatMap((graph) => graph.nodes.map((node) => node?.type).filter((type) => typeof type === 'string')));
-  const requiredRuntimeModules = new Set(['builders.js', 'control_flow.js', 'data.js', 'logic.js']);
+  const requiredRuntimeModules = new Set(['builders.js', 'control_flow.js', 'data.js', 'logic.js', 'RegexConfiguration.js', 'RegexExecution.js']);
   const runtimeTypeGroups = [
     [['action_console_log', 'action_console_warn', 'action_console_error'], 'console_log.js'],
     [['action_http_download', 'action_web_fetch', 'action_web_retry'], 'network.js'],
@@ -774,7 +774,7 @@ const botUptimeInterval = setInterval(() => {
 }, 1000);
 botUptimeInterval.unref?.();
 const resolveFunctionGraph = (graphId) => graphs.find((graph) => graph.id === graphId);
-const isFunctionGraph = (graph) => graph?.graphType === 'function' || (graph?.nodes || []).some((node) => ['function_input', 'function_return'].includes(node?.type));
+const isFunctionGraph = (graph) => graph?.graphType === 'function' || (graph?.nodes || []).some((node) => ['function_input', 'function_return', 'function_return_exec'].includes(node?.type));
 const resolveFunctionGraphByName = (name) => {
   const matches = graphs.filter((graph) => isFunctionGraph(graph) && graph.name?.toLowerCase() === String(name).toLowerCase());
   return matches.length === 1 ? matches[0] : null;
