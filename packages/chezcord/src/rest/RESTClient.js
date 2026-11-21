@@ -1,5 +1,6 @@
 import { API_BASE } from '../constants.js';
 import { RateLimiter } from './RateLimiter.js';
+import { getDiscordErrorGuidance } from './DiscordErrors.js';
 import { createHash } from 'node:crypto';
 
 const COMMAND_CREATE_LIMIT = 200;
@@ -12,6 +13,13 @@ const INTERACTION_RESPONSE_RETENTION_MS = 15 * 60 * 1000;
 const commandDeployments = new Map();
 const sharedRateLimiters = new Map();
 //
+function formatDiscordErrorMessage(status, code, rawError) {
+  const discordMessage = typeof rawError === 'string' ? rawError : rawError?.message;
+  const guidance = getDiscordErrorGuidance(code);
+  if (!guidance) return discordMessage || (status === 429 ? 'Discord API rate limit exceeded.' : `Discord API Error: HTTP ${status}`);
+  return `${guidance}${discordMessage ? ` Discord’s response: ${discordMessage}` : ''} (code ${code}, HTTP ${status})`;
+}
+
 function parseAttachmentData(file) {
   const raw = String(file?.data ?? file?.dataUrl ?? file?.file_data ?? '');
   const dataUrl = /^data:([^;,\s]+)?;base64,([A-Za-z0-9+/]+={0,2})$/i.exec(raw);
@@ -111,12 +119,14 @@ function applicationCommandKey(command) {
 }
 
 export class DiscordAPIError extends Error {
-  constructor(message, status, code, raw) {
+  constructor(message, status, code, rawError) {
     super(message);
     this.name = 'DiscordAPIError';
     this.status = status;
     this.code = code;
-    this.raw = raw;
+    this.discordMessage = typeof rawError === 'string' ? rawError : rawError?.message || null;
+    this.rawError = rawError;
+    this.raw = rawError;
   }
 }
 
@@ -256,8 +266,9 @@ export class RESTClient {
 
       if (response.status === 429) {
         if (attempts >= maxRetries) {
-          const errorMsg = parsedData?.message || 'Discord API rate limit exceeded.';
-          throw new DiscordAPIError(errorMsg, 429, parsedData?.code || 0, parsedData);
+          const errorCode = parsedData?.code || 0;
+          const errorMsg = formatDiscordErrorMessage(429, errorCode, parsedData) || 'Discord API rate limit exceeded.';
+          throw new DiscordAPIError(errorMsg, 429, errorCode, parsedData);
         }
         const retryAfterMs = (parsedData && parsedData.retry_after)
           ? parsedData.retry_after * 1000
@@ -267,9 +278,9 @@ export class RESTClient {
       }
 
       if (!response.ok) {
-        const errorMsg = parsedData?.message || `Discord API Error: HTTP ${response.status} ${response.statusText}`;
         const errorCode = parsedData?.code || 0;
-        throw new DiscordAPIError(errorMsg, response.status, errorCode, parsedData);
+        const errorPayload = parsedData ?? `HTTP ${response.status} ${response.statusText}`;
+        throw new DiscordAPIError(formatDiscordErrorMessage(response.status, errorCode, errorPayload), response.status, errorCode, errorPayload);
       }
 
       return parsedData;
