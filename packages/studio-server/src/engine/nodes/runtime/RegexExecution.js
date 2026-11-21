@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 //
-export const REGEX_MATCH_TIMEOUT_MS = 250;
+export const REGEX_MATCH_TIMEOUT_MS = 1000;
 
 const regexWorker = String.raw`
 let input = '';
