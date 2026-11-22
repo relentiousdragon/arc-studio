@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import { STATUS_CODES } from 'node:http';
+import { Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { serverConfig } from '../config.js';
 import { createAuthMiddleware, requirePermission } from '../auth.js';
 import { NodeDefinitions, NODE_SCHEMA_VERSION, CLIENT_PROTOCOL_VERSION, getNodeRegistryPayload } from '../engine/NodeRegistry.js';
@@ -18,7 +20,7 @@ import { ActivityWebhookDispatcher, ActivityWebhookStore } from '../security/Act
 import { activityAvatarPath, activityAvatarUrl, renderActivityAvatarPng, verifyActivityAvatarSignature } from '../security/ActivityAvatar.js';
 import { StarterProjects } from '../storage/StarterProjects.js';
 import { hasImportableTextContent } from '../storage/ImportContentReview.js';
-import { randomUUID, createHash } from 'node:crypto';
+import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { dataDir } from '../storage.js';
@@ -29,11 +31,12 @@ import { readClientAccessSettings, writeClientAccessSettings, isArcStudioOrigin,
 import { isArcStudioClientVersionAllowed } from '../versioning/arcProjectCompatibility.js';
 import { normalizeGraphRouteId, normalizeProjectRouteId } from './routeResourceIds.js';
 import { ProjectMediaStore } from '../engine/ProjectMediaStore.js';
+import { inspectArcProjectArchive, prepareArcProjectImport } from '../storage/ArcArchiveFile.js';
 //
 const ACTIVITY_WEBHOOK_AVATAR_URL = 'https://raw.githubusercontent.com/relentiousdragon/arc-studio/main/packages/studio-client/public/arc.png';
 
-function decodeArcArchiveRequest(value, fileKind) {
-  const fileLabel = fileKind === 'project' ? 'project file' : 'graph file';
+function decodeArcArchiveRequest(value) {
+  const fileLabel = 'graph file';
   if (!Buffer.isBuffer(value)) {
     throw new TypeError(`Upload a supported ARC ${fileLabel}.`);
   }
@@ -85,6 +88,58 @@ function graphNodeChanges(previous, next) {
 
 export function createApiRouter(botManager, userStore, logger, managerForUser = () => botManager, broadcastWorkspace = () => {}, isUserOnline = () => false, clearDeletedGraphCollaboration = () => {}, onGraphSaved = () => {}, broadcastProject = () => {}, disconnectUnknownClients = () => {}) {
   const router = Router();
+  const projectImportStagingDirectory = path.join(dataDir, 'project-import-staging');
+  fs.mkdirSync(projectImportStagingDirectory, { recursive: true, mode: 0o700 });
+  try { fs.chmodSync(projectImportStagingDirectory, 0o700); } catch {}
+  try {
+    for (const name of fs.readdirSync(projectImportStagingDirectory)) {
+      if (/^\.arc-import-[0-9a-f-]+\.arcproject$/i.test(name) || /^\.arc-inner-[0-9-]+-[a-f0-9]+\.arcproject$/i.test(name)) {
+        fs.rmSync(path.join(projectImportStagingDirectory, name), { force: true });
+      }
+    }
+  } catch {}
+  const projectImportSessions = new Map();
+  const downloadTickets = new Map();
+  const botExportTicketReservations = new Map();
+  const issueDownloadTicket = (data) => {
+    const now = Date.now();
+    for (const [ticket, value] of downloadTickets) {
+      if (value.expiresAt > now) continue;
+      downloadTickets.delete(ticket);
+      if (value.kind === 'bot' && botExportTicketReservations.get(value.projectId) === ticket) botExportTicketReservations.delete(value.projectId);
+    }
+    if (downloadTickets.size >= 256) return null;
+    const ticket = randomBytes(32).toString('base64url');
+    downloadTickets.set(ticket, { ...data, expiresAt: now + 2 * 60 * 1000 });
+    return ticket;
+  };
+  const hasActiveBotExportTicket = (projectId) => {
+    const ticketId = botExportTicketReservations.get(projectId);
+    if (!ticketId) return false;
+    const ticket = downloadTickets.get(ticketId);
+    if (ticket && ticket.expiresAt > Date.now()) return true;
+    botExportTicketReservations.delete(projectId);
+    downloadTickets.delete(ticketId);
+    return false;
+  };
+  const removeProjectImportSession = async (sessionId) => {
+    const session = projectImportSessions.get(sessionId);
+    if (!session) return;
+    clearTimeout(session.expiryTimer);
+    if (session.activeController) {
+      session.cancelRequested = true;
+      session.activeController.abort(new Error('Project import cancelled.'));
+      return;
+    }
+    projectImportSessions.delete(sessionId);
+    try { await session.prepared?.cleanup?.(); } catch {}
+    try { await fs.promises.rm(session.uploadPath, { force: true }); } catch {}
+  };
+  const keepProjectImportSession = (session) => {
+    clearTimeout(session.expiryTimer);
+    session.expiryTimer = setTimeout(() => { void removeProjectImportSession(session.id); }, 2 * 60 * 60 * 1000);
+    session.expiryTimer.unref?.();
+  };
   const isProjectRecoveryRequest = (req) => {
     if (req.method === 'GET' && ['/auth/me', '/nodes/registry', '/projects', '/projects/templates'].includes(req.path)) return true;
     if (req.method === 'POST' && ['/projects', '/projects/initialize'].includes(req.path)) return true;
@@ -125,6 +180,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
   });
   const botExportCache = new Map();
   const botExportRuns = new Map();
+  let exportBotArchive;
   const publishBotExport = (projectId, payload) => broadcastProject(projectId, { type: 'BOT_EXPORT_PROGRESS', payload: { projectId, ...payload } });
   const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
   const authMiddleware = createAuthMiddleware(userStore);
@@ -798,6 +854,48 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     } catch (error) { rejectPasskey(res, error); }
   });
 //
+  const sendProjectArchive = async (projectId, user, options, res) => {
+    try {
+      const project = botManager.projectStore.projects.find((item) => item.id === projectId);
+      if (!project) return res.status(404).json({ error: 'That project no longer exists.' });
+      const projectManager = managerForUser({ ...user, activeProjectId: projectId }) || botManager;
+      const archive = await botManager.projectStore.exportProjectArchiveStream(projectId, {
+        password: typeof options?.password === 'string' ? options.password : '',
+        includeSecrets: options?.includeSecrets === true,
+        pluginRequirements: PluginStore.projectRequirements(projectManager.graphs),
+        secretValueResolver: (scope, graphId, variableId) => projectManager.getSecretValue(scope, graphId, variableId)
+      });
+      res.setHeader('Cache-Control', 'no-store, private');
+      res.setHeader('Content-Type', 'application/vnd.arc-studio.project+zip');
+      res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`${project.name}.arcproject`)}`);
+      return await pipeline(archive, res);
+    } catch (error) {
+      if (res.headersSent) { res.destroy(error); return; }
+      return res.status(400).json({ error: error.message || 'Could not export the project.' });
+    }
+  };
+  router.get('/download/:ticket', async (req, res) => {
+    const ticketId = String(req.params.ticket || '');
+    if (!/^[A-Za-z0-9_-]{43}$/.test(ticketId)) return res.status(410).json({ error: 'This download link expired. Start the export again.' });
+    const ticket = downloadTickets.get(ticketId);
+    downloadTickets.delete(ticketId);
+    if (ticket?.kind === 'bot' && botExportTicketReservations.get(ticket.projectId) === ticketId) botExportTicketReservations.delete(ticket.projectId);
+    if (!ticket || ticket.expiresAt <= Date.now()) return res.status(410).json({ error: 'This download link expired. Start the export again.' });
+    const user = userStore.users.find((item) => item.id === ticket.userId);
+    if (!user || user.mustChangePassword || !(user.permissions?.includes('*') || user.permissions?.includes('graphs:read'))) {
+      return res.status(403).json({ error: 'This account can no longer download the export.' });
+    }
+    req.user = user;
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    let manager;
+    try { manager = managerForUser({ ...user, activeProjectId: ticket.projectId }) || botManager; }
+    catch { return res.status(503).json({ error: 'The project could not be opened for export.' }); }
+    return botManagerContext.run(manager, async () => {
+      if (ticket.kind === 'project') return sendProjectArchive(ticket.projectId, user, ticket.options, res);
+      if (ticket.kind === 'bot' && exportBotArchive) return exportBotArchive(req, res, ticket.options);
+      return res.status(410).json({ error: 'This download link is no longer available.' });
+    });
+  });
   router.use(authMiddleware);
   router.use((req, res, next) => {
     let manager;
@@ -947,11 +1045,17 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     res.json({ templates: StarterProjects.map(({ id, name, description, icon, highlights, setup }) => ({ id, name, description, icon, highlights, setup })) });
   });
 
-  router.get('/projects/:projectId/export', requirePermission('graphs:read'), (req, res) => {
+  router.get('/projects/:projectId/export', requirePermission('graphs:read'), async (req, res) => {
     try {
       const projectManager = managerForUser({ ...req.user, activeProjectId: req.params.projectId }) || botManager;
+      const summaryOnly = req.query.summary === '1';
+      const mediaAssets = summaryOnly
+        ? await new ProjectMediaStore(botManager.projectStore.directory(req.params.projectId)).listAsync()
+        : null;
       const bundle = botManager.projectStore.exportProject(req.params.projectId, {
         includeSecrets: req.query.includeSecrets === '1',
+        includeMediaData: !summaryOnly,
+        mediaAssets,
         pluginRequirements: PluginStore.projectRequirements(projectManager.graphs),
         secretValueResolver: (scope, graphId, variableId) => projectManager.getSecretValue(scope, graphId, variableId)
       });
@@ -961,61 +1065,155 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     } catch (error) { res.status(404).json({ error: error.message }); }
   });
 
-  router.post('/projects/:projectId/export/archive', requirePermission('graphs:read'), async (req, res) => {
+  router.post('/projects/:projectId/export/archive/download-ticket', requirePermission('graphs:read'), (req, res) => {
+    const projectId = normalizeProjectRouteId(req.params.projectId);
+    if (!botManager.projectStore.projects.some((item) => item.id === projectId)) return res.status(404).json({ error: 'That project no longer exists.' });
+    const ticket = issueDownloadTicket({
+      kind: 'project', userId: req.user.id, projectId,
+      options: { password: typeof req.body?.password === 'string' ? req.body.password : '', includeSecrets: req.body?.includeSecrets === true }
+    });
+    if (!ticket) return res.status(503).json({ error: 'Too many project downloads are waiting. Try again shortly.' });
+    res.setHeader('Cache-Control', 'no-store, private');
+    res.status(201).json({ downloadPath: `/api/download/${ticket}` });
+  });
+
+  router.post('/projects/:projectId/export/archive', requirePermission('graphs:read'), (req, res) =>
+    sendProjectArchive(normalizeProjectRouteId(req.params.projectId), req.user, req.body, res));
+
+  router.post('/projects/:projectId/export/encrypted', requirePermission('graphs:read'), async (req, res) => {
     try {
-      const projectId = normalizeProjectRouteId(req.params.projectId);
-      const project = botManager.projectStore.projects.find((item) => item.id === projectId);
+      const projectManager = managerForUser({ ...req.user, activeProjectId: req.params.projectId }) || botManager;
+      const project = botManager.projectStore.projects.find((item) => item.id === req.params.projectId);
       if (!project) return res.status(404).json({ error: 'That project no longer exists.' });
-      const projectManager = managerForUser({ ...req.user, activeProjectId: projectId }) || botManager;
-      const bytes = await botManager.projectStore.exportProjectArchive(projectId, {
-        password: typeof req.body?.password === 'string' ? req.body.password : '',
+      const archive = await botManager.projectStore.exportProjectArchiveStream(req.params.projectId, {
+        password: req.body?.password,
         includeSecrets: req.body?.includeSecrets === true,
         pluginRequirements: PluginStore.projectRequirements(projectManager.graphs),
         secretValueResolver: (scope, graphId, variableId) => projectManager.getSecretValue(scope, graphId, variableId)
       });
       res.setHeader('Cache-Control', 'no-store, private');
       res.setHeader('Content-Type', 'application/vnd.arc-studio.project+zip');
-      res.setHeader('Content-Length', String(bytes.byteLength));
       res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`${project.name}.arcproject`)}`);
-      return res.end(bytes);
+      await pipeline(archive, res);
     } catch (error) {
-      return res.status(400).json({ error: error.message || 'Could not export the project.' });
+      if (res.headersSent) res.destroy(error);
+      else res.status(400).json({ error: error.message || 'Could not encrypt the project export.' });
     }
   });
 
-  router.post('/projects/:projectId/export/encrypted', requirePermission('graphs:read'), async (req, res) => {
-    try {
-      const projectManager = managerForUser({ ...req.user, activeProjectId: req.params.projectId }) || botManager;
-      const bundle = await botManager.projectStore.exportEncryptedProject(req.params.projectId, req.body?.password, {
-        includeSecrets: req.body?.includeSecrets === true,
-        pluginRequirements: PluginStore.projectRequirements(projectManager.graphs),
-        secretValueResolver: (scope, graphId, variableId) => projectManager.getSecretValue(scope, graphId, variableId)
-      });
-      res.setHeader('Cache-Control', 'no-store, private');
-      res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`${botManager.projectStore.projects.find((item) => item.id === req.params.projectId)?.name || 'project'}.arcproject`)}`);
-      res.json(bundle);
-    } catch (error) { res.status(400).json({ error: error.message || 'Could not encrypt the project export.' }); }
-  });
-
   router.post('/projects/import', requirePermission('graphs:write'), async (req, res) => {
+    const requestedSessionId = String(req.headers['x-arc-import-session'] || '');
+    if (!requestedSessionId) {
+      const requestedCreationId = String(req.headers['x-arc-import-session-create'] || randomUUID());
+      if (!/^[A-Za-z0-9_-]{8,100}$/.test(requestedCreationId) || projectImportSessions.has(requestedCreationId)) return res.status(409).json({ error: 'This project upload session is invalid or already in use.' });
+      const uploadPath = path.join(projectImportStagingDirectory, `.arc-import-${randomUUID()}.arcproject`);
+      const controller = new AbortController();
+      let retained = false;
+      res.once('close', () => {
+        if (!res.writableFinished) {
+          controller.abort(new Error('Project upload cancelled.'));
+          if (retained) void removeProjectImportSession(requestedCreationId);
+          else void fs.promises.rm(uploadPath, { force: true }).catch(() => {});
+        }
+      });
+      try {
+        const contentType = String(req.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase();
+        if (!['application/vnd.arc-studio.project+zip', 'application/zip'].includes(contentType)) throw new TypeError('Upload a supported ARC project archive.');
+        await pipeline(req, fs.createWriteStream(uploadPath, { flags: 'wx', mode: 0o600 }), { signal: controller.signal });
+        if (controller.signal.aborted) throw controller.signal.reason;
+        const inspection = await inspectArcProjectArchive(uploadPath, { signal: controller.signal });
+        if (controller.signal.aborted) throw controller.signal.reason || new Error('Project upload cancelled.');
+        const payload = inspection.payload;
+        const pluginRequirements = Array.isArray(payload?.plugins) ? payload.plugins : [];
+        const pluginPlan = PluginStore.projectImportRequirements(pluginRequirements);
+        const hasText = !inspection.encrypted && hasImportableTextContent(payload);
+        const session = {
+          id: requestedCreationId,
+          userId: req.user.id,
+          uploadPath,
+          encrypted: inspection.encrypted,
+          integrityVerified: inspection.integrityVerified,
+          prepared: null,
+          activeController: null,
+          cancelRequested: false,
+          expiryTimer: null
+        };
+        projectImportSessions.set(session.id, session);
+        retained = true;
+        keepProjectImportSession(session);
+        return res.status(202).json({
+          success: true,
+          importSessionId: session.id,
+          encrypted: session.encrypted,
+          hasImportableTextContent: hasText,
+          workspaceName: userStore.workspaceName || 'ARC Studio Workspace',
+          plugins: pluginPlan
+        });
+      } catch (error) {
+        if (controller.signal.aborted || error?.name === 'AbortError') return;
+        const status = error.code === 'ENOSPC' ? 507 : error instanceof RangeError ? 413 : 400;
+        if (!res.headersSent && !res.destroyed) res.status(status).json({ error: error.message || 'Upload a valid .arcproject file.' });
+      } finally {
+        if (!retained) await fs.promises.rm(uploadPath, { force: true }).catch(() => {});
+      }
+      return;
+    }
+
+    const session = projectImportSessions.get(requestedSessionId);
+    if (!session || session.userId !== req.user.id) return res.status(410).json({ error: 'This staged project import expired. Upload the project again.', code: 'PROJECT_IMPORT_SESSION_EXPIRED' });
+    if (session.activeController) return res.status(409).json({ error: 'This project import is already being processed.' });
+    const controller = new AbortController();
+    session.activeController = controller;
+    res.once('close', () => {
+      if (!res.writableFinished) controller.abort(new Error('Project import cancelled.'));
+    });
+    let preserveSession = false;
     try {
-      const submittedBundle = await readArcArchive(decodeArcArchiveRequest(req.body, 'project'), 'arc-project');
-      const bundle = submittedBundle?.format === 'arc-project-encrypted'
-        ? await botManager.projectStore.decryptProjectBundle(submittedBundle, readProjectImportPassword(req))
-        : submittedBundle;
+      if (req.readableLength > 0 || Number(req.headers['content-length'] || 0) > 0) throw new TypeError('The staged project import request must not include another file.');
+      if (!session.prepared) {
+        try {
+          session.prepared = await prepareArcProjectImport(session.uploadPath, {
+            password: readProjectImportPassword(req),
+            stagingDirectory: projectImportStagingDirectory,
+            signal: controller.signal
+          });
+          session.encrypted = session.prepared.archivePath !== session.uploadPath;
+        } catch (error) {
+          if (['PROJECT_PASSWORD_REQUIRED', 'PROJECT_PASSWORD_INVALID'].includes(error.code)) {
+            preserveSession = true;
+            return res.status(400).json({ error: error.message, code: error.code, importSessionId: session.id });
+          }
+          throw error;
+        }
+      }
+      if (controller.signal.aborted) throw controller.signal.reason;
+      const bundle = session.prepared.bundle;
       const pluginRequirements = Array.isArray(bundle?.plugins) ? bundle.plugins : [];
       const pluginPlan = PluginStore.projectImportRequirements(pluginRequirements);
+      const sessionReply = { importSessionId: session.id };
+      if (!req.headers['x-arc-trusted'] || req.headers['x-arc-trusted'] !== 'true') throw new TypeError('Confirm that you trust this project file before importing it.');
       if (pluginPlan.length && req.headers['x-arc-import-plugins'] !== 'true') {
-        return res.status(409).json({ code: 'PROJECT_PLUGIN_IMPORT_CONFIRMATION_REQUIRED', plugins: pluginPlan });
+        preserveSession = true;
+        return res.status(409).json({ code: 'PROJECT_PLUGIN_IMPORT_CONFIRMATION_REQUIRED', plugins: pluginPlan, ...sessionReply });
       }
       if (!serverConfig.desktopMode && hasImportableTextContent(bundle) && req.headers['x-arc-confirm-collaborative-text'] !== 'true') {
+        preserveSession = true;
         return res.status(409).json({
           code: 'IMPORT_SHARED_CONTENT_CONFIRMATION_REQUIRED',
-          workspaceName: userStore.workspaceName || 'ARC Studio Workspace'
+          workspaceName: userStore.workspaceName || 'ARC Studio Workspace',
+          ...sessionReply
         });
       }
       const integrityWarning = !bundle?.integrity;
-      const project = botManager.projectStore.importProject(bundle, { trusted: req.headers['x-arc-trusted'] === 'true', allowOldVersion: req.headers['x-arc-allow-old-version'] === 'true', ownerId: req.user.id, projectName: readProjectImportName(req) });
+      const projectName = botManager.projectStore.reserveProjectImport(session.id, bundle, readProjectImportName(req));
+      const project = await botManager.projectStore.importProjectFromArchive(bundle, session.prepared.sources, {
+        trusted: true,
+        allowOldVersion: req.headers['x-arc-allow-old-version'] === 'true',
+        ownerId: req.user.id,
+        projectName,
+        reservationId: session.id,
+        signal: controller.signal
+      });
       const importedManager = managerForUser({ ...req.user, activeProjectId: project.id });
       importedManager?.importProjectSecretValues();
       const pluginImportResults = [];
@@ -1043,16 +1241,37 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       if (pluginRegistryChanged) publishRegistryChange(previousRegistryRevision);
       recordTeamActivity(req, 'project.imported', `Imported project “${project.name}”`, { projectId: project.id });
       broadcastWorkspace({ type: 'PROJECTS_UPDATED', payload: botManager.projectStore.list() });
+      session.activeController = null;
+      await removeProjectImportSession(session.id);
       res.json({ success: true, project, integrityWarning, pluginImportResults, ...botManager.getProjects() });
     } catch (error) {
+      if (controller.signal.aborted || error?.name === 'AbortError') {
+        preserveSession = false;
+        return;
+      }
       if (error.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' || error.code === 'PROJECT_REQUIRES_NEWER_ARC') {
-        return res.status(409).json({ error: error.message, code: error.code, projectVersion: error.projectVersion || null, currentVersion: error.currentVersion || null, unknownProjectVersion: error.unknownProjectVersion === true });
+        preserveSession = true;
+        return res.status(409).json({ error: error.message, code: error.code, projectVersion: error.projectVersion || null, currentVersion: error.currentVersion || null, unknownProjectVersion: error.unknownProjectVersion === true, importSessionId: session.id });
       }
       if (error.code === 'PROJECT_NAME_CONFLICT') {
-        return res.status(409).json({ error: error.message, code: error.code, projectName: error.projectName, suggestedName: error.suggestedName });
+        preserveSession = true;
+        return res.status(409).json({ error: error.message, code: error.code, projectName: error.projectName, suggestedName: error.suggestedName, importSessionId: session.id });
       }
-      res.status(400).json({ error: error.message, ...(error.code ? { code: error.code } : {}) });
+      if (!res.headersSent && !res.destroyed) res.status(error.code === 'ENOSPC' ? 507 : error.code === 'PROJECT_LIMIT_REACHED' ? 409 : error instanceof RangeError ? 413 : 400).json({ error: error.message, ...(error.code ? { code: error.code } : {}), importSessionId: session.id });
+    } finally {
+      botManager.projectStore.releaseProjectImportReservation(session.id);
+      session.activeController = null;
+      if (session.cancelRequested || !preserveSession) await removeProjectImportSession(session.id);
+      else if (preserveSession) keepProjectImportSession(session);
     }
+  });
+
+  router.delete('/projects/import/:sessionId', requirePermission('graphs:write'), async (req, res) => {
+    const session = projectImportSessions.get(req.params.sessionId);
+    if (!session || session.userId !== req.user.id) return res.sendStatus(204);
+    session.cancelRequested = true;
+    await removeProjectImportSession(session.id);
+    res.sendStatus(204);
   });
 
   router.patch('/projects/settings', requirePermission('*'), (req, res) => {
@@ -1809,24 +2028,25 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     }
   });
 
-  router.post('/graphs/export/bot.zip', requirePermission('graphs:read'), async (req, res) => {
-    const includeBotToken = req.body?.includeBotToken === true;
-    const includeCryptoSecret = req.body?.includeCryptoSecret === true;
+  exportBotArchive = async (req, res, body = req.body || {}) => {
+    const includeBotToken = body.includeBotToken === true;
+    const includeCryptoSecret = body.includeCryptoSecret === true;
     const permissions = req.user?.permissions || [];
     const canExportBotToken = req.user?.isPrimaryAdmin === true
       || (serverConfig.showBotTokenExportOptionToAuthorizedUsers && (permissions.includes('*') || permissions.includes('bot:control')));
     if (includeBotToken && !canExportBotToken) {
       return res.status(403).json({ error: 'Only the primary owner can include the bot token in exports unless ARC_SHOW_BOT_TOKEN_EXPORT_OPTION is enabled for bot-control accounts.' });
     }
-    const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId : botManager.project.id;
+    const projectId = typeof body.projectId === 'string' ? body.projectId : botManager.project.id;
     const project = botManager.projectStore.projects.find((item) => item.id === projectId);
     if (!project) return res.status(404).json({ error: 'That project no longer exists.' });
     const isActiveProject = projectId === botManager.project.id;
     if (includeBotToken && !isActiveProject) return res.status(400).json({ error: 'Switch to the project whose bot token you want to include, then export again.' });
     const botToken = includeBotToken ? botManager.getBotToken() : null;
     if (includeBotToken && !botToken) return res.status(400).json({ error: 'No bot token is configured for this project.' });
+    if (hasActiveBotExportTicket(projectId)) return res.status(409).json({ error: 'A bot export is already being prepared for this project.', code: 'BOT_EXPORT_IN_PROGRESS' });
     if (botExportRuns.has(projectId)) return res.status(409).json({ error: 'A bot export is already running for this project.', code: 'BOT_EXPORT_IN_PROGRESS' });
-    const exportId = typeof req.body?.exportId === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(req.body.exportId) ? req.body.exportId : randomUUID();
+    const exportId = typeof body.exportId === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(body.exportId) ? body.exportId : randomUUID();
     const startedAt = Date.now();
     botExportRuns.set(projectId, exportId);
     const report = (stage, progress, message) => publishBotExport(projectId, { exportId, stage, progress, message, status: 'running' });
@@ -1850,9 +2070,15 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       }
       const projectDirectory = botManager.projectStore.directory(projectId);
       let projectMedia = [];
+      let streamArchive = false;
       try {
         const mediaStore = new ProjectMediaStore(projectDirectory);
-        projectMedia = mediaStore.getAll();
+        const metadata = await mediaStore.listAsync();
+        const mediaBytes = metadata.reduce((total, asset) => total + (Number(asset.size) || 0), 0);
+        streamArchive = mediaBytes > 100 * 1024 * 1024;
+        projectMedia = streamArchive
+          ? metadata.map((asset) => ({ ...asset, archiveSource: mediaStore.getArchiveSource(asset.id, asset.sha256) }))
+          : mediaStore.getAll();
       } catch (error) {
         if (error.code !== 'ENOENT') throw error;
       }
@@ -1866,7 +2092,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
         return hydrated;
       };
       const exportGraphs = projectGraphs.map((graph) => ({
-        ...hydrateMedia(graph),
+        ...(streamArchive ? graph : hydrateMedia(graph)),
         variables: Array.isArray(graph.variables) ? graph.variables.filter((variable) => variable?.secret !== true) : graph.variables
       }));
       projectVariables = projectVariables.filter((variable) => variable?.secret !== true);
@@ -1881,11 +2107,11 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
         statisticsSettings: botManager.commandStatistics.getSettings(),
         mediaAssets: projectMedia
       };
-      const fingerprintInput = { graphs: exportGraphs, projectVariables, adapters, mediaAssets: projectMedia.map(({ data, ...asset }) => asset), project: project.name, owner: exportSettings.projectAuthor, logRetentionDays: exportSettings.logRetentionDays, statisticsSettings: exportSettings.statisticsSettings, includeCryptoSecret, includeBotToken, botTokenDigest: includeBotToken ? createHash('sha256').update(botToken).digest('hex') : '' };
+      const fingerprintInput = { graphs: exportGraphs, projectVariables, adapters, mediaAssets: projectMedia.map(({ data, archiveSource, ...asset }) => asset), project: project.name, owner: exportSettings.projectAuthor, logRetentionDays: exportSettings.logRetentionDays, statisticsSettings: exportSettings.statisticsSettings, includeCryptoSecret, includeBotToken, botTokenDigest: includeBotToken ? createHash('sha256').update(botToken).digest('hex') : '' };
       const fingerprint = createHash('sha256').update(stableJson(fingerprintInput)).digest('hex');
       const cacheKey = `${projectId}:${fingerprint}`;
       let archive;
-      const cached = botExportCache.get(cacheKey);
+      const cached = streamArchive ? null : botExportCache.get(cacheKey);
       if (cached && cached.expiresAt > Date.now()) {
         archive = cached.archive;
         report('checking-cache', 72, 'Using saved export and checking its integrity');
@@ -1894,12 +2120,14 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
         if (cached) botExportCache.delete(cacheKey);
         report('zipping', 38, 'Building the bot ZIP');
         await nextTurn();
-        archive = buildBotArchive(exportGraphs, projectVariables, adapters, { ...exportSettings, ...(includeBotToken ? { botToken } : {}) });
+        archive = buildBotArchive(exportGraphs, projectVariables, adapters, { ...exportSettings, ...(includeBotToken ? { botToken } : {}), ...(streamArchive ? { stream: true } : {}) });
       }
-      report('verifying', 88, cached && cached.expiresAt > Date.now() ? 'Verifying cached archive integrity' : 'Verifying SHA-256 file records');
-      await nextTurn();
-      verifyBotArchiveIntegrity(archive);
-      if (!cached || cached.expiresAt <= Date.now()) {
+      if (!streamArchive) {
+        report('verifying', 88, cached && cached.expiresAt > Date.now() ? 'Verifying cached archive integrity' : 'Verifying SHA-256 file records');
+        await nextTurn();
+        verifyBotArchiveIntegrity(archive);
+      }
+      if (!streamArchive && (!cached || cached.expiresAt <= Date.now())) {
         for (const key of botExportCache.keys()) if (key.startsWith(`${projectId}:`)) botExportCache.delete(key);
         botExportCache.set(cacheKey, { archive, expiresAt: Date.now() + 30 * 60 * 1000 });
       }
@@ -1908,16 +2136,60 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       res.setHeader('Cache-Control', 'no-store, private');
       res.setHeader('Content-Type', 'application/zip');
       res.setHeader('Content-Disposition', 'attachment; filename="arc-bot-export.zip"');
-      res.setHeader('Content-Length', archive.length);
-      res.send(archive);
+      if (streamArchive) {
+        res.setHeader('Content-Length', String(archive.archiveLength));
+        report('streaming', 92, 'Streaming the standalone bot ZIP');
+        const totalBytes = Number(archive.archiveLength);
+        let sentBytes = 0;
+        let lastProgress = 92;
+        const progressStream = new Transform({
+          transform(chunk, _encoding, callback) {
+            sentBytes += chunk.length;
+            const progress = totalBytes > 0 ? Math.min(99, 92 + Math.floor(sentBytes / totalBytes * 7)) : 92;
+            if (progress > lastProgress) {
+              lastProgress = progress;
+              const transferPercent = totalBytes > 0 ? Math.min(100, Math.floor(sentBytes / totalBytes * 100)) : 0;
+              report('streaming', progress, `Streaming standalone bot ZIP · ${transferPercent}%`);
+            }
+            callback(null, chunk);
+          }
+        });
+        await pipeline(archive, progressStream, res);
+      } else {
+        res.setHeader('Content-Length', archive.length);
+        res.send(archive);
+      }
       publishBotExport(projectId, { exportId, stage: 'complete', progress: 100, message: cached && cached.expiresAt > Date.now() ? 'Cached bot export is ready' : 'Bot export is ready', status: 'complete' });
     } catch (error) {
       publishBotExport(projectId, { exportId, stage: 'failed', progress: 100, message: error.message || 'Could not create bot export', status: 'failed' });
-      res.status(500).json({ error: `Could not create bot export: ${error.message}` });
+      if (res.headersSent) res.destroy(error);
+      else res.status(500).json({ error: `Could not create bot export: ${error.message}` });
     } finally {
       if (botExportRuns.get(projectId) === exportId) botExportRuns.delete(projectId);
     }
+  };
+
+  router.post('/graphs/export/bot.zip/download-ticket', requirePermission('graphs:read'), (req, res) => {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const projectId = typeof body.projectId === 'string' ? body.projectId : botManager.project.id;
+    const includeBotToken = body.includeBotToken === true;
+    const permissions = req.user?.permissions || [];
+    const canExportBotToken = req.user?.isPrimaryAdmin === true
+      || (serverConfig.showBotTokenExportOptionToAuthorizedUsers && (permissions.includes('*') || permissions.includes('bot:control')));
+    if (includeBotToken && !canExportBotToken) return res.status(403).json({ error: 'Only the primary owner can include the bot token in exports unless ARC_SHOW_BOT_TOKEN_EXPORT_OPTION is enabled for bot-control accounts.' });
+    if (!botManager.projectStore.projects.some((item) => item.id === projectId)) return res.status(404).json({ error: 'That project no longer exists.' });
+    if (includeBotToken && projectId !== botManager.project.id) return res.status(400).json({ error: 'Switch to the project whose bot token you want to include, then export again.' });
+    if (includeBotToken && !botManager.getBotToken()) return res.status(400).json({ error: 'No bot token is configured for this project.' });
+    if (botExportRuns.has(projectId) || hasActiveBotExportTicket(projectId)) return res.status(409).json({ error: 'A bot export is already running for this project.', code: 'BOT_EXPORT_IN_PROGRESS' });
+    const exportId = typeof body.exportId === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(body.exportId) ? body.exportId : randomUUID();
+    const ticket = issueDownloadTicket({ kind: 'bot', userId: req.user.id, projectId, options: { ...body, projectId, exportId } });
+    if (!ticket) return res.status(503).json({ error: 'Too many downloads are waiting. Try again shortly.' });
+    botExportTicketReservations.set(projectId, ticket);
+    res.setHeader('Cache-Control', 'no-store, private');
+    res.status(201).json({ downloadPath: `/api/download/${ticket}` });
   });
+
+  router.post('/graphs/export/bot.zip', requirePermission('graphs:read'), (req, res) => exportBotArchive(req, res, req.body));
 
   router.post('/graphs/plugin-requirements', requirePermission('graphs:read'), (req, res) => {
     const graph = req.body?.graph;
@@ -1930,7 +2202,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
 
   router.post('/graphs/import', requirePermission('graphs:write'), async (req, res) => {
     let payload;
-    try { payload = await readArcArchive(decodeArcArchiveRequest(req.body, 'graph'), 'arc-graph'); }
+    try { payload = await readArcArchive(decodeArcArchiveRequest(req.body), 'arc-graph'); }
     catch (error) { return res.status(error instanceof RangeError ? 413 : 400).json({ error: error.message || 'Upload a valid .arcgraph file.' }); }
     const source = payload?.graph;
     if (!source || !Array.isArray(source.nodes) || !Array.isArray(source.connections)) {
