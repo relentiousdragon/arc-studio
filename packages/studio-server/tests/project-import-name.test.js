@@ -38,6 +38,36 @@ test('project import suggestions fit the project name limit', () => {
   assert.notEqual(suggestedName, longName);
 });
 
+test('project import reservations prevent concurrent duplicate names', () => {
+  const store = storeWithProjects(['Default']);
+  store.maxProjects = 5;
+  const bundle = { project: { name: 'Shared copy' } };
+
+  assert.equal(store.reserveProjectImport('import_11111111', bundle), 'Shared copy');
+  assert.throws(
+    () => store.reserveProjectImport('import_22222222', bundle),
+    (error) => error.code === 'PROJECT_NAME_CONFLICT' && error.suggestedName === 'Shared copy (2)'
+  );
+  assert.equal(store.reserveProjectImport('import_22222222', bundle, 'Shared copy (2)'), 'Shared copy (2)');
+  store.releaseProjectImportReservation('import_11111111');
+  store.releaseProjectImportReservation('import_22222222');
+  assert.equal(store.projectImportReservations().size, 0);
+});
+
+test('project import reservations hold capacity against concurrent creates and imports', () => {
+  const store = storeWithProjects(['Default']);
+  store.maxProjects = 2;
+  const bundle = { project: { name: 'Imported' } };
+
+  store.reserveProjectImport('import_11111111', bundle);
+  assert.throws(() => store.create('Another project'), /reached its 2-project limit/);
+  assert.throws(
+    () => store.reserveProjectImport('import_22222222', { project: { name: 'Second import' } }),
+    /reached its 2-project limit/
+  );
+  store.releaseProjectImportReservation('import_11111111');
+});
+
 test('renaming a project changes only its name and persists the registry', () => {
   const project = { id: 'project-one', name: 'Original', createdAt: '2026-01-01T00:00:00.000Z' };
   const store = storeWithProjects([project.name]);
