@@ -60,8 +60,12 @@ dependencies = [
 name = "arc-studio-desktop"
 version = "2026.1.1-nightly.11"
 dependencies = [
+ "bytes",
  "discord-rich-presence",
+ "futures-util",
  "keyring",
+ "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "tauri",
@@ -70,6 +74,7 @@ dependencies = [
  "tauri-plugin-notification",
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
+ "tokio",
  "url",
  "uuid 1.28.0",
 ]
