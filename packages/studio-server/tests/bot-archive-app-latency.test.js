@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { inflateRawSync } from 'node:zlib';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
@@ -46,6 +47,45 @@ function listZipEntries(archive) {
   return entries;
 }
 
+function readZip64Entries(archive) {
+  const endOffset = archive.length - 22;
+  assert.equal(archive.readUInt32LE(endOffset), 0x06054b50);
+  const locatorOffset = endOffset - 20;
+  assert.equal(archive.readUInt32LE(locatorOffset), 0x07064b50);
+  const zip64Offset = Number(archive.readBigUInt64LE(locatorOffset + 8));
+  assert.equal(archive.readUInt32LE(zip64Offset), 0x06064b50);
+  const count = Number(archive.readBigUInt64LE(zip64Offset + 32));
+  const centralSize = Number(archive.readBigUInt64LE(zip64Offset + 40));
+  const centralOffset = Number(archive.readBigUInt64LE(zip64Offset + 48));
+  assert.equal(centralOffset + centralSize, zip64Offset);
+  const entries = new Map();
+  let cursor = centralOffset;
+  for (let index = 0; index < count; index += 1) {
+    assert.equal(archive.readUInt32LE(cursor), 0x02014b50);
+    const crc = archive.readUInt32LE(cursor + 16);
+    const nameLength = archive.readUInt16LE(cursor + 28);
+    const extraLength = archive.readUInt16LE(cursor + 30);
+    const name = archive.toString('utf8', cursor + 46, cursor + 46 + nameLength);
+    const extraStart = cursor + 46 + nameLength;
+    assert.equal(archive.readUInt16LE(extraStart), 1);
+    const size = Number(archive.readBigUInt64LE(extraStart + 4));
+    const offset = Number(archive.readBigUInt64LE(extraStart + 20));
+    const localNameLength = archive.readUInt16LE(offset + 26);
+    const localExtraLength = archive.readUInt16LE(offset + 28);
+    const dataStart = offset + 30 + localNameLength + localExtraLength;
+    const data = archive.subarray(dataStart, dataStart + size);
+    const descriptor = dataStart + size;
+    assert.equal(archive.readUInt32LE(descriptor), 0x08074b50);
+    assert.equal(archive.readUInt32LE(descriptor + 4), crc);
+    assert.equal(Number(archive.readBigUInt64LE(descriptor + 8)), size);
+    assert.equal(Number(archive.readBigUInt64LE(descriptor + 16)), size);
+    entries.set(name, data);
+    cursor += 46 + nameLength + extraLength + archive.readUInt16LE(cursor + 32);
+  }
+  assert.equal(cursor, centralOffset + centralSize);
+  return entries;
+}
+
 function extractZipEntries(archive, directory) {
   let offset = 0;
   while (offset + 30 <= archive.length && archive.readUInt32LE(offset) === 0x04034b50) {
@@ -63,6 +103,40 @@ function extractZipEntries(archive, directory) {
     offset = headerEnd + compressedSize;
   }
 }
+
+test('standalone bot export streams ZIP64 media files and verifies their SHA-256 records', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-bot-stream-'));
+  try {
+    const sourcePath = path.join(directory, 'media.bin');
+    const sourceBytes = Buffer.from('streamed bot media file');
+    fs.writeFileSync(sourcePath, sourceBytes);
+    const sha256 = createHash('sha256').update(sourceBytes).digest('hex');
+    const archiveStream = buildBotArchive([], [], [], {
+      stream: true,
+      mediaAssets: [{
+        id: 'media_11111111-1111-4111-8111-111111111111',
+        filename: 'media.bin',
+        contentType: 'application/octet-stream',
+        size: sourceBytes.length,
+        sha256,
+        archiveSource: { path: sourcePath, expectedSha256: sha256 }
+      }]
+    });
+    const chunks = [];
+    for await (const chunk of archiveStream) chunks.push(chunk);
+    const archive = Buffer.concat(chunks);
+    assert.equal(archiveStream.archiveLength, BigInt(archive.length));
+    const entries = readZip64Entries(archive);
+    assert.deepEqual(entries.get('media/media_11111111-1111-4111-8111-111111111111.bin'), sourceBytes);
+    const manifest = JSON.parse(entries.get('integrity.json').toString('utf8'));
+    assert.equal(manifest.files['media/media_11111111-1111-4111-8111-111111111111.bin'], sha256);
+    for (const [name, digest] of Object.entries(manifest.files)) {
+      assert.equal(createHash('sha256').update(entries.get(name)).digest('hex'), digest, name);
+    }
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test('standalone bot export refreshes APP_LATENCY at intervals and falls back to zero', () => {
   const archive = buildBotArchive([], [{
