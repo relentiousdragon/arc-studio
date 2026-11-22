@@ -1743,6 +1743,17 @@ kbd {
   font-size: calc((10px) * var(--arc-font-scale, 1));
 }
 
+.project-import-analysis-status progress {
+  display: block;
+  width: 100%;
+  height: 6px;
+  margin-top: 8px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  accent-color: var(--accent);
+}
+
 .project-import-warning>label,
 .project-import-warning .project-import-checkbox-label {
   display: flex;
