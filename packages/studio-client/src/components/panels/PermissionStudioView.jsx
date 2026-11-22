@@ -104,7 +104,7 @@ export function PermissionStudioView({ mode = 'role', nodeName = 'Permissions', 
   return <section className="permission-studio" aria-label="Permission editor">
     <header className="permission-studio-header">
       <button type="button" className="permission-studio-back" onClick={close}><ArrowLeft size={16} /> Back</button>
-      <div className="permission-studio-title"><div><h1>{isCommand ? 'Command permissions' : 'Permission editor'}</h1><p>{nodeName} · {isOverwrite ? 'Channel access rules' : isCommand ? 'Slash command defaults' : 'Role permissions'}</p></div></div>
+      <div className="permission-studio-title"><div><h1>{isCommand ? 'Command permissions' : 'Permission editor'}</h1><p>{nodeName} · {isOverwrite ? 'Channel access rules' : isCommand ? 'Application command defaults' : 'Role permissions'}</p></div></div>
       <button type="button" className="permission-studio-apply" onClick={apply} disabled={invalidBitfield}><Check size={15} /> Apply</button>
     </header>
     <div className="permission-studio-toolbar">
