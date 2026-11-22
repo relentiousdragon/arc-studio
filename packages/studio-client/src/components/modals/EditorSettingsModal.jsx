@@ -260,6 +260,7 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
         else arcEvents.emit('toast:notify', { title: 'Notifications unavailable', message: 'Allow ARC Studio notifications in your system settings, then enable them here.', type: 'warning' });
       }} />}
       <Toggle label="Compact context menus" description="Use tighter spacing in right-click menus" checked={settings.compactContextMenus ?? false} onChange={(value) => update('compactContextMenus', value)} />
+      <Toggle label="Compact nodes" description="Show node names in the header and hide extra unused fallback fields until revealed" checked={settings.compactNodes ?? false} onChange={(value) => update('compactNodes', value)} />
     </div>}
 
     {activeTab === 'security' && externalWorkspace && passkeysSupported && <div className="settings-section settings-tab-content">
