@@ -47,6 +47,16 @@ function readProjectImportPassword(req) {
   return Buffer.from(encoded, 'base64url').toString('utf8');
 }
 
+function readProjectImportName(req) {
+  if (req.headers['x-arc-project-name'] === undefined) return undefined;
+  const encoded = String(req.headers['x-arc-project-name'] || '');
+  if (!encoded || encoded.length > 512 || !/^[A-Za-z0-9_-]+$/.test(encoded)) throw new TypeError('The new project name is invalid.');
+  const bytes = Buffer.from(encoded, 'base64url');
+  if (bytes.toString('base64url') !== encoded) throw new TypeError('The new project name is invalid.');
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+  catch { throw new TypeError('The new project name is invalid.'); }
+}
+
 function graphNodeChanges(previous, next) {
   const before = new Map((previous?.nodes || []).filter((node) => node && typeof node === 'object').map((node) => [node.id, node]));
   const after = new Map((next?.nodes || []).filter((node) => node && typeof node === 'object').map((node) => [node.id, node]));
@@ -75,6 +85,11 @@ function graphNodeChanges(previous, next) {
 
 export function createApiRouter(botManager, userStore, logger, managerForUser = () => botManager, broadcastWorkspace = () => {}, isUserOnline = () => false, clearDeletedGraphCollaboration = () => {}, onGraphSaved = () => {}, broadcastProject = () => {}, disconnectUnknownClients = () => {}) {
   const router = Router();
+  const isProjectRecoveryRequest = (req) => {
+    if (req.method === 'GET' && ['/auth/me', '/nodes/registry', '/projects', '/projects/templates'].includes(req.path)) return true;
+    if (req.method === 'POST' && ['/projects', '/projects/initialize'].includes(req.path)) return true;
+    return req.method === 'POST' && /^\/projects\/[^/]+\/activate$/.test(req.path);
+  };
   router.param('projectId', (req, _res, next, projectId) => {
     req.params.projectId = normalizeProjectRouteId(projectId);
     next();
@@ -785,7 +800,20 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
 //
   router.use(authMiddleware);
   router.use((req, res, next) => {
-    const manager = managerForUser(req.user);
+    let manager;
+    try {
+      manager = managerForUser(req.user) || botManager;
+    } catch (error) {
+      const projectId = String(req.user?.activeProjectId || '');
+      logger.log('ERROR', `Could not load active project ${projectId || '(none)'} for API request ${req.method} ${req.path}: ${error.message || error}`);
+      if (!isProjectRecoveryRequest(req)) {
+        return res.status(503).json({
+          code: 'PROJECT_UNAVAILABLE',
+          error: 'The active project could not be opened. Choose another project or create a new one.'
+        });
+      }
+      manager = botManager;
+    }
     botManagerContext.run(manager, next);
   });
 
@@ -933,6 +961,28 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     } catch (error) { res.status(404).json({ error: error.message }); }
   });
 
+  router.post('/projects/:projectId/export/archive', requirePermission('graphs:read'), async (req, res) => {
+    try {
+      const projectId = normalizeProjectRouteId(req.params.projectId);
+      const project = botManager.projectStore.projects.find((item) => item.id === projectId);
+      if (!project) return res.status(404).json({ error: 'That project no longer exists.' });
+      const projectManager = managerForUser({ ...req.user, activeProjectId: projectId }) || botManager;
+      const bytes = await botManager.projectStore.exportProjectArchive(projectId, {
+        password: typeof req.body?.password === 'string' ? req.body.password : '',
+        includeSecrets: req.body?.includeSecrets === true,
+        pluginRequirements: PluginStore.projectRequirements(projectManager.graphs),
+        secretValueResolver: (scope, graphId, variableId) => projectManager.getSecretValue(scope, graphId, variableId)
+      });
+      res.setHeader('Cache-Control', 'no-store, private');
+      res.setHeader('Content-Type', 'application/vnd.arc-studio.project+zip');
+      res.setHeader('Content-Length', String(bytes.byteLength));
+      res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`${project.name}.arcproject`)}`);
+      return res.end(bytes);
+    } catch (error) {
+      return res.status(400).json({ error: error.message || 'Could not export the project.' });
+    }
+  });
+
   router.post('/projects/:projectId/export/encrypted', requirePermission('graphs:read'), async (req, res) => {
     try {
       const projectManager = managerForUser({ ...req.user, activeProjectId: req.params.projectId }) || botManager;
@@ -965,7 +1015,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
         });
       }
       const integrityWarning = !bundle?.integrity;
-      const project = botManager.projectStore.importProject(bundle, { trusted: req.headers['x-arc-trusted'] === 'true', allowOldVersion: req.headers['x-arc-allow-old-version'] === 'true', ownerId: req.user.id });
+      const project = botManager.projectStore.importProject(bundle, { trusted: req.headers['x-arc-trusted'] === 'true', allowOldVersion: req.headers['x-arc-allow-old-version'] === 'true', ownerId: req.user.id, projectName: readProjectImportName(req) });
       const importedManager = managerForUser({ ...req.user, activeProjectId: project.id });
       importedManager?.importProjectSecretValues();
       const pluginImportResults = [];
@@ -997,6 +1047,9 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     } catch (error) {
       if (error.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' || error.code === 'PROJECT_REQUIRES_NEWER_ARC') {
         return res.status(409).json({ error: error.message, code: error.code, projectVersion: error.projectVersion || null, currentVersion: error.currentVersion || null, unknownProjectVersion: error.unknownProjectVersion === true });
+      }
+      if (error.code === 'PROJECT_NAME_CONFLICT') {
+        return res.status(409).json({ error: error.message, code: error.code, projectName: error.projectName, suggestedName: error.suggestedName });
       }
       res.status(400).json({ error: error.message, ...(error.code ? { code: error.code } : {}) });
     }
@@ -1065,15 +1118,33 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     try {
       const project = botManager.projectStore.projects.find((item) => item.id === req.params.projectId);
       if (!project) throw new Error('That project no longer exists.');
-      userStore.setActiveProject(req.user.id, project.id);
-      recordTeamActivity(req, 'project.opened', `Opened project “${project.name}”`, { projectId: project.id });
       const selectedManager = managerForUser({ ...req.user, activeProjectId: project.id });
       const selectedEmbedStore = new EmbedStore(path.join(selectedManager.projectDir, 'embeds.json'));
       const embeds = selectedEmbedStore.list();
-      res.json({ success: true, project, ...selectedManager.getProjects(), graphs: selectedManager.getGraphs(), graphLibrary: selectedManager.getGraphLibrary(), projectVariables: selectedManager.getProjectVariables(), botProfile: selectedManager.botProfile, botStatus: selectedManager.status, botMetrics: selectedManager.gatewayMetrics, logs: selectedManager.getLogs().slice(-100), embeds });
+      const payload = { success: true, project, ...selectedManager.getProjects(), graphs: selectedManager.getGraphs(), graphLibrary: selectedManager.getGraphLibrary(), projectVariables: selectedManager.getProjectVariables(), botProfile: selectedManager.botProfile, botStatus: selectedManager.status, botMetrics: selectedManager.gatewayMetrics, logs: selectedManager.getLogs().slice(-100), embeds };
+      userStore.setActiveProject(req.user.id, project.id);
+      recordTeamActivity(req, 'project.opened', `Opened project “${project.name}”`, { projectId: project.id });
+      res.json(payload);
     } catch (error) {
       logger.log('ERROR', `Could not activate project ${req.params.projectId}: ${error.message}`);
       res.status(400).json({ error: error.message });
+    }
+  });
+
+  router.patch('/projects/:projectId/rename', requirePermission('graphs:write'), (req, res) => {
+    try {
+      const previous = botManager.projectStore.projects.find((item) => item.id === req.params.projectId);
+      if (!previous) return res.status(404).json({ error: 'That project no longer exists.' });
+      const previousName = previous.name;
+      const project = botManager.projectStore.renameProject(req.params.projectId, req.body?.name);
+      if (previousName !== project.name) {
+        recordTeamActivity(req, 'project.renamed', `Renamed project “${previousName}” to “${project.name}”`, { projectId: project.id });
+      }
+      broadcastWorkspace({ type: 'PROJECTS_UPDATED', payload: botManager.projectStore.list() });
+      return res.json({ success: true, project, ...botManager.getProjects() });
+    } catch (error) {
+      if (error.code === 'PROJECT_NAME_CONFLICT') return res.status(409).json({ error: error.message, code: error.code });
+      return res.status(400).json({ error: error.message || 'Could not rename the project.' });
     }
   });
 
