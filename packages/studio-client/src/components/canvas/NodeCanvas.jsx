@@ -339,7 +339,7 @@ export function NodeCanvas({
   isActive = true,
   nodes: suppliedNodes = [], connections: suppliedConnections = [], graphId = '', projectId = '', focusRequest = null, followRequest = null, onFollowComplete, activePulseNodeIds = [], debugStep = null, simulationOverlay = null, onClearSimulationOverlay, onDebugAction, settings = {}, isLocked = false, canvasLocked = isLocked, canWriteGraphs = true, desktopMode = false, shortcutPlatform = 'windows', authToken = '', graphName = 'Untitled graph',
   tagGroups = [], notes = [], arrows = [], transientArrows = [], currentUser = null, projectOwnerId = '', noteEditLocks = {}, nodeMoveLocks = {}, collaborationOnline = false, collaborationReady = false, collaborationMotionSupported = false, collaborationClientId = '', onRequestNoteEditLock, onReleaseNoteEditLock, onRequestNodeMoveLock, onReleaseNodeMoveLock, onNotesChange, onArrowsChange, onCanvasArrowAction, onTagGroupsChange, onRequestCreateTagGroup, onRequestEditTagGroup, onRenameNode,
-  graphVariables = [], eventTemplatePaths = [], functionGraphs = [], callableGraphs = functionGraphs, appEmojis = [], mediaAssets = [], onUploadMedia, onLoadMediaContent, nodeDefinitions = BuiltInNodeDefinitions, nodeDefinitionsReady = false, onNodesChange, onConnectionsChange, onOpenPalette, onViewportCenterChange, onSelectedNodeChange, onSelectedNodeCountChange, onOpenLibrary, onOpenVariables,
+  graphVariables = [], validationWarningItems = [], ignoredWarningItems = [], onSetGraphWarningIgnored, eventTemplatePaths = [], functionGraphs = [], callableGraphs = functionGraphs, appEmojis = [], mediaAssets = [], onUploadMedia, onLoadMediaContent, nodeDefinitions = BuiltInNodeDefinitions, nodeDefinitionsReady = false, onNodesChange, onConnectionsChange, onOpenPalette, onViewportCenterChange, onSelectedNodeChange, onSelectedNodeCountChange, onOpenLibrary, onOpenVariables,
   onHistoryGroupStart, onHistoryGroupEnd, onNodeDrop, onSaveNodePrefab, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph, remoteActions = [], onCollaborationAction, onNodeMoveCommit,
   graphChatEnabled = false, graphChatBubbles = [], graphChatHistory = [], onSendGraphChat, onMoveGraphChatBubble
 }) {
@@ -5050,7 +5050,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
             : 'This node type is not supported by this ARC Studio version or its plugin is not installed.';
           return (
             <div
-              className={`node-position ${shakingNodeId === node.id ? 'is-shaking' : ''} ${isSelected ? 'is-selected' : ''} ${isFindMatch ? 'is-canvas-find-match' : ''} ${isFindCurrent ? 'is-canvas-find-current' : ''} ${remoteOwner || nodeMoveLocked ? 'is-collaborator-active' : ''} ${remoteVisual.dragging ? 'is-collaborator-dragging' : ''} ${nodeMoveLocked ? 'is-node-move-locked' : ''} ${remotePosition ? 'is-remote-moving' : ''} ${remoteSelection ? 'is-collaborator-selected' : ''} ${nodeLoadFailed ? 'is-node-load-failed' : ''}`}
+              className={`node-position ${draggingNode && (draggingNode.nodeIds || [draggingNode.id]).includes(node.id) && draggingNode.historyStarted && !draggingNode.released ? 'is-node-dragging' : ''} ${shakingNodeId === node.id ? 'is-shaking' : ''} ${isSelected ? 'is-selected' : ''} ${isFindMatch ? 'is-canvas-find-match' : ''} ${isFindCurrent ? 'is-canvas-find-current' : ''} ${remoteOwner || nodeMoveLocked ? 'is-collaborator-active' : ''} ${remoteVisual.dragging ? 'is-collaborator-dragging' : ''} ${nodeMoveLocked ? 'is-node-move-locked' : ''} ${remotePosition ? 'is-remote-moving' : ''} ${remoteSelection ? 'is-collaborator-selected' : ''} ${nodeLoadFailed ? 'is-node-load-failed' : ''}`}
               key={node.id}
               style={{ transform: `translate3d(${displayPosition.x}px, ${displayPosition.y}px, 0)`, zIndex: isSelected ? 16 : isWireRelated ? 14 : undefined, '--collaborator-color': remoteOwner?.color || nodeMoveLock?.color }}
               inert={nodeMoveLocked || undefined}
@@ -5069,7 +5069,10 @@ const previewOutput = (node, outputId, seen = new Set()) => {
                 connectedInputIds={connectedInputIds.get(node.id) || EMPTY_PIN_SET}
                 connectedOutputIds={connectionByNodePin.outgoing.get(node.id) || EMPTY_PIN_SET}
                 pinRevealEnabled={settings.progressiveSocketReveal !== false}
+                compactNodes={settings.compactNodes === true}
+                isNodeDragging={Boolean(draggingNode && (draggingNode.nodeIds || [draggingNode.id]).includes(node.id) && draggingNode.historyStarted && !draggingNode.released)}
                 isConnectingWire={Boolean(connectingWire?.nodeId === node.id || pendingPinDragNodeId === node.id)}
+                connectingPin={connectingWire?.nodeId === node.id ? connectingWire : pendingPinDragNodeId === node.id ? pendingPinDragRef.current : null}
                 autoRevealInputs={autoRevealInputNodeIds.has(node.id) || remoteSocketReveal.inputs}
                 autoRevealOutputs={remoteSocketReveal.outputs}
                 incomingConnections={connectionByNodePin.incoming.get(node.id)}
@@ -5387,6 +5390,17 @@ const previewOutput = (node, outputId, seen = new Set()) => {
           })()}
           <button role="menuitem" onClick={() => { copyNodes(contextMenu.nodeIds?.length ? contextMenu.nodeIds : [contextMenu.nodeId]); setContextMenu(null); }}>Copy {contextMenu.nodeIds?.length > 1 ? `${contextMenu.nodeIds.length} nodes` : 'node'} <span className="context-shortcut"><kbd>{shortcutModifier}</kbd><kbd>C</kbd></span></button>
           <button role="menuitem" disabled={isLocked || isNodeBeingMovedByOther(contextMenu.nodeId)} onClick={() => { onRenameNode?.(nodes.find((node) => node.id === contextMenu.nodeId)); setContextMenu(null); }}>Rename node <span className="context-shortcut"><kbd>{shortcutModifier}</kbd><kbd>R</kbd></span><span className="context-shortcut"><kbd>F11</kbd></span></button>
+          {(() => {
+            const targetIds = contextMenu.nodeIds?.length ? contextMenu.nodeIds : [contextMenu.nodeId];
+            const currentWarnings = validationWarningItems.filter((item) => targetIds.includes(item.nodeId));
+            const ignoredWarnings = ignoredWarningItems.filter((item) => targetIds.includes(item.nodeId));
+            if (!currentWarnings.length && !ignoredWarnings.length) return null;
+            return <>
+              <div className="context-menu-heading">Graph warnings</div>
+              {currentWarnings.map((item) => <button key={`ignore-${item.nodeId}-${item.message}`} role="menuitem" title={item.message} onClick={() => { onSetGraphWarningIgnored?.(item, true); setContextMenu(null); }}><span className="context-menu-item-label">Ignore warning · {item.message}</span></button>)}
+              {ignoredWarnings.map((item) => <button key={`restore-${item.nodeId}-${item.message}`} role="menuitem" title={item.message} onClick={() => { onSetGraphWarningIgnored?.(item, false); setContextMenu(null); }}><span className="context-menu-item-label">Show warning · {item.message}</span></button>)}
+            </>;
+          })()}
           <button role="menuitem" disabled={isLocked || contextMenu.nodeIds?.some(isNodeBeingMovedByOther)} onClick={() => { onRequestCreateTagGroup?.(contextMenu.nodeIds); setContextMenu(null); }}>Create color section… <span className="context-shortcut"><kbd>Shift</kbd><kbd>G</kbd></span></button>
           {(() => {
             const selectedIds = (contextMenu.nodeIds?.length ? contextMenu.nodeIds : [contextMenu.nodeId]).filter((id) => nodes.some((node) => node.id === id));
