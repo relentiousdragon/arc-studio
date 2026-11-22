@@ -155,18 +155,30 @@ export class GraphRunner {
       try {
         const values = JSON.parse(fs.readFileSync(path.join(context.projectDir, 'media-assets.json'), 'utf8'));
         if (!Array.isArray(values)) return new Map();
-        return new Map(values.flatMap((asset) => {
-          if (!asset || typeof asset.id !== 'string' || typeof asset.contentType !== 'string' || typeof asset.sha256 !== 'string') return [];
-          try {
-            const bytes = typeof asset.data === 'string'
-              ? Buffer.from(asset.data.slice(asset.data.indexOf(',') + 1), 'base64')
-              : fs.readFileSync(path.join(context.projectDir, 'media', `${asset.id}.bin`));
-            if (createHash('sha256').update(bytes).digest('hex') !== asset.sha256) return [];
-            return [[asset.id, { ...asset, data: `data:${asset.contentType};base64,${bytes.toString('base64')}` }]];
-          } catch { return []; }
-        }));
+        return new Map(values.flatMap((asset) => asset && typeof asset.id === 'string'
+          && /^media_[0-9a-f-]{36}$/i.test(asset.id)
+          && typeof asset.filename === 'string'
+          && typeof asset.contentType === 'string'
+          && typeof asset.sha256 === 'string'
+          && /^[a-f0-9]{64}$/i.test(asset.sha256)
+          && Number.isSafeInteger(Number(asset.size)) && Number(asset.size) > 0
+          ? [[asset.id, asset]] : []));
       } catch { return new Map(); }
     })();
+    const resolvedProjectMedia = new Map();
+    const resolveProjectMedia = async (file) => {
+      if (file?.data) return file;
+      const asset = projectMediaById.get(file?.assetId || file?.id);
+      if (!asset || !context.projectDir) return null;
+      if (resolvedProjectMedia.has(asset.id)) return resolvedProjectMedia.get(asset.id);
+      const bytes = await fs.promises.readFile(path.join(context.projectDir, 'media', `${asset.id}.bin`));
+      if (bytes.length !== Number(asset.size) || createHash('sha256').update(bytes).digest('hex') !== asset.sha256) {
+        throw new Error(`Project media integrity check failed for ${asset.filename}.`);
+      }
+      const resolved = { ...asset, data: `data:${asset.contentType};base64,${bytes.toString('base64')}` };
+      resolvedProjectMedia.set(asset.id, resolved);
+      return resolved;
+    };
     let appAvatarAttachmentPromise = null;
     const templateResolutionOptions = (allowProjectMedia = false) => {
       const appUser = context.client?.user;
@@ -572,7 +584,7 @@ export class GraphRunner {
       const files = [...(Array.isArray(normalizedConnectedFiles) ? normalizedConnectedFiles : normalizedConnectedFiles?.filename && normalizedConnectedFiles?.data ? [normalizedConnectedFiles] : []), ...(Array.isArray(node.data?.attachments) ? node.data.attachments : []), ...(Array.isArray(embedNode?.data?.attachments) ? embedNode.data.attachments : []), ...(Array.isArray(componentsNode?.data?.attachments) ? componentsNode.data.attachments : [])];
       const unique = new Map();
       for (const file of files) {
-        const resolved = file?.data ? file : projectMediaById.get(file?.assetId || file?.id);
+        const resolved = await resolveProjectMedia(file);
         if (resolved?.filename && resolved?.data) unique.set(String(resolved.filename).toLowerCase(), resolved);
       }
       const referencedContent = (() => { try { return JSON.stringify([node.data || {}, referencedPayload]); } catch { return ''; } })();
