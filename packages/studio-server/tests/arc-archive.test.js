@@ -1,11 +1,141 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createCipheriv, randomBytes, scryptSync } from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { pipeline } from 'node:stream/promises';
+import { createCipheriv, createHash, randomBytes, scryptSync } from 'node:crypto';
 import { createArcArchive, isArcArchive, readArcArchive } from '../src/storage/ArcArchive.js';
+import { createArcArchiveStream, createEncryptedArcProjectArchiveStream } from '../src/storage/ArcArchiveStream.js';
+import { inspectArcProjectArchive, prepareArcProjectImport } from '../src/storage/ArcArchiveFile.js';
+import { ProjectMediaStore } from '../src/engine/ProjectMediaStore.js';
 import { ProjectStore } from '../src/storage/ProjectStore.js';
 
 const imageData = 'data:image/png;base64,iVBORw0KGgo=';
 //
+async function collectStream(stream) {
+  const chunks = [];
+  for await (const chunk of stream) chunks.push(chunk);
+  return Buffer.concat(chunks);
+}
+
+function streamedProjectFixture() {
+  const id = 'media_11111111-1111-4111-8111-111111111111';
+  const name = `attachments/${id}.bin`;
+  const media = Buffer.from('streamed project media');
+  const sha256 = createHash('sha256').update(media).digest('hex');
+  return {
+    payload: {
+      format: 'arc-project', version: 1, project: { name: 'Stream fixture' },
+      files: {
+        'graphs.json': { graphs: [{ id: 'graph_fixture', nodes: [{ id: 'node_fixture', data: { attachments: [{ assetId: id, filename: 'data.bin' }] } }], connections: [] }] },
+        'media-assets.json': [{ id, filename: 'data.bin', contentType: 'application/octet-stream', size: media.length, sha256, data: `arc-attachment://${name}?mime=application%2Foctet-stream` }]
+      }
+    },
+    sources: new Map([[name, { bytes: media, expectedSha256: sha256 }]])
+  };
+}
+
+test('streamed ZIP64 project archives restore media references and verify content hashes', async () => {
+  const { payload, sources } = streamedProjectFixture();
+  const archive = await collectStream(await createArcArchiveStream(payload, sources));
+  assert.equal(isArcArchive(archive), true);
+  const restored = await readArcArchive(archive, 'arc-project');
+  assert.equal(restored.files['media-assets.json'][0].data, 'data:application/octet-stream;base64,c3RyZWFtZWQgcHJvamVjdCBtZWRpYQ==');
+});
+
+test('streamed encrypted ZIP64 exports decrypt and reject modified authentication tags', async () => {
+  const { payload, sources } = streamedProjectFixture();
+  const password = 'correct horse battery staple';
+  const archive = await collectStream(await createEncryptedArcProjectArchiveStream(payload, sources, password));
+  const envelope = await readArcArchive(archive, 'arc-project');
+  assert.equal(envelope.format, 'arc-project-encrypted');
+  const restored = await ProjectStore.prototype.decryptProjectBundle.call({}, envelope, password);
+  assert.equal(restored.project.name, payload.project.name);
+  assert.equal(restored.files['media-assets.json'][0].data, 'data:application/octet-stream;base64,c3RyZWFtZWQgcHJvamVjdCBtZWRpYQ==');
+  await assert.rejects(ProjectStore.prototype.decryptProjectBundle.call({}, { ...envelope, tag: Buffer.alloc(16).toString('base64') }, password), /incorrect or.*damaged/);
+});
+
+test('disk staged project import keeps media IDs and copies archive assets with bounded buffers', async () => {
+  const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'arc-project-import-'));
+  try {
+    const { payload, sources } = streamedProjectFixture();
+    const archivePath = path.join(directory, 'project.arcproject');
+    await pipeline(await createArcArchiveStream(payload, sources), fs.createWriteStream(archivePath, { mode: 0o600 }));
+    const inspection = await inspectArcProjectArchive(archivePath);
+    assert.equal(inspection.encrypted, false);
+    const prepared = await prepareArcProjectImport(archivePath, { stagingDirectory: directory });
+    const projectRoot = path.join(directory, 'projects');
+    const store = Object.create(ProjectStore.prototype);
+    store.projects = [];
+    store.maxProjects = null;
+    store.directory = (id) => path.join(projectRoot, id);
+    store.persist = () => {};
+    const project = await store.importProjectFromArchive(prepared.bundle, prepared.sources, { trusted: true, allowOldVersion: true });
+    const savedAssets = JSON.parse(fs.readFileSync(path.join(store.directory(project.id), 'media-assets.json'), 'utf8'));
+    const savedGraphs = JSON.parse(fs.readFileSync(path.join(store.directory(project.id), 'graphs.json'), 'utf8'));
+    const media = new ProjectMediaStore(store.directory(project.id)).getBytes('media_11111111-1111-4111-8111-111111111111');
+    assert.equal(savedAssets[0].id, 'media_11111111-1111-4111-8111-111111111111');
+    assert.equal(Object.hasOwn(savedAssets[0], 'data'), false);
+    assert.equal(savedGraphs.graphs[0].nodes[0].data.attachments[0].assetId, savedAssets[0].id);
+    assert.deepEqual(media.bytes, Buffer.from('streamed project media'));
+    const cancelledStore = Object.create(ProjectStore.prototype);
+    cancelledStore.projects = [];
+    cancelledStore.maxProjects = null;
+    cancelledStore.directory = (id) => path.join(directory, 'cancelled-projects', id);
+    cancelledStore.persist = () => {};
+    const controller = new AbortController();
+    controller.abort(new Error('Project import cancelled.'));
+    await assert.rejects(cancelledStore.importProjectFromArchive(prepared.bundle, prepared.sources, { trusted: true, allowOldVersion: true, signal: controller.signal }));
+    assert.equal(cancelledStore.projects.length, 0);
+    assert.deepEqual(fs.readdirSync(path.join(directory, 'cancelled-projects')), []);
+    await prepared.cleanup();
+  } finally {
+    await fs.promises.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('asynchronous media validation rejects missing blobs instead of exporting an empty library', async () => {
+  const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'arc-media-validation-'));
+  try {
+    await fs.promises.writeFile(path.join(directory, 'media-assets.json'), JSON.stringify([{
+      id: 'media_11111111-1111-4111-8111-111111111111',
+      filename: 'missing.bin',
+      contentType: 'application/octet-stream',
+      size: 16,
+      sha256: '0'.repeat(64)
+    }]));
+    await assert.rejects(new ProjectMediaStore(directory).listAsync(), /media library could not be read/);
+  } finally {
+    await fs.promises.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('encrypted disk staged imports retain ciphertext after password errors and honor cancellation', async () => {
+  const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'arc-encrypted-import-'));
+  try {
+    const { payload, sources } = streamedProjectFixture();
+    const archivePath = path.join(directory, 'encrypted.arcproject');
+    await pipeline(await createEncryptedArcProjectArchiveStream(payload, sources, 'correct horse battery staple'), fs.createWriteStream(archivePath, { mode: 0o600 }));
+    assert.equal((await inspectArcProjectArchive(archivePath)).encrypted, true);
+    await assert.rejects(prepareArcProjectImport(archivePath, { stagingDirectory: directory }), (error) => error.code === 'PROJECT_PASSWORD_REQUIRED');
+    await assert.rejects(prepareArcProjectImport(archivePath, { password: 'wrong password value', stagingDirectory: directory }), (error) => error.code === 'PROJECT_PASSWORD_INVALID');
+    assert.equal(fs.existsSync(archivePath), true);
+    const prepared = await prepareArcProjectImport(archivePath, { password: 'correct horse battery staple', stagingDirectory: directory });
+    assert.equal(prepared.bundle.format, 'arc-project');
+    await prepared.cleanup();
+
+    const cancelledArchivePath = path.join(directory, 'cancelled.arcproject');
+    await pipeline(await createArcArchiveStream(payload, sources), fs.createWriteStream(cancelledArchivePath, { mode: 0o600 }));
+    const controller = new AbortController();
+    controller.abort(new Error('Project import cancelled.'));
+    await assert.rejects(inspectArcProjectArchive(cancelledArchivePath, { signal: controller.signal }));
+    await assert.rejects(prepareArcProjectImport(cancelledArchivePath, { stagingDirectory: directory, signal: controller.signal }));
+  } finally {
+    await fs.promises.rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('graph archives store attachments as separate ZIP entries and restore them intact', async () => {
   const graph = {
     format: 'arc-graph', version: 1,
