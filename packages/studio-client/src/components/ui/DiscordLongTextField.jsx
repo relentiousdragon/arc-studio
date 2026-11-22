@@ -3,12 +3,14 @@ import { ArrowUpRight, Code2 } from 'lucide-react';
 //
 export const LONG_TEXT_THRESHOLD = 500;
 
-export function DiscordLongTextField({ value = '', onOpenEditor, label = 'Message text', maxLength }) {
+export function DiscordLongTextField({ value = '', onOpenEditor, label = 'Message text', maxLength, force = false }) {
   const text = String(value ?? '');
-  if (text.length <= LONG_TEXT_THRESHOLD) return null;
-  return <div className="long-discord-text-card">
-    <div className="long-discord-text-summary"><Code2 size={14} /><span>{label}</span><small>{text.length.toLocaleString()}{maxLength ? ` / ${maxLength.toLocaleString()}` : ''} characters</small></div>
-    <button type="button" className="embed-node-open" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onOpenEditor?.(); }}><ArrowUpRight size={13} /> Edit</button>
+  if (text.length <= LONG_TEXT_THRESHOLD && !force) return null;
+  const overLimit = maxLength != null && text.length > Number(maxLength);
+  const openEditor = () => onOpenEditor?.();
+  return <div className="long-discord-text-card" role="button" tabIndex={0} onPointerDown={(event) => event.stopPropagation()} onClick={openEditor} onKeyDown={(event) => { if (event.target !== event.currentTarget) return; if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openEditor(); } }}>
+    <div className="long-discord-text-summary"><Code2 size={14} /><span>{label}</span><small className={overLimit ? 'is-over-limit' : undefined}>{text.length.toLocaleString()}{maxLength != null ? ` / ${Number(maxLength).toLocaleString()}` : ''} chars</small></div>
+    <button type="button" className="embed-node-open" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); openEditor(); }}><ArrowUpRight size={13} /> Edit</button>
   </div>;
 }
 
