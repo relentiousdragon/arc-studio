@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Activity, AlertTriangle, Archive, Check, ChevronDown, ChevronLeft, ChevronUp, CircleCheck, CircleX, ClipboardCopy, Cpu, ExternalLink, FileText,
+  Activity, AlertTriangle, Archive, Check, ChevronDown, ChevronLeft, ChevronUp, CircleCheck, CircleX, ClipboardCopy, Cpu, FileText,
   GitCompare, PictureInPicture2, Play, Plus, Save, Search, ShieldCheck, Smile, Square, StepForward, Terminal, Trash2, Upload, X
 } from 'lucide-react';
 import { arcEvents } from '../../core/ArcEvents.js';
@@ -159,7 +159,7 @@ function resolveLogNodeTarget(log, activeTabId) {
 
 export function ControlDock({
   logs = [], botStatus = 'DISCONNECTED', discordAuthWarning = null, botMetrics = {}, botProfile, activeTabId, activeProjectId = '', authToken, onEmojisChange, emojiCacheScope = '', networkOnline = true, cachedAppEmojis = [],
-  graphs = [], graphLookup = new Map(), graphValidationReports = [], graphNodes = [], nodeDefinitions = BuiltInNodeDefinitions, isLocked = false, canControlBot = false, consoleOpenRequest = 0, gatewayStartedRequest = 0, commandBrowserRequest = 0, onClearLogs, onStartBot, onStopBot, onEnsureGraphsSaved, onOpenGraph, onTraceLog, onTraceIssue, onIntentSummaryChange, onOpenTextStudio, onOpenChange
+  graphs = [], graphLookup = new Map(), graphValidationReports = [], graphNodes = [], nodeDefinitions = BuiltInNodeDefinitions, compactContextMenus = false, isLocked = false, canControlBot = false, consoleOpenRequest = 0, gatewayStartedRequest = 0, commandBrowserRequest = 0, onClearLogs, onStartBot, onStopBot, onEnsureGraphsSaved, onOpenGraph, onTraceLog, onTraceIssue, onIntentSummaryChange, onOpenTextStudio, onOpenChange
 }) {
   const [isOpen, setIsOpen] = useState(false);
   useEffect(() => {
@@ -205,11 +205,13 @@ export function ControlDock({
   const [filterLevel, setFilterLevel] = useState('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [showDebugLogs, setShowDebugLogs] = useState(() => readAppStorage('arc_console_show_debug_logs') === 'true');
+  const [expandedLogGroups, setExpandedLogGroups] = useState(() => new Set());
   const [logFiles, setLogFiles] = useState([]);
   const [selectedFile, setSelectedFile] = useState('');
   const [fileContent, setFileContent] = useState(null);
   const [consoleContextMenu, setConsoleContextMenu] = useState(null);
   const [consoleContextLog, setConsoleContextLog] = useState(null);
+  const consoleContextMenuRef = useRef(null);
   const lastProjectIdRef = useRef(activeProjectId);
 
   const closeConsolePopup = () => {
@@ -703,6 +705,28 @@ export function ControlDock({
     const queryMatches = !searchQuery || `${log.message} ${log.level}`.toLowerCase().includes(searchQuery.toLowerCase());
     return levelMatches && debugMatches && queryMatches;
   }), [logs, filterLevel, searchQuery, showDebugLogs]);
+  const logGroups = useMemo(() => {
+    const signature = (log) => {
+      const target = resolveLogNodeTarget(log, activeTabId);
+      const graphId = log?.meta?.graphId || target?.graphId || '';
+      const nodeId = log?.meta?.nodeId || target?.nodeId || '';
+      return `${String(log.level || 'INFO').toUpperCase()}\0${String(log.message ?? '')}\0${graphId}\0${nodeId}`;
+    };
+    const groups = [];
+    for (const log of filteredLogs) {
+      const level = String(log.level || 'INFO').toUpperCase();
+      const key = ['WARN', 'ERROR'].includes(level) ? signature(log) : `${signature(log)}\0${log.id}`;
+      const timestamp = new Date(log.timestamp).getTime();
+      const last = groups.at(-1);
+      const withinRepeatWindow = Number.isFinite(timestamp) && Number.isFinite(last?.lastTimestamp)
+        && timestamp >= last.lastTimestamp && timestamp - last.lastTimestamp <= 70_000;
+      if (last?.signature === key && withinRepeatWindow) {
+        last.logs.push(log);
+        last.lastTimestamp = timestamp;
+      } else groups.push({ key: `${key}\0${log.id}`, signature: key, lastTimestamp: timestamp, logs: [log] });
+    }
+    return groups;
+  }, [activeTabId, filteredLogs]);
 
   const openTab = (tab) => { setActiveTab(tab); setIsOpen(true); };
 
@@ -822,15 +846,11 @@ export function ControlDock({
     return off;
   }, [debugRunId, debugAdvancing, authToken]);
 
-  const openConsoleContextMenu = (event, log) => {
+  const openConsoleContextMenu = (event, log, groupKey = '') => {
     event.preventDefault();
     event.stopPropagation();
-    const scale = getArcUiScale();
     setConsoleContextLog(log);
-    setConsoleContextMenu({
-      x: Math.max(8, Math.min(event.clientX / scale, (window.visualViewport?.width || window.innerWidth) / scale - 188)),
-      y: Math.max(8, Math.min(event.clientY / scale, (window.visualViewport?.height || window.innerHeight) / scale - 104))
-    });
+    setConsoleContextMenu({ x: event.clientX, y: event.clientY, groupKey });
   };
 
   const copyConsoleText = async (text) => {
@@ -886,6 +906,27 @@ export function ControlDock({
       removePageBlurListener();
     };
   }, [consoleContextMenu]);
+
+  useLayoutEffect(() => {
+    if (!consoleContextMenu) return;
+    const menu = consoleContextMenuRef.current;
+    if (!menu) return;
+    const viewport = window.visualViewport;
+    const leftEdge = viewport?.offsetLeft || 0;
+    const topEdge = viewport?.offsetTop || 0;
+    const rightEdge = leftEdge + (viewport?.width || window.innerWidth);
+    const bottomEdge = topEdge + (viewport?.height || window.innerHeight);
+    const bounds = menu.getBoundingClientRect();
+    const menuWidth = bounds.width;
+    const menuHeight = bounds.height;
+    const x = Math.max(leftEdge + 8, Math.min(consoleContextMenu.x, rightEdge - menuWidth - 8));
+    const belowY = consoleContextMenu.y;
+    const aboveY = belowY - menuHeight;
+    const y = Math.max(topEdge + 8, Math.min(belowY + menuHeight <= bottomEdge - 8 ? belowY : aboveY, bottomEdge - menuHeight - 8));
+    if (Math.abs(x - consoleContextMenu.x) > 0.5 || Math.abs(y - consoleContextMenu.y) > 0.5) {
+      setConsoleContextMenu((current) => current ? { ...current, x, y } : current);
+    }
+  }, [consoleContextMenu, modalRoot]);
 
   const saveFixture = (event) => {
     event.preventDefault();
@@ -1081,6 +1122,11 @@ export function ControlDock({
     });
   };
 
+  const handleDockHeaderClick = (event) => {
+    if (event.detail !== 3 || !(event.target instanceof Element) || event.target.closest('.dock-tabs, button, a, input, select, textarea')) return;
+    setIsOpen(false);
+  };
+
   const consolePanel = <div className="console-panel">
     <div className="console-toolbar">
       <div className="console-filters">{['ALL', 'INFO', 'GATEWAY', 'EXECUTION', 'MOCK', 'WARN', 'ERROR'].map((level) => <button key={level} className={filterLevel === level ? 'is-active' : ''} onClick={() => setFilterLevel(level)}>{level}</button>)}</div>
@@ -1109,33 +1155,24 @@ export function ControlDock({
         )}
       </div>
     ) : <div className="log-lines" ref={logContainerRef} onScroll={handleConsoleScroll}>
-      {filteredLogs.length === 0 ? <div className="dock-empty"><Activity size={17} /><span>No output</span></div> : filteredLogs.map((log) => {
-        const target = resolveLogNodeTarget(log, activeTabId);
-        const isTraceable = Boolean(target?.graphId && target?.nodeId);
-        return (
-          <div
-            className={`log-line${isTraceable ? ' is-traceable' : ''}`}
-            key={log.id}
-            onClick={() => isTraceable && onTraceLog?.(target.graphId, target.nodeId)}
-            onDoubleClick={() => isTraceable && onTraceLog?.(target.graphId, target.nodeId)}
-            onContextMenu={(event) => openConsoleContextMenu(event, log)}
-            title={isTraceable ? 'Click to open graph and highlight this node' : undefined}
-          >
-            <time>{formatTime(log.timestamp)}</time>
-            <span className={`log-level log-${String(log.level || 'INFO').toLowerCase()}`}>{log.level}</span>
-            <span className="log-message">{log.message}</span>
-            {isTraceable && (
-              <button
-                type="button"
-                className="log-trace-jump-pill"
-                onClick={(e) => { e.stopPropagation(); onTraceLog?.(target.graphId, target.nodeId); }}
-                title="Highlight node in graph"
-              >
-                Go to node
-              </button>
-            )}
-          </div>
-        );
+      {logGroups.length === 0 ? <div className="dock-empty"><Activity size={17} /><span>No output</span></div> : logGroups.map((group) => {
+        const expanded = expandedLogGroups.has(group.key);
+        const renderLog = (log, repeatToggle = null, repeatNumber = null) => {
+            const target = resolveLogNodeTarget(log, activeTabId);
+            const isTraceable = Boolean(target?.graphId && target?.nodeId);
+            return <div className={`log-line${isTraceable ? ' is-traceable' : ''}`} key={log.id} onClick={() => isTraceable && onTraceLog?.(target.graphId, target.nodeId)} onDoubleClick={() => isTraceable && onTraceLog?.(target.graphId, target.nodeId)} onContextMenu={(event) => openConsoleContextMenu(event, log, group.key)}>
+              <time className={repeatNumber !== null ? 'has-repeat-index' : ''} data-repeat-index={repeatNumber !== null ? repeatNumber : undefined}>{formatTime(log.timestamp)}</time><span className={`log-level log-${String(log.level || 'INFO').toLowerCase()}`}><span className="log-level-text">{log.level}</span>{repeatToggle}</span><span className="log-message">{log.message}</span>
+            </div>;
+        };
+        const toggle = () => setExpandedLogGroups((current) => { const next = new Set(current); if (next.has(group.key)) next.delete(group.key); else next.add(group.key); return next; });
+        const severity = String(group.logs[0]?.level || '').toLowerCase();
+        const repeatToggle = group.logs.length > 1 && <button type="button" className={`log-repeat-toggle log-${severity}`} aria-expanded={expanded} aria-label={`${expanded ? 'Collapse' : 'Expand'} ${group.logs.length} repeated ${severity} entries`} title={`${expanded ? 'Collapse' : 'Expand'} ${group.logs.length} repeated entries`} onClick={(event) => { event.stopPropagation(); toggle(); }}>
+          {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}<b>{group.logs.length}</b>
+        </button>;
+        return <div key={group.key} className={`log-repeat-group${group.logs.length > 1 ? ` log-repeat-${severity}` : ''}${expanded ? ' is-expanded' : ''}`}>
+          {renderLog(group.logs[0], repeatToggle, expanded && group.logs.length > 1 ? 1 : null)}
+          {expanded && group.logs.length > 1 && <div className="log-repeat-children">{group.logs.slice(1).map((log, index) => renderLog(log, null, index + 2))}</div>}
+        </div>;
       })}
     </div>}
   </div>;
@@ -1144,7 +1181,7 @@ export function ControlDock({
     <>
     <section className={`control-dock ${isOpen ? 'is-open' : ''} ${isResizing ? 'is-resizing' : ''}`} style={{ '--dock-height': `${dockHeight}px`, height: isOpen ? `${dockHeight}px` : '45px' }} aria-label="Control dock">
       {isOpen && <div className={`dock-resize-handle ${isLocked ? 'is-disabled' : ''}`} onPointerDown={beginResize} onDoubleClick={toggleDockSize} title={isLocked ? 'Canvas is locked' : 'Drag to resize · double-click to toggle size'}><span /></div>}
-      <header className="dock-header">
+      <header className="dock-header" onClick={handleDockHeaderClick}>
         <nav className="dock-tabs" aria-label="Control panels">
           <DockTab active={isOpen && activeTab === 'console'} onClick={() => consolePopupRoot ? closeConsolePopup() : openTab('console')} icon={Terminal} label="Console" count={logs.length} />
           <DockTab active={isOpen && activeTab === 'simulator'} onClick={() => openTab('simulator')} icon={Cpu} label="Simulate" />
@@ -1316,20 +1353,26 @@ export function ControlDock({
           </div>
         </div>}
       </div>
-      {modalRoot && consoleContextMenu && createPortal(<div className="canvas-context-menu console-context-menu" role="menu" style={{ left: consoleContextMenu.x, top: consoleContextMenu.y }} onPointerDown={(event) => event.stopPropagation()}>
-        {Boolean(resolveLogNodeTarget(consoleContextLog, activeTabId)) && (
-          <button role="menuitem" onClick={() => {
-            const target = resolveLogNodeTarget(consoleContextLog, activeTabId);
-            if (target) {
-              onTraceLog?.(target.graphId, target.nodeId);
-              setConsoleContextMenu(null);
-            }
-          }}><ExternalLink size={13} />Go to node in graph</button>
-        )}
+      {consoleContextMenu && createPortal(<div ref={consoleContextMenuRef} className={`canvas-context-menu console-context-menu${compactContextMenus ? ' is-compact' : ''}`} role="menu" style={{ left: consoleContextMenu.x, top: consoleContextMenu.y, transform: `scale(${getArcUiScale()})`, transformOrigin: 'top left' }} onPointerDown={(event) => event.stopPropagation()}>
+        {(() => {
+          const group = logGroups.find((item) => item.key === consoleContextMenu.groupKey);
+          if (!group || group.logs.length < 2) return null;
+          const expanded = expandedLogGroups.has(group.key);
+          const setExpanded = () => {
+            setExpandedLogGroups((current) => {
+              const next = new Set(current);
+              if (expanded) next.delete(group.key);
+              else next.add(group.key);
+              return next;
+            });
+            setConsoleContextMenu(null);
+          };
+          return <button role="menuitem" onClick={setExpanded}>{expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}{expanded ? 'Collapse repeated logs' : 'Expand repeated logs'}</button>;
+        })()}
         <button role="menuitem" onClick={() => copyConsoleText(consoleContextLog?.message)}><ClipboardCopy size={13} />Copy message</button>
         <button role="menuitem" onClick={() => copyConsoleText(`${formatTime(consoleContextLog?.timestamp)}  ${consoleContextLog?.level || 'INFO'}  ${consoleContextLog?.message || ''}`)}><ClipboardCopy size={13} />Copy full line</button>
         <button role="menuitem" onClick={() => copyConsoleText(filteredLogs.map((log) => `${formatTime(log.timestamp)}  ${log.level || 'INFO'}  ${log.message}`).join('\n'))}><FileText size={13} />Copy visible output</button>
-      </div>, modalRoot)}
+      </div>, document.body)}
       {modalRoot && createPortal(<Modal isOpen={Boolean(commandReview)} onClose={() => { setCommandReview(null); setDeployError(''); }} title="Deployment review" subtitle={`${reviewCommandItems.length} commands · ${reviewIssueCount('error')} errors · ${reviewIssueCount('warning')} warnings`} icon={ShieldCheck} maxWidth="max-w-2xl" footer={commandReview && <><button className="studio-button" onClick={() => setCommandReview(null)}>Cancel</button><button className="studio-button studio-button-primary" onClick={deployCommands} disabled={!networkOnline || !commandReview.valid || commandReview.noChanges || deployingCommands || commandDeploySeconds > 0 || isDiscordRateLimited || graphValidationReports.some(({ report }) => report.errors.length)}>{deployingCommands ? 'Deploying…' : !networkOnline ? 'Offline' : isDiscordRateLimited ? `Cooldown · ${rateLimitSeconds}s` : commandReview.noChanges ? 'No changes' : `Deploy ${commandReview.commands?.length || 0} commands`}</button></>}>
         {commandReview && <div className="deployment-review-content">
           {(commandReview.discordAuthWarning || discordAuthWarning) && <div className="discord-auth-warning is-review" role="status">
