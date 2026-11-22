@@ -27,10 +27,27 @@ function safePath(name) {
     && name.split('/').every((part) => part && part !== '.' && part !== '..');
 }
 
-function base64ToBytes(value) {
-  if (typeof value !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) throw new TypeError('An embedded attachment has invalid base64 data.');
-  const binary = atob(value);
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+function base64ToBytes(value, maxBytes = MAX_ENTRY_BYTES, oversizedMessage = 'The encoded data exceeds the supported size limit.') {
+  if (typeof value !== 'string' || value.length % 4 !== 0) throw new TypeError('An embedded attachment has invalid base64 data.');
+  const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0;
+  const dataLength = value.length - padding;
+  if (padding === 2 && dataLength % 4 !== 2 || padding === 1 && dataLength % 4 !== 3) throw new TypeError('An embedded attachment has invalid base64 data.');
+  const decodedLength = value.length / 4 * 3 - padding;
+  if (decodedLength > maxBytes) throw new RangeError(oversizedMessage);
+  for (let index = 0; index < dataLength; index += 1) {
+    const code = value.charCodeAt(index);
+    const valid = code >= 65 && code <= 90 || code >= 97 && code <= 122 || code >= 48 && code <= 57 || code === 43 || code === 47;
+    if (!valid) throw new TypeError('An embedded attachment has invalid base64 data.');
+  }
+  for (let index = dataLength; index < value.length; index += 1) {
+    if (value.charCodeAt(index) !== 61) throw new TypeError('An embedded attachment has invalid base64 data.');
+  }
+  let binary;
+  try { binary = atob(value); }
+  catch { throw new TypeError('An embedded attachment has invalid base64 data.'); }
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
 }
 
 function bytesToBase64(bytes) {
@@ -83,7 +100,7 @@ export function validateArcAttachments(value, maxTotalBytes = 50 * 1024 * 1024) 
         if (!['data', 'preview'].includes(key)) throw new TypeError('This file contains an invalid embedded attachment.');
         const mime = attachmentMime(entry);
         const encoded = entry.slice(entry.indexOf(',') + 1);
-        const bytes = base64ToBytes(encoded);
+        const bytes = base64ToBytes(encoded, MAX_ATTACHMENT_BYTES, 'An embedded attachment exceeds the 20 MiB limit.');
         validateArcAttachmentBytes(mime, bytes);
         if (!bytes.length) throw new TypeError('An embedded attachment cannot be empty.');
         if (bytes.length > MAX_ATTACHMENT_BYTES) throw new RangeError('An embedded attachment exceeds the 20 MiB limit.');
@@ -104,7 +121,7 @@ function collectAttachments(value, entries, locations, depth = 0) {
   for (const [key, item] of Object.entries(value)) {
     if (['data', 'preview'].includes(key) && typeof item === 'string' && item.startsWith('data:')) {
       const mime = attachmentMime(item);
-      const bytes = base64ToBytes(item.slice(item.indexOf(',') + 1));
+      const bytes = base64ToBytes(item.slice(item.indexOf(',') + 1), MAX_ATTACHMENT_BYTES, 'An embedded attachment exceeds the 20 MiB limit.');
       validateAttachmentBytes(mime, bytes);
       if (!bytes.length) throw new TypeError('An embedded attachment cannot be empty.');
       if (bytes.length > MAX_ATTACHMENT_BYTES) throw new RangeError('An embedded attachment exceeds the 20 MiB limit.');
@@ -146,7 +163,7 @@ export async function createArcArchive(payload) {
   let encryptedPayload = null;
   let packagedPayload;
   if (encryptedProject) {
-    const encryptedBytes = base64ToBytes(payload.data);
+    const encryptedBytes = base64ToBytes(payload.data, MAX_ENTRY_BYTES, 'The encrypted project payload exceeds the 128 MiB limit.');
     if (!encryptedBytes.length || encryptedBytes.length > 128 * 1024 * 1024) throw new RangeError('The encrypted project payload exceeds the 128 MiB limit.');
     const { data, ...metadata } = payload;
     encryptedPayload = { name: 'encrypted.bin', sha256: await sha256Hex(encryptedBytes) };
