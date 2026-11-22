@@ -23,10 +23,31 @@ export function TextInput({ label, error, helper, icon: Icon, rightElement, clas
   </div>;
 }
 
-export function CharacterLimit({ value = '', maxLength, children, className = '' }) {
+export function CharacterLimit({ value = '', maxLength, children, className = '', hardCap = false }) {
   if (maxLength == null) return children;
   const over = String(value ?? '').length > maxLength;
-  return <div className={`character-limit-control ${className}`}>{children}<small className={`character-count ${over ? 'is-over' : ''}`} style={over ? { color: '#f87171', fontWeight: 600 } : undefined} aria-hidden="true">{String(value ?? '').length} / {maxLength}</small></div>;
+  const typingLimit = hardCap ? maxLength : getExpandedTextLimit(maxLength);
+  const limitedChildren = applyExpandedTextLimit(children, typingLimit);
+  return <div className={`character-limit-control ${className}`.trim()}>{limitedChildren}<small className={`character-count ${over ? 'is-over' : ''}`} style={over ? { color: '#f87171', fontWeight: 600 } : undefined} aria-hidden="true">{String(value ?? '').length} / {maxLength}</small></div>;
+}
+
+export function CharacterCount({ value = '', children, className = '' }) {
+  const characterCount = String(value ?? '').length;
+  return <div className={`character-limit-control is-below ${className}`.trim()}>{children}<small className="character-count" aria-hidden="true">{characterCount} chars</small></div>;
+}
+
+export function getExpandedTextLimit(maxLength) {
+  const limit = Number(maxLength);
+  return Number.isSafeInteger(limit) && limit > 0 ? Math.min(2147483647, Math.max(1024, limit * 15)) : undefined;
+}
+
+function applyExpandedTextLimit(element, typingLimit, logicalLimit) {
+  if (!React.isValidElement(element)) return element;
+  if (element.type === 'input' || element.type === 'textarea') return React.cloneElement(element, { maxLength: typingLimit, 'data-soft-maxlength': logicalLimit });
+  if (!element.props?.children) return element;
+  return React.cloneElement(element, {
+    children: React.Children.map(element.props.children, (child) => applyExpandedTextLimit(child, typingLimit, logicalLimit))
+  });
 }
 
 export function PasswordInput({ label = 'Password', error, showStrength = false, value = '', className = '', id, ...props }) {
