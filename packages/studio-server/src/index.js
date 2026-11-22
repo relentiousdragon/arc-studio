@@ -64,6 +64,7 @@ const collaborationLastSeen = new CollaborationLastSeen();
 
 const app = express();
 const server = http.createServer(app);
+server.requestTimeout = 0;
 let reportedListenError = false;
 server.on('error', (error) => {
   if (reportedListenError) return;
@@ -319,7 +320,7 @@ app.use(cors(desktopOrigins.length ? {
   }
 } : undefined));
 app.use('/api/auth/passkeys', express.json({ limit: '64kb' }));
-app.use(['/api/graphs/import', '/api/projects/import'], express.raw({ type: ['application/vnd.arc-studio.graph+zip', 'application/vnd.arc-studio.project+zip', 'application/zip'], limit: '132mb' }));
+app.use('/api/graphs/import', express.raw({ type: ['application/vnd.arc-studio.graph+zip', 'application/zip'], limit: '132mb' }));
 app.use('/api/media-assets', express.raw({ type: 'application/octet-stream', limit: '21mb' }));
 app.use(express.json({ limit: '50mb' }));
 
