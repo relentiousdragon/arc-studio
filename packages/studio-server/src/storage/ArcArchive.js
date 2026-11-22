@@ -1,7 +1,6 @@
 const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal: true });
-const MAX_ARCHIVE_BYTES = 132 * 1024 * 1024;
-const MAX_ENTRY_BYTES = 128 * 1024 * 1024;
+const MAX_ENTRY_BYTES = Number.MAX_SAFE_INTEGER;
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const ATTACHMENT_PREFIX = 'arc-attachment://';
 
@@ -19,6 +18,35 @@ function crc32(bytes) {
   let value = 0xffffffff;
   for (const byte of bytes) value = CRC_TABLE[(value ^ byte) & 0xff] ^ (value >>> 8);
   return (value ^ 0xffffffff) >>> 0;
+}
+
+function safeZip64Number(value, label) {
+  if (value < 0n || value > BigInt(Number.MAX_SAFE_INTEGER)) throw new RangeError(`This ARC archive has an unsupported ${label}.`);
+  return Number(value);
+}
+
+function readZip64Values(view, start, length, fields) {
+  let cursor = start;
+  const end = start + length;
+  while (cursor + 4 <= end) {
+    const id = view.getUint16(cursor, true);
+    const size = view.getUint16(cursor + 2, true);
+    cursor += 4;
+    if (cursor + size > end) throw new TypeError('This ARC archive has a damaged ZIP64 entry.');
+    if (id === 0x0001) {
+      let valueOffset = cursor;
+      const result = {};
+      for (const field of fields) {
+        if (!field.required) continue;
+        if (valueOffset + 8 > cursor + size) throw new TypeError('This ARC archive has an incomplete ZIP64 entry.');
+        result[field.name] = view.getBigUint64(valueOffset, true);
+        valueOffset += 8;
+      }
+      return result;
+    }
+    cursor += size;
+  }
+  return null;
 }
 
 function safePath(name) {
@@ -156,15 +184,15 @@ export async function createArcArchive(payload) {
   if (!payload || typeof payload !== 'object' || !['arc-graph', 'arc-project', 'arc-project-encrypted'].includes(payload.format)) throw new TypeError('Unsupported ARC archive content.');
   const encryptedProject = payload.format === 'arc-project-encrypted';
   if (encryptedProject && (payload.version !== 3 || typeof payload.data !== 'string')) throw new TypeError('This encrypted project envelope is not supported.');
-  if (!encryptedProject) validateArcAttachments(payload, payload.format === 'arc-graph' ? 50 * 1024 * 1024 : 100 * 1024 * 1024);
+  if (!encryptedProject) validateArcAttachments(payload, payload.format === 'arc-graph' ? 50 * 1024 * 1024 : Number.MAX_SAFE_INTEGER);
   const contentType = payload.format === 'arc-project-encrypted' ? 'arc-project' : payload.format;
   const entries = [];
   const locations = [];
   let encryptedPayload = null;
   let packagedPayload;
   if (encryptedProject) {
-    const encryptedBytes = base64ToBytes(payload.data, MAX_ENTRY_BYTES, 'The encrypted project payload exceeds the 128 MiB limit.');
-    if (!encryptedBytes.length || encryptedBytes.length > 128 * 1024 * 1024) throw new RangeError('The encrypted project payload exceeds the 128 MiB limit.');
+    const encryptedBytes = base64ToBytes(payload.data, MAX_ENTRY_BYTES, 'The encrypted project payload is too large.');
+    if (!encryptedBytes.length) throw new RangeError('The encrypted project payload is empty.');
     const { data, ...metadata } = payload;
     encryptedPayload = { name: 'encrypted.bin', sha256: await sha256Hex(encryptedBytes) };
     entries.push({ name: encryptedPayload.name, bytes: encryptedBytes });
@@ -215,7 +243,7 @@ export async function createArcArchive(payload) {
   endView.setUint32(12, centralSize, true);
   endView.setUint32(16, localOffset, true);
   const total = localOffset + centralSize + end.length;
-  if (total > MAX_ARCHIVE_BYTES) throw new RangeError('This ARC archive exceeds the 132 MiB limit.');
+  if (!Number.isSafeInteger(total)) throw new RangeError('This ARC archive is too large to represent in memory.');
   const output = new Uint8Array(total);
   let offset = 0;
   for (const part of [...localParts, ...centralParts, end]) { output.set(part, offset); offset += part.length; }
@@ -224,18 +252,44 @@ export async function createArcArchive(payload) {
 
 export async function readArcArchive(input, expectedContentType = '') {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
-  if (bytes.length < 22 || bytes.length > MAX_ARCHIVE_BYTES) throw new RangeError('This ARC archive is invalid or exceeds the 132 MiB limit.');
+  if (bytes.length < 22) throw new RangeError('This ARC archive is invalid or truncated.');
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let endOffset = -1;
   for (let offset = Math.max(0, bytes.length - 65557); offset <= bytes.length - 22; offset += 1) {
     if (view.getUint32(offset, true) === 0x06054b50 && offset + 22 + view.getUint16(offset + 20, true) === bytes.length) endOffset = offset;
   }
   if (endOffset < 0) throw new TypeError('This file is not a supported ARC archive.');
-  const count = view.getUint16(endOffset + 10, true);
-  const centralSize = view.getUint32(endOffset + 12, true);
-  const centralOffset = view.getUint32(endOffset + 16, true);
-  if (!count || count > 1024 || view.getUint16(endOffset + 4, true) !== 0 || view.getUint16(endOffset + 6, true) !== 0
-    || view.getUint16(endOffset + 8, true) !== count || centralOffset + centralSize !== endOffset) throw new TypeError('This ARC archive has an invalid directory.');
+  const disk = view.getUint16(endOffset + 4, true);
+  const directoryDisk = view.getUint16(endOffset + 6, true);
+  const entriesOnDisk32 = view.getUint16(endOffset + 8, true);
+  const count32 = view.getUint16(endOffset + 10, true);
+  const centralSize32 = view.getUint32(endOffset + 12, true);
+  const centralOffset32 = view.getUint32(endOffset + 16, true);
+  let count = count32;
+  let centralSize = centralSize32;
+  let centralOffset = centralOffset32;
+  let directoryEnd = endOffset;
+  const zip64 = count32 === 0xffff || entriesOnDisk32 === 0xffff || centralSize32 === 0xffffffff || centralOffset32 === 0xffffffff;
+  if (zip64) {
+    const locatorOffset = endOffset - 20;
+    if (locatorOffset < 0 || view.getUint32(locatorOffset, true) !== 0x07064b50
+      || view.getUint32(locatorOffset + 4, true) !== 0 || view.getUint32(locatorOffset + 16, true) !== 1) {
+      throw new TypeError('This ARC archive has an invalid ZIP64 directory locator.');
+    }
+    const zip64EndOffset = safeZip64Number(view.getBigUint64(locatorOffset + 8, true), 'ZIP64 directory offset');
+    if (zip64EndOffset + 56 !== locatorOffset || view.getUint32(zip64EndOffset, true) !== 0x06064b50
+      || view.getBigUint64(zip64EndOffset + 4, true) < 44n || view.getUint32(zip64EndOffset + 16, true) !== 0
+      || view.getUint32(zip64EndOffset + 20, true) !== 0) throw new TypeError('This ARC archive has an invalid ZIP64 directory.');
+    const entriesOnDisk = safeZip64Number(view.getBigUint64(zip64EndOffset + 24, true), 'entry count');
+    count = safeZip64Number(view.getBigUint64(zip64EndOffset + 32, true), 'entry count');
+    centralSize = safeZip64Number(view.getBigUint64(zip64EndOffset + 40, true), 'directory size');
+    centralOffset = safeZip64Number(view.getBigUint64(zip64EndOffset + 48, true), 'directory offset');
+    directoryEnd = zip64EndOffset;
+    if (entriesOnDisk !== count) throw new TypeError('This ARC archive has an invalid ZIP64 entry count.');
+  } else if (entriesOnDisk32 !== count32) throw new TypeError('This ARC archive has an invalid entry count.');
+  if (!count || count > 4096 || disk !== 0 || directoryDisk !== 0 || centralOffset + centralSize !== directoryEnd) {
+    throw new TypeError('This ARC archive has an invalid directory.');
+  }
   const files = new Map();
   let cursor = centralOffset;
   for (let index = 0; index < count; index += 1) {
@@ -243,16 +297,27 @@ export async function readArcArchive(input, expectedContentType = '') {
     const flags = view.getUint16(cursor + 8, true);
     const method = view.getUint16(cursor + 10, true);
     const crc = view.getUint32(cursor + 16, true);
-    const compressedSize = view.getUint32(cursor + 20, true);
-    const uncompressedSize = view.getUint32(cursor + 24, true);
+    const compressedSize32 = view.getUint32(cursor + 20, true);
+    const uncompressedSize32 = view.getUint32(cursor + 24, true);
     const nameLength = view.getUint16(cursor + 28, true);
     const extraLength = view.getUint16(cursor + 30, true);
     const commentLength = view.getUint16(cursor + 32, true);
-    const localOffset = view.getUint32(cursor + 42, true);
+    const localOffset32 = view.getUint32(cursor + 42, true);
     if (cursor + 46 + nameLength + extraLength + commentLength > centralOffset + centralSize) throw new TypeError('This ARC archive has a damaged directory.');
     const name = decoder.decode(bytes.subarray(cursor + 46, cursor + 46 + nameLength));
+    const zip64Values = readZip64Values(view, cursor + 46 + nameLength, extraLength, [
+      { name: 'uncompressedSize', required: uncompressedSize32 === 0xffffffff },
+      { name: 'compressedSize', required: compressedSize32 === 0xffffffff },
+      { name: 'localOffset', required: localOffset32 === 0xffffffff }
+    ]);
+    const uncompressedSize = uncompressedSize32 === 0xffffffff
+      ? safeZip64Number(zip64Values?.uncompressedSize ?? -1n, 'entry size') : uncompressedSize32;
+    const compressedSize = compressedSize32 === 0xffffffff
+      ? safeZip64Number(zip64Values?.compressedSize ?? -1n, 'entry size') : compressedSize32;
+    const localOffset = localOffset32 === 0xffffffff
+      ? safeZip64Number(zip64Values?.localOffset ?? -1n, 'entry offset') : localOffset32;
     cursor += 46 + nameLength + extraLength + commentLength;
-    if (!safePath(name) || files.has(name) || method !== 0 || flags & ~0x0800 || compressedSize !== uncompressedSize || uncompressedSize > MAX_ENTRY_BYTES) throw new TypeError('This ARC archive contains an unsupported or unsafe entry.');
+    if (!safePath(name) || files.has(name) || method !== 0 || flags & ~0x0808 || compressedSize !== uncompressedSize) throw new TypeError('This ARC archive contains an unsupported or unsafe entry.');
     if (localOffset + 30 > centralOffset || view.getUint32(localOffset, true) !== 0x04034b50) throw new TypeError('This ARC archive has a damaged file entry.');
     const localFlags = view.getUint16(localOffset + 6, true);
     const localMethod = view.getUint16(localOffset + 8, true);
@@ -263,17 +328,42 @@ export async function readArcArchive(input, expectedContentType = '') {
     const localExtraLength = view.getUint16(localOffset + 28, true);
     const localName = decoder.decode(bytes.subarray(localOffset + 30, localOffset + 30 + localNameLength));
     const dataOffset = localOffset + 30 + localNameLength + localExtraLength;
-    if (localName !== name || localFlags !== flags || localMethod !== method || localCrc !== crc || localCompressedSize !== compressedSize || localUncompressedSize !== uncompressedSize
+    const hasDataDescriptor = Boolean(flags & 0x0008);
+    if (localName !== name || localFlags !== flags || localMethod !== method
+      || !hasDataDescriptor && (localCrc !== crc || localCompressedSize !== compressedSize || localUncompressedSize !== uncompressedSize)
+      || hasDataDescriptor && localCrc !== 0
       || localOffset + 30 + localNameLength + localExtraLength > centralOffset || dataOffset + uncompressedSize > centralOffset) throw new TypeError('This ARC archive has a truncated or inconsistent file entry.');
     const entry = bytes.slice(dataOffset, dataOffset + uncompressedSize);
     if (crc32(entry) !== crc) throw new TypeError(`Archive integrity check failed for ${name}.`);
+    if (hasDataDescriptor) {
+      let descriptorOffset = dataOffset + uncompressedSize;
+      if (descriptorOffset + 4 <= centralOffset && view.getUint32(descriptorOffset, true) === 0x08074b50) descriptorOffset += 4;
+      const zip64Descriptor = compressedSize32 === 0xffffffff || uncompressedSize32 === 0xffffffff;
+      const descriptorLength = zip64Descriptor ? 20 : 12;
+      if (descriptorOffset + descriptorLength > centralOffset || view.getUint32(descriptorOffset, true) !== crc) {
+        throw new TypeError(`Archive integrity check failed for ${name}.`);
+      }
+      const descriptorCompressed = zip64Descriptor
+        ? safeZip64Number(view.getBigUint64(descriptorOffset + 4, true), 'entry size')
+        : view.getUint32(descriptorOffset + 4, true);
+      const descriptorUncompressed = zip64Descriptor
+        ? safeZip64Number(view.getBigUint64(descriptorOffset + 12, true), 'entry size')
+        : view.getUint32(descriptorOffset + 8, true);
+      if (descriptorCompressed !== compressedSize || descriptorUncompressed !== uncompressedSize) {
+        throw new TypeError(`Archive integrity check failed for ${name}.`);
+      }
+    }
     files.set(name, entry);
   }
+  if (cursor !== centralOffset + centralSize) throw new TypeError('This ARC archive has a damaged directory size.');
   const manifestBytes = files.get('manifest.json');
   const contentBytes = files.get('content.json');
   if (!manifestBytes || !contentBytes) throw new TypeError('This ARC archive is missing its manifest or content.');
   const manifest = JSON.parse(decoder.decode(manifestBytes));
   const payload = JSON.parse(decoder.decode(contentBytes));
+  if (manifest.contentSha256 && (!/^[a-f0-9]{64}$/.test(manifest.contentSha256) || await sha256Hex(contentBytes) !== manifest.contentSha256)) {
+    throw new TypeError('This ARC archive content failed its integrity check.');
+  }
   const encryptedArchive = payload?.format === 'arc-project-encrypted-archive';
   if (manifest?.format !== 'arc-archive' || manifest.version !== 1 || !['arc-graph', 'arc-project'].includes(manifest.contentType)
     || (payload?.format !== manifest.contentType && !(manifest.contentType === 'arc-project' && encryptedArchive))
@@ -295,7 +385,7 @@ export async function readArcArchive(input, expectedContentType = '') {
   for (const name of files.keys()) if (name.startsWith('attachments/') && !declared.has(name)) throw new TypeError('This ARC archive contains an undeclared attachment.');
   for (const name of files.keys()) if (!['manifest.json', 'content.json', manifest.encryptedPayload?.name].includes(name) && !name.startsWith('attachments/')) throw new TypeError('This ARC archive contains an unsupported file.');
   const restored = restoreAttachments(payload, files);
-  validateArcAttachments(restored, manifest.contentType === 'arc-graph' ? 50 * 1024 * 1024 : 100 * 1024 * 1024);
+  validateArcAttachments(restored, Number.MAX_SAFE_INTEGER);
   return restored;
 }
 
