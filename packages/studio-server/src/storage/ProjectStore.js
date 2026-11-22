@@ -7,6 +7,7 @@ import { getStarterProject } from './StarterProjects.js';
 import { compareArcStudioVersions, currentArcStudioVersion, projectVersionAge } from '../versioning/arcProjectCompatibility.js';
 import { withIntegrity, verifyIntegrity } from './Integrity.js';
 import { createArcArchive, readArcArchive, validateArcAttachments } from './ArcArchive.js';
+import { createArcArchiveStream, createEncryptedArcProjectArchiveStream } from './ArcArchiveStream.js';
 import { ProjectMediaStore } from '../engine/ProjectMediaStore.js';
 
 const registryPath = path.join(dataDir, 'projects.json');
@@ -40,7 +41,6 @@ function normalizeExportPassword(password) {
 async function encryptProjectBundle(bundle, password) {
   normalizeExportPassword(password);
   const plaintext = await createArcArchive(bundle);
-  if (plaintext.byteLength > 128 * 1024 * 1024) throw new RangeError('The encrypted project file exceeds the 128 MiB limit.');
   const salt = randomBytes(16);
   const iv = randomBytes(12);
   const key = scryptSync(password, salt, 32, { ...PROJECT_EXPORT_KDF, maxmem: 256 * 1024 * 1024 });
@@ -64,7 +64,7 @@ async function decryptProjectBundle(envelope, password) {
     const iv = Buffer.from(envelope.iv, 'base64');
     const tag = Buffer.from(envelope.tag, 'base64');
     const data = Buffer.from(envelope.data, 'base64');
-    if (salt.length !== 16 || iv.length !== 12 || tag.length !== 16 || data.length > 128 * 1024 * 1024) throw new Error('Invalid encrypted project data.');
+    if (salt.length !== 16 || iv.length !== 12 || tag.length !== 16) throw new Error('Invalid encrypted project data.');
     const key = scryptSync(password, salt, 32, { ...PROJECT_EXPORT_KDF, maxmem: 256 * 1024 * 1024 });
     const decipher = createDecipheriv('aes-256-gcm', key, iv);
     decipher.setAAD(Buffer.from(PROJECT_EXPORT_AAD));
@@ -82,6 +82,12 @@ function cleanName(value) {
   const name = String(value || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 64);
   if (!name) throw new TypeError('Enter a project name.');
   return name;
+}
+
+function projectLimitError(maxProjects) {
+  const error = new RangeError(`This workspace has reached its ${maxProjects}-project limit.`);
+  error.code = 'PROJECT_LIMIT_REACHED';
+  return error;
 }
 
 function normalizedName(value) {
@@ -141,6 +147,7 @@ export class ProjectStore {
   constructor(options = {}) {
     this.projects = [];
     this.activeProjectId = '';
+    this.importReservations = new Map();
     this.maxProjects = serverConfig.desktopMode ? null : DEFAULT_MAX_PROJECTS;
     this.load();
     if (options.activeProjectId && this.projects.some((project) => project.id === options.activeProjectId)) this.activeProjectId = options.activeProjectId;
@@ -208,29 +215,39 @@ export class ProjectStore {
   list() { return { projects: this.projects.map((project) => ({ ...project })), activeProjectId: this.activeProjectId, maxProjects: this.maxProjects }; }
   active() { return this.projects.find((project) => project.id === this.activeProjectId) || this.projects[0]; }
 
-  assertUniqueName(name, exceptId = '') {
+  projectImportReservations() {
+    if (!(this.importReservations instanceof Map)) this.importReservations = new Map();
+    return this.importReservations;
+  }
+
+  isProjectNameUnavailable(name, exceptId = '', exceptReservationId = '') {
     const normalized = normalizedName(name);
-    if (this.projects.some((project) => project.id !== exceptId && normalizedName(project.name) === normalized)) {
+    return this.projects.some((project) => project.id !== exceptId && normalizedName(project.name) === normalized)
+      || [...this.projectImportReservations()].some(([reservationId, reservedName]) => reservationId !== exceptReservationId && normalizedName(reservedName) === normalized);
+  }
+
+  assertUniqueName(name, exceptId = '', exceptReservationId = '') {
+    if (this.isProjectNameUnavailable(name, exceptId, exceptReservationId)) {
       throw new TypeError('A project with this name already exists. Choose a different name.');
     }
   }
 
   suggestAvailableProjectName(name) {
     const base = cleanName(name);
-    for (let number = 2; number <= this.projects.length + 2; number += 1) {
+    for (let number = 2; number <= this.projects.length + this.projectImportReservations().size + 2; number += 1) {
       const suffix = ` (${number})`;
       let stem = base.slice(0, 64 - suffix.length);
       if (/[\uD800-\uDBFF]$/.test(stem)) stem = stem.slice(0, -1);
       const candidate = cleanName(`${stem}${suffix}`);
-      if (!this.projects.some((project) => normalizedName(project.name) === normalizedName(candidate))) return candidate;
+      if (!this.isProjectNameUnavailable(candidate)) return candidate;
     }
     throw new RangeError('Could not suggest an available project name.');
   }
 
-  resolveImportProjectName(bundle, requestedName) {
+  resolveImportProjectName(bundle, requestedName, reservationId = '') {
     const sourceName = requestedName === undefined ? bundle?.project?.name || 'Imported Project' : requestedName;
     const name = cleanName(sourceName);
-    if (this.projects.some((project) => normalizedName(project.name) === normalizedName(name))) {
+    if (this.isProjectNameUnavailable(name, '', reservationId)) {
       const error = new TypeError('A project with this name already exists. Choose a different name for the imported project.');
       error.code = 'PROJECT_NAME_CONFLICT';
       error.projectName = name;
@@ -240,11 +257,27 @@ export class ProjectStore {
     return name;
   }
 
+  reserveProjectImport(reservationId, bundle, requestedName) {
+    if (typeof reservationId !== 'string' || !/^[A-Za-z0-9_-]{8,100}$/.test(reservationId)) throw new TypeError('The project import session is invalid.');
+    const reservations = this.projectImportReservations();
+    if (reservations.has(reservationId)) return reservations.get(reservationId);
+    if (this.maxProjects !== null && this.projects.length + reservations.size >= this.maxProjects) {
+      throw projectLimitError(this.maxProjects);
+    }
+    const name = this.resolveImportProjectName(bundle, requestedName, reservationId);
+    reservations.set(reservationId, name);
+    return name;
+  }
+
+  releaseProjectImportReservation(reservationId) {
+    return this.projectImportReservations().delete(reservationId);
+  }
+
   renameProject(id, requestedName) {
     const project = this.projects.find((item) => item.id === id);
     if (!project) throw new Error('That project no longer exists.');
     const name = cleanName(requestedName);
-    if (this.projects.some((item) => item.id !== id && normalizedName(item.name) === normalizedName(name))) {
+    if (this.isProjectNameUnavailable(name, id)) {
       const error = new TypeError('A project with this name already exists. Choose a different name.');
       error.code = 'PROJECT_NAME_CONFLICT';
       throw error;
@@ -262,7 +295,7 @@ export class ProjectStore {
   }
 
   create(name, starterId = 'blank', ownerId = '') {
-    if (this.maxProjects !== null && this.projects.length >= this.maxProjects) throw new RangeError(`This workspace has reached its ${this.maxProjects}-project limit.`);
+    if (this.maxProjects !== null && this.projects.length + this.projectImportReservations().size >= this.maxProjects) throw projectLimitError(this.maxProjects);
     const starter = getStarterProject(starterId || 'blank');
     if (!starter) throw new TypeError('Choose one of the available project starters.');
     const projectName = cleanName(name);
@@ -304,6 +337,7 @@ export class ProjectStore {
   setMaxProjects(value) {
     if (serverConfig.desktopMode) throw new TypeError('Local desktop workspaces do not have a project limit.');
     if (value !== null && (!Number.isInteger(value) || value < 1)) throw new TypeError('Set a whole-number project limit, or choose unlimited.');
+    if (value !== null && this.projects.length + this.projectImportReservations().size > value) throw new RangeError('The project limit cannot be lower than the current projects and imports in progress.');
     this.maxProjects = value;
     this.persist();
     return this.maxProjects;
@@ -319,7 +353,7 @@ export class ProjectStore {
     return value;
   }
 
-  exportProject(id, { includeSecrets = false, secretValueResolver = null, pluginRequirements = [] } = {}) {
+  exportProject(id, { includeSecrets = false, secretValueResolver = null, pluginRequirements = [], includeMediaData = true, mediaAssets = null } = {}) {
     const project = this.projects.find((item) => item.id === id);
     if (!project) throw new Error('That project no longer exists.');
     const files = {};
@@ -328,7 +362,7 @@ export class ProjectStore {
       catch { files[filename] = filename === 'graphs.json' ? { graphs: [], deletedIds: [] } : filename === 'graph-library.json' ? { templates: [], snapshots: [] } : ['embeds.json', 'project-variables.json', 'media-assets.json'].includes(filename) ? [] : {}; }
     }
     const mediaStore = new ProjectMediaStore(this.directory(id));
-    files['media-assets.json'] = mediaStore.getAll();
+    files['media-assets.json'] = includeMediaData ? mediaStore.getAll() : Array.isArray(mediaAssets) ? mediaAssets : mediaStore.list();
     assertProjectDataDepth(files);
     let sensitiveCount = 0;
     const defaultValueForType = (type) => type === 'number' ? 0 : type === 'boolean' ? false : type === 'array' ? [] : type === 'object' ? {} : '';
@@ -385,7 +419,7 @@ export class ProjectStore {
     exportedFiles['bot-config.json'] = {};
     const exportedProject = { format: 'arc-project', version: 1, project: { name: project.name, exportedAt: new Date().toISOString(), createdWithVersion: currentArcStudioVersion }, files: exportedFiles, ...(pluginRequirements.length ? { plugins: pluginRequirements } : {}), sensitiveData: includeSecrets ? undefined : { omittedFields: sensitiveCount } };
     assertProjectDataDepth(exportedProject);
-    return withIntegrity(exportedProject);
+    return includeMediaData ? withIntegrity(exportedProject) : exportedProject;
   }
 
   exportEncryptedProject(id, password, options = {}) {
@@ -397,6 +431,21 @@ export class ProjectStore {
     if (!password) return createArcArchive(bundle);
     const envelope = await encryptProjectBundle(bundle, password);
     return createArcArchive(envelope);
+  }
+
+  async exportProjectArchiveStream(id, { password = '', ...options } = {}) {
+    const mediaStore = new ProjectMediaStore(this.directory(id));
+    const mediaAssets = await mediaStore.listAsync();
+    const bundle = this.exportProject(id, { ...options, includeMediaData: false, mediaAssets });
+    const sourceFiles = new Map();
+    for (const asset of bundle.files['media-assets.json']) {
+      const name = `attachments/${asset.id}.bin`;
+      sourceFiles.set(name, mediaStore.getArchiveSource(asset.id, asset.sha256));
+      asset.data = `arc-attachment://${name}?mime=${encodeURIComponent(asset.contentType)}`;
+    }
+    return password
+      ? createEncryptedArcProjectArchiveStream(bundle, sourceFiles, password)
+      : createArcArchiveStream(bundle, sourceFiles);
   }
 
   decryptProjectBundle(envelope, password) {
@@ -412,7 +461,7 @@ export class ProjectStore {
       error.code = 'PROJECT_INTEGRITY_FAILED';
       throw error;
     }
-    validateArcAttachments(bundle.files, 100 * 1024 * 1024);
+    validateArcAttachments(bundle.files, Number.MAX_SAFE_INTEGER);
     const createdWithVersion = bundle.project?.createdWithVersion;
     const versionOrder = createdWithVersion ? compareArcStudioVersions(createdWithVersion, currentArcStudioVersion) : null;
     if (versionOrder === 1) {
@@ -432,7 +481,7 @@ export class ProjectStore {
       error.unknownProjectVersion = age.unknown;
       throw error;
     }
-    if (this.maxProjects !== null && this.projects.length >= this.maxProjects) throw new RangeError(`This workspace has reached its ${this.maxProjects}-project limit.`);
+    if (this.maxProjects !== null && this.projects.length + this.projectImportReservations().size >= this.maxProjects) throw projectLimitError(this.maxProjects);
     const name = this.resolveImportProjectName(bundle, projectName);
     const project = { id: `project_${randomUUID()}`, name, createdAt: new Date().toISOString(), ...(ownerId ? { ownerId } : {}), importedAt: new Date().toISOString(), emptyStart: true, trusted: true, idleDisconnectMinutes: 15 };
     const destination = this.directory(project.id);
@@ -442,12 +491,73 @@ export class ProjectStore {
         if (!Object.prototype.hasOwnProperty.call(bundle.files, filename)) continue;
         if (filename === 'media-assets.json') continue;
         const content = JSON.stringify(bundle.files[filename], null, 2);
-        if (content.length > 180 * 1024 * 1024) throw new RangeError(`Project file ${filename} is too large.`);
         fs.writeFileSync(path.join(destination, filename), content, { mode: 0o600 });
       }
       new ProjectMediaStore(destination).importAssets(bundle.files['media-assets.json'] || []);
       this.projects.push(project);
       this.persist();
+      return { ...project };
+    } catch (error) {
+      fs.rmSync(destination, { recursive: true, force: true });
+      throw error;
+    }
+  }
+
+  async importProjectFromArchive(bundle, mediaSources = new Map(), { trusted = false, allowOldVersion = false, ownerId = '', projectName, reservationId = '', signal } = {}) {
+    if (!trusted) throw new Error('Confirm that you trust this project file before importing it.');
+    if (!bundle || bundle.format !== 'arc-project' || bundle.version !== 1 || !bundle.files || typeof bundle.files !== 'object' || Array.isArray(bundle.files)) {
+      throw new TypeError('This is not a supported ARC project file.');
+    }
+    const integrity = verifyIntegrity(bundle);
+    if (!integrity.valid) {
+      const error = new Error('The project file integrity check failed. This file may be corrupted or altered.');
+      error.code = 'PROJECT_INTEGRITY_FAILED';
+      throw error;
+    }
+    validateArcAttachments(bundle.files, Number.MAX_SAFE_INTEGER);
+    const createdWithVersion = bundle.project?.createdWithVersion;
+    const versionOrder = createdWithVersion ? compareArcStudioVersions(createdWithVersion, currentArcStudioVersion) : null;
+    if (versionOrder === 1) {
+      const error = new Error(`This project was created with ARC Studio ${createdWithVersion}. Update ARC Studio to ${createdWithVersion} or newer before importing it.`);
+      error.code = 'PROJECT_REQUIRES_NEWER_ARC';
+      error.projectVersion = createdWithVersion;
+      throw error;
+    }
+    const age = projectVersionAge(createdWithVersion, currentArcStudioVersion);
+    if (age.veryOld && !allowOldVersion) {
+      const error = new Error(age.unknown
+        ? 'This project has no recognized ARC Studio version. It may use an older project format.'
+        : `This project was created with ARC Studio ${createdWithVersion}, at least ten releases ago. Its graphs or settings may behave differently.`);
+      error.code = 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED';
+      error.projectVersion = createdWithVersion || null;
+      error.currentVersion = currentArcStudioVersion;
+      error.unknownProjectVersion = age.unknown;
+      throw error;
+    }
+    const reservations = this.projectImportReservations();
+    const hasReservation = Boolean(reservationId && reservations.has(reservationId));
+    if (reservationId && !hasReservation) throw new Error('The project import reservation expired. Try importing the project again.');
+    const otherReservations = reservations.size - (hasReservation ? 1 : 0);
+    if (this.maxProjects !== null && this.projects.length + otherReservations >= this.maxProjects) throw projectLimitError(this.maxProjects);
+    const name = this.resolveImportProjectName(bundle, hasReservation ? reservations.get(reservationId) : projectName, hasReservation ? reservationId : '');
+    const project = { id: `project_${randomUUID()}`, name, createdAt: new Date().toISOString(), ...(ownerId ? { ownerId } : {}), importedAt: new Date().toISOString(), emptyStart: true, trusted: true, idleDisconnectMinutes: 15 };
+    const destination = this.directory(project.id);
+    fs.mkdirSync(destination, { recursive: true, mode: 0o700 });
+    try {
+      for (const filename of projectFiles) {
+        if (signal?.aborted) throw signal.reason || new Error('Project import cancelled.');
+        if (!Object.prototype.hasOwnProperty.call(bundle.files, filename) || filename === 'media-assets.json') continue;
+        const content = JSON.stringify(bundle.files[filename], null, 2);
+        fs.writeFileSync(path.join(destination, filename), content, { mode: 0o600 });
+      }
+      await new ProjectMediaStore(destination).importArchiveAssets(bundle.files['media-assets.json'] || [], mediaSources, { signal });
+      if (signal?.aborted) throw signal.reason || new Error('Project import cancelled.');
+      this.projects.push(project);
+      try { this.persist(); }
+      catch (error) {
+        this.projects = this.projects.filter((item) => item.id !== project.id);
+        throw error;
+      }
       return { ...project };
     } catch (error) {
       fs.rmSync(destination, { recursive: true, force: true });
