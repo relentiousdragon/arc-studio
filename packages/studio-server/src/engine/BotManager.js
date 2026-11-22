@@ -1381,7 +1381,8 @@ export class BotManager {
     const next = variables.map((item) => {
       const name = String(item?.name || '').trim().slice(0, 64);
       const type = ['string', 'number', 'boolean', 'array', 'object'].includes(item?.type) ? item.type : '';
-      if (!item || typeof item.id !== 'string' || !/^project_var_[A-Za-z0-9_-]{1,100}$/.test(item.id)) throw new TypeError(`A project variable has an invalid ID. (${item.id})`);
+      const validProjectVariableId = typeof item?.id === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(item.id);
+      if (!item || !validProjectVariableId) throw new TypeError(`A project variable has an invalid ID. (${item?.id ?? 'missing'})`);
       if (!name) throw new TypeError('Every project variable needs a name.');
       const previousVariable = existingVariables.get(item.id);
       const secret = Boolean(item.secret || previousVariable?.secret);
