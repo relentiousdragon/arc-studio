@@ -146,40 +146,6 @@ async function arcFileToBytes(file) {
   if (typeof file?.arrayBuffer !== 'function') throw new TypeError('This project or graph file cannot be read.');
   return await file.arrayBuffer();
 }
-async function analyzeProjectArchive(file, signal) {
-  const input = await arcFileToBytes(file);
-  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
-  const buffer = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength ? bytes.buffer : bytes.slice().buffer;
-  if (signal?.aborted) throw new Error('Project archive check cancelled.');
-  return await new Promise((resolve, reject) => {
-    const worker = new Worker(new URL('./workers/projectImportWorker.js', import.meta.url), { type: 'module' });
-    let settled = false;
-    const cleanup = () => {
-      if (settled) return false;
-      settled = true;
-      signal?.removeEventListener('abort', onAbort);
-      worker.terminate();
-      return true;
-    };
-    const onAbort = () => {
-      if (cleanup()) reject(new Error('Project archive check cancelled.'));
-    };
-    const finish = (callback, value) => {
-      if (!cleanup()) return;
-      callback(value);
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-    worker.onmessage = ({ data }) => data?.success
-      ? finish(resolve, data)
-      : finish(reject, new TypeError(data?.error || 'This is not a supported ARC project archive.'));
-    worker.onerror = (event) => {
-      event.preventDefault();
-      finish(reject, new Error('Could not check this project archive.'));
-    };
-    try { worker.postMessage({ buffer }, [buffer]); }
-    catch (error) { finish(reject, error); }
-  });
-}
 function encodeHeaderValue(value) {
   const bytes = new TextEncoder().encode(String(value || ''));
   let binary = '';
@@ -1279,7 +1245,14 @@ export function App() {
   const [projectImportFile, setProjectImportFile] = useState(null);
   const [projectImportRenameRequired, setProjectImportRenameRequired] = useState(false);
   const [projectImportName, setProjectImportName] = useState('');
+  const projectImportFileRef = useRef(null);
   const projectImportPathRef = useRef(null);
+  const projectImportSessionRef = useRef('');
+  const projectImportRequestRef = useRef(null);
+  const projectImportNativeUploadRef = useRef('');
+  const projectImportActiveRef = useRef(false);
+  const projectImportCancelRequestedRef = useRef(false);
+  const [projectImportProgress, setProjectImportProgress] = useState(null);
   const [openedProjectFiles, setOpenedProjectFiles] = useState([]);
   const [desktopFileImportBusy, setDesktopFileImportBusy] = useState(false);
   const desktopGraphImportHandlerRef = useRef(null);
@@ -1480,11 +1453,7 @@ export function App() {
     projectImportPathRef.current = path;
     setProjectImportSharingWarning(null);
     setProjectImportSharingApproved(false);
-    setProjectImportFile({ name, path, arrayBuffer: async () => {
-      const invoke = window.__TAURI_INTERNALS__?.invoke;
-      if (typeof invoke !== 'function') throw new Error('ARC Studio could not open this project file.');
-      return new Uint8Array(await invoke('read_arc_project_file', { path })).buffer;
-    } });
+    setProjectImportFile({ name, path });
     setProjectImportTrusted(false);
     setProjectImportError('');
     setProjectImportCompatibility(null);
@@ -1664,8 +1633,19 @@ export function App() {
     };
   }, []);
   useEffect(() => {
-    let active = true;
-    const controller = new AbortController();
+    const previousFile = projectImportFileRef.current;
+    if (previousFile && previousFile !== projectImportFile && projectImportSessionRef.current) {
+      const previousSessionId = projectImportSessionRef.current;
+      projectImportSessionRef.current = '';
+      projectImportCancelRequestedRef.current = true;
+      projectImportRequestRef.current?.abort();
+      const invoke = window.__TAURI_INTERNALS__?.invoke;
+      if (projectImportNativeUploadRef.current && typeof invoke === 'function') invoke('cancel_project_import_upload', { uploadId: projectImportNativeUploadRef.current }).catch(() => {});
+      if (authToken) fetch(apiUrl(`/api/projects/import/${encodeURIComponent(previousSessionId)}`), { method: 'DELETE', headers: { 'x-arc-token': authToken } }).catch(() => {});
+    }
+    projectImportFileRef.current = projectImportFile;
+  }, [authToken, projectImportFile]);
+  useEffect(() => {
     setProjectImportEncrypted(false);
     setProjectImportHasText(false);
     setProjectImportPassword('');
@@ -1676,23 +1656,12 @@ export function App() {
     setProjectImportError('');
     setProjectImportRenameRequired(false);
     setProjectImportName('');
-    if (!projectImportFile?.arrayBuffer) {
+    setProjectImportProgress(null);
+    if (!projectImportFile) {
       setProjectImportAnalysisStatus('idle');
-      return undefined;
+      return;
     }
-    setProjectImportAnalysisStatus('checking');
-    analyzeProjectArchive(projectImportFile, controller.signal).then((analysis) => {
-      if (!active) return;
-      setProjectImportEncrypted(analysis.encrypted);
-      setProjectImportHasText(analysis.hasImportableTextContent);
-      setProjectImportAnalysisStatus('ready');
-    }).catch((error) => {
-      if (active) {
-        setProjectImportAnalysisStatus('error');
-        setProjectImportError(error.message || 'This is not a supported ARC project archive.');
-      }
-    });
-    return () => { active = false; controller.abort(); };
+    setProjectImportAnalysisStatus('ready');
   }, [projectImportFile]);
   useEffect(() => {
     if (!projectImportFile || projectImportAnalysisStatus !== 'ready' || projectImportEncrypted || !projectImportHasText || !externalCollaborativeWorkspace) {
@@ -5979,50 +5948,95 @@ export function App() {
     });
     try {
       reportProgress(2, 'Preparing graph data');
-      const body = JSON.stringify({
+      const exportRequest = {
         projectId: exportProjectId,
         exportId,
         includeCryptoSecret: exportOptions.includeCryptoSecret === true,
         includeBotToken: exportOptions.includeBotToken === true
-      });
-      const blob = await new Promise((resolve, reject) => {
-        const request = new XMLHttpRequest();
-        request.open('POST', apiUrl('/api/graphs/export/bot.zip'));
-        request.setRequestHeader('Content-Type', 'application/json');
-        request.setRequestHeader('x-arc-token', authToken);
-        request.responseType = 'blob';
-        request.addEventListener('load', async () => {
-          if (request.status >= 200 && request.status < 300) return resolve(request.response);
-          let message = 'Could not export bot.';
-          try {
-            const data = JSON.parse(await request.response.text());
-            message = data.error || message;
-          } catch {}
-          reject(new Error(message));
+      };
+      if (desktopMode && typeof window.__TAURI_INTERNALS__?.invoke === 'function') {
+        const receipt = await window.__TAURI_INTERNALS__.invoke('download_bot_export', {
+          endpoint: apiUrl('/api/graphs/export/bot.zip'),
+          token: authToken,
+          projectId: exportProjectId,
+          exportId,
+          includeCryptoSecret: exportOptions.includeCryptoSecret === true,
+          includeBotToken: exportOptions.includeBotToken === true
         });
-        request.addEventListener('error', () => reject(new Error('The server could not be reached. Check the connection and try again.')));
-        request.addEventListener('abort', () => reject(new Error('The export was cancelled.')));
-        request.send(body);
-      });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = 'arc-bot-export.zip';
-      anchor.click();
-      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        const revealed = receipt?.revealed === true;
+        arcEvents.emit('toast:notify', {
+          id: toastId,
+          title: 'Bot export ready',
+          message: revealed ? 'Saved the bot ZIP to Downloads and opened its location.' : 'Saved the bot ZIP to Downloads.',
+          type: 'success',
+          persistent: false,
+          dismissible: true,
+          progress: 100
+        });
+      } else {
+        const fileHandle = typeof window.showSaveFilePicker === 'function'
+          ? await window.showSaveFilePicker({ suggestedName: 'arc-bot-export.zip', types: [{ description: 'Standalone bot ZIP', accept: { 'application/zip': ['.zip'] } }] })
+          : null;
+        if (fileHandle) {
+          const response = await fetch(apiUrl('/api/graphs/export/bot.zip'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
+            body: JSON.stringify(exportRequest)
+          });
+          if (!response.ok) {
+            let data = {};
+            try { data = await response.json(); } catch {}
+            throw new Error(data.error || 'Could not export bot.');
+          }
+          const writable = await fileHandle.createWritable();
+          const reader = response.body?.getReader();
+          if (!reader) throw new Error('This browser could not stream the bot archive to disk.');
+          const total = Number(response.headers.get('content-length')) || 0;
+          let received = 0;
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              await writable.write(value);
+              received += value.byteLength;
+              if (total > 0) reportProgress(92 + received / total * 7, `Saving bot ZIP · ${Math.floor(received / total * 100)}%`);
+            }
+            await writable.close();
+          } catch (error) {
+            await reader.cancel(error).catch(() => {});
+            await writable.abort(error).catch(() => {});
+            throw error;
+          }
+          arcEvents.emit('toast:notify', { id: toastId, title: 'Bot export ready', message: 'Saved the standalone bot ZIP.', type: 'success', persistent: false, dismissible: true, progress: 100 });
+        } else {
+          const response = await fetch(apiUrl('/api/graphs/export/bot.zip/download-ticket'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
+            body: JSON.stringify(exportRequest)
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(data.error || 'Could not export bot.');
+          const anchor = document.createElement('a');
+          anchor.href = apiUrl(data.downloadPath);
+          anchor.download = 'arc-bot-export.zip';
+          anchor.rel = 'noreferrer';
+          anchor.click();
+        }
+      }
       void notifyDesktopInBackground({
         enabled: settings.desktopNotifications,
         title: 'Bot export complete',
         body: 'Your bot archive is ready.'
       });
     } catch (error) {
+      if (error.name === 'AbortError') return;
       const alreadyRunning = /already running for this project/i.test(error.message || '');
       arcEvents.emit('toast:notify', { id: toastId, title: alreadyRunning ? 'Bot export in progress' : 'Export failed', message: alreadyRunning ? 'A collaborator is already building this project export.' : error.message, type: alreadyRunning ? 'info' : 'error', persistent: false, dismissible: true, duration: 5000 });
     } finally {
       exportInFlightRef.current = false;
       setExportInProgress(false);
     }
-  }, [activeProjectId, authToken, botProfile?.intentSummary, currentUser, graphLookup, projectVariables, savedGraphs, settings.desktopNotifications, tabs]);
+  }, [activeProjectId, authToken, botProfile?.intentSummary, currentUser, desktopMode, graphLookup, projectVariables, savedGraphs, settings.desktopNotifications, tabs]);
 
   const applyHistorySnapshot = useCallback((snapshot, graphId) => {
     const saved = savedGraphsRef.current.find((graph) => graph.id === graphId);
@@ -7221,7 +7235,7 @@ export function App() {
     setProjectBusy(true);
     try {
       if (project.id === activeProjectId) await ensureWorkspaceGraphsSaved();
-      const response = await fetch(apiUrl(`/api/projects/${encodeURIComponent(project.id)}/export`), { headers: { 'x-arc-token': authToken } });
+      const response = await fetch(apiUrl(`/api/projects/${encodeURIComponent(project.id)}/export?summary=1`), { headers: { 'x-arc-token': authToken } });
       if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Could not export the project.'); }
       const bundle = await response.json();
       setProjectExportDialog({
@@ -7258,22 +7272,17 @@ export function App() {
     }
     setProjectExportDialog((cur) => ({ ...cur, isSubmitting: true, error: '' }));
     try {
-      const response = await fetch(apiUrl(`/api/projects/${encodeURIComponent(project.id)}/export/archive`), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
-        body: JSON.stringify({ password: shouldEncrypt ? password : '', includeSecrets })
-      });
-      if (!response.ok) {
-        let data = {};
-        try { data = await response.json(); } catch {}
-        throw new Error(data.error || 'Could not export the project.');
-      }
-      const contents = new Uint8Array(await response.arrayBuffer());
       const filename = `${String(project.name || 'project').replace(/[\\/:*?"<>|]/g, '_')}.arcproject`;
       if (desktopMode) {
         const invoke = window.__TAURI_INTERNALS__?.invoke;
         if (typeof invoke !== 'function') throw new Error('ARC Studio could not save the project file.');
-        const receipt = await invoke('save_project_export', { filename, contents: Array.from(contents) });
+        const receipt = await invoke('download_project_export', {
+          endpoint: apiUrl(`/api/projects/${encodeURIComponent(project.id)}/export/archive`),
+          token: authToken,
+          filename,
+          password: shouldEncrypt ? password : '',
+          includeSecrets
+        });
         const revealed = receipt?.revealed === true;
         void notifyDesktopInBackground({
           enabled: settings.desktopNotifications,
@@ -7287,14 +7296,43 @@ export function App() {
         });
         if (typeof receipt?.path === 'string') console.info(`ARC Studio project export saved to ${receipt.path}`);
       } else {
-        const blob = new Blob([contents], { type: 'application/vnd.arc-studio.project+zip' });
-        const url = URL.createObjectURL(blob);
+        const fileHandle = typeof window.showSaveFilePicker === 'function'
+          ? await window.showSaveFilePicker({
+            suggestedName: filename,
+            types: [{ description: 'ARC Studio project', accept: { 'application/vnd.arc-studio.project+zip': ['.arcproject'] } }]
+          })
+          : null;
+        if (fileHandle) {
+          const response = await fetch(apiUrl(`/api/projects/${encodeURIComponent(project.id)}/export/archive`), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
+            body: JSON.stringify({ password: shouldEncrypt ? password : '', includeSecrets })
+          });
+          if (!response.ok) {
+            let data = {};
+            try { data = await response.json(); } catch {}
+            throw new Error(data.error || 'Could not export the project.');
+          }
+          const writable = await fileHandle.createWritable();
+          try { await response.body.pipeTo(writable); }
+          catch (error) { await writable.abort(error).catch(() => {}); throw error; }
+          arcEvents.emit('toast:notify', { title: 'Project exported', message: `${filename} was downloaded.${shouldEncrypt ? ' Password protected.' : ''}`, type: 'success' });
+          setProjectExportDialog(null);
+          return;
+        }
+        const ticketResponse = await fetch(apiUrl(`/api/projects/${encodeURIComponent(project.id)}/export/archive/download-ticket`), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
+          body: JSON.stringify({ password: shouldEncrypt ? password : '', includeSecrets })
+        });
+        const ticketData = await ticketResponse.json().catch(() => ({}));
+        if (!ticketResponse.ok) throw new Error(ticketData.error || 'Could not prepare the project download.');
         const link = document.createElement('a');
-        link.href = url;
+        link.href = apiUrl(ticketData.downloadPath);
         link.download = filename;
+        link.rel = 'noreferrer';
         link.click();
-        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-        arcEvents.emit('toast:notify', { title: 'Project exported', message: `${filename} was downloaded.${shouldEncrypt ? ' Password protected.' : ''}`, type: 'success' });
+        arcEvents.emit('toast:notify', { title: 'Project download started', message: `${filename}${shouldEncrypt ? ' will be password protected.' : ''}`, type: 'success' });
       }
       setProjectExportDialog(null);
     } catch (error) {
@@ -7304,53 +7342,183 @@ export function App() {
 
   const handleImportProject = async () => {
     if (!projectWorkspaceConnected || !projectImportFile || projectImportAnalysisStatus !== 'ready' || !projectImportTrusted || projectBusy || projectImportRenameRequired && !projectImportName.trim() || projectImportSharingWarning && !projectImportSharingApproved || projectImportPlugins.length && !projectImportPluginsApproved || projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && !projectImportOldVersionApproved) return;
+    projectImportActiveRef.current = true;
+    projectImportCancelRequestedRef.current = false;
     setProjectBusy(true);
     setProjectImportError('');
-    try {
-      const response = await fetch(apiUrl('/api/projects/import'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/vnd.arc-studio.project+zip',
-          'x-arc-token': authToken,
-          'x-arc-trusted': 'true',
-          'x-arc-allow-old-version': String(projectImportOldVersionApproved),
-          'x-arc-confirm-collaborative-text': String(projectImportSharingApproved),
-          'x-arc-import-plugins': String(projectImportPluginsApproved),
-          'x-arc-project-password': encodeHeaderValue(projectImportPassword),
-          ...(projectImportRenameRequired ? { 'x-arc-project-name': encodeHeaderValue(projectImportName.trim()) } : {})
-        },
-        body: await arcFileToBytes(projectImportFile)
+    const importUrl = apiUrl('/api/projects/import');
+    let lastUploadPercent = -1;
+    let lastUploadProgressAt = 0;
+    const updateUploadProgress = (loaded, total) => {
+      const percent = total > 0 ? Math.min(100, Math.floor(loaded / total * 100)) : -1;
+      const now = Date.now();
+      if ((percent >= 0 && percent === lastUploadPercent) || (percent < 0 && now - lastUploadProgressAt < 200)) return;
+      lastUploadPercent = percent;
+      lastUploadProgressAt = now;
+      setProjectImportProgress({ phase: 'uploading', loaded, total });
+    };
+    const requestJson = (headers, body, trackUpload = false) => new Promise((resolve, reject) => {
+      const request = new XMLHttpRequest();
+      projectImportRequestRef.current = request;
+      request.open('POST', importUrl);
+      request.responseType = 'text';
+      for (const [name, value] of Object.entries(headers)) request.setRequestHeader(name, value);
+      if (trackUpload) request.upload.addEventListener('progress', (event) => {
+        updateUploadProgress(event.loaded, event.lengthComputable ? event.total : Number(projectImportFile.size) || 0);
       });
-      let data = {};
-      try { data = await response.json(); } catch {}
+      request.addEventListener('load', () => {
+        if (projectImportRequestRef.current === request) projectImportRequestRef.current = null;
+        let data = {};
+        try { data = JSON.parse(request.responseText || '{}'); } catch {}
+        resolve({ status: request.status, data });
+      }, { once: true });
+      request.addEventListener('error', () => {
+        if (projectImportRequestRef.current === request) projectImportRequestRef.current = null;
+        reject(new Error('The server could not be reached. Check the connection and try again.'));
+      }, { once: true });
+      request.addEventListener('abort', () => {
+        if (projectImportRequestRef.current === request) projectImportRequestRef.current = null;
+        const error = new Error('The project import was cancelled.');
+        error.name = 'AbortError';
+        reject(error);
+      }, { once: true });
+      if (trackUpload) setProjectImportProgress({ phase: 'uploading', loaded: 0, total: Number(projectImportFile.size) || 0 });
+      else setProjectImportProgress({ phase: 'processing', loaded: 0, total: 0 });
+      request.send(body || null);
+    });
+    const throwIfImportCancelled = () => {
+      if (!projectImportCancelRequestedRef.current) return;
+      const error = new Error('The project import was cancelled.');
+      error.name = 'AbortError';
+      throw error;
+    };
+    try {
+      let sessionId = projectImportSessionRef.current;
+      if (!sessionId) {
+        sessionId = globalThis.crypto?.randomUUID?.() || `import_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        projectImportSessionRef.current = sessionId;
+        let staged;
+        if (desktopMode && projectImportFile.path) {
+          const invoke = window.__TAURI_INTERNALS__?.invoke;
+          if (typeof invoke !== 'function') throw new Error('ARC Studio could not upload this project file.');
+          const uploadId = globalThis.crypto?.randomUUID?.() || sessionId;
+          let unlisten = null;
+          try {
+            unlisten = await listenTauriEvent('arc-project-import-upload', ({ payload }) => {
+              if (payload?.uploadId !== uploadId) return;
+              updateUploadProgress(Number(payload.loaded) || 0, Number(payload.total) || 0);
+            });
+          } catch {}
+          throwIfImportCancelled();
+          projectImportNativeUploadRef.current = uploadId;
+          setProjectImportProgress({ phase: 'uploading', loaded: 0, total: 0 });
+          try {
+            staged = await invoke('upload_project_import_file', {
+              endpoint: importUrl,
+              token: authToken,
+              path: projectImportFile.path,
+              uploadId,
+              sessionId
+            });
+          } finally {
+            projectImportNativeUploadRef.current = '';
+            unlisten?.();
+          }
+          throwIfImportCancelled();
+        } else {
+          if (!projectImportFile || typeof projectImportFile.slice !== 'function') throw new Error('Choose a project file that ARC Studio can read.');
+          staged = await requestJson({
+            'Content-Type': 'application/vnd.arc-studio.project+zip',
+            'x-arc-token': authToken,
+            'x-arc-import-session-create': sessionId
+          }, projectImportFile, true);
+          throwIfImportCancelled();
+        }
+        const stagedData = staged?.data || {};
+        if (staged.status !== 202) {
+          projectImportSessionRef.current = '';
+          throw new Error(stagedData.error || stagedData.detail || 'Could not stage this project file.');
+        }
+        sessionId = String(stagedData.importSessionId || sessionId);
+        projectImportSessionRef.current = sessionId;
+        setProjectImportEncrypted(stagedData.encrypted === true);
+        setProjectImportHasText(stagedData.hasImportableTextContent === true);
+        setProjectImportPlugins(Array.isArray(stagedData.plugins) ? stagedData.plugins : []);
+        if (stagedData.hasImportableTextContent && !localDesktopWorkspace) {
+          setProjectImportSharingWarning({ workspaceName: String(stagedData.workspaceName || externalWorkspaceName).trim() || externalWorkspaceName });
+        }
+        setProjectImportProgress(null);
+        if (stagedData.encrypted === true) {
+          setProjectImportError('');
+          return;
+        }
+        if (stagedData.hasImportableTextContent && !localDesktopWorkspace && !projectImportSharingApproved
+          || Array.isArray(stagedData.plugins) && stagedData.plugins.length > 0 && !projectImportPluginsApproved) {
+          setProjectImportError('');
+          return;
+        }
+      }
+
+      const headers = {
+        'Content-Type': 'application/vnd.arc-studio.project+zip',
+        'x-arc-token': authToken,
+        'x-arc-import-session': sessionId,
+        'x-arc-trusted': 'true',
+        'x-arc-allow-old-version': String(projectImportOldVersionApproved),
+        'x-arc-confirm-collaborative-text': String(projectImportSharingApproved),
+        'x-arc-import-plugins': String(projectImportPluginsApproved),
+        'x-arc-project-password': encodeHeaderValue(projectImportPassword),
+        ...(projectImportRenameRequired ? { 'x-arc-project-name': encodeHeaderValue(projectImportName.trim()) } : {})
+      };
+      const response = await requestJson(headers, null, false);
+      throwIfImportCancelled();
+      const { data } = response;
       if (response.status === 409 && data.code === 'IMPORT_SHARED_CONTENT_CONFIRMATION_REQUIRED') {
+        projectImportSessionRef.current = String(data.importSessionId || sessionId);
         setProjectImportSharingWarning({ workspaceName: String(data.workspaceName || externalWorkspaceName).trim() || externalWorkspaceName });
         setProjectImportSharingApproved(false);
+        setProjectImportProgress(null);
         setProjectImportError('');
         return;
       }
       if (response.status === 409 && data.code === 'PROJECT_PLUGIN_IMPORT_CONFIRMATION_REQUIRED') {
+        projectImportSessionRef.current = String(data.importSessionId || sessionId);
         setProjectImportPlugins(Array.isArray(data.plugins) ? data.plugins : []);
         setProjectImportPluginsApproved(false);
+        setProjectImportProgress(null);
         setProjectImportError('');
         return;
       }
       if (response.status === 409 && data.code === 'PROJECT_NAME_CONFLICT') {
+        projectImportSessionRef.current = String(data.importSessionId || sessionId);
         setProjectImportRenameRequired(true);
         setProjectImportName(String(data.suggestedName || '').slice(0, 64));
+        setProjectImportProgress(null);
         setProjectImportError('');
         return;
       }
       if (response.status === 409 && ['PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED', 'PROJECT_REQUIRES_NEWER_ARC'].includes(data.code)) {
+        projectImportSessionRef.current = String(data.importSessionId || sessionId);
         setProjectImportCompatibility(data);
         setProjectImportOldVersionApproved(false);
+        setProjectImportProgress(null);
         setProjectImportError('');
         return;
       }
-      if (!response.ok) {
-        const message = data.error || data.detail || (response.status === 413 ? 'This project file is too large for the server to process. Reduce the project size or remove large assets and try again.' : 'Could not import the project.');
+      if (response.status === 400 && ['PROJECT_PASSWORD_REQUIRED', 'PROJECT_PASSWORD_INVALID'].includes(data.code)) {
+        projectImportSessionRef.current = String(data.importSessionId || sessionId);
+        setProjectImportEncrypted(true);
+        setProjectImportProgress(null);
+        setProjectImportError(data.code === 'PROJECT_PASSWORD_REQUIRED' ? '' : data.error || 'The password is incorrect or the encrypted project file is damaged.');
+        return;
+      }
+      if (response.status < 200 || response.status >= 300) {
+        projectImportSessionRef.current = '';
+        const message = data.error || data.detail || (response.status === 413 ? 'The server could not process this project archive.' : 'Could not import the project.');
         throw new Error(message);
       }
+      projectImportSessionRef.current = '';
+      setProjectImportProgress(null);
       setProjects(data.projects || []);
       setMaxProjects(localDesktopWorkspace ? null : data.maxProjects === undefined ? maxProjects : data.maxProjects);
       const imported = data.project;
@@ -7368,17 +7536,38 @@ export function App() {
         ? { title: 'Project imported with a warning', message: 'This older file has no integrity record and could not be checked.', type: 'warning', duration: 7000 }
         : { title: 'Project imported', message: imported?.name || 'Project added to your workspace', type: 'success' });
     } catch (error) {
-      setProjectImportError(error.message);
-      if (/password/i.test(error.message || '')) {
-        setProjectImportSharingWarning(null);
-        setProjectImportCompatibility(null);
+      if (error.name !== 'AbortError' && !projectImportCancelRequestedRef.current) {
+        setProjectImportError(error.message);
+        setProjectImportProgress(null);
+        if (/password/i.test(error.message || '')) {
+          setProjectImportSharingWarning(null);
+          setProjectImportCompatibility(null);
+        }
+        if (/integrity|corrupt/i.test(error.message || '')) arcEvents.emit('toast:notify', { title: 'Project file may be corrupted', message: error.message, type: 'warning', duration: 7000 });
       }
-      if (/integrity|corrupt/i.test(error.message || '')) arcEvents.emit('toast:notify', { title: 'Project file may be corrupted', message: error.message, type: 'warning', duration: 7000 });
     }
-    finally { setProjectBusy(false); }
+    finally {
+      projectImportActiveRef.current = false;
+      projectImportCancelRequestedRef.current = false;
+      projectImportRequestRef.current = null;
+      setProjectBusy(false);
+    }
   };
 
   const cancelProjectImport = () => {
+    const wasActive = projectImportActiveRef.current;
+    projectImportCancelRequestedRef.current = true;
+    const request = projectImportRequestRef.current;
+    projectImportRequestRef.current = null;
+    request?.abort();
+    const invoke = window.__TAURI_INTERNALS__?.invoke;
+    const nativeUploadId = projectImportNativeUploadRef.current;
+    if (nativeUploadId && typeof invoke === 'function') invoke('cancel_project_import_upload', { uploadId: nativeUploadId }).catch(() => {});
+    const sessionId = projectImportSessionRef.current;
+    projectImportSessionRef.current = '';
+    if (sessionId && authToken) fetch(apiUrl(`/api/projects/import/${encodeURIComponent(sessionId)}`), { method: 'DELETE', headers: { 'x-arc-token': authToken } }).catch(() => {});
+    if (!wasActive) setProjectBusy(false);
+    setProjectImportProgress(null);
     const canceledPath = projectImportFile?.path;
     projectImportPathRef.current = null;
     if (canceledPath) {
@@ -9428,16 +9617,18 @@ export function App() {
       </Modal>
       <Modal
         isOpen={Boolean(projectImportFile)}
-        onClose={() => { if (!projectBusy) cancelProjectImport(); }}
+        onClose={() => { if (!projectBusy || projectImportActiveRef.current) cancelProjectImport(); }}
         title="Import project file?"
         subtitle={projectImportFile?.name || ''}
         icon={ShieldCheck}
-        footer={<><Button variant="secondary" disabled={projectBusy} onClick={cancelProjectImport}>Cancel</Button><Button icon={FileUp} loading={projectBusy} disabled={!projectWorkspaceConnected || projectImportAnalysisStatus !== 'ready' || !projectImportTrusted || projectBusy || projectImportRenameRequired && !projectImportName.trim() || projectImportSharingWarning && !projectImportSharingApproved || projectImportPlugins.length > 0 && !projectImportPluginsApproved || !projectImportCompatibility && projectImportEncrypted && projectImportPassword.length < 12 || projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' || projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && !projectImportOldVersionApproved} onClick={handleImportProject}>{projectImportAnalysisStatus === 'checking' ? 'Checking file…' : projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' ? 'Newer ARC Studio required' : projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' ? 'Import older project' : projectImportRenameRequired ? 'Import with new name' : projectImportPlugins.length > 0 && projectImportPluginsApproved ? 'Import with plugins' : projectImportPlugins.length > 0 ? 'Review plugin requirements' : projectImportSharingWarning ? 'Import project' : projectImportTrusted ? 'Trust and import' : 'Review and trust'}</Button></>}
+        footer={<><Button variant="secondary" disabled={projectBusy && !projectImportActiveRef.current} onClick={cancelProjectImport}>{projectImportProgress?.phase === 'uploading' ? 'Cancel upload' : projectImportActiveRef.current ? 'Cancel import' : 'Cancel'}</Button><Button icon={FileUp} loading={projectBusy} disabled={!projectWorkspaceConnected || projectImportAnalysisStatus !== 'ready' || !projectImportTrusted || projectBusy || projectImportRenameRequired && !projectImportName.trim() || projectImportSharingWarning && !projectImportSharingApproved || projectImportPlugins.length > 0 && !projectImportPluginsApproved || !projectImportCompatibility && projectImportEncrypted && projectImportPassword.length < 12 || projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' || projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && !projectImportOldVersionApproved} onClick={handleImportProject}>{projectImportAnalysisStatus === 'checking' ? 'Checking file…' : projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' ? 'Newer ARC Studio required' : projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' ? 'Import older project' : projectImportRenameRequired ? 'Import with new name' : projectImportPlugins.length > 0 && projectImportPluginsApproved ? 'Import with plugins' : projectImportPlugins.length > 0 ? 'Review plugin requirements' : projectImportSharingWarning ? 'Import project' : projectImportTrusted ? 'Import project' : 'Trust and continue'}</Button></>}
       >
         <div className="project-import-warning">
           <strong>Only import a project from someone you trust.</strong>
           <p>Project files contain graphs, settings, and assets. Importing adds the project to this workspace and marks it trusted here.</p>
           {projectImportAnalysisStatus === 'checking' && <div className="project-import-analysis-status" role="status" aria-live="polite">Checking project file…</div>}
+          {projectImportProgress?.phase === 'uploading' && <div className="project-import-analysis-status" role="status" aria-live="polite">Uploading project{projectImportProgress.total > 0 ? ` · ${Math.min(100, Math.floor(projectImportProgress.loaded / projectImportProgress.total * 100))}%` : '…'}{projectImportProgress.total > 0 && <progress max={projectImportProgress.total} value={Math.min(projectImportProgress.loaded, projectImportProgress.total)} />}</div>}
+          {projectImportProgress?.phase === 'processing' && <div className="project-import-analysis-status" role="status" aria-live="polite">Verifying project archive and copying assets. Large projects can take a while…</div>}
           {projectImportAnalysisStatus === 'error' && <div className="project-import-analysis-status" role="alert">Could not verify this project file.</div>}
           {!projectImportCompatibility && <label className="project-import-checkbox-label"><input type="checkbox" checked={projectImportTrusted} onChange={(event) => setProjectImportTrusted(event.target.checked)} /><span>I trust the source of this project file.</span></label>}
           {projectImportRenameRequired && <div className="project-import-compatibility-warning project-import-rename-warning" role="group" aria-label="Choose a name for the imported project"><strong>A project with this name already exists</strong><p>Choose a different name for this imported copy. The existing project will not be changed.</p><label htmlFor="project-import-new-name">New project name</label><input id="project-import-new-name" className="studio-field" value={projectImportName} maxLength={64} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} onChange={(event) => { setProjectImportName(event.target.value); setProjectImportError(''); }} /></div>}
