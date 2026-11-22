@@ -1,5 +1,6 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { getExpandedTextLimit } from './Inputs.jsx';
 import { onPageBlur } from '../../core/pageFocus.js';
 import { getCaretCoordinates } from '../../core/caretCoordinates.js';
 import { BUILTIN_TEMPLATE_FUNCTIONS, getTemplateStringContext, templatePathSuggestions } from '../../core/templateFieldAutocomplete.js';
@@ -362,7 +363,7 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
     event.stopPropagation();
     setTextMenu({ x: Math.min(event.clientX, window.innerWidth - 210), y: Math.min(event.clientY, window.innerHeight - 54) });
   };
-  const maxLen = props.maxLength ?? undefined;
+  const maxLen = getExpandedTextLimit(props.maxLength);
   const showSuggestions = suggestions.length > 0 || (match?.kind !== 'template' && emojiEntries === null);
   return <>
     <Component {...fieldProps} {...(maxLen !== undefined ? { maxLength: maxLen } : {})} data-template-autocomplete="native" data-soft-maxlength={props.maxLength ?? undefined} ref={inputRef} className={`${className}${maskWhenInactive ? ' is-masked-when-inactive' : ''}`.trim()} value={value} onFocus={handleFocus} onChange={onInputChange} onKeyDown={handleKeyDown} onPointerDown={onPointerDown} onContextMenu={handleContextMenu} />
