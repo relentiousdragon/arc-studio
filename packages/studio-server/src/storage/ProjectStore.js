@@ -15,7 +15,23 @@ const projectFiles = ['graphs.json', 'graph-library.json', 'bot-config.json', 's
 const DEFAULT_MAX_PROJECTS = 10;
 const PROJECT_EXPORT_KDF = Object.freeze({ N: 131072, r: 8, p: 1 });
 const PROJECT_EXPORT_AAD = 'arc-studio-encrypted-project-v1';
+const MAX_PROJECT_DATA_DEPTH = 40;
 //
+function assertProjectDataDepth(value) {
+  const pending = [{ value, depth: 0 }];
+  const visited = new WeakSet();
+  while (pending.length) {
+    const current = pending.pop();
+    if (!current.value || typeof current.value !== 'object') continue;
+    if (current.depth > MAX_PROJECT_DATA_DEPTH) throw new RangeError('Project data is nested too deeply to export.');
+    if (visited.has(current.value)) throw new TypeError('Project data contains circular references and cannot be exported.');
+    visited.add(current.value);
+    for (const child of Object.values(current.value)) {
+      if (child && typeof child === 'object') pending.push({ value: child, depth: current.depth + 1 });
+    }
+  }
+}
+
 function normalizeExportPassword(password) {
   if (typeof password !== 'string' || password.length < 12 || password.length > 1024) throw new TypeError('Use an export password between 12 and 1,024 characters.');
   return password;
@@ -23,13 +39,14 @@ function normalizeExportPassword(password) {
 
 async function encryptProjectBundle(bundle, password) {
   normalizeExportPassword(password);
+  const plaintext = await createArcArchive(bundle);
+  if (plaintext.byteLength > 128 * 1024 * 1024) throw new RangeError('The encrypted project file exceeds the 128 MiB limit.');
   const salt = randomBytes(16);
   const iv = randomBytes(12);
   const key = scryptSync(password, salt, 32, { ...PROJECT_EXPORT_KDF, maxmem: 256 * 1024 * 1024 });
   const cipher = createCipheriv('aes-256-gcm', key, iv);
   cipher.setAAD(Buffer.from(PROJECT_EXPORT_AAD));
-  const archive = await createArcArchive(bundle);
-  const ciphertext = Buffer.concat([cipher.update(archive), cipher.final()]);
+  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   return {
     format: 'arc-project-encrypted', version: 3, cipher: 'aes-256-gcm', kdf: 'scrypt', ...PROJECT_EXPORT_KDF,
     salt: salt.toString('base64'), iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), data: ciphertext.toString('base64')
@@ -198,6 +215,52 @@ export class ProjectStore {
     }
   }
 
+  suggestAvailableProjectName(name) {
+    const base = cleanName(name);
+    for (let number = 2; number <= this.projects.length + 2; number += 1) {
+      const suffix = ` (${number})`;
+      let stem = base.slice(0, 64 - suffix.length);
+      if (/[\uD800-\uDBFF]$/.test(stem)) stem = stem.slice(0, -1);
+      const candidate = cleanName(`${stem}${suffix}`);
+      if (!this.projects.some((project) => normalizedName(project.name) === normalizedName(candidate))) return candidate;
+    }
+    throw new RangeError('Could not suggest an available project name.');
+  }
+
+  resolveImportProjectName(bundle, requestedName) {
+    const sourceName = requestedName === undefined ? bundle?.project?.name || 'Imported Project' : requestedName;
+    const name = cleanName(sourceName);
+    if (this.projects.some((project) => normalizedName(project.name) === normalizedName(name))) {
+      const error = new TypeError('A project with this name already exists. Choose a different name for the imported project.');
+      error.code = 'PROJECT_NAME_CONFLICT';
+      error.projectName = name;
+      error.suggestedName = this.suggestAvailableProjectName(name);
+      throw error;
+    }
+    return name;
+  }
+
+  renameProject(id, requestedName) {
+    const project = this.projects.find((item) => item.id === id);
+    if (!project) throw new Error('That project no longer exists.');
+    const name = cleanName(requestedName);
+    if (this.projects.some((item) => item.id !== id && normalizedName(item.name) === normalizedName(name))) {
+      const error = new TypeError('A project with this name already exists. Choose a different name.');
+      error.code = 'PROJECT_NAME_CONFLICT';
+      throw error;
+    }
+    if (project.name === name) return { ...project };
+    const previousName = project.name;
+    project.name = name;
+    try {
+      this.persist();
+    } catch (error) {
+      project.name = previousName;
+      throw error;
+    }
+    return { ...project };
+  }
+
   create(name, starterId = 'blank', ownerId = '') {
     if (this.maxProjects !== null && this.projects.length >= this.maxProjects) throw new RangeError(`This workspace has reached its ${this.maxProjects}-project limit.`);
     const starter = getStarterProject(starterId || 'blank');
@@ -266,6 +329,7 @@ export class ProjectStore {
     }
     const mediaStore = new ProjectMediaStore(this.directory(id));
     files['media-assets.json'] = mediaStore.getAll();
+    assertProjectDataDepth(files);
     let sensitiveCount = 0;
     const defaultValueForType = (type) => type === 'number' ? 0 : type === 'boolean' ? false : type === 'array' ? [] : type === 'object' ? {} : '';
     const sanitizeVariables = (variables, scope, graphId, allowSecretValues = true) => variables.map((variable) => {
@@ -319,18 +383,27 @@ export class ProjectStore {
     if ((typeof botConfig === 'string' && botConfig.length > 0)
       || (botConfig && typeof botConfig === 'object' && Object.keys(botConfig).length > 0)) sensitiveCount += 1;
     exportedFiles['bot-config.json'] = {};
-    return withIntegrity({ format: 'arc-project', version: 1, project: { name: project.name, exportedAt: new Date().toISOString(), createdWithVersion: currentArcStudioVersion }, files: exportedFiles, ...(pluginRequirements.length ? { plugins: pluginRequirements } : {}), sensitiveData: includeSecrets ? undefined : { omittedFields: sensitiveCount } });
+    const exportedProject = { format: 'arc-project', version: 1, project: { name: project.name, exportedAt: new Date().toISOString(), createdWithVersion: currentArcStudioVersion }, files: exportedFiles, ...(pluginRequirements.length ? { plugins: pluginRequirements } : {}), sensitiveData: includeSecrets ? undefined : { omittedFields: sensitiveCount } };
+    assertProjectDataDepth(exportedProject);
+    return withIntegrity(exportedProject);
   }
 
   exportEncryptedProject(id, password, options = {}) {
     return encryptProjectBundle(this.exportProject(id, options), password);
   }
 
+  async exportProjectArchive(id, { password = '', ...options } = {}) {
+    const bundle = this.exportProject(id, options);
+    if (!password) return createArcArchive(bundle);
+    const envelope = await encryptProjectBundle(bundle, password);
+    return createArcArchive(envelope);
+  }
+
   decryptProjectBundle(envelope, password) {
     return decryptProjectBundle(envelope, password);
   }
 
-  importProject(bundle, { trusted = false, allowOldVersion = false, ownerId = '' } = {}) {
+  importProject(bundle, { trusted = false, allowOldVersion = false, ownerId = '', projectName } = {}) {
     if (!trusted) throw new Error('Confirm that you trust this project file before importing it.');
     if (!bundle || bundle.format !== 'arc-project' || bundle.version !== 1 || !bundle.files || typeof bundle.files !== 'object' || Array.isArray(bundle.files)) throw new TypeError('This is not a supported ARC project file.');
     const integrity = verifyIntegrity(bundle);
@@ -360,8 +433,7 @@ export class ProjectStore {
       throw error;
     }
     if (this.maxProjects !== null && this.projects.length >= this.maxProjects) throw new RangeError(`This workspace has reached its ${this.maxProjects}-project limit.`);
-    const name = cleanName(bundle.project?.name || 'Imported Project');
-    this.assertUniqueName(name);
+    const name = this.resolveImportProjectName(bundle, projectName);
     const project = { id: `project_${randomUUID()}`, name, createdAt: new Date().toISOString(), ...(ownerId ? { ownerId } : {}), importedAt: new Date().toISOString(), emptyStart: true, trusted: true, idleDisconnectMinutes: 15 };
     const destination = this.directory(project.id);
     fs.mkdirSync(destination, { recursive: true, mode: 0o700 });
