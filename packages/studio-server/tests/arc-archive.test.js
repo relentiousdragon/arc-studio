@@ -43,6 +43,36 @@ test('encrypted project archives keep attachment bytes inside AES GCM ciphertext
   await assert.rejects(ProjectStore.prototype.decryptProjectBundle.call({}, { ...parsedEnvelope, version: 2 }, password), /not supported/);
 });
 
+test('encrypted project archives decode multi megabyte ciphertext', async () => {
+  const data = Buffer.alloc(4 * 1024 * 1024, 0x5a).toString('base64');
+  const archive = await createArcArchive({
+    format: 'arc-project-encrypted', version: 3, cipher: 'aes-256-gcm', kdf: 'scrypt', N: 131072, r: 8, p: 1,
+    salt: Buffer.alloc(16).toString('base64'), iv: Buffer.alloc(12).toString('base64'), tag: Buffer.alloc(16).toString('base64'), data
+  });
+  const envelope = await readArcArchive(archive, 'arc-project');
+  assert.equal(envelope.data, data);
+});
+
+test('server encrypted project archives keep all project metadata inside authenticated ciphertext', async () => {
+  const password = 'correct horse battery staple';
+  const bundle = {
+    format: 'arc-project', version: 1,
+    project: { name: 'Archive fixture', createdWithVersion: '2026.1.1-nightly.11', exportedAt: '2026-11-22T00:00:00.000Z' },
+    files: { 'graphs.json': { graphs: [{ nodes: [{ data: { secret: 'never expose this value' } }] }] } }
+  };
+  const archive = await ProjectStore.prototype.exportProjectArchive.call({ exportProject: () => bundle }, 'project_fixture', { password });
+  const envelope = await readArcArchive(archive, 'arc-project');
+  assert.equal(envelope.version, 3);
+  assert.equal(Object.hasOwn(envelope, 'project'), false);
+  assert.equal(JSON.stringify(envelope).includes('Archive fixture'), false);
+  assert.equal(JSON.stringify(envelope).includes('2026.1.1-nightly.11'), false);
+  assert.equal(JSON.stringify(envelope).includes('never expose this value'), false);
+  const restored = await ProjectStore.prototype.decryptProjectBundle.call({}, envelope, password);
+  assert.deepEqual(restored.project, bundle.project);
+  assert.equal(restored.files['graphs.json'].graphs[0].nodes[0].data.secret, 'never expose this value');
+  await assert.rejects(ProjectStore.prototype.decryptProjectBundle.call({}, { ...envelope, tag: Buffer.alloc(16).toString('base64') }, password), /incorrect or.*damaged/);
+});
+
 test('archive import rejects legacy JSON and detects modified entries', async () => {
   await assert.rejects(readArcArchive(Buffer.from('{"format":"arc-project"}'), 'arc-project'), /supported ARC archive/);
   const archive = await createArcArchive({ format: 'arc-graph', version: 1, graph: { nodes: [], connections: [] } });
