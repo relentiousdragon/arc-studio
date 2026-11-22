@@ -226,7 +226,10 @@ export function MediaPreviewModal({ asset, assets = [], onNavigate, onClose, onD
   const isPlayable = kind === 'video' || kind === 'audio';
   const imageIsLoading = imageLoadState.src !== asset.data || imageLoadState.status === 'loading';
   const imageLoadError = imageLoadState.src === asset.data && imageLoadState.status === 'error';
-  return createPortal(<div ref={dialogRef} className="discord-gallery-lightbox project-media-viewer" role="dialog" aria-modal="true" aria-label={`Preview ${asset.filename}`} tabIndex={-1} onClick={handleViewerClick}>
+  return createPortal(<div ref={dialogRef} className="discord-gallery-lightbox project-media-viewer" role="dialog" aria-modal="true" aria-label={`Preview ${asset.filename}`} tabIndex={-1} onPointerDownCapture={(event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target?.closest('.discord-gallery-lightbox-close, .project-media-viewer-nav, .project-media-image-frame, .project-media-custom-player, .project-media-viewer-download')) onClose?.();
+  }} onClick={handleViewerClick}>
     <button ref={closeButtonRef} type="button" className="discord-gallery-lightbox-close" aria-label="Close media viewer" title="Close media viewer (Esc)" onClick={onClose}><X size={20} /></button>
     {canNavigate && <>
       <button type="button" className="project-media-viewer-nav is-previous" onClick={() => navigate(-1)} disabled={assetIndex === 0} aria-label="Previous media" title="Previous media (←)"><ChevronLeft size={21} /></button>
