@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deflateRawSync, inflateRawSync } from 'node:zlib';
 import { randomBytes, createHash } from 'node:crypto';
+import { Readable } from 'node:stream';
 import { NodeDefinitions } from '../engine/NodeRegistry.js';
 import { isTemplateEnvironmentNameAllowed } from '../engine/TemplateExpressions.js';
 
@@ -41,13 +42,27 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
   const exportedMediaAssets = (Array.isArray(exportOptions.mediaAssets) ? exportOptions.mediaAssets : []).map((asset) => {
     if (!asset || !/^media_[0-9a-f-]{36}$/i.test(String(asset.id || '')) || typeof asset.filename !== 'string'
       || typeof asset.contentType !== 'string' || typeof asset.sha256 !== 'string'
-      || !/^data:[^;,]+;base64,[A-Za-z0-9+/]*={0,2}$/i.test(String(asset.data || ''))) throw new Error('Project media could not be verified for the standalone export.');
+      || !/^[a-f0-9]{64}$/i.test(asset.sha256)) throw new Error('Project media could not be verified for the standalone export.');
+    if (asset.archiveSource?.path) {
+      const size = Number(asset.size);
+      if (!Number.isSafeInteger(size) || size <= 0 || asset.archiveSource.expectedSha256 !== asset.sha256) {
+        throw new Error(`Project media ${asset.filename} failed its export integrity check.`);
+      }
+      return {
+        metadata: { id: asset.id, filename: asset.filename, contentType: asset.contentType, size, sha256: asset.sha256 },
+        filePath: asset.archiveSource.path,
+        expectedSha256: asset.sha256,
+        size
+      };
+    }
+    if (!/^data:[^;,]+;base64,[A-Za-z0-9+/]*={0,2}$/i.test(String(asset.data || ''))) {
+      throw new Error('Project media could not be verified for the standalone export.');
+    }
     const bytes = Buffer.from(asset.data.slice(asset.data.indexOf(',') + 1), 'base64');
     if (!bytes.length || bytes.length > 20 * 1024 * 1024 || bytes.length !== Number(asset.size)
       || createHash('sha256').update(bytes).digest('hex') !== asset.sha256) throw new Error(`Project media ${asset.filename} failed its export integrity check.`);
     return { metadata: { id: asset.id, filename: asset.filename, contentType: asset.contentType, size: bytes.length, sha256: asset.sha256 }, bytes };
   });
-  if (exportedMediaAssets.reduce((total, asset) => total + asset.bytes.length, 0) > 100 * 1024 * 1024) throw new Error('Project media exceeds the standalone export size limit.');
   const includeCryptoSecret = exportOptions.includeCryptoSecret === true;
   const includeBotToken = exportOptions.includeBotToken === true;
   const botToken = includeBotToken ? String(exportOptions.botToken || '').replace(/[\r\n]/g, '') : '';
@@ -186,7 +201,9 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
     { name: 'LICENSE', data: readText('LICENSE', repoRoot) },
     { name: 'THIRD-PARTY-LICENSES.md', data: generateThirdPartyLicenses({ exports, dependencies }) }
   ];
-  for (const asset of exportedMediaAssets) entries.push({ name: `media/${asset.metadata.id}.bin`, data: asset.bytes });
+  for (const asset of exportedMediaAssets) entries.push(asset.filePath
+    ? { name: `media/${asset.metadata.id}.bin`, filePath: asset.filePath, expectedSha256: asset.expectedSha256, size: asset.size }
+    : { name: `media/${asset.metadata.id}.bin`, data: asset.bytes });
   if (requiredRuntimeModules.has('network.js')) {
     entries.push({ name: 'src/engine/SafeHttpRequest.js', data: readText('src/engine/SafeHttpRequest.js') });
   }
@@ -224,11 +241,12 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
   const integrityFiles = Object.fromEntries(entries
     .filter((entry) => entry.name !== '.env')
     .map((entry) => {
+      if (entry.expectedSha256) return [entry.name, entry.expectedSha256];
       const bytes = Buffer.isBuffer(entry.data) ? entry.data : Buffer.from(String(entry.data));
       return [entry.name, createHash('sha256').update(bytes).digest('hex')];
     }));
   entries.push({ name: 'integrity.json', data: JSON.stringify({ format: 'arc-bot-integrity', version: 1, algorithm: 'sha256', files: integrityFiles }, null, 2) });
-  return zip(entries);
+  return exportOptions.stream === true ? zipStream(entries) : zip(entries);
 }
 
 export function verifyBotArchiveIntegrity(archive) {
@@ -557,6 +575,146 @@ function zip(entries) {
   end.writeUInt32LE(localOffset, 16);
   end.writeUInt16LE(0, 20);
   return Buffer.concat([...localChunks, centralDirectory, end]);
+}
+
+function updateCrc32(crc, buffer) {
+  let value = crc;
+  for (const byte of buffer) value = crcTable[(value ^ byte) & 0xff] ^ (value >>> 8);
+  return value >>> 0;
+}
+
+function zip64Extra(values) {
+  const extra = Buffer.alloc(4 + values.length * 8);
+  extra.writeUInt16LE(0x0001, 0);
+  extra.writeUInt16LE(values.length * 8, 2);
+  values.forEach((value, index) => extra.writeBigUInt64LE(value, 4 + index * 8));
+  return extra;
+}
+
+function botEntrySize(entry) {
+  if (Buffer.isBuffer(entry.data)) return BigInt(entry.data.length);
+  if (entry.filePath) return BigInt(entry.size ?? fs.statSync(entry.filePath).size);
+  return BigInt(Buffer.byteLength(String(entry.data ?? ''), 'utf8'));
+}
+
+async function* botEntryChunks(entry) {
+  if (Buffer.isBuffer(entry.data)) {
+    const chunkSize = 1024 * 1024;
+    for (let offset = 0; offset < entry.data.length; offset += chunkSize) yield entry.data.subarray(offset, Math.min(entry.data.length, offset + chunkSize));
+    return;
+  }
+  if (entry.filePath) {
+    yield* fs.createReadStream(entry.filePath, { highWaterMark: 1024 * 1024 });
+    return;
+  }
+  yield Buffer.from(String(entry.data ?? ''), 'utf8');
+}
+
+function zipStream(entries) {
+  const entrySizes = entries.map(botEntrySize);
+  let archiveLength = 98n;
+  for (let index = 0; index < entries.length; index += 1) {
+    const nameLength = Buffer.byteLength(entries[index].name, 'utf8');
+    archiveLength += 30n + BigInt(nameLength) + 20n + entrySizes[index] + 24n;
+    archiveLength += 46n + BigInt(nameLength) + 28n;
+  }
+
+  async function* chunks() {
+    let offset = 0n;
+    const centralEntries = [];
+    for (const entry of entries) {
+      const localOffset = offset;
+      const name = Buffer.from(entry.name, 'utf8');
+      const extra = zip64Extra([0n, 0n]);
+      const local = Buffer.alloc(30 + name.length + extra.length);
+      local.writeUInt32LE(0x04034b50, 0);
+      local.writeUInt16LE(45, 4);
+      local.writeUInt16LE(0x0808, 6);
+      local.writeUInt16LE(0, 8);
+      local.writeUInt32LE(0, 14);
+      local.writeUInt32LE(0xffffffff, 18);
+      local.writeUInt32LE(0xffffffff, 22);
+      local.writeUInt16LE(name.length, 26);
+      local.writeUInt16LE(extra.length, 28);
+      name.copy(local, 30);
+      extra.copy(local, 30 + name.length);
+      offset += BigInt(local.length);
+      yield local;
+
+      const hash = createHash('sha256');
+      let size = 0n;
+      let crc = 0xffffffff;
+      for await (const chunk of botEntryChunks(entry)) {
+        size += BigInt(chunk.length);
+        hash.update(chunk);
+        crc = updateCrc32(crc, chunk);
+        offset += BigInt(chunk.length);
+        yield chunk;
+      }
+      const sha256 = hash.digest('hex');
+      const crc32Value = (crc ^ 0xffffffff) >>> 0;
+      if (size !== entrySizes[centralEntries.length]) throw new Error(`Standalone export file changed during ZIP creation: ${entry.name}.`);
+      if (entry.expectedSha256 && sha256 !== entry.expectedSha256) throw new Error(`Project media changed during standalone export: ${entry.name}.`);
+
+      const descriptor = Buffer.alloc(24);
+      descriptor.writeUInt32LE(0x08074b50, 0);
+      descriptor.writeUInt32LE(crc32Value, 4);
+      descriptor.writeBigUInt64LE(size, 8);
+      descriptor.writeBigUInt64LE(size, 16);
+      offset += BigInt(descriptor.length);
+      yield descriptor;
+
+      const centralExtra = zip64Extra([size, size, localOffset]);
+      const central = Buffer.alloc(46 + name.length + centralExtra.length);
+      central.writeUInt32LE(0x02014b50, 0);
+      central.writeUInt16LE((3 << 8) | 45, 4);
+      central.writeUInt16LE(45, 6);
+      central.writeUInt16LE(0x0808, 8);
+      central.writeUInt16LE(0, 10);
+      central.writeUInt16LE(0, 12);
+      central.writeUInt32LE(crc32Value, 16);
+      central.writeUInt32LE(0xffffffff, 20);
+      central.writeUInt32LE(0xffffffff, 24);
+      central.writeUInt16LE(name.length, 28);
+      central.writeUInt16LE(centralExtra.length, 30);
+      central.writeUInt32LE((0o100644 * 0x10000) >>> 0, 38);
+      central.writeUInt32LE(0xffffffff, 42);
+      name.copy(central, 46);
+      centralExtra.copy(central, 46 + name.length);
+      centralEntries.push(central);
+    }
+
+    const centralOffset = offset;
+    const centralSize = centralEntries.reduce((sum, entry) => sum + BigInt(entry.length), 0n);
+    for (const entry of centralEntries) { offset += BigInt(entry.length); yield entry; }
+    const zip64Offset = offset;
+    const zip64End = Buffer.alloc(56);
+    zip64End.writeUInt32LE(0x06064b50, 0);
+    zip64End.writeBigUInt64LE(44n, 4);
+    zip64End.writeUInt16LE((3 << 8) | 45, 12);
+    zip64End.writeUInt16LE(45, 14);
+    zip64End.writeBigUInt64LE(BigInt(entries.length), 24);
+    zip64End.writeBigUInt64LE(BigInt(entries.length), 32);
+    zip64End.writeBigUInt64LE(centralSize, 40);
+    zip64End.writeBigUInt64LE(centralOffset, 48);
+    yield zip64End;
+    const locator = Buffer.alloc(20);
+    locator.writeUInt32LE(0x07064b50, 0);
+    locator.writeBigUInt64LE(zip64Offset, 8);
+    locator.writeUInt32LE(1, 16);
+    yield locator;
+    const end = Buffer.alloc(22);
+    end.writeUInt32LE(0x06054b50, 0);
+    end.writeUInt16LE(0xffff, 8);
+    end.writeUInt16LE(0xffff, 10);
+    end.writeUInt32LE(0xffffffff, 12);
+    end.writeUInt32LE(0xffffffff, 16);
+    yield end;
+  }
+
+  const stream = Readable.from(chunks(), { objectMode: false });
+  stream.archiveLength = archiveLength;
+  return stream;
 }
 
 function crc32(buffer) {
