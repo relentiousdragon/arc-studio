@@ -17,11 +17,10 @@ export function GraphValidationModal({ isOpen, onClose, graphName, result, onTra
       ? `${warnings.length} warning${warnings.length === 1 ? '' : 's'}`
       : 'No issues';
   const reportedItems = Array.isArray(result.issueItems) ? result.issueItems : [];
-  const items = [
-    ...reportedItems,
+  const items = (reportedItems.length ? reportedItems : [
     ...errors.map((message) => ({ message, kind: 'error', nodeId: result.errorNodeIds?.[message] })),
     ...warnings.map((message) => ({ message, kind: 'warning', nodeId: result.warningNodeIds?.[message] }))
-  ].filter((item, index, all) => all.findIndex((candidate) => candidate.kind === item.kind && candidate.message === item.message) === index);
+  ]).filter((item, index, all) => all.findIndex((candidate) => candidate.kind === item.kind && candidate.message === item.message && candidate.nodeId === item.nodeId && candidate.graphId === item.graphId) === index);
   return <Modal
     isOpen={isOpen}
     onClose={onClose}
