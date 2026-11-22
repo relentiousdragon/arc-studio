@@ -1,10 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { validateArcAttachmentBytes } from '../storage/ArcArchive.js';
 
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
-const MAX_PROJECT_BYTES = 100 * 1024 * 1024;
 const MAX_ASSETS = 2000;
 //
 function cleanFilename(value) {
@@ -58,7 +59,6 @@ export class ProjectMediaStore {
       const value = JSON.parse(fs.readFileSync(this.filePath, 'utf8'));
       if (!Array.isArray(value) || value.length > MAX_ASSETS) throw new Error('The project media library is invalid.');
       let migrated = false;
-      let totalBytes = 0;
       const metadata = [];
       for (const asset of value) {
         if (typeof asset.id !== 'string' || !/^media_[0-9a-f-]{36}$/i.test(asset.id)) throw new Error('The project media library metadata is invalid.');
@@ -67,7 +67,6 @@ export class ProjectMediaStore {
           ? contentBytes(asset)
           : { bytes: fs.readFileSync(path.join(this.mediaDirectory, `${asset.id}.bin`)), contentType: String(asset.contentType || '').toLowerCase() };
         validateArcAttachmentBytes(contentType, bytes);
-        totalBytes += bytes.length;
         const normalizedGenericType = asset.contentType === 'application/octet-stream' && contentType !== 'application/octet-stream';
         if (cleanFilename(asset.filename) !== asset.filename || Number(asset.size) !== bytes.length || asset.contentType !== contentType && !normalizedGenericType) throw new Error('The project media library metadata is invalid.');
         if (typeof asset.id !== 'string' || !/^media_[0-9a-f-]{36}$/i.test(asset.id)
@@ -80,9 +79,7 @@ export class ProjectMediaStore {
         if (asset.preview) {
           const thumbnail = contentBytes({ filename: 'preview.webp', data: asset.preview });
           if (!/^image\/(?:jpeg|png|webp)$/.test(thumbnail.contentType) || thumbnail.bytes.length > 256 * 1024) throw new Error('The project media thumbnail is invalid.');
-          totalBytes += thumbnail.bytes.length;
         }
-        if (totalBytes > MAX_PROJECT_BYTES) throw new Error('The project media library exceeds its storage limit.');
         const { data, ...safeMetadata } = asset;
         if (normalizedGenericType) { safeMetadata.contentType = contentType; migrated = true; }
         metadata.push(safeMetadata);
@@ -91,6 +88,55 @@ export class ProjectMediaStore {
       return metadata;
     } catch (error) {
       if (error.code === 'ENOENT') return [];
+      throw new Error('The project media library could not be read.');
+    }
+  }
+
+  async listAsync() {
+    let value;
+    try {
+      value = JSON.parse(await fs.promises.readFile(this.filePath, 'utf8'));
+    } catch (error) {
+      if (error.code === 'ENOENT') return [];
+      throw new Error('The project media library could not be read.');
+    }
+    try {
+      if (!Array.isArray(value) || value.length > MAX_ASSETS) throw new Error('The project media library is invalid.');
+      let migrated = false;
+      const metadata = [];
+      for (const asset of value) {
+        if (typeof asset.id !== 'string' || !/^media_[0-9a-f-]{36}$/i.test(asset.id)) throw new Error('The project media library metadata is invalid.');
+        const legacyData = typeof asset.data === 'string';
+        let bytes;
+        let contentType;
+        if (legacyData) ({ bytes, contentType } = contentBytes(asset));
+        else {
+          const blobPath = path.join(this.mediaDirectory, `${asset.id}.bin`);
+          const stat = await fs.promises.stat(blobPath);
+          if (!stat.isFile() || stat.size > MAX_FILE_BYTES || stat.size !== Number(asset.size)) throw new Error('The project media library metadata is invalid.');
+          bytes = await fs.promises.readFile(blobPath);
+          contentType = String(asset.contentType || '').toLowerCase();
+        }
+        validateArcAttachmentBytes(contentType, bytes);
+        const normalizedGenericType = asset.contentType === 'application/octet-stream' && contentType !== 'application/octet-stream';
+        if (cleanFilename(asset.filename) !== asset.filename || Number(asset.size) !== bytes.length || asset.contentType !== contentType && !normalizedGenericType) throw new Error('The project media library metadata is invalid.');
+        if (crypto.createHash('sha256').update(bytes).digest('hex') !== asset.sha256) throw new Error('The project media library failed its integrity check.');
+        if (legacyData) {
+          fs.mkdirSync(this.mediaDirectory, { recursive: true, mode: 0o700 });
+          fs.writeFileSync(path.join(this.mediaDirectory, `${asset.id}.bin`), bytes, { flag: 'wx', mode: 0o600 });
+          migrated = true;
+        }
+        if (asset.preview) {
+          const thumbnail = contentBytes({ filename: 'preview.webp', data: asset.preview });
+          if (!/^image\/(?:jpeg|png|webp)$/.test(thumbnail.contentType) || thumbnail.bytes.length > 256 * 1024) throw new Error('The project media thumbnail is invalid.');
+        }
+        const { data, ...safeMetadata } = asset;
+        if (normalizedGenericType) { safeMetadata.contentType = contentType; migrated = true; }
+        metadata.push(safeMetadata);
+      }
+      if (migrated) this.persist(metadata);
+      return metadata;
+    } catch {
       throw new Error('The project media library could not be read.');
     }
   }
@@ -110,8 +156,6 @@ export class ProjectMediaStore {
     }
     const assets = this.list();
     const digest = crypto.createHash('sha256').update(bytes).digest('hex');
-    const usedBytes = assets.reduce((total, item) => total + (Number(item.size) || 0) + (item.preview ? Buffer.byteLength(item.preview, 'utf8') * 0.75 : 0), 0);
-    if (usedBytes + bytes.length + (preview ? Buffer.byteLength(preview, 'utf8') * 0.75 : 0) > MAX_PROJECT_BYTES) throw new RangeError('The project media library is limited to 100 MiB.');
     if (assets.length >= MAX_ASSETS) throw new RangeError('The project media library has reached its file limit.');
     const base = path.parse(filename);
     let uniqueName = filename;
@@ -142,6 +186,11 @@ export class ProjectMediaStore {
     return { asset, bytes: fs.readFileSync(path.join(this.mediaDirectory, `${asset.id}.bin`)) };
   }
 
+  getArchiveSource(id, expectedSha256 = '') {
+    if (typeof id !== 'string' || !/^media_[0-9a-f-]{36}$/i.test(id)) throw new TypeError('The project media entry is invalid.');
+    return { path: path.join(this.mediaDirectory, `${id}.bin`), expectedSha256 };
+  }
+
   getAll() {
     return this.list().map((asset) => {
       const bytes = fs.readFileSync(path.join(this.mediaDirectory, `${asset.id}.bin`));
@@ -152,6 +201,71 @@ export class ProjectMediaStore {
   importAssets(assets = []) {
     if (!Array.isArray(assets)) throw new TypeError('The project media library is invalid.');
     for (const asset of assets) this.add(asset);
+  }
+
+  async importArchiveAssets(assets = [], sources = new Map(), { signal } = {}) {
+    if (!Array.isArray(assets) || assets.length > MAX_ASSETS) throw new TypeError('The project media library is invalid.');
+    const metadata = [];
+    const ids = new Set();
+    fs.mkdirSync(this.mediaDirectory, { recursive: true, mode: 0o700 });
+    for (const asset of assets) {
+      if (signal?.aborted) throw signal.reason || new Error('Project import cancelled.');
+      if (!asset || typeof asset.id !== 'string' || !/^media_[0-9a-f-]{36}$/i.test(asset.id) || ids.has(asset.id)) {
+        throw new TypeError('The project media library contains an invalid asset ID.');
+      }
+      ids.add(asset.id);
+      const filename = cleanFilename(asset.filename);
+      const contentType = String(asset.contentType || '').toLowerCase();
+      const size = Number(asset.size);
+      const sha256 = String(asset.sha256 || '').toLowerCase();
+      const reference = typeof asset.data === 'string' && asset.data.startsWith('arc-attachment://') ? asset.data : '';
+      const [entryName] = reference ? reference.slice('arc-attachment://'.length).split('?') : [''];
+      const source = sources.get(entryName);
+      if (!source || !/^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/i.test(contentType)
+        || !Number.isSafeInteger(size) || size <= 0 || size > MAX_FILE_BYTES
+        || !/^[a-f0-9]{64}$/.test(sha256) || source.size !== size || source.sha256 !== sha256 || source.mime !== contentType) {
+        throw new TypeError('The project archive media metadata is invalid.');
+      }
+      let preview = '';
+      if (asset.preview) {
+        const thumbnail = contentBytes({ filename: 'preview.webp', data: asset.preview });
+        if (!/^image\/(?:jpeg|png|webp)$/.test(thumbnail.contentType) || thumbnail.bytes.length > 256 * 1024) throw new TypeError('The project media thumbnail is invalid.');
+        preview = asset.preview;
+      }
+      const blobPath = path.join(this.mediaDirectory, `${asset.id}.bin`);
+      const hash = crypto.createHash('sha256');
+      let copiedBytes = 0;
+      const verifier = new Transform({
+        transform(chunk, _encoding, callback) {
+          copiedBytes += chunk.length;
+          hash.update(chunk);
+          callback(null, chunk);
+        },
+        flush(callback) {
+          if (copiedBytes !== size || hash.digest('hex') !== sha256) callback(new Error(`Project media integrity check failed for ${filename}.`));
+          else callback();
+        }
+      });
+      try {
+        await pipeline(
+          fs.createReadStream(source.archivePath, { start: source.offset, end: source.offset + source.size - 1, highWaterMark: 1024 * 1024, ...(signal ? { signal } : {}) }),
+          verifier,
+          fs.createWriteStream(blobPath, { flags: 'wx', mode: 0o600 }),
+          { signal }
+        );
+        validateArcAttachmentBytes(contentType, fs.readFileSync(blobPath));
+      } catch (error) {
+        try { fs.rmSync(blobPath, { force: true }); } catch {}
+        throw error;
+      }
+      metadata.push({
+        id: asset.id, filename, contentType, size, sha256,
+        ...(preview ? { preview } : {}),
+        ...(typeof asset.createdAt === 'string' ? { createdAt: asset.createdAt } : {})
+      });
+    }
+    this.persist(metadata);
+    return metadata;
   }
 
   delete(id) {
