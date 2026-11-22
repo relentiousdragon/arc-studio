@@ -2,17 +2,21 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
+use std::collections::HashMap;
 #[cfg(target_os = "macos")]
 use std::ffi::CString;
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
 use tauri::{Emitter, Manager, RunEvent, State, Webview, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_updater::UpdaterExt;
+use tokio::io::AsyncReadExt;
+use tokio::sync::Notify;
 
 const UPDATE_REPOSITORY: &str = match option_env!("ARC_UPDATE_REPOSITORY") {
     Some(repository) => repository,
@@ -500,9 +504,6 @@ struct ProjectExportReceipt {
 
 #[tauri::command]
 fn save_project_export<R: tauri::Runtime>(app: tauri::AppHandle<R>, filename: String, contents: Vec<u8>) -> Result<ProjectExportReceipt, String> {
-    if contents.len() > 128 * 1024 * 1024 {
-        return Err("The project export is too large to save.".to_string());
-    }
     let safe_name = filename
         .chars()
         .filter(|character| !character.is_control() && !matches!(character, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
@@ -547,6 +548,392 @@ fn save_project_export<R: tauri::Runtime>(app: tauri::AppHandle<R>, filename: St
         eprintln!("Project export saved at {}, but its folder could not be opened: {error}", path.display());
     }
     Ok(ProjectExportReceipt { path: path.to_string_lossy().into_owned(), revealed })
+}
+
+#[tauri::command]
+async fn download_project_export<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    endpoint: String,
+    token: String,
+    filename: String,
+    password: String,
+    include_secrets: bool,
+) -> Result<ProjectExportReceipt, String> {
+    let endpoint = url::Url::parse(&endpoint).map_err(|_| "Could not locate the project export endpoint.".to_string())?;
+    let host = endpoint.host_str().unwrap_or_default();
+    let loopback = matches!(host, "localhost" | "127.0.0.1" | "::1" | "[::1]");
+    if (endpoint.scheme() != "https" && !(endpoint.scheme() == "http" && loopback))
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || endpoint.query().is_some()
+        || endpoint.fragment().is_some()
+        || !endpoint.path().contains("/api/projects/")
+        || !endpoint.path().ends_with("/export/archive")
+        || token.is_empty()
+        || token.len() > 4096
+        || token.chars().any(char::is_control)
+    {
+        return Err("The project export request is invalid.".to_string());
+    }
+
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| format!("Could not prepare the project download: {error}"))?;
+    let mut response = client
+        .post(endpoint)
+        .header("x-arc-token", token)
+        .json(&serde_json::json!({ "password": password, "includeSecrets": include_secrets }))
+        .send()
+        .await
+        .map_err(|error| format!("Could not start the project download: {error}"))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let mut error_bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|error| format!("Project export failed with HTTP {status}: {error}"))?
+        {
+            if error_bytes.len() + chunk.len() > 64 * 1024 {
+                break;
+            }
+            error_bytes.extend_from_slice(&chunk);
+        }
+        let message = serde_json::from_slice::<serde_json::Value>(&error_bytes)
+            .ok()
+            .and_then(|value| value.get("error").and_then(serde_json::Value::as_str).map(str::to_owned))
+            .unwrap_or_else(|| format!("Project export failed with HTTP {status}."));
+        return Err(message);
+    }
+
+    let safe_name = filename
+        .chars()
+        .filter(|character| !character.is_control() && !matches!(character, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+        .collect::<String>()
+        .trim_matches(|character| character == ' ' || character == '.')
+        .to_string();
+    let stem = safe_name.strip_suffix(".arcproject").unwrap_or(&safe_name);
+    if stem.trim().is_empty() || stem == "." || stem == ".." {
+        return Err("Choose a valid project name before exporting.".to_string());
+    }
+
+    let directory = app.path().download_dir()
+        .map_err(|error| format!("Could not locate your Downloads folder: {error}"))?;
+    fs::create_dir_all(&directory).map_err(|error| format!("Could not access your Downloads folder: {error}"))?;
+    let mut suffix = 0u32;
+    let (path, mut file) = loop {
+        let name = if suffix == 0 { format!("{stem}.arcproject") } else { format!("{stem} ({suffix}).arcproject") };
+        let path = directory.join(name);
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => break (path, file),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => suffix += 1,
+            Err(error) => return Err(format!("Could not save the project export: {error}")),
+        }
+    };
+    #[cfg(unix)]
+    if let Err(error) = file.set_permissions(fs::Permissions::from_mode(0o600)) {
+        let _ = fs::remove_file(&path);
+        return Err(format!("Could not secure the project export: {error}"));
+    }
+
+    loop {
+        let chunk = match response.chunk().await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => break,
+            Err(error) => {
+                let _ = fs::remove_file(&path);
+                return Err(format!("The project download stopped early: {error}"));
+            }
+        };
+        if let Err(error) = file.write_all(&chunk) {
+            let _ = fs::remove_file(&path);
+            return Err(format!("Could not write the project export: {error}"));
+        }
+    }
+    if let Err(error) = file.sync_all() {
+        let _ = fs::remove_file(&path);
+        return Err(format!("Could not finish writing the project export: {error}"));
+    }
+    drop(file);
+
+    #[cfg(target_os = "macos")]
+    let reveal = Command::new("open").arg("-R").arg(&path).spawn();
+    #[cfg(target_os = "windows")]
+    let reveal = Command::new("explorer").arg(format!("/select,{}", path.display())).spawn();
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let reveal = Command::new("xdg-open").arg(&directory).spawn();
+    let revealed = reveal.is_ok();
+    if let Err(error) = reveal {
+        eprintln!("ARC Studio project export saved at {}, but its folder could not be opened: {error}", path.display());
+    }
+    Ok(ProjectExportReceipt { path: path.to_string_lossy().into_owned(), revealed })
+}
+
+#[tauri::command]
+async fn download_bot_export<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    endpoint: String,
+    token: String,
+    project_id: String,
+    export_id: String,
+    include_crypto_secret: bool,
+    include_bot_token: bool,
+) -> Result<ProjectExportReceipt, String> {
+    let endpoint = url::Url::parse(&endpoint).map_err(|_| "Could not locate the bot export endpoint.".to_string())?;
+    let host = endpoint.host_str().unwrap_or_default();
+    let loopback = matches!(host, "localhost" | "127.0.0.1" | "::1" | "[::1]");
+    if (endpoint.scheme() != "https" && !(endpoint.scheme() == "http" && loopback))
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || endpoint.query().is_some()
+        || endpoint.fragment().is_some()
+        || !endpoint.path().ends_with("/api/graphs/export/bot.zip")
+        || token.is_empty()
+        || token.len() > 4096
+        || token.chars().any(char::is_control)
+        || project_id.len() > 100
+        || project_id.chars().any(char::is_control)
+        || export_id.len() > 100
+        || export_id.chars().any(char::is_control)
+    {
+        return Err("The bot export request is invalid.".to_string());
+    }
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| format!("Could not prepare the bot download: {error}"))?;
+    let request = serde_json::json!({
+        "projectId": project_id,
+        "exportId": export_id,
+        "includeCryptoSecret": include_crypto_secret,
+        "includeBotToken": include_bot_token
+    });
+    let mut response = client.post(endpoint)
+        .header("x-arc-token", token)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|error| format!("Could not start the bot download: {error}"))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let mut error_bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(|error| format!("Bot export failed with HTTP {status}: {error}"))? {
+            if error_bytes.len().saturating_add(chunk.len()) > 64 * 1024 { break; }
+            error_bytes.extend_from_slice(&chunk);
+        }
+        return Err(serde_json::from_slice::<serde_json::Value>(&error_bytes)
+            .ok()
+            .and_then(|value| value.get("error").and_then(serde_json::Value::as_str).map(str::to_owned))
+            .unwrap_or_else(|| format!("Bot export failed with HTTP {status}.")));
+    }
+    let directory = app.path().download_dir().map_err(|error| format!("Could not locate your Downloads folder: {error}"))?;
+    fs::create_dir_all(&directory).map_err(|error| format!("Could not access your Downloads folder: {error}"))?;
+    let mut suffix = 0u32;
+    let (path, mut file) = loop {
+        let name = if suffix == 0 { "arc-bot-export.zip".to_string() } else { format!("arc-bot-export ({suffix}).zip") };
+        let path = directory.join(name);
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => break (path, file),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => suffix += 1,
+            Err(error) => return Err(format!("Could not save the bot export: {error}")),
+        }
+    };
+    #[cfg(unix)]
+    if let Err(error) = file.set_permissions(fs::Permissions::from_mode(0o600)) {
+        let _ = fs::remove_file(&path);
+        return Err(format!("Could not secure the bot export: {error}"));
+    }
+    loop {
+        let chunk = match response.chunk().await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => break,
+            Err(error) => {
+                let _ = fs::remove_file(&path);
+                return Err(format!("The bot download stopped early: {error}"));
+            }
+        };
+        if let Err(error) = file.write_all(&chunk) {
+            let _ = fs::remove_file(&path);
+            return Err(format!("Could not write the bot export: {error}"));
+        }
+    }
+    if let Err(error) = file.sync_all() {
+        let _ = fs::remove_file(&path);
+        return Err(format!("Could not finish writing the bot export: {error}"));
+    }
+    drop(file);
+    #[cfg(target_os = "macos")]
+    let reveal = Command::new("open").arg("-R").arg(&path).spawn();
+    #[cfg(target_os = "windows")]
+    let reveal = Command::new("explorer").arg(format!("/select,{}", path.display())).spawn();
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let reveal = Command::new("xdg-open").arg(&directory).spawn();
+    let revealed = reveal.is_ok();
+    if let Err(error) = reveal { eprintln!("ARC Studio bot export saved at {}, but its folder could not be opened: {error}", path.display()); }
+    Ok(ProjectExportReceipt { path: path.to_string_lossy().into_owned(), revealed })
+}
+
+struct ProjectImportUploadControl {
+    cancelled: AtomicBool,
+    notify: Notify,
+}
+
+static PROJECT_IMPORT_UPLOADS: OnceLock<Mutex<HashMap<String, Arc<ProjectImportUploadControl>>>> = OnceLock::new();
+
+fn project_import_uploads() -> &'static Mutex<HashMap<String, Arc<ProjectImportUploadControl>>> {
+    PROJECT_IMPORT_UPLOADS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[tauri::command]
+async fn upload_project_import_file<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    endpoint: String,
+    token: String,
+    path: String,
+    upload_id: String,
+    session_id: String,
+) -> Result<serde_json::Value, String> {
+    if !upload_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        || upload_id.len() < 8
+        || !session_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        || session_id.len() < 8
+        || token.is_empty()
+        || token.len() > 4096
+        || token.chars().any(char::is_control)
+    {
+        return Err("The project import request is invalid.".to_string());
+    }
+    let endpoint = url::Url::parse(&endpoint).map_err(|_| "Could not locate the project import endpoint.".to_string())?;
+    let host = endpoint.host_str().unwrap_or_default();
+    let loopback = matches!(host, "localhost" | "127.0.0.1" | "::1" | "[::1]");
+    if (endpoint.scheme() != "https" && !(endpoint.scheme() == "http" && loopback))
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || endpoint.query().is_some()
+        || endpoint.fragment().is_some()
+        || !endpoint.path().ends_with("/api/projects/import")
+    {
+        return Err("The project import endpoint is invalid.".to_string());
+    }
+    let source = PathBuf::from(path);
+    let metadata = fs::metadata(&source).map_err(|error| format!("Could not read the project file: {error}"))?;
+    if !metadata.is_file() {
+        return Err("Choose a regular project file to import.".to_string());
+    }
+    let total = metadata.len();
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| format!("Could not prepare the project upload: {error}"))?;
+    let control = {
+        let mut uploads = project_import_uploads().lock().map_err(|_| "Could not prepare the project upload.".to_string())?;
+        uploads.entry(upload_id.clone()).or_insert_with(|| Arc::new(ProjectImportUploadControl {
+            cancelled: AtomicBool::new(false),
+            notify: Notify::new(),
+        })).clone()
+    };
+    if control.cancelled.load(Ordering::Acquire) {
+        if let Ok(mut uploads) = project_import_uploads().lock() { uploads.remove(&upload_id); }
+        return Err("The project upload was cancelled.".to_string());
+    }
+    let file = match tokio::fs::File::open(&source).await {
+        Ok(file) => file,
+        Err(error) => {
+            if let Ok(mut uploads) = project_import_uploads().lock() { uploads.remove(&upload_id); }
+            return Err(format!("Could not open the project file: {error}"));
+        }
+    };
+    if control.cancelled.load(Ordering::Acquire) {
+        if let Ok(mut uploads) = project_import_uploads().lock() { uploads.remove(&upload_id); }
+        return Err("The project upload was cancelled.".to_string());
+    }
+
+    let upload_app = app.clone();
+    let progress_id = upload_id.clone();
+    let progress_control = control.clone();
+    let stream = futures_util::stream::try_unfold((file, 0u64, 0u64), move |(mut file, mut loaded, mut last_reported)| {
+        let app = upload_app.clone();
+        let upload_id = progress_id.clone();
+        let control = progress_control.clone();
+        async move {
+            if control.cancelled.load(Ordering::Acquire) {
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "Project upload cancelled."));
+            }
+            let mut buffer = vec![0; 1024 * 1024];
+            let count = file.read(&mut buffer).await?;
+            if count == 0 { return Ok(None); }
+            buffer.truncate(count);
+            loaded = loaded.saturating_add(count as u64);
+            if loaded.saturating_sub(last_reported) >= 64 * 1024 * 1024 || loaded >= total {
+                last_reported = loaded;
+                let _ = app.emit("arc-project-import-upload", serde_json::json!({ "uploadId": upload_id, "loaded": loaded, "total": total }));
+            }
+            Ok(Some((bytes::Bytes::from(buffer), (file, loaded, last_reported))))
+        }
+    });
+
+    let request = client.post(endpoint)
+        .header("x-arc-token", token)
+        .header("x-arc-import-session-create", session_id)
+        .header("content-type", "application/vnd.arc-studio.project+zip")
+        .header("content-length", total.to_string())
+        .body(reqwest::Body::wrap_stream(stream));
+    let send_future = Box::pin(request.send());
+    let cancel_future = Box::pin(control.notify.notified());
+    let response_result = match futures_util::future::select(send_future, cancel_future).await {
+        futures_util::future::Either::Left((response, _)) => response.map_err(|error| format!("Could not upload the project file: {error}")),
+        futures_util::future::Either::Right((_, _)) => Err("The project upload was cancelled.".to_string()),
+    };
+    let mut response = match response_result {
+        Ok(response) => response,
+        Err(error) => {
+            if let Ok(mut uploads) = project_import_uploads().lock() { uploads.remove(&upload_id); }
+            return Err(error);
+        }
+    };
+    let status = response.status().as_u16();
+    let mut response_bytes = Vec::new();
+    loop {
+        if control.cancelled.load(Ordering::Acquire) {
+            if let Ok(mut uploads) = project_import_uploads().lock() { uploads.remove(&upload_id); }
+            return Err("The project upload was cancelled.".to_string());
+        }
+        let chunk = match response.chunk().await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => break,
+            Err(error) => {
+                if let Ok(mut uploads) = project_import_uploads().lock() { uploads.remove(&upload_id); }
+                return Err(format!("Could not read the project upload response: {error}"));
+            }
+        };
+        if response_bytes.len().saturating_add(chunk.len()) > 64 * 1024 {
+            if let Ok(mut uploads) = project_import_uploads().lock() { uploads.remove(&upload_id); }
+            return Err("The server returned an oversized project upload response.".to_string());
+        }
+        response_bytes.extend_from_slice(&chunk);
+    }
+    if let Ok(mut uploads) = project_import_uploads().lock() { uploads.remove(&upload_id); }
+    let data = serde_json::from_slice(&response_bytes).unwrap_or_else(|_| serde_json::json!({}));
+    Ok(serde_json::json!({ "status": status, "data": data }))
+}
+
+#[tauri::command]
+fn cancel_project_import_upload(upload_id: String) -> Result<(), String> {
+    if upload_id.len() < 8 || !upload_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')) {
+        return Err("The project upload ID is invalid.".to_string());
+    }
+    let mut uploads = project_import_uploads().lock().map_err(|_| "Could not cancel the project upload.".to_string())?;
+    let control = uploads.entry(upload_id).or_insert_with(|| Arc::new(ProjectImportUploadControl {
+        cancelled: AtomicBool::new(false),
+        notify: Notify::new(),
+    })).clone();
+    control.cancelled.store(true, Ordering::Release);
+    control.notify.notify_one();
+    Ok(())
 }
 
 #[tauri::command]
@@ -1121,6 +1508,10 @@ fn main() {
             read_arc_project_file,
             read_arc_graph_file,
             save_project_export,
+            download_project_export,
+            download_bot_export,
+            upload_project_import_file,
+            cancel_project_import_upload,
             open_project_window,
             reset_local_data,
             open_external_url,
