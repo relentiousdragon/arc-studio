@@ -91,12 +91,15 @@ export class BotManager {
     this.gatewayMetrics = { latencyMs: null, averageLatencyMs: null, jitterMs: null, lastHeartbeatAt: null, rateLimitedUntil: 0, rateLimitScope: null };
     this.gatewayLatencySamples = [];
     this.botProfile = null;
+    this.guildNameDirectory = new Map();
     this.intentPlanLastRefreshAt = 0;
     this.intentPlanRefreshPromise = null;
     this.applicationEmojis = [];
     this.loadBotConfig();
     this.commandDeploymentLastAt = 0;
     this.commandDeploymentInFlight = false;
+    this.commandPreviewCache = new Map();
+    this.commandApplicationCacheAt = 0;
     this.debugRuns = new Map();
     if (serverConfig.defaultBotToken) {
       this.setBotToken(serverConfig.defaultBotToken, true);
@@ -504,6 +507,11 @@ export class BotManager {
       } else {
         this.botProfile = null;
       }
+      if (Array.isArray(stored.guilds)) {
+        this.guildNameDirectory = new Map(stored.guilds
+          .filter((guild) => guild && /^\d{17,20}$/.test(String(guild.id || '')) && typeof guild.name === 'string' && guild.name.trim())
+          .map((guild) => [String(guild.id), { id: String(guild.id), name: guild.name.slice(0, 100), icon: guild.icon || null }]));
+      }
       if (needsReEncryption && this.encryptedBotToken) this.persistBotConfig();
     } catch {
       this.encryptedBotToken = null;
@@ -520,7 +528,7 @@ export class BotManager {
     fs.mkdirSync(path.dirname(this.botConfigPath), { recursive: true, mode: 0o700 });
     try { fs.chmodSync(path.dirname(this.botConfigPath), 0o700); } catch {}
     const temporaryPath = `${this.botConfigPath}.tmp`;
-    const envelope = CryptoEngine.encryptObject({ token, profile: this.botProfile }, serverConfig.botTokenEncryptionKey, botConfigAad);
+    const envelope = CryptoEngine.encryptObject({ token, profile: this.botProfile, guilds: this.getKnownBotGuilds() }, serverConfig.botTokenEncryptionKey, botConfigAad);
     fs.writeFileSync(temporaryPath, envelope, { mode: 0o600 });
     try { fs.chmodSync(temporaryPath, 0o600); } catch {}
     fs.renameSync(temporaryPath, this.botConfigPath);
@@ -531,6 +539,9 @@ export class BotManager {
     const normalizedToken = token ? String(token).trim() : '';
     const changed = (this.getBotToken() || '') !== normalizedToken;
     if (changed) {
+      this.commandPreviewCache?.clear();
+      this.commandApplicationCacheAt = 0;
+      this.guildNameDirectory = new Map();
       this.discordUnauthorizedCount = 0;
       if (this.discordAuthWarning) {
         this.discordAuthWarning = null;
@@ -768,20 +779,21 @@ export class BotManager {
     return graphs;
   }
 
-  getDesiredSlashCommands(graphs = this.getGraphs()) {
-    const definitions = graphs.filter((graph) => graph?.enabled !== false).flatMap((graph) => (graph.nodes || [])
+  getDesiredSlashCommands(graphs = this.getGraphs(), commandKeys = null) {
+    const allDefinitions = graphs.filter((graph) => graph?.enabled !== false).flatMap((graph) => (graph.nodes || [])
       .filter((node) => ['event_slash_command', 'event_user_command', 'event_message_command'].includes(node.type))
       .map((node) => ({ graph, node })));
+    const keyForDefinition = ({ node }) => `${node.type === 'event_user_command' ? 2 : node.type === 'event_message_command' ? 3 : 1}:${String(node.data?.commandName || '').trim().toLowerCase()}`;
+    const requestedKeys = Array.isArray(commandKeys) ? new Set(commandKeys.map(String)) : null;
+    const definitions = requestedKeys ? allDefinitions.filter((definition) => requestedKeys.has(keyForDefinition(definition))) : allDefinitions;
     const desired = [];
     const errors = [];
     const seen = new Set();
-    if (!definitions.length && !(this.botProfile?.managedSlashCommandNames || []).length) errors.push('Add a slash or context command event node to a graph before deploying.');
-    const slashCount = definitions.filter((d) => d.node.type === 'event_slash_command').length;
-    const userCount = definitions.filter((d) => d.node.type === 'event_user_command').length;
-    const messageCount = definitions.filter((d) => d.node.type === 'event_message_command').length;
-    if (slashCount > 100) errors.push('Discord allows up to 100 global slash commands per application.');
-    if (userCount > 5) errors.push('Discord allows up to 5 global user context commands per application.');
-    if (messageCount > 5) errors.push('Discord allows up to 5 global message context commands per application.');
+    if (!definitions.length && !requestedKeys && !(this.botProfile?.managedSlashCommandNames || []).length) errors.push('Add a slash or context command event node to a graph before deploying.');
+    if (requestedKeys) {
+      const availableKeys = new Set(allDefinitions.map(keyForDefinition));
+      for (const key of requestedKeys) if (!availableKeys.has(key)) errors.push(`Selected command "${key}" is no longer configured in this workspace.`);
+    }
 
     for (const { graph, node } of definitions) {
       const graphName = graph.name || 'Untitled graph';
@@ -871,12 +883,24 @@ export class BotManager {
         ...(contexts ? { contexts } : {})
       });
     }
+    const slashCount = desired.filter((command) => Number(command.type || 1) === 1).length;
+    const userCount = desired.filter((command) => Number(command.type || 1) === 2).length;
+    const messageCount = desired.filter((command) => Number(command.type || 1) === 3).length;
+    if (slashCount > 100) errors.push('Discord allows up to 100 slash commands in each deployment scope.');
+    if (userCount > 15) errors.push('Discord allows up to 15 user context commands in each deployment scope.');
+    if (messageCount > 15) errors.push('Discord allows up to 15 message context commands in each deployment scope.');
     return { desired, errors };
   }
 
-  getCommandPlanHash(commands, graphs = []) {
+  getCommandPlanHash(commands, graphs = [], scope = {}, currentByTarget = []) {
     const reviewedWorkspace = graphs.map((graph) => ({ id: graph.id, name: graph.name, enabled: graph.enabled !== false, graphType: graph.graphType, variables: graph.variables || [], nodes: graph.nodes || [], connections: graph.connections || [] }));
-    return createHash('sha256').update(JSON.stringify({ commands, graphs: reviewedWorkspace })).digest('hex');
+    const relevantFields = ['name', 'name_localizations', 'description', 'description_localizations', 'options', 'default_member_permissions', 'dm_permission', 'default_permission', 'integration_types', 'contexts', 'nsfw', 'type'];
+    const currentState = currentByTarget.map(({ guildId, commands: currentCommands }) => ({
+      guildId: guildId || '',
+      commands: [...(currentCommands || [])].map((command) => Object.fromEntries(relevantFields.filter((field) => command[field] !== undefined).map((field) => [field, command[field]])))
+        .sort((left, right) => `${Number(left.type || 1)}:${String(left.name || '').toLowerCase()}`.localeCompare(`${Number(right.type || 1)}:${String(right.name || '').toLowerCase()}`))
+    }));
+    return createHash('sha256').update(JSON.stringify({ commands, graphs: reviewedWorkspace, scope: { guildIds: scope.guildIds || [], commandKeys: scope.commandKeys ?? null }, currentState })).digest('hex');
   }
 
   getCommandPermissionRequirements(graphs) {
@@ -938,20 +962,26 @@ export class BotManager {
     return [...permissions];
   }
 
-  async previewSlashCommands(graphsOverride = null) {
-    const token = this.getBotToken();
-    if (!token) throw new Error('Configure a bot token before reviewing commands.');
-    const graphs = Array.isArray(graphsOverride) ? graphsOverride : this.getGraphs();
-    if (graphs.length > 300 || graphs.some((graph) => !graph || !Array.isArray(graph.nodes) || !Array.isArray(graph.connections) || graph.nodes.length > 2000)) {
-      throw new Error('The workspace is too large or contains an invalid graph. Save the graphs and try again.');
-    }
-    const { desired, errors } = this.getDesiredSlashCommands(graphs);
-    const rest = this.createTrackedRESTClient(token);
+  normalizeCommandDeploymentScope(options = {}) {
+    const requestedGuildIds = Array.isArray(options.guildIds) ? options.guildIds : options.guildId ? [options.guildId] : [];
+    const guildIds = [...new Set(requestedGuildIds.map((id) => String(id || '').trim()).filter(Boolean))].sort();
+    if (guildIds.length > 25 || guildIds.some((id) => !/^\d{17,20}$/.test(id))) throw new Error('Choose up to 25 valid Discord guild IDs.');
+    const commandKeys = Array.isArray(options.commandKeys)
+      ? [...new Set(options.commandKeys.map((key) => String(key).trim()))].filter((key) => /^[1-3]:[^:]{1,32}$/.test(key)).sort()
+      : null;
+    if (Array.isArray(options.commandKeys) && (options.commandKeys.length > 130 || commandKeys.length !== new Set(options.commandKeys.map(String)).size)) throw new Error('Choose up to 130 valid application command entries.');
+    return { guildIds, commandKeys };
+  }
+
+  async resolveApplicationForCommandDeployment(rest, graphs, forceFresh = false) {
     let application = this.botProfile?.application || null;
+    const cachedApplicationIsFresh = Date.now() - this.commandApplicationCacheAt < 120_000;
+    if (!forceFresh && application?.id && cachedApplicationIsFresh) return application;
     try {
       const freshApplication = await rest.getCurrentApplication();
       if (freshApplication?.id) {
         application = { ...application, id: freshApplication.id };
+        this.commandApplicationCacheAt = Date.now();
         if (freshApplication.flags !== undefined) application.flags = freshApplication.flags;
         if (freshApplication.flags_new !== undefined) application.flags_new = freshApplication.flags_new;
         if (this.botProfile) {
@@ -963,62 +993,122 @@ export class BotManager {
       }
     } catch (error) {
       if (!application?.id) throw error;
+      if (!forceFresh) this.commandApplicationCacheAt = Date.now();
     }
     if (!application?.id) throw new Error('Discord did not return an application ID for this bot.');
+    return application;
+  }
+
+  async getApplicationCommandsForScope(rest, applicationId, guildId = '', forceFresh = false) {
+    const key = `${applicationId}:${guildId || 'global'}`;
+    const cached = this.commandPreviewCache.get(key);
+    if (!forceFresh && cached && Date.now() - cached.at < 120_000) return cached.commands;
+    let response;
+    try {
+      response = guildId
+        ? await rest.getGuildApplicationCommands(applicationId, guildId)
+        : await rest.getGlobalApplicationCommands(applicationId);
+    } catch (error) {
+      if (guildId && (error?.status === 403 || error?.status === 404 || error?.code === 50001 || error?.code === 10004)) {
+        throw new Error(`Discord could not verify server ${guildId}. Check the server ID and make sure the application is authorized in that server.`);
+      }
+      throw error;
+    }
+    const commands = Array.isArray(response) ? response : [];
+    this.commandPreviewCache.set(key, { at: Date.now(), commands });
+    while (this.commandPreviewCache.size > 100) this.commandPreviewCache.delete(this.commandPreviewCache.keys().next().value);
+    return commands;
+  }
+
+  getCommandPayloadForScope(command, guildId = '') {
+    if (!guildId) return command;
+    const { contexts, integration_types, ...guildCommand } = command;
+    return guildCommand;
+  }
+
+  async previewSlashCommands(graphsOverride = null, deploymentOptions = {}) {
+    const token = this.getBotToken();
+    if (!token) throw new Error('Configure a bot token before reviewing commands.');
+    const graphs = Array.isArray(graphsOverride) ? graphsOverride : this.getGraphs();
+    if (graphs.length > 300 || graphs.some((graph) => !graph || !Array.isArray(graph.nodes) || !Array.isArray(graph.connections) || graph.nodes.length > 2000)) {
+      throw new Error('The workspace is too large or contains an invalid graph. Save the graphs and try again.');
+    }
+    const scope = this.normalizeCommandDeploymentScope(deploymentOptions);
+    const { desired, errors } = this.getDesiredSlashCommands(graphs, scope.commandKeys);
+    const rest = this.createTrackedRESTClient(token);
+    const application = await this.resolveApplicationForCommandDeployment(rest, graphs);
     const commandKey = (cmd) => `${Number(cmd?.type || 1)}:${String(cmd?.name || '').toLowerCase()}`;
-    const current = await rest.getGlobalApplicationCommands(application.id);
-    const currentCommands = Array.isArray(current) ? current : [];
-    const currentByKey = new Map(currentCommands.map((command) => [commandKey(command), command]));
-    const desiredByKey = new Map(desired.map((command) => [commandKey(command), command]));
-    const managed = new Set(this.botProfile?.managedSlashCommandNames || []);
-    const isManaged = (cmd) => managed.has(commandKey(cmd)) || (Number(cmd?.type || 1) === 1 && managed.has(String(cmd?.name || '').toLowerCase()));
-    const created = desired.filter((command) => !currentByKey.has(commandKey(command)));
-    const updated = desired.filter((command) => {
-      const existing = currentByKey.get(commandKey(command));
-      if (!existing) return false;
-      if (Number(command.type || 1) === 1) {
-        return existing.description !== command.description
-          || JSON.stringify(normalizeSlashCommandOptions(existing.options || [])) !== JSON.stringify(command.options || [])
-          || (existing.default_member_permissions || undefined) !== (command.default_member_permissions || undefined)
-          || JSON.stringify(existing.integration_types || undefined) !== JSON.stringify(command.integration_types || undefined)
-          || JSON.stringify(existing.contexts || undefined) !== JSON.stringify(command.contexts || undefined);
+    const targets = scope.guildIds.length ? scope.guildIds : [''];
+    const combined = { created: new Map(), updated: new Map(), unchanged: new Map(), removed: new Map() };
+    const targetPlans = [];
+    for (const guildId of targets) {
+      const currentCommands = await this.getApplicationCommandsForScope(rest, application.id, guildId);
+      const currentByKey = new Map(currentCommands.map((command) => [commandKey(command), command]));
+      const targetDesired = desired.map((command) => this.getCommandPayloadForScope(command, guildId));
+      const desiredByKey = new Map(targetDesired.map((command) => [commandKey(command), command]));
+      const changes = { created: [], updated: [], unchanged: [], removed: [] };
+      for (const command of targetDesired) {
+        const key = commandKey(command);
+        const existing = currentByKey.get(key);
+        if (!existing) changes.created.push(command);
+        else {
+          const same = Number(command.type || 1) === 1
+            ? existing.description === command.description
+              && JSON.stringify(normalizeSlashCommandOptions(existing.options || [])) === JSON.stringify(command.options || [])
+              && (existing.default_member_permissions || undefined) === (command.default_member_permissions || undefined)
+              && JSON.stringify(existing.integration_types || undefined) === JSON.stringify(command.integration_types || undefined)
+              && JSON.stringify(existing.contexts || undefined) === JSON.stringify(command.contexts || undefined)
+            : (existing.default_member_permissions || undefined) === (command.default_member_permissions || undefined)
+              && JSON.stringify(existing.integration_types || undefined) === JSON.stringify(command.integration_types || undefined)
+              && JSON.stringify(existing.contexts || undefined) === JSON.stringify(command.contexts || undefined);
+          changes[same ? 'unchanged' : 'updated'].push(command);
+        }
       }
-      return (existing.default_member_permissions || undefined) !== (command.default_member_permissions || undefined)
-        || JSON.stringify(existing.integration_types || undefined) !== JSON.stringify(command.integration_types || undefined)
-        || JSON.stringify(existing.contexts || undefined) !== JSON.stringify(command.contexts || undefined);
-    });
-    const unchanged = desired.filter((command) => {
-      const existing = currentByKey.get(commandKey(command));
-      if (!existing) return false;
-      if (Number(command.type || 1) === 1) {
-        return existing.description === command.description
-          && JSON.stringify(normalizeSlashCommandOptions(existing.options || [])) === JSON.stringify(command.options || [])
-          && (existing.default_member_permissions || undefined) === (command.default_member_permissions || undefined)
-          && JSON.stringify(existing.integration_types || undefined) === JSON.stringify(command.integration_types || undefined)
-          && JSON.stringify(existing.contexts || undefined) === JSON.stringify(command.contexts || undefined);
+      for (const command of currentCommands) {
+        const key = commandKey(command);
+        if (!desiredByKey.has(key)) changes.removed.push({ name: command.name, type: command.type || 1 });
       }
-      return (existing.default_member_permissions || undefined) === (command.default_member_permissions || undefined)
-        && JSON.stringify(existing.integration_types || undefined) === JSON.stringify(command.integration_types || undefined)
-        && JSON.stringify(existing.contexts || undefined) === JSON.stringify(command.contexts || undefined);
-    });
-    const removed = currentCommands.filter((command) => isManaged(command) && !desiredByKey.has(commandKey(command)));
-    const preserved = currentCommands.filter((command) => !isManaged(command) && !desiredByKey.has(commandKey(command)));
+      const typeCounts = new Map([[1, 0], [2, 0], [3, 0], [4, 0]]);
+      for (const command of targetDesired) {
+        const type = Number(command.type || 1);
+        if (typeCounts.has(type)) typeCounts.set(type, typeCounts.get(type) + 1);
+      }
+      const quotaScope = guildId ? `server ${guildId}` : 'global scope';
+      if (typeCounts.get(1) > 100) errors.push(`Discord allows up to 100 slash commands in each deployment scope. The ${quotaScope} would exceed this limit.`);
+      if (typeCounts.get(2) > 15) errors.push(`Discord allows up to 15 user context commands in each deployment scope. The ${quotaScope} would exceed this limit.`);
+      if (typeCounts.get(3) > 15) errors.push(`Discord allows up to 15 message context commands in each deployment scope. The ${quotaScope} would exceed this limit.`);
+      if (typeCounts.get(4) > 1) errors.push(`Discord allows one primary entry point command in each deployment scope. The ${quotaScope} would exceed this limit.`);
+      targetPlans.push({ guildId, currentCommands, changes });
+      for (const [status, items] of Object.entries(changes)) for (const command of items) {
+        const key = commandKey(command);
+        const entry = combined[status].get(key) || { ...command, guildIds: [] };
+        entry.guildIds.push(guildId || 'global');
+        combined[status].set(key, entry);
+      }
+    }
+    const currentByTarget = targetPlans.map(({ guildId, currentCommands }) => ({ guildId, commands: currentCommands }));
+    const changes = Object.fromEntries(Object.entries(combined).map(([status, items]) => [status, [...items.values()]]));
     const intentPlan = this.getIntentPlan(graphs);
     return {
       valid: errors.length === 0,
-      errors,
+      errors: [...new Set(errors)],
       applicationId: application.id,
       commands: desired,
-      changes: { created, updated, unchanged, removed: removed.map(({ name, type }) => ({ name, type: type || 1 })), preserved: preserved.map(({ name, type }) => ({ name, type: type || 1 })) },
-      planHash: this.getCommandPlanHash(desired, graphs),
+      availableCommands: this.getDesiredSlashCommands(graphs).desired,
+      changes,
+      scope: scope.guildIds.length ? 'guilds' : 'global',
+      guildIds: scope.guildIds,
+      targetPlans: targetPlans.map(({ guildId, changes: targetChanges }) => ({ guildId, changes: targetChanges })),
+      commandKeys: scope.commandKeys,
+      planHash: this.getCommandPlanHash(desired, graphs, scope, currentByTarget),
       intents: intentPlan.filter((intent) => intent.required),
       permissions: this.getCommandPermissionRequirements(graphs),
-      noChanges: !created.length && !updated.length && !removed.length,
+      noChanges: !changes.created.length && !changes.updated.length && !changes.removed.length,
       discordAuthWarning: this.discordAuthWarning
     };
   }
 
-  async deploySlashCommands(graphsOverride = null, expectedPlanHash = null) {
+  async deploySlashCommands(graphsOverride = null, expectedPlanHash = null, deploymentOptions = {}) {
     const token = this.getBotToken();
     if (!token) throw new Error('Configure a bot token before deploying commands.');
     if (this.commandDeploymentInFlight) {
@@ -1036,51 +1126,82 @@ export class BotManager {
     }
 
     const graphs = Array.isArray(graphsOverride) ? graphsOverride : this.getGraphs();
-    const { desired, errors } = this.getDesiredSlashCommands(graphs);
+    const scope = this.normalizeCommandDeploymentScope(deploymentOptions);
+    const { desired, errors } = this.getDesiredSlashCommands(graphs, scope.commandKeys);
     if (errors.length) throw new Error(errors.join(' '));
-    if (expectedPlanHash && expectedPlanHash !== this.getCommandPlanHash(desired, graphs)) {
-      const error = new Error('The workspace changed after review. Review the deployment again before applying it.');
-      error.status = 409;
-      throw error;
-    }
-
     this.commandDeploymentInFlight = true;
-    this.commandDeploymentLastAt = Date.now();
     try {
       const rest = this.createTrackedRESTClient(token);
-      const application = this.botProfile?.application?.id
-        ? this.botProfile.application
-        : await rest.getCurrentApplication();
-      if (!application?.id) throw new Error('Discord did not return an application ID for this bot.');
-      const current = await rest.getGlobalApplicationCommands(application.id);
+      const application = await this.resolveApplicationForCommandDeployment(rest, graphs, true);
       const commandKey = (cmd) => `${Number(cmd?.type || 1)}:${String(cmd?.name || '').toLowerCase()}`;
-      const desiredByKey = new Map(desired.map((command) => [commandKey(command), command]));
-      const previouslyManaged = new Set(this.botProfile?.managedSlashCommandNames || []);
-      const isManaged = (cmd) => previouslyManaged.has(commandKey(cmd)) || (Number(cmd?.type || 1) === 1 && previouslyManaged.has(String(cmd?.name || '').toLowerCase()));
-      const preserved = (Array.isArray(current) ? current : []).flatMap((command) => {
-        const key = commandKey(command);
-        const isGraphManaged = isManaged(command);
-        if (isGraphManaged && !desiredByKey.has(key)) return [];
-        const payload = {};
-        for (const field of ['name', 'name_localizations', 'description', 'description_localizations', 'options', 'default_member_permissions', 'dm_permission', 'default_permission', 'integration_types', 'contexts', 'nsfw', 'type']) {
-          if (command[field] !== undefined) payload[field] = command[field];
+      const targets = scope.guildIds.length ? scope.guildIds : [''];
+      const snapshots = [];
+      for (const guildId of targets) {
+        snapshots.push({ guildId, currentCommands: await this.getApplicationCommandsForScope(rest, application.id, guildId, true) });
+      }
+      const currentByTarget = snapshots.map(({ guildId, currentCommands }) => ({ guildId, commands: currentCommands }));
+      if (expectedPlanHash && expectedPlanHash !== this.getCommandPlanHash(desired, graphs, scope, currentByTarget)) {
+        const error = new Error('The commands or workspace changed after review. Review the deployment again before applying it.');
+        error.status = 409;
+        throw error;
+      }
+      const plans = snapshots.map(({ guildId, currentCommands }) => {
+        const targetDesired = desired.map((command) => this.getCommandPayloadForScope(command, guildId));
+        const merged = targetDesired;
+        const existingKeys = new Set(currentCommands.map(commandKey));
+        const typeCounts = new Map([[1, 0], [2, 0], [3, 0], [4, 0]]);
+        for (const command of merged) {
+          const type = Number(command.type || 1);
+          if (typeCounts.has(type)) typeCounts.set(type, typeCounts.get(type) + 1);
         }
-        if (desiredByKey.has(key)) return [{ ...payload, ...desiredByKey.get(key) }];
-        return [payload];
+        const limits = new Map([[1, 100], [2, 15], [3, 15], [4, 1]]);
+        for (const [type, count] of typeCounts) {
+          if (count > limits.get(type)) throw new Error(`The final command list for ${guildId ? `server ${guildId}` : 'global scope'} exceeds Discord's limit of ${limits.get(type)} commands of type ${type}.`);
+        }
+        return { guildId, currentCommands, targetDesired, merged, existingKeys };
       });
-      const existingKeys = new Set((Array.isArray(current) ? current : []).map(commandKey));
-      for (const command of desired) if (!existingKeys.has(commandKey(command))) preserved.push(command);
+      let created = 0;
+      let appliedCount = 0;
+      const appliedGuilds = [];
+      for (const { guildId, currentCommands, targetDesired, merged, existingKeys } of plans) {
+        this.commandDeploymentLastAt = Date.now();
+        let deployed;
+        try {
+          deployed = guildId
+            ? await rest.bulkOverwriteGuildApplicationCommands(application.id, guildId, merged, currentCommands)
+            : await rest.bulkOverwriteGlobalApplicationCommands(application.id, merged, currentCommands);
+        } catch (error) {
+          this.commandPreviewCache.delete(`${application.id}:${guildId || 'global'}`);
+          if (appliedGuilds.length) error.message = `Deployment partially completed for ${appliedGuilds.join(', ')}. ${error.message}`;
+          throw error;
+        }
+        this.commandPreviewCache.delete(`${application.id}:${guildId || 'global'}`);
+        appliedGuilds.push(guildId || 'global commands');
+        created += targetDesired.filter((command) => !existingKeys.has(commandKey(command))).length;
+        appliedCount += (Array.isArray(deployed) ? deployed : []).length;
 
-      const deployed = await rest.bulkOverwriteGlobalApplicationCommands(application.id, preserved);
+        const nextManaged = new Set(targetDesired.map(commandKey));
+        if (this.botProfile) {
+          if (guildId) {
+            const managedSlashCommandsByGuild = { ...(this.botProfile.managedSlashCommandsByGuild || {}), [guildId]: [...nextManaged] };
+            this.botProfile = { ...this.botProfile, application, managedSlashCommandsByGuild };
+          } else {
+            this.botProfile = { ...this.botProfile, application, managedSlashCommandNames: [...nextManaged] };
+          }
+          this.persistBotConfig();
+        }
+      }
       if (this.botProfile) {
-        this.botProfile = { ...this.botProfile, application, managedSlashCommandNames: desired.map(commandKey) };
+        this.botProfile = { ...this.botProfile, application };
         this.persistBotConfig();
       }
       return {
         applicationId: application.id,
-        deployed: desired.length,
-        created: desired.filter((command) => !existingKeys.has(commandKey(command))).length,
-        commands: (Array.isArray(deployed) ? deployed : []).length
+        deployed: desired.length * targets.length,
+        created,
+        commands: appliedCount,
+        targetCount: targets.length,
+        guildIds: scope.guildIds
       };
     } finally {
       this.commandDeploymentInFlight = false;
@@ -1551,6 +1672,16 @@ export class BotManager {
     for (const guild of Array.isArray(payload.guilds) ? payload.guilds : []) rememberGuild(guild);
   }
 
+  getKnownBotGuilds() {
+    return [...(this.guildNameDirectory?.values() || [])]
+      .map((guild) => ({ id: guild.id, name: guild.name, icon: guild.icon || null }))
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  async refreshKnownBotGuilds() {
+    return { guilds: this.getKnownBotGuilds(), error: '' };
+  }
+
   registerRuntimeVariable(variable) {
     if (!variable || typeof variable.name !== 'string') return;
     const name = variable.name.trim();
@@ -1832,6 +1963,9 @@ export class BotManager {
               bot_public: app.bot_public,
               bot_require_code_grant: app.bot_require_code_grant,
               install_params: app.install_params,
+              approximate_guild_count: app.approximate_guild_count,
+              approximate_user_install_count: app.approximate_user_install_count,
+              approximate_user_authorization_count: app.approximate_user_authorization_count,
               flags: app.flags,
               flags_new: app.flags_new
             }
@@ -2005,7 +2139,7 @@ export class BotManager {
               try { permissions = BigInt(String(payload?.member?.permissions || 0)); } catch {}
               return (permissions & 8n) !== 0n || (permissions & 32n) !== 0n;
             },
-            deploySlashCommands: () => this.deploySlashCommands(),
+            deploySlashCommands: (options) => this.deploySlashCommands(null, null, options),
             dispatchGraphEvent: (nextEventName, nextPayload, nextGraphId) => dispatchGraphEvent(nextEventName, nextPayload, nextGraphId),
             signal: graphController.signal,
             waitForGateway: (timeoutMs, signal) => this.status === 'ONLINE'
@@ -2123,7 +2257,9 @@ export class BotManager {
     }));
 
     this.client.on('gatewayDispatch', (eventName, payload) => {
+      if (eventName === 'GUILD_DELETE' && payload?.id && payload.unavailable !== true) this.guildNameDirectory?.delete(String(payload.id));
       this.cacheDiscordDirectory(payload);
+      if (['READY', 'GUILD_CREATE', 'GUILD_UPDATE', 'GUILD_DELETE'].includes(eventName)) this.persistBotConfig();
       if (['READY', 'MESSAGE_CREATE', 'INTERACTION_CREATE', 'GUILD_MEMBER_ADD'].includes(eventName)) return;
       const graphNeedsEvent = [...this.graphs.values()].some((graph) => graph.enabled !== false && graph.graphType !== 'function'
         && (graph.nodes || []).some((node) => NodeDefinitions[node.type]?.gatewayEvent === eventName));
@@ -2207,6 +2343,9 @@ export class BotManager {
             application: {
               ...previous,
               id: application.id || previous.id,
+              ...(application.approximate_guild_count !== undefined ? { approximate_guild_count: application.approximate_guild_count } : {}),
+              ...(application.approximate_user_install_count !== undefined ? { approximate_user_install_count: application.approximate_user_install_count } : {}),
+              ...(application.approximate_user_authorization_count !== undefined ? { approximate_user_authorization_count: application.approximate_user_authorization_count } : {}),
               ...(application.flags !== undefined ? { flags: application.flags } : {}),
               ...(application.flags_new !== undefined ? { flags_new: application.flags_new } : {})
             }
