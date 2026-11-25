@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { AnimatedCheckbox } from '../ui/CustomControls.jsx';
 import {
   ArrowDown, ArrowUp, ArrowUpRight, Check, ChevronDown, ChevronRight, CircleOff, Clock3,
@@ -9,6 +9,7 @@ import { TemplateVariableHints } from '../ui/TemplateVariableHints.jsx';
 import { DiscordLongTextField, LONG_TEXT_THRESHOLD } from '../ui/DiscordLongTextField.jsx';
 import { AttachmentUrlInput } from '../ui/AttachmentUrlInput.jsx';
 import { ColorSwatchPicker } from '../ui/ColorSwatchPicker.jsx';
+import { setNativePaletteDragPreview } from '../../core/nativeDragPreview.js';
 import { getTextTemplateSlots } from './nodeDefinitions.js';
 //
 export const EmbedBlockTypes = [
@@ -164,7 +165,8 @@ export function EmbedNodeBuilder({
   templatePreviewValues = {},
   focusedBlockId = null,
   focusOnly = false,
-  onFocusBlock
+  onFocusBlock,
+  desktopPointerDragFallback = false
 }) {
   const blocks = getEmbedBlocks(data);
   const timestampBlock = blocks.find((block) => block.type === 'timestamp');
@@ -187,6 +189,7 @@ export function EmbedNodeBuilder({
     } catch { return []; }
   });
   const activeDragRef = useRef(null);
+  const addBlockRef = useRef(null);
 
   const toggleCollapse = (id) => {
     setCollapsedBlockIds((prev) => {
@@ -242,6 +245,16 @@ export function EmbedNodeBuilder({
     onFocusBlock?.(block.id);
     onChange?.(next);
   };
+  addBlockRef.current = addBlock;
+  useEffect(() => {
+    if (!desktopPointerDragFallback || mode !== 'studio') return undefined;
+    const onPointerDrop = (event) => {
+      const { type, index } = event.detail || {};
+      if (typeof type === 'string') addBlockRef.current?.(type, Number.isInteger(index) ? index : undefined);
+    };
+    window.addEventListener('arc-embed-block-pointer-drop', onPointerDrop);
+    return () => window.removeEventListener('arc-embed-block-pointer-drop', onPointerDrop);
+  }, [desktopPointerDragFallback, mode]);
 
   const patchBlock = (id, patch) => onChange?.(blocks.map((block) => block.id === id ? { ...block, ...patch } : block));
   const removeBlock = (id) => {
@@ -601,10 +614,12 @@ export function EmbedNodeBuilder({
                 key={type}
                 type="button"
                 className={`embed-quick-chip ${isAdded ? 'is-added' : ''}`}
-                draggable={!(isAdded && type !== 'field')}
+                draggable={!desktopPointerDragFallback && !(isAdded && type !== 'field')}
+                data-studio-palette-drag={desktopPointerDragFallback && !(isAdded && type !== 'field') ? JSON.stringify({ kind: 'palette', scope: 'embed', type }) : undefined}
                 onDragStart={(event) => {
                   event.dataTransfer.effectAllowed = 'copy';
                   event.dataTransfer.setData('application/x-arc-studio-palette', JSON.stringify({ kind: 'palette', scope: 'embed', type }));
+                  setNativePaletteDragPreview(event);
                 }}
                 onClick={() => addBlock(type)}
                 title={isAdded ? `${label} is already added (click to view)` : `Add ${label}`}
@@ -685,6 +700,7 @@ export function EmbedNodeBuilder({
           return (
             <section
               id={`embed_block_${block.id}`}
+              data-embed-block-id={block.id}
               data-embed-block-type={block.type}
               className={`embed-subnode ${dropClass} ${isCollapsed ? 'is-collapsed' : ''}`}
               key={block.id}
