@@ -9,7 +9,7 @@ import { TemplateSyntaxHelp } from '../ui/TemplateSyntaxHelp.jsx';
 import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
 import { CustomEmoji } from '../ui/CustomEmoji.jsx';
-import { notifyStudioSwitchCancelled, useStudioEscape, useStudioSwitchClose } from './useStudioEscape.js';
+import { notifyStudioSwitchCancelled, useStudioDiscardConfirmation, useStudioEscape, useStudioSwitchClose } from './useStudioEscape.js';
 import { onPageBlur } from '../../core/pageFocus.js';
 import { isSafeImageMedia } from '../ui/mediaTypes.js';
 
@@ -122,13 +122,13 @@ function updateGalleryCropState(button) {
   return cropped;
 }
 
-function PreviewRemoveButton({ label, disabled = false, disabledTitle = 'Disconnect this block’s wires before removing it', onClick, warning, onWarningClick }) {
+function PreviewRemoveButton({ label, disabled = false, disabledTitle = 'Disconnect this block’s wires before removing it', onClick, warning, onWarningClick, hideRemove = false }) {
   const removeButton = <button type="button" className="studio-preview-remove-button" aria-label={`Remove ${label}`} title={disabled ? disabledTitle : `Remove ${label}`} disabled={disabled} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onClick?.(); }}><X size={13} /></button>;
-  if (!warning) return removeButton;
+  if (!warning) return hideRemove ? null : removeButton;
   const message = typeof warning === 'string' ? warning : warning.message;
   return <span className="studio-preview-block-controls has-warning">
     <button type="button" className="studio-preview-warning-button" aria-label={`Go to warning: ${message}`} title={`Go to warning: ${message}`} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onWarningClick?.(); }}><AlertTriangle size={13} /></button>
-    {removeButton}
+    {!hideRemove && removeButton}
   </span>;
 }
 
@@ -240,6 +240,7 @@ export function EmbedStudioView({
   isContentWired = false,
   isEmbedWired = false,
   isComponentsWired = false,
+  desktopMode = false,
   contentSourceLabel = '',
   embedSourceLabel = '',
   componentsSourceLabel = '',
@@ -266,12 +267,14 @@ export function EmbedStudioView({
   onSave,
   onSaveAs,
   onSaveComponentsV2As,
+  requestConfirmation,
   onClose,
   saveLabel = 'Save embed',
   saveAsLabel = 'Save to library',
   showSaveAs = true,
   showSave = true
 }) {
+  const desktopPointerDragFallback = Boolean(desktopMode && window.__ARC_STUDIO_CONFIG__?.platform === 'macos');
   const previewMessageTime = new Date().toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
   const [activeTab, setActiveTab] = useState(initialTab || (componentsOnly ? 'components' : 'embed'));
   const [selectedComponentId, setSelectedComponentId] = useState(null);
@@ -301,8 +304,13 @@ export function EmbedStudioView({
   const [revealedGallerySpoilers, setRevealedGallerySpoilers] = useState(() => new Set());
   const [revealedContainerSpoilers, setRevealedContainerSpoilers] = useState(() => new Set());
   const [previewDropTarget, setPreviewDropTarget] = useState(null);
+  const [desktopPointerDrag, setDesktopPointerDrag] = useState(null);
   const [studioBodyWidth, setStudioBodyWidth] = useState(0);
   const previewDragRef = useRef(null);
+  const desktopPointerDragRef = useRef(null);
+  const desktopPointerDragHandlersRef = useRef({});
+  const suppressStudioClickRef = useRef(false);
+  const studioRootRef = useRef(null);
   const studioBodyRef = useRef(null);
   const resizingStudioRef = useRef(false);
   const activeStudioSnapRef = useRef(null);
@@ -540,6 +548,135 @@ export function EmbedStudioView({
     }
     setPreviewDropTarget(null);
   };
+  desktopPointerDragHandlersRef.current = {
+    getPreviewDropTarget,
+    handlePreviewDrop,
+    getEmbedBlockInsertIndex: (hit, clientY) => {
+      const targetBlock = hit?.closest('.embed-subnode[data-embed-block-id]');
+      if (!targetBlock) return blocks.length;
+      const targetIndex = blocks.findIndex((block) => block.id === targetBlock.dataset.embedBlockId);
+      if (targetIndex < 0) return blocks.length;
+      const bounds = targetBlock.getBoundingClientRect();
+      return targetIndex + Number(clientY >= bounds.top + bounds.height / 2);
+    }
+  };
+  const beginDesktopPointerDrag = (event) => {
+    if (!desktopPointerDragFallback || event.button !== 0 || event.isPrimary === false) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) return;
+    const paletteSource = target.closest('[data-studio-palette-drag]');
+    let payload = null;
+    let sourceElement = paletteSource;
+    if (paletteSource) {
+      try { payload = JSON.parse(paletteSource.dataset.studioPaletteDrag || 'null'); } catch { payload = null; }
+      if (!payload || paletteSource.matches(':disabled')) return;
+    } else {
+      if (target.closest('input, textarea, select, [contenteditable="true"], .studio-preview-block-controls')) return;
+      const previewSource = target.closest('[data-preview-block-id][data-preview-scope]');
+      if (!previewSource) return;
+      const scope = previewSource.dataset.previewScope;
+      if (scope === 'embed' && activeTab !== 'embed' || scope !== 'embed' && activeTab !== 'components') return;
+      payload = { kind: 'move', scope, id: previewSource.dataset.previewBlockId };
+      sourceElement = previewSource;
+    }
+    if (!payload?.scope || !payload?.kind || !sourceElement) return;
+    desktopPointerDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      payload,
+      sourceElement,
+      active: false
+    };
+  };
+  const handleDesktopStudioClickCapture = (event) => {
+    if (!suppressStudioClickRef.current) return;
+    suppressStudioClickRef.current = false;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  useEffect(() => {
+    if (!desktopPointerDragFallback) return undefined;
+    const clearDrag = () => {
+      desktopPointerDragRef.current = null;
+      previewDragRef.current = null;
+      studioRootRef.current?.querySelectorAll('.embed-block-list.is-pointer-drop-target').forEach((list) => list.classList.remove('is-pointer-drop-target'));
+      setDesktopPointerDrag(null);
+      setPreviewDropTarget(null);
+    };
+    const onPointerMove = (event) => {
+      const drag = desktopPointerDragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      if (!drag.active && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 6) return;
+      if (event.cancelable) event.preventDefault();
+      drag.active = true;
+      drag.clientX = event.clientX;
+      drag.clientY = event.clientY;
+      previewDragRef.current = drag.payload;
+      setDesktopPointerDrag({ payload: drag.payload, clientX: event.clientX, clientY: event.clientY });
+      const hit = document.elementFromPoint(event.clientX, event.clientY);
+      const studioRoot = studioRootRef.current;
+      const embedList = hit?.closest('.embed-block-list');
+      studioRoot?.querySelectorAll('.embed-block-list.is-pointer-drop-target').forEach((list) => {
+        if (list !== embedList || drag.payload.kind !== 'palette' || drag.payload.scope !== 'embed') list.classList.remove('is-pointer-drop-target');
+      });
+      if (drag.payload.kind === 'palette' && drag.payload.scope === 'embed' && embedList && studioRoot?.contains(embedList)) {
+        embedList.classList.add('is-pointer-drop-target');
+      }
+      const preview = studioRoot?.querySelector('.embed-studio-preview');
+      if (!hit || !preview?.contains(hit)) {
+        setPreviewDropTarget(null);
+        return;
+      }
+      let marker = desktopPointerDragHandlersRef.current.getPreviewDropTarget({ target: hit, clientY: event.clientY });
+      if (drag.payload.scope && marker.scope !== drag.payload.scope) marker = { id: null, scope: drag.payload.scope, placement: 'end' };
+      setPreviewDropTarget((current) => current?.id === marker.id && current?.scope === marker.scope && current?.placement === marker.placement ? current : marker);
+    };
+    const onPointerUp = (event) => {
+      const drag = desktopPointerDragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      if (drag.active) {
+        if (event.cancelable) event.preventDefault();
+        suppressStudioClickRef.current = true;
+        window.setTimeout(() => { suppressStudioClickRef.current = false; }, 0);
+        const hit = document.elementFromPoint(event.clientX, event.clientY);
+        const studioRoot = studioRootRef.current;
+        const embedList = hit?.closest('.embed-block-list');
+        if (drag.payload.kind === 'palette' && drag.payload.scope === 'embed' && embedList && studioRoot?.contains(embedList)) {
+          const index = desktopPointerDragHandlersRef.current.getEmbedBlockInsertIndex(hit, event.clientY);
+          window.dispatchEvent(new CustomEvent('arc-embed-block-pointer-drop', { detail: { type: drag.payload.type, index } }));
+        } else {
+          const preview = studioRoot?.querySelector('.embed-studio-preview');
+          if (hit && preview?.contains(hit)) {
+            const transferType = drag.payload.kind === 'move' ? 'application/x-arc-studio-preview' : 'application/x-arc-studio-palette';
+            const serialized = JSON.stringify(drag.payload);
+            desktopPointerDragHandlersRef.current.handlePreviewDrop({
+              preventDefault() {},
+              target: hit,
+              clientY: event.clientY,
+              dataTransfer: { getData: (type) => type === transferType ? serialized : '', dropEffect: 'move' }
+            });
+          }
+        }
+      }
+      clearDrag();
+    };
+    const onPointerCancel = (event) => {
+      if (desktopPointerDragRef.current?.pointerId === event.pointerId) clearDrag();
+    };
+    window.addEventListener('pointermove', onPointerMove, { capture: true, passive: false });
+    window.addEventListener('pointerup', onPointerUp, true);
+    window.addEventListener('pointercancel', onPointerCancel, true);
+    window.addEventListener('blur', clearDrag);
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove, true);
+      window.removeEventListener('pointerup', onPointerUp, true);
+      window.removeEventListener('pointercancel', onPointerCancel, true);
+      window.removeEventListener('blur', clearDrag);
+    };
+  }, [desktopPointerDragFallback]);
   const previewBlockClass = (id, scope = '') => {
     const isSelected = scope === 'embed'
       ? activeTab === 'embed' && focusedEmbedBlockId === id
@@ -548,7 +685,8 @@ export function EmbedStudioView({
         : scope === 'components'
           ? activeTab === 'components' && !componentsV2Enabled && focusedComponentRowId === id
           : false;
-    return `studio-preview-block${isSelected ? ' is-selected' : ''}${previewDropTarget?.id === id ? ` is-drop-${previewDropTarget.placement}` : ''}`;
+    const isPointerDragging = desktopPointerDrag?.payload?.kind === 'move' && desktopPointerDrag.payload.scope === scope && desktopPointerDrag.payload.id === id;
+    return `studio-preview-block${isSelected ? ' is-selected' : ''}${isPointerDragging ? ' is-dragging' : ''}${previewDropTarget?.id === id ? ` is-drop-${previewDropTarget.placement}` : ''}`;
   };
   const openButtonEditor = (target, button) => {
     if (target.scope === 'components-v2-accessory') {
@@ -565,9 +703,14 @@ export function EmbedStudioView({
   };
   const openV2TextEditor = (blockId, textIndex = 0) => focusV2Block(blockId, { kind: 'text', index: textIndex });
   const initialDraftRef = React.useRef(JSON.stringify({ name, content, blocks, components, componentsV2Layout, componentsV2Enabled, attachments }));
-  const closeStudio = () => {
+  const requestNativeDiscard = useStudioDiscardConfirmation({ desktopMode, requestConfirmation, title: 'Discard studio changes?', subtitle: 'These edits have not been applied to the graph.', message: 'Your embed or component changes will be lost.', onClose });
+  const closeStudio = async () => {
     const currentDraft = JSON.stringify({ name, content, blocks, components, componentsV2Layout, componentsV2Enabled, attachments: attachedFiles });
-    if (currentDraft !== initialDraftRef.current) { setDiscardPromptOpen(true); return; }
+    if (currentDraft !== initialDraftRef.current) {
+      if (await requestNativeDiscard()) return;
+      setDiscardPromptOpen(true);
+      return;
+    }
     onClose?.();
   };
   useStudioEscape(closeStudio);
@@ -1301,7 +1444,7 @@ export function EmbedStudioView({
         else focusV2Block(block.id);
       }} onContextMenu={(event) => openV2ContainerContextMenu(event, block.id)}><PreviewRemoveButton label="container" onClick={() => removePreviewBlock('components-v2', block.id)} />{(block.children || []).length ? block.children.map((child, index) => {
         const issue = getV2Issue(child.id);
-        return <div className={`studio-preview-nested-block ${previewBlockClass(child.id, 'components-v2')}`} key={child.id || `${key}_${index}`} data-preview-block-id={child.id} data-preview-validation-target={child.id} data-preview-scope="components-v2" data-preview-parent-container-id={block.id} draggable onClick={(event) => { event.stopPropagation(); focusV2Block(child.id); }} onDragStart={(event) => startPreviewMove(event, 'components-v2', child.id)} onDragEnd={endPreviewMove}>{renderV2Block(child, `${key}_${index}`)}<PreviewRemoveButton label={child.type.replaceAll('_', ' ')} warning={issue} onWarningClick={() => focusV2Issue(issue)} onClick={() => removePreviewBlock('components-v2', child.id)} /></div>;
+        return <div className={`studio-preview-nested-block ${previewBlockClass(child.id, 'components-v2')}`} key={child.id || `${key}_${index}`} data-preview-block-id={child.id} data-preview-validation-target={child.id} data-preview-scope="components-v2" data-preview-parent-container-id={block.id} draggable={!desktopPointerDragFallback} onClick={(event) => { event.stopPropagation(); focusV2Block(child.id); }} onDragStart={(event) => startPreviewMove(event, 'components-v2', child.id)} onDragEnd={endPreviewMove}>{renderV2Block(child, `${key}_${index}`)}<PreviewRemoveButton label={child.type.replaceAll('_', ' ')} warning={issue} onWarningClick={() => focusV2Issue(issue)} onClick={() => removePreviewBlock('components-v2', child.id)} hideRemove={child.type === 'section'} /></div>;
       }) : v2EmptyBlock('Empty container', 'Drag an eligible block here to add it')}</div>;
     }
     if (block.type === 'action_row') return <div className={`discord-action-row ${previewDropTarget?.id === block.id && previewDropTarget?.placement === 'inside' ? 'is-drop-target' : ''}`} key={key}>
@@ -1389,7 +1532,7 @@ export function EmbedStudioView({
 
   return (
     <>
-      <section className="embed-studio" aria-label={componentsV2Enabled || isComponentsBuilderNode ? 'Component Studio' : 'Embed Studio'}>
+      <section ref={studioRootRef} className={`embed-studio${desktopPointerDragFallback ? ' is-pointer-drag-fallback' : ''}`} aria-label={componentsV2Enabled || isComponentsBuilderNode ? 'Component Studio' : 'Embed Studio'} onPointerDownCapture={beginDesktopPointerDrag} onClickCapture={handleDesktopStudioClickCapture}>
         <header className="embed-studio-header">
           <button className="embed-studio-back" onClick={closeStudio} title="Return to node graph">
             <ArrowLeft size={15} />
@@ -1547,9 +1690,10 @@ export function EmbedStudioView({
                   onChange={onBlocksChange}
                   onOpenTextStudio={onOpenTextStudio}
                   validation={validation}
+                  desktopPointerDragFallback={desktopPointerDragFallback}
                 />
               ) : componentsV2Enabled ? (
-                <ComponentsV2Builder value={componentsV2Layout} focusedBlockId={focusedV2BlockId} focusedItemId={focusedV2ItemId} focusedSectionItem={focusedV2SectionItem} focusedComponentId={selectedComponentId} onSelectComponent={setSelectedComponentId} focusOnly onSelectBlock={setFocusedV2BlockId} onChange={onComponentsV2LayoutChange} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} templateFunctions={templateFunctions} appEmojis={appEmojis} botProfile={botProfile} attachments={attachedFiles} mediaAssets={mediaAssets} onSelectMediaAsset={attachMediaAsset} onUploadMedia={onUploadMedia} />
+                <ComponentsV2Builder value={componentsV2Layout} focusedBlockId={focusedV2BlockId} focusedItemId={focusedV2ItemId} focusedSectionItem={focusedV2SectionItem} focusedComponentId={selectedComponentId} onSelectComponent={setSelectedComponentId} focusOnly onSelectBlock={setFocusedV2BlockId} onChange={onComponentsV2LayoutChange} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} templateFunctions={templateFunctions} appEmojis={appEmojis} botProfile={botProfile} attachments={attachedFiles} mediaAssets={mediaAssets} onSelectMediaAsset={attachMediaAsset} onUploadMedia={onUploadMedia} desktopPointerDragFallback={desktopPointerDragFallback} />
               ) : (
                 <MessageComponentsBuilder
                   rows={components}
@@ -1565,6 +1709,7 @@ export function EmbedStudioView({
                   focusedRowId={focusedComponentRowId}
                   focusOnly
                   onFocusRow={focusComponentRow}
+                  desktopPointerDragFallback={desktopPointerDragFallback}
                 />
               )}
             </div>
@@ -1595,7 +1740,7 @@ export function EmbedStudioView({
                 <span>Please review and fix the highlighted fields in your embed blocks.</span>
               </div>
             )}
-            {((activeTab === 'embed' && focusedEmbedBlockId) || (activeTab === 'components' && (componentsV2Enabled ? focusedV2BlockId : focusedComponentRowId))) && <div className="embed-studio-help-footer"><TemplateSyntaxHelp connectedArguments={connectedTemplateArguments} /></div>}
+            {((activeTab === 'embed' && focusedEmbedBlockId) || (activeTab === 'components' && (componentsV2Enabled ? focusedV2BlockId : focusedComponentRowId))) && <div className="embed-studio-help-footer"><TemplateSyntaxHelp connectedArguments={connectedTemplateArguments} desktopMode={desktopMode} /></div>}
           </div>
 
           <div className="embed-studio-resize-handle" role="separator" aria-label="Resize editor and preview" aria-orientation="vertical" aria-valuemin={25} aria-valuemax={75} aria-valuenow={Math.round(editorPanePercent)} tabIndex={0} title="Drag to resize" onPointerDown={onStudioDividerPointerDown} onPointerMove={onStudioDividerPointerMove} onPointerUp={stopStudioResize} onPointerCancel={stopStudioResize} onKeyDown={(event) => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); updateStudioSplitFromKeyboard(event.key === 'ArrowRight' ? 1 : -1); } }} />
@@ -1652,7 +1797,7 @@ export function EmbedStudioView({
 
                   {componentsV2Enabled && componentsV2Layout.map((block, index) => {
                     const issue = getV2Issue(block.id);
-                    return <div key={block.id || `v2_${index}`} className={`${previewBlockClass(block.id, 'components-v2')}${block.type === 'separator' ? ' is-separator-block' : ''}`} data-preview-block-id={block.id} data-preview-validation-target={block.id} data-preview-scope="components-v2" draggable onClick={(event) => { if (event.target.closest('button')) return; focusV2Block(block.id); }} onDragStart={(event) => startPreviewMove(event, 'components-v2', block.id)} onDragEnd={endPreviewMove}>{renderV2Block(block, block.id || `v2_${index}`)}{block.type !== 'container' && <PreviewRemoveButton label={block.type.replaceAll('_', ' ')} warning={issue} onWarningClick={() => focusV2Issue(issue)} onClick={() => removePreviewBlock('components-v2', block.id)} />}</div>;
+                    return <div key={block.id || `v2_${index}`} className={`${previewBlockClass(block.id, 'components-v2')}${block.type === 'separator' ? ' is-separator-block' : ''}`} data-preview-block-id={block.id} data-preview-validation-target={block.id} data-preview-scope="components-v2" draggable={!desktopPointerDragFallback} onClick={(event) => { if (event.target.closest('button')) return; focusV2Block(block.id); }} onDragStart={(event) => startPreviewMove(event, 'components-v2', block.id)} onDragEnd={endPreviewMove}>{renderV2Block(block, block.id || `v2_${index}`)}{block.type !== 'container' && <PreviewRemoveButton label={block.type.replaceAll('_', ' ')} warning={issue} onWarningClick={() => focusV2Issue(issue)} onClick={() => removePreviewBlock('components-v2', block.id)} hideRemove={block.type === 'section'} />}</div>;
                   })}
 
                   {!componentsV2Enabled && content ? (
@@ -1675,7 +1820,7 @@ export function EmbedStudioView({
                               className={`${previewBlockClass(author.id, 'embed')} embed-preview-author is-interactive`}
                               data-preview-block-id={author.id}
                               data-preview-scope="embed"
-                              draggable
+                              draggable={!desktopPointerDragFallback}
                               onDragStart={(event) => startPreviewMove(event, 'embed', author.id)}
                               onDragEnd={endPreviewMove}
                               onClick={() => focusEditorBlock(author)}
@@ -1702,7 +1847,7 @@ export function EmbedStudioView({
                               className={`${previewBlockClass(previewItems.find((block) => block.type === 'title')?.id, 'embed')} embed-preview-title-wrapper is-interactive`}
                               data-preview-block-id={previewItems.find((block) => block.type === 'title')?.id}
                               data-preview-scope="embed"
-                              draggable
+                              draggable={!desktopPointerDragFallback}
                               onDragStart={(event) => startPreviewMove(event, 'embed', previewItems.find((block) => block.type === 'title')?.id)}
                               onDragEnd={endPreviewMove}
                               onClick={() => openEmbedTextEditor(previewItems.find((block) => block.type === 'title'), 'value', 'Title Text', 256)}
@@ -1725,7 +1870,7 @@ export function EmbedStudioView({
                               className={`${previewBlockClass(previewItems.find((block) => block.type === 'description')?.id, 'embed')} embed-preview-description is-interactive`}
                               data-preview-block-id={previewItems.find((block) => block.type === 'description')?.id}
                               data-preview-scope="embed"
-                              draggable
+                              draggable={!desktopPointerDragFallback}
                               onDragStart={(event) => startPreviewMove(event, 'embed', previewItems.find((block) => block.type === 'description')?.id)}
                               onDragEnd={endPreviewMove}
                               onClick={() => openEmbedTextEditor(previewItems.find((block) => block.type === 'description'), 'value', 'Message Description', 4096)}
@@ -1744,7 +1889,7 @@ export function EmbedStudioView({
                                   className={`${previewBlockClass(field.id, 'embed')} embed-preview-field ${field.inline ? 'is-inline' : 'is-full'} is-interactive`}
                                   data-preview-block-id={field.id}
                                   data-preview-scope="embed"
-                                  draggable
+                                  draggable={!desktopPointerDragFallback}
                                   onDragStart={(event) => startPreviewMove(event, 'embed', field.id)}
                                   onDragEnd={endPreviewMove}
                                   title="Click to edit field"
@@ -1759,7 +1904,7 @@ export function EmbedStudioView({
                         </div>
 
                         {thumbnailWire ? <div className="embed-preview-wire-media is-thumbnail">{thumbnailWire.token}</div> : thumbnailBlock ? (
-                          <div className={`${previewBlockClass(thumbnailBlock.id, 'embed')} studio-preview-media-block is-thumbnail`} data-preview-block-id={thumbnailBlock.id} data-preview-scope="embed" draggable onDragStart={(event) => startPreviewMove(event, 'embed', thumbnailBlock.id)} onDragEnd={endPreviewMove}>
+                          <div className={`${previewBlockClass(thumbnailBlock.id, 'embed')} studio-preview-media-block is-thumbnail`} data-preview-block-id={thumbnailBlock.id} data-preview-scope="embed" draggable={!desktopPointerDragFallback} onDragStart={(event) => startPreviewMove(event, 'embed', thumbnailBlock.id)} onDragEnd={endPreviewMove}>
                             <PreviewImage
                               className="embed-preview-thumbnail is-interactive"
                               src={resolvePreviewImageSource(thumbnail)}
@@ -1774,7 +1919,7 @@ export function EmbedStudioView({
                         ) : null}
                       </div>
 
-                      {imageWire ? <div className="embed-preview-wire-media">{imageWire.token}</div> : imageBlock ? <div className={`${previewBlockClass(imageBlock.id, 'embed')} studio-preview-media-block is-image`} data-preview-block-id={imageBlock.id} data-preview-scope="embed" draggable onDragStart={(event) => startPreviewMove(event, 'embed', imageBlock.id)} onDragEnd={endPreviewMove}>
+                      {imageWire ? <div className="embed-preview-wire-media">{imageWire.token}</div> : imageBlock ? <div className={`${previewBlockClass(imageBlock.id, 'embed')} studio-preview-media-block is-image`} data-preview-block-id={imageBlock.id} data-preview-scope="embed" draggable={!desktopPointerDragFallback} onDragStart={(event) => startPreviewMove(event, 'embed', imageBlock.id)} onDragEnd={endPreviewMove}>
                         <PreviewImage
                           className="embed-preview-image is-interactive"
                           src={resolvePreviewImageSource(image)}
@@ -1791,7 +1936,7 @@ export function EmbedStudioView({
                           className={`${previewBlockClass(footer?.id, 'embed')} embed-preview-footer is-interactive`}
                           data-preview-block-id={footer?.id}
                           data-preview-scope="embed"
-                          draggable={Boolean(footer?.id)}
+                          draggable={Boolean(footer?.id) && !desktopPointerDragFallback}
                           onDragStart={(event) => footer?.id && startPreviewMove(event, 'embed', footer.id)}
                           onDragEnd={endPreviewMove}
                           onClick={() => footer?.id && openEmbedTextEditor(footer, 'text', 'Footer Text', 2048)}
@@ -1823,7 +1968,7 @@ export function EmbedStudioView({
                     const row = toDiscordComponents([sourceRow], appEmojis)[0] || { components: [] };
 
                     return (
-                      <div className={`discord-action-row ${previewBlockClass(sourceRow?.id, 'components')} ${previewDropTarget?.id === sourceRow?.id && previewDropTarget?.placement === 'inside' ? 'is-drop-target' : ''}`} key={sourceRow?.id || rowIndex} data-preview-block-id={sourceRow?.id} data-preview-scope="components" draggable={Boolean(sourceRow?.id)} onClick={() => sourceRow?.id && focusComponentRow(sourceRow.id)} onDragStart={(event) => sourceRow?.id && startPreviewMove(event, 'components', sourceRow.id)} onDragEnd={endPreviewMove}>
+                      <div className={`discord-action-row ${previewBlockClass(sourceRow?.id, 'components')} ${previewDropTarget?.id === sourceRow?.id && previewDropTarget?.placement === 'inside' ? 'is-drop-target' : ''}`} key={sourceRow?.id || rowIndex} data-preview-block-id={sourceRow?.id} data-preview-scope="components" draggable={Boolean(sourceRow?.id) && !desktopPointerDragFallback} onClick={() => sourceRow?.id && focusComponentRow(sourceRow.id)} onDragStart={(event) => sourceRow?.id && startPreviewMove(event, 'components', sourceRow.id)} onDragEnd={endPreviewMove}>
                         {!row.components.length && <div className="discord-preview-empty-action-row">
                           <span>Action row {rowIndex + 1}</span>
                           <button type="button" className="discord-preview-add-button" onClick={(event) => { event.stopPropagation(); addButtonToRow(sourceRow.id); }}>
@@ -1947,6 +2092,7 @@ export function EmbedStudioView({
           </aside>
         </div>
       </section>
+      {desktopPointerDrag && createPortal(<div className="studio-pointer-drag-ghost" style={{ left: `${desktopPointerDrag.clientX}px`, top: `${desktopPointerDrag.clientY}px` }}>{desktopPointerDrag.payload.kind === 'move' ? 'Move' : 'Add'} {String(desktopPointerDrag.payload.type || desktopPointerDrag.payload.scope).replaceAll('_', ' ')}</div>, document.body)}
       <Modal isOpen={discardPromptOpen} onClose={() => { setDiscardPromptOpen(false); notifyStudioSwitchCancelled(); }} title="Discard studio changes?" subtitle="These edits have not been applied to the graph." footer={<><Button variant="secondary" onClick={() => { setDiscardPromptOpen(false); notifyStudioSwitchCancelled(); }}>Keep editing</Button><Button variant="danger" onClick={onClose}>Discard changes</Button></>}><p className="close-graph-copy">Your graph stays unchanged until you choose Apply.</p></Modal>
       {thumbnailContextMenu && createPortal(
         <div className="canvas-context-menu embed-thumbnail-context-menu" role="menu" style={{ position: 'fixed', left: thumbnailContextMenu.x, top: thumbnailContextMenu.y, zIndex: 10000 }} onPointerDown={(event) => event.stopPropagation()}>
