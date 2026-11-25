@@ -1,14 +1,16 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { emitTo, listen as listenTauriEvent } from '@tauri-apps/api/event';
 import {
   Activity, AlertTriangle, Archive, Check, ChevronDown, ChevronLeft, ChevronUp, CircleCheck, CircleX, ClipboardCopy, Cpu, FileText,
-  GitCompare, PictureInPicture2, Play, Plus, Save, Search, ShieldCheck, Smile, Square, StepForward, Terminal, Trash2, Upload, X
+  GitCompare, Globe2, PictureInPicture2, Play, Plus, Save, Search, Server, ShieldCheck, Smile, Square, StepForward, Terminal, Trash2, Upload, X
 } from 'lucide-react';
 import { arcEvents } from '../../core/ArcEvents.js';
 import { apiUrl } from '../../core/api.js';
 import { xhrJson } from '../../core/xhrJson.js';
 import { onPageBlur } from '../../core/pageFocus.js';
 import { readAppStorage, writeAppStorage } from '../../core/storage.js';
+import { isDesktopPromptActive } from '../../core/desktopPrompts.js';
 import { AnimatedDropdown } from '../ui/CustomControls.jsx';
 import { CharacterLimit } from '../ui/Inputs.jsx';
 import { CustomEmoji } from '../ui/CustomEmoji.jsx';
@@ -25,6 +27,19 @@ const HTTP_METHOD_OPTIONS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'O
 
 const EMPTY_DEBUG_VALUES = [];
 //
+function deploymentCommandStatusMap(changes = {}) {
+  const entries = new Map();
+  for (const [key, label] of [['created', 'Create'], ['updated', 'Update'], ['unchanged', 'Unchanged'], ['removed', 'Remove']]) {
+    for (const command of changes[key] || []) {
+      const commandKey = `${Number(command?.type || 1)}:${String(command?.name || '').toLowerCase()}`;
+      const items = entries.get(commandKey) || [];
+      items.push({ label, targets: command.guildIds?.length || 1 });
+      entries.set(commandKey, items);
+    }
+  }
+  return new Map([...entries].map(([key, items]) => [key, items.map(({ label, targets }) => targets > 1 ? `${label} · ${targets} targets` : label).join(' · ')]));
+}
+
 function parseSimulationObject(source, label) {
   let value;
   try { value = JSON.parse(String(source || '{}')); }
@@ -159,13 +174,15 @@ function resolveLogNodeTarget(log, activeTabId) {
 
 export function ControlDock({
   logs = [], botStatus = 'DISCONNECTED', discordAuthWarning = null, botMetrics = {}, botProfile, activeTabId, activeProjectId = '', authToken, onEmojisChange, emojiCacheScope = '', networkOnline = true, cachedAppEmojis = [],
-  graphs = [], graphLookup = new Map(), graphValidationReports = [], graphNodes = [], nodeDefinitions = BuiltInNodeDefinitions, compactContextMenus = false, isLocked = false, canControlBot = false, consoleOpenRequest = 0, gatewayStartedRequest = 0, commandBrowserRequest = 0, onClearLogs, onStartBot, onStopBot, onEnsureGraphsSaved, onOpenGraph, onTraceLog, onTraceIssue, onIntentSummaryChange, onOpenTextStudio, onOpenChange
+  graphs = [], graphLookup = new Map(), graphValidationReports = [], graphNodes = [], nodeDefinitions = BuiltInNodeDefinitions, compactContextMenus = false, autoResizeDockOnScroll = true, isLocked = false, canControlBot = false, desktopMode = false, consoleOpenRequest = 0, gatewayStartedRequest = 0, commandBrowserRequest = 0, onClearLogs, onStartBot, onStopBot, onEnsureGraphsSaved, onOpenGraph, onTraceLog, onTraceIssue, onIntentSummaryChange, onOpenTextStudio, onOpenChange
 }) {
   const [isOpen, setIsOpen] = useState(false);
   useEffect(() => {
     onOpenChange?.(isOpen);
   }, [isOpen, onOpenChange]);
   const [activeTab, setActiveTab] = useState('console');
+  const activeTabRef = useRef(activeTab);
+  activeTabRef.current = activeTab;
   const lastConsoleShortcutRequestRef = useRef(consoleOpenRequest);
   const lastGatewayStartedRequestRef = useRef(gatewayStartedRequest);
   useEffect(() => {
@@ -186,8 +203,21 @@ export function ControlDock({
     try { return clamp(Number(readAppStorage('arc_dock_height')) || 284, 180, 620); }
     catch { return 284; }
   });
+  const dockHeightRef = useRef(dockHeight);
+  const lastExpandedDockHeightRef = useRef(Math.max(284, dockHeight));
   const [isResizing, setIsResizing] = useState(false);
   const resizeRef = useRef({ y: 0, height: 0 });
+  const dockRef = useRef(null);
+  const autoResizeStateRef = useRef(null);
+  const wheelDeltaRef = useRef(0);
+  const wheelFrameRef = useRef(0);
+  const wheelCommitTimerRef = useRef(0);
+  const wheelGestureRef = useRef({ direction: 0, amount: 0, lastAt: 0 });
+  const wheelGuardUntilRef = useRef(0);
+  const dockTabSwipeRef = useRef(null);
+  const dockTabSwipeFrameRef = useRef(0);
+  const dockWheelAxisRef = useRef({ axis: '', lastAt: 0 });
+  autoResizeStateRef.current = { enabled: autoResizeDockOnScroll, isOpen, isLocked, isResizing };
   const logContainerRef = useRef(null);
   const isNearBottomRef = useRef(true);
   const lastLogsLengthRef = useRef(logs?.length || 0);
@@ -264,6 +294,13 @@ export function ControlDock({
     if (lastProjectIdRef.current === activeProjectId) return;
     lastProjectIdRef.current = activeProjectId;
     closeConsolePopup();
+    commandPreviewRequestRef.current += 1;
+    setCommandReview(null);
+    setReviewingCommands(false);
+    setUpdatingCommandReview(false);
+    setGuildIdDraft('');
+    setGuildIdError('');
+    setDeployError('');
   }, [activeProjectId]);
 
   useEffect(() => {
@@ -419,7 +456,12 @@ export function ControlDock({
   const [commandDeployUntil, setCommandDeployUntil] = useState(0);
   const [commandDeploySeconds, setCommandDeploySeconds] = useState(0);
   const [commandReview, setCommandReview] = useState(null);
+  const commandReviewOpenRef = useRef(false);
+  useLayoutEffect(() => { commandReviewOpenRef.current = Boolean(commandReview); }, [commandReview]);
   const [reviewingCommands, setReviewingCommands] = useState(false);
+  const [updatingCommandReview, setUpdatingCommandReview] = useState(false);
+  const [guildIdDraft, setGuildIdDraft] = useState('');
+  const [guildIdError, setGuildIdError] = useState('');
   const [deployError, setDeployError] = useState('');
   const [rateLimitClock, setRateLimitClock] = useState(Date.now());
   const rateLimitUntil = Number(botMetrics?.rateLimitedUntil) || 0;
@@ -432,16 +474,41 @@ export function ControlDock({
   const [selectedReviewCommand, setSelectedReviewCommand] = useState(null);
   const [selectedCommandStats, setSelectedCommandStats] = useState(null);
   const [commandDirectoryItems, setCommandDirectoryItems] = useState(null);
-  const commandBrowserRequestRef = useRef(0);
+  const commandBrowserRequestRef = useRef(commandBrowserRequest);
+  const commandPreviewRequestRef = useRef(0);
+  const desktopCommandActionRef = useRef({});
   const [loadingCommandStats, setLoadingCommandStats] = useState(false);
   const [expandedReviewIssues, setExpandedReviewIssues] = useState(() => new Set());
+  const commandReviewOpen = Boolean(commandReview);
+  const cachedGuildOptionCount = commandReview?.guildOptions?.length || 0;
+  useEffect(() => {
+    if (!commandReviewOpen || cachedGuildOptionCount || botStatus !== 'ONLINE') return undefined;
+    let current = true;
+    let attempts = 0;
+    let timer = 0;
+    const requestId = commandPreviewRequestRef.current;
+    const requestProjectId = activeProjectId;
+    const refresh = async () => {
+      attempts += 1;
+      try {
+        const response = await fetch(apiUrl('/api/bot/commands/guilds'), { cache: 'no-store', headers: { 'x-arc-token': authToken } });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) return;
+        if (!current || requestId !== commandPreviewRequestRef.current || lastProjectIdRef.current !== requestProjectId || !commandReviewOpenRef.current) return;
+        if (Array.isArray(data.guilds) && data.guilds.length) {
+          setCommandReview((review) => review ? { ...review, guildOptions: data.guilds, gatewayConnected: Boolean(data.gatewayConnected), guildDirectoryError: '' } : review);
+          return;
+        }
+      } catch {}
+      if (current && attempts < 8) timer = window.setTimeout(refresh, 1000);
+    };
+    void refresh();
+    return () => { current = false; window.clearTimeout(timer); };
+  }, [activeProjectId, authToken, botStatus, cachedGuildOptionCount, commandReviewOpen]);
   const reviewCommandItems = useMemo(() => {
     if (!commandReview) return [];
     const commandKey = (cmd) => `${Number(cmd?.type || 1)}:${String(cmd?.name || '').toLowerCase()}`;
-    const statusByKey = new Map();
-    for (const [key, status] of [['created', 'Create'], ['updated', 'Update'], ['unchanged', 'Unchanged']]) {
-      for (const item of commandReview.changes?.[key] || []) statusByKey.set(commandKey(item), status);
-    }
+    const statusByKey = deploymentCommandStatusMap(commandReview.changes);
     const desired = (commandReview.commands || []).map((command) => {
       const graph = graphs.find((item) => (item.nodes || []).some((node) => {
         if (!['event_slash_command', 'event_user_command', 'event_message_command'].includes(node.type)) return false;
@@ -450,9 +517,12 @@ export function ControlDock({
       }));
       return { ...command, status: statusByKey.get(commandKey(command)) || 'Command', graphName: graph?.name || '', graphId: graph?.id || '' };
     });
-    const removed = (commandReview.changes?.removed || []).map((command) => ({ ...command, status: 'Remove', description: 'This managed command will be removed.' }));
+    const removed = (commandReview.changes?.removed || []).map((command) => ({ ...command, status: statusByKey.get(commandKey(command)) || 'Remove', description: 'This managed command will be removed.' }));
     return [...desired, ...removed];
   }, [commandReview, graphs]);
+  const availableReviewCommands = commandReview?.availableCommands || commandReview?.commands || [];
+  const allReviewCommandKeys = availableReviewCommands.map((command) => `${Number(command?.type || 1)}:${String(command?.name || '').toLowerCase()}`);
+  const includedReviewCommandKeys = commandReview?.commandKeys == null ? allReviewCommandKeys : commandReview.commandKeys;
   const workspaceCommandItems = useMemo(() => {
     const byKey = new Map();
     for (const graph of graphs) {
@@ -524,6 +594,11 @@ export function ControlDock({
     return [...groups.values()].sort((left, right) => left.severity === right.severity ? left.message.localeCompare(right.message) : left.severity === 'error' ? -1 : 1);
   }, [graphValidationReports, commandReview?.errors]);
   const reviewIssueCount = (severity) => reviewIssueGroups.filter((group) => group.severity === severity).length;
+  const graphCheckCounts = useMemo(() => graphValidationReports.reduce((totals, { report }) => {
+    totals.errors += report.errors?.length || 0;
+    totals.warnings += report.warnings?.length || 0;
+    return totals;
+  }, { errors: 0, warnings: 0 }), [graphValidationReports]);
 
   useLayoutEffect(() => {
     document.documentElement.style.setProperty('--arc-dock-height', `${isOpen ? dockHeight : 45}px`);
@@ -573,7 +648,10 @@ export function ControlDock({
     const onMove = (event) => {
       const scale = getArcUiScale();
       const availableHeight = (window.visualViewport?.height || window.innerHeight) / scale;
-      setDockHeight(clamp(resizeRef.current.height + (resizeRef.current.y - event.clientY) / scale, 180, Math.min(availableHeight - 100, 620)));
+      const next = clamp(resizeRef.current.height + (resizeRef.current.y - event.clientY) / scale, 180, Math.min(availableHeight - 100, 620));
+      dockHeightRef.current = next;
+      if (next > 180) lastExpandedDockHeightRef.current = next;
+      setDockHeight(next);
     };
     const onUp = () => {
       setIsResizing(false);
@@ -583,6 +661,281 @@ export function ControlDock({
     window.addEventListener('pointerup', onUp);
     return () => { window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); };
   }, [isResizing, dockHeight]);
+
+  useEffect(() => {
+    const dock = dockRef.current;
+    if (!dock) return undefined;
+    const dockContent = dock.querySelector('.dock-content');
+    const clearTabSwipe = (swipe) => {
+      if (!swipe || dockTabSwipeRef.current !== swipe) return;
+      window.clearTimeout(swipe.endTimer);
+      if (swipe.transitionEndHandler) dockContent?.removeEventListener('transitionend', swipe.transitionEndHandler);
+      dockContent?.style.removeProperty('translate');
+      dockContent?.style.removeProperty('transition');
+      dockContent?.style.removeProperty('opacity');
+      dockContent?.style.removeProperty('will-change');
+      dockTabSwipeRef.current = null;
+    };
+    const completeTabSwipe = (swipe, nextTab) => {
+      if (!swipe || swipe.finishing || !dockContent) return;
+      swipe.finishing = true;
+      window.clearTimeout(swipe.endTimer);
+      if (dockTabSwipeFrameRef.current) window.cancelAnimationFrame(dockTabSwipeFrameRef.current);
+      dockTabSwipeFrameRef.current = 0;
+      const tabOrder = ['console', 'simulator', 'hub'];
+      const tabStep = Math.sign(tabOrder.indexOf(nextTab) - tabOrder.indexOf(swipe.startTab));
+      const outgoingOffset = swipe.offset - tabStep * 32;
+      const incomingOffset = tabStep * 28;
+      const finishOutgoing = () => {
+        if (dockTabSwipeRef.current !== swipe) return;
+        window.clearTimeout(swipe.endTimer);
+        if (swipe.transitionEndHandler) dockContent.removeEventListener('transitionend', swipe.transitionEndHandler);
+        swipe.transitionEndHandler = null;
+        if (!autoResizeStateRef.current?.isOpen || activeTabRef.current !== swipe.startTab) {
+          clearTabSwipe(swipe);
+          return;
+        }
+        if (nextTab === 'console' && consolePopupWindowRef.current) closeConsolePopup();
+        setActiveTab(nextTab);
+        dockContent.style.transition = 'none';
+        dockContent.style.translate = `${incomingOffset}px 0px`;
+        dockContent.style.opacity = '0';
+        dockTabSwipeFrameRef.current = window.requestAnimationFrame(() => {
+          dockTabSwipeFrameRef.current = 0;
+          if (dockTabSwipeRef.current !== swipe) return;
+          dockContent.style.transition = 'translate 180ms cubic-bezier(.22,.61,.36,1), opacity 150ms ease-out';
+          dockContent.style.translate = '0px 0px';
+          dockContent.style.opacity = '1';
+          swipe.endTimer = window.setTimeout(() => clearTabSwipe(swipe), 200);
+        });
+      };
+      swipe.transitionEndHandler = (event) => {
+        if (event.target === dockContent && event.propertyName === 'translate') finishOutgoing();
+      };
+      dockContent.addEventListener('transitionend', swipe.transitionEndHandler);
+      dockContent.style.transition = 'translate 180ms cubic-bezier(.22,.61,.36,1), opacity 130ms ease-out';
+      dockTabSwipeFrameRef.current = window.requestAnimationFrame(() => {
+        dockTabSwipeFrameRef.current = 0;
+        if (dockTabSwipeRef.current !== swipe) return;
+        dockContent.style.transition = 'translate 180ms cubic-bezier(.22,.61,.36,1), opacity 130ms ease-out';
+        dockContent.style.translate = `${outgoingOffset}px 0px`;
+        dockContent.style.opacity = '0';
+        swipe.endTimer = window.setTimeout(finishOutgoing, 210);
+      });
+    };
+    const finishTabSwipe = () => {
+      const swipe = dockTabSwipeRef.current;
+      if (!swipe || !dockContent) return;
+      const width = dockContent.getBoundingClientRect().width;
+      const tabs = ['console', 'simulator', 'hub'];
+      const nextTab = tabs[tabs.indexOf(swipe.startTab) + swipe.direction];
+      const threshold = Math.max(72, Math.min(150, width * 0.2));
+      const shouldChangeTab = autoResizeStateRef.current?.isOpen
+        && activeTabRef.current === swipe.startTab
+        && swipe.samples >= 3
+        && swipe.distance >= threshold
+        && Boolean(nextTab);
+      if (shouldChangeTab) {
+        completeTabSwipe(swipe, nextTab);
+        return;
+      }
+      swipe.finishing = true;
+      if (dockTabSwipeFrameRef.current) window.cancelAnimationFrame(dockTabSwipeFrameRef.current);
+      dockTabSwipeFrameRef.current = 0;
+      dockContent.style.transition = 'translate 180ms cubic-bezier(.4,0,.2,1)';
+      dockContent.style.translate = '0px 0px';
+      swipe.endTimer = window.setTimeout(() => clearTabSwipe(swipe), 200);
+    };
+    const onWheel = (event) => {
+      const state = autoResizeStateRef.current;
+      const now = performance.now();
+      const target = event.target instanceof Element ? event.target : null;
+      const tabs = ['console', 'simulator', 'hub'];
+      const absX = Math.abs(event.deltaX);
+      const absY = Math.abs(event.deltaY);
+      const horizontalCandidate = !state?.isResizing
+        && event.deltaMode === WheelEvent.DOM_DELTA_PIXEL
+        && absX >= Math.max(14, absY * 0.85);
+      const axisLocked = dockWheelAxisRef.current.axis === 'horizontal'
+        && now - dockWheelAxisRef.current.lastAt < 240;
+      if (horizontalCandidate || axisLocked) {
+        if (horizontalCandidate) dockWheelAxisRef.current = { axis: 'horizontal', lastAt: now };
+        if (!horizontalCandidate || !target || !dockContent?.contains(target)) return;
+        if (target.closest('button, a, input, textarea, select, [contenteditable="true"], [role="option"], .arc-dropdown, .dock-tabs, [data-no-dock-swipe]')) return;
+        for (let element = target; element && element !== dockContent; element = element.parentElement) {
+          const style = window.getComputedStyle(element);
+          if (/(auto|scroll)/.test(style.overflowX) && element.scrollWidth > element.clientWidth + 2) return;
+        }
+        const currentSwipe = dockTabSwipeRef.current;
+        if (currentSwipe?.finishing) {
+          event.preventDefault();
+          return;
+        }
+        const direction = Math.sign(event.deltaX);
+        const sameGesture = currentSwipe && currentSwipe.direction === direction && now - currentSwipe.lastAt <= 240;
+        const startTab = sameGesture ? currentSwipe.startTab : activeTabRef.current;
+        const nextTab = tabs[tabs.indexOf(startTab) + direction];
+        if (!nextTab) {
+          if (currentSwipe) {
+            window.clearTimeout(currentSwipe.endTimer);
+            dockTabSwipeRef.current = null;
+            if (dockTabSwipeFrameRef.current) window.cancelAnimationFrame(dockTabSwipeFrameRef.current);
+            dockTabSwipeFrameRef.current = 0;
+            dockContent.style.removeProperty('translate');
+            dockContent.style.removeProperty('transition');
+            dockContent.style.removeProperty('will-change');
+          }
+          event.preventDefault();
+          return;
+        }
+        let swipe = sameGesture ? currentSwipe : null;
+        if (!swipe) {
+          if (currentSwipe) {
+            window.clearTimeout(currentSwipe.endTimer);
+            if (dockTabSwipeFrameRef.current) window.cancelAnimationFrame(dockTabSwipeFrameRef.current);
+            dockTabSwipeFrameRef.current = 0;
+            dockContent.style.removeProperty('translate');
+            dockContent.style.removeProperty('transition');
+            dockContent.style.removeProperty('will-change');
+          }
+          swipe = { direction, distance: 0, samples: 0, lastAt: now, endTimer: 0, finishing: false, startTab, offset: 0 };
+          dockTabSwipeRef.current = swipe;
+          dockContent.style.transition = 'none';
+          dockContent.style.willChange = 'translate';
+        }
+        const width = dockContent.getBoundingClientRect().width;
+        swipe.distance += absX;
+        swipe.samples += 1;
+        swipe.lastAt = now;
+        const threshold = Math.max(72, Math.min(150, width * 0.2));
+        swipe.offset = direction > 0
+          ? -Math.min(width, swipe.distance)
+          : Math.min(width, swipe.distance);
+        if (!dockTabSwipeFrameRef.current) {
+          dockTabSwipeFrameRef.current = window.requestAnimationFrame(() => {
+            dockTabSwipeFrameRef.current = 0;
+            if (dockTabSwipeRef.current === swipe && !swipe.finishing) dockContent.style.translate = `${swipe.offset}px 0px`;
+          });
+        }
+        event.preventDefault();
+        if (swipe.distance >= threshold && swipe.samples >= 3) {
+          if (dockTabSwipeFrameRef.current) window.cancelAnimationFrame(dockTabSwipeFrameRef.current);
+          dockTabSwipeFrameRef.current = 0;
+          completeTabSwipe(swipe, nextTab);
+          return;
+        }
+        window.clearTimeout(swipe.endTimer);
+        swipe.endTimer = window.setTimeout(finishTabSwipe, 160);
+        return;
+      }
+      if (!state?.enabled || state.isLocked || state.isResizing || event.deltaY === 0) return;
+      if (now < wheelGuardUntilRef.current) {
+        event.preventDefault();
+        return;
+      }
+      const scale = getArcUiScale();
+      const rawDelta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? window.innerHeight : 1) / scale;
+      const direction = Math.sign(rawDelta);
+      const gesture = wheelGestureRef.current;
+      if (gesture.direction !== direction || now - gesture.lastAt > 260) {
+        gesture.direction = direction;
+        gesture.amount = 0;
+      }
+      gesture.amount += Math.abs(rawDelta);
+      gesture.lastAt = now;
+
+      if (!state.isOpen) {
+        if (direction < 0) return;
+        event.preventDefault();
+        if (gesture.amount < 150) return;
+        const viewportHeight = (window.visualViewport?.height || window.innerHeight) / scale;
+        const maximum = Math.max(180, Math.min(viewportHeight - 100, 620));
+        const restoreHeight = clamp(Math.max(284, lastExpandedDockHeightRef.current), 180, maximum);
+        const hoveredTab = event.target instanceof Element ? event.target.closest('[data-dock-tab]')?.dataset.dockTab : '';
+        const tabToOpen = ['console', 'simulator', 'hub'].includes(hoveredTab) ? hoveredTab : activeTabRef.current;
+        setActiveTab(tabToOpen);
+        if (tabToOpen === 'console' && consolePopupWindowRef.current) closeConsolePopup();
+        dockHeightRef.current = restoreHeight;
+        setDockHeight(restoreHeight);
+        writeAppStorage('arc_dock_height', String(restoreHeight));
+        setIsOpen(true);
+        wheelGestureRef.current = { direction: 0, amount: 0, lastAt: 0 };
+        wheelGuardUntilRef.current = now + 260;
+        return;
+      }
+
+      if (direction < 0) {
+        let scrollable = event.target instanceof Element ? event.target : null;
+        while (scrollable && scrollable !== dock) {
+          const style = window.getComputedStyle(scrollable);
+          if (/(auto|scroll)/.test(style.overflowY) && scrollable.scrollHeight > scrollable.clientHeight + 1) break;
+          scrollable = scrollable.parentElement;
+        }
+        if (scrollable !== dock && scrollable && scrollable.scrollTop > 0) {
+          wheelGestureRef.current = { direction: 0, amount: 0, lastAt: 0 };
+          return;
+        }
+      }
+
+      const viewportHeight = (window.visualViewport?.height || window.innerHeight) / scale;
+      const maximum = Math.max(180, Math.min(viewportHeight - 100, 620));
+      const currentHeight = dockHeightRef.current;
+      if (direction > 0 && currentHeight >= maximum) return;
+      if (direction < 0 && currentHeight <= 180) {
+        event.preventDefault();
+        if (gesture.amount < 170) return;
+        setIsOpen(false);
+        wheelGestureRef.current = { direction: 0, amount: 0, lastAt: 0 };
+        wheelGuardUntilRef.current = now + 260;
+        return;
+      }
+
+      event.preventDefault();
+      wheelGestureRef.current = { direction: 0, amount: 0, lastAt: 0 };
+      wheelDeltaRef.current += rawDelta;
+      if (wheelFrameRef.current) return;
+      wheelFrameRef.current = window.requestAnimationFrame(() => {
+        wheelFrameRef.current = 0;
+        const amount = wheelDeltaRef.current;
+        wheelDeltaRef.current = 0;
+        const next = clamp(dockHeightRef.current + amount, 180, maximum);
+        if (next === dockHeightRef.current) return;
+        dockHeightRef.current = next;
+        if (next > 180) lastExpandedDockHeightRef.current = next;
+        dock.style.setProperty('--dock-height', `${next}px`);
+        dock.style.height = `${next}px`;
+        dock.classList.add('is-auto-resizing');
+        document.documentElement.style.setProperty('--arc-dock-height', `${next}px`);
+        window.clearTimeout(wheelCommitTimerRef.current);
+        wheelCommitTimerRef.current = window.setTimeout(() => {
+          dock.classList.remove('is-auto-resizing');
+          setDockHeight(dockHeightRef.current);
+          writeAppStorage('arc_dock_height', String(dockHeightRef.current));
+        }, 180);
+      });
+    };
+    dock.addEventListener('wheel', onWheel, { passive: false });
+    return () => {
+      dock.removeEventListener('wheel', onWheel);
+      const swipe = dockTabSwipeRef.current;
+      if (swipe) {
+        window.clearTimeout(swipe.endTimer);
+        if (swipe.transitionEndHandler) dockContent?.removeEventListener('transitionend', swipe.transitionEndHandler);
+      }
+      dockTabSwipeRef.current = null;
+      if (dockTabSwipeFrameRef.current) window.cancelAnimationFrame(dockTabSwipeFrameRef.current);
+      dockTabSwipeFrameRef.current = 0;
+      dockWheelAxisRef.current = { axis: '', lastAt: 0 };
+      if (dockContent) {
+        dockContent.style.removeProperty('translate');
+        dockContent.style.removeProperty('transition');
+        dockContent.style.removeProperty('will-change');
+      }
+      if (wheelFrameRef.current) window.cancelAnimationFrame(wheelFrameRef.current);
+      window.clearTimeout(wheelCommitTimerRef.current);
+      dock.classList.remove('is-auto-resizing');
+    };
+  }, []);
 
   useEffect(() => {
     const isConsoleActive = (isOpen || consolePopupRoot) && activeTab === 'console';
@@ -728,7 +1081,20 @@ export function ControlDock({
     return groups;
   }, [activeTabId, filteredLogs]);
 
-  const openTab = (tab) => { setActiveTab(tab); setIsOpen(true); };
+  const openTab = (tab) => {
+    setActiveTab(tab);
+    if (!isOpen) {
+      const scale = getArcUiScale();
+      const viewportHeight = (window.visualViewport?.height || window.innerHeight) / scale;
+      const maximum = Math.max(180, Math.min(viewportHeight - 100, 620));
+      const restoreHeight = clamp(Math.max(320, dockHeightRef.current, lastExpandedDockHeightRef.current), 180, maximum);
+      dockHeightRef.current = restoreHeight;
+      lastExpandedDockHeightRef.current = restoreHeight;
+      setDockHeight(restoreHeight);
+      writeAppStorage('arc_dock_height', String(restoreHeight));
+    }
+    setIsOpen(true);
+  };
 
   useEffect(() => {
     if (consoleOpenRequest === lastConsoleShortcutRequestRef.current) return;
@@ -968,23 +1334,103 @@ export function ControlDock({
 
   const reviewCommands = async () => {
     if (!networkOnline || !authToken || reviewingCommands || commandDeploySeconds > 0 || rateLimitUntil > Date.now()) return;
+    const requestProjectId = activeProjectId;
+    const requestId = ++commandPreviewRequestRef.current;
     setReviewingCommands(true);
     setDeployError('');
     try {
-      const response = await fetch(apiUrl('/api/bot/commands/preview'), { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken }, body: JSON.stringify({ graphs }) });
+      const [response, guildResponse] = await Promise.all([
+        fetch(apiUrl('/api/bot/commands/preview'), { method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken }, body: JSON.stringify({ graphs }) }),
+        fetch(apiUrl('/api/bot/commands/guilds'), { cache: 'no-store', headers: { 'x-arc-token': authToken } })
+      ]);
       const data = await response.json();
       if (!response.ok) throw new Error([data.error || 'Could not review command changes.', data.discordAuthWarning?.message].filter(Boolean).join(' '));
+      const guildData = await guildResponse.json().catch(() => ({}));
+      if (requestId !== commandPreviewRequestRef.current || lastProjectIdRef.current !== requestProjectId) return;
       setExpandedReviewIssues(new Set());
-      setCommandReview({ ...data, graphs });
+      setCommandReview({ ...data, guildOptions: Array.isArray(guildData.guilds) ? guildData.guilds : [], gatewayConnected: Boolean(guildData.gatewayConnected), guildDirectoryError: guildData.guildDirectoryError || (!guildResponse.ok ? guildData.error : ''), graphs });
+      setGuildIdDraft('');
     } catch (error) {
+      if (requestId !== commandPreviewRequestRef.current || lastProjectIdRef.current !== requestProjectId) return;
       const message = commandRequestError(error, 'Could not review command changes.');
       setDeployError(message);
       arcEvents.emit('toast:notify', { title: 'Command review failed', message, type: 'error' });
-    } finally { setReviewingCommands(false); }
+    } finally { if (requestId === commandPreviewRequestRef.current) setReviewingCommands(false); }
+  };
+
+  const updateCommandReviewOptions = async ({ scope = 'global', guildIds = [], commandKeys = null, addedGuild = null } = {}) => {
+    if (!commandReview) return null;
+    const previousReview = commandReview;
+    const requestId = ++commandPreviewRequestRef.current;
+    const uniqueGuildIds = [...new Set((guildIds || []).map((id) => String(id || '').trim()).filter(Boolean))];
+    if (scope === 'guilds' && !uniqueGuildIds.length) {
+      const next = { ...commandReview, scope: 'guilds', guildIds: [], commandKeys, commands: [], changes: { created: [], updated: [], unchanged: [], removed: [] }, noChanges: true, canDeploy: false, planHash: '' };
+      setCommandReview(next);
+      setDeployError('');
+      setUpdatingCommandReview(false);
+      return next;
+    }
+    setUpdatingCommandReview(true);
+    setDeployError('');
+    setCommandReview((current) => current ? {
+      ...current,
+      scope,
+      guildIds: scope === 'guilds' ? uniqueGuildIds : [],
+        guildSelectionError: '',
+      commandKeys,
+      canDeploy: false,
+      guildOptions: addedGuild?.id && !(current.guildOptions || []).some((guild) => guild.id === addedGuild.id)
+        ? [...(current.guildOptions || []), addedGuild]
+        : current.guildOptions
+    } : current);
+    try {
+      const response = await fetch(apiUrl('/api/bot/commands/preview'), {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
+        body: JSON.stringify({ graphs, guildIds: scope === 'guilds' ? uniqueGuildIds : [], commandKeys })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error([data.error || 'Could not refresh the deployment review.', data.discordAuthWarning?.message].filter(Boolean).join(' '));
+      const guildOptions = [...(commandReview.guildOptions || [])];
+      if (addedGuild?.id && !guildOptions.some((guild) => guild.id === addedGuild.id)) guildOptions.push(addedGuild);
+      const next = {
+        ...data,
+        guildOptions,
+        gatewayConnected: commandReview.gatewayConnected,
+        guildDirectoryError: commandReview.guildDirectoryError,
+        guildSelectionError: '',
+        canDeploy: Boolean(data.valid && !data.noChanges && networkOnline && !commandDeploySeconds && !isDiscordRateLimited && !graphValidationReports.some(({ report }) => report.errors.length)),
+        graphs
+      };
+      const promptStillOpen = commandReviewOpenRef.current;
+      if (requestId === commandPreviewRequestRef.current && promptStillOpen) setCommandReview(next);
+      return next;
+    } catch (error) {
+      const message = commandRequestError(error, 'Could not refresh the deployment review.');
+      const promptStillOpen = commandReviewOpenRef.current;
+      if (requestId === commandPreviewRequestRef.current && promptStillOpen) {
+        if (scope === 'guilds' && !addedGuild?.id) {
+          setCommandReview({ ...previousReview, scope: 'guilds', guildIds: uniqueGuildIds, canDeploy: false, planHash: '', guildSelectionError: message });
+          return { requestError: message };
+        }
+        setCommandReview(previousReview);
+        if (addedGuild?.id) {
+          const requestError = /50035|invalid form body/i.test(message)
+            ? `Discord rejected server ID ${addedGuild.id}. Check that the ID is correct and the application is authorized in that server.`
+            : message;
+          return { requestError };
+        }
+        setDeployError(message);
+      }
+      return { requestError: message };
+    } finally {
+      if (requestId === commandPreviewRequestRef.current) setUpdatingCommandReview(false);
+    }
   };
 
   const deployCommands = async () => {
-    if (!networkOnline || !authToken || deployingCommands || commandDeploySeconds > 0 || rateLimitUntil > Date.now() || !commandReview?.valid || commandReview.noChanges || graphValidationReports.some(({ report }) => report.errors.length)) return;
+    if (!networkOnline || !authToken || deployingCommands || updatingCommandReview || commandDeploySeconds > 0 || rateLimitUntil > Date.now() || !commandReview?.valid || commandReview.noChanges || commandReview.scope === 'guilds' && !commandReview.guildIds?.length || graphValidationReports.some(({ report }) => report.errors.length)) return { ok: false, error: 'The deployment is no longer ready. Review the current workspace again.' };
     setDeployingCommands(true);
     setDeployError('');
     try {
@@ -992,29 +1438,58 @@ export function ControlDock({
       const response = await fetch(apiUrl('/api/bot/commands/deploy'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
-        body: JSON.stringify({ graphs, planHash: commandReview.planHash })
+        body: JSON.stringify({ graphs, planHash: commandReview.planHash, guildIds: commandReview.guildIds || [], commandKeys: commandReview.commandKeys ?? null })
       });
       const data = await response.json();
       if (!response.ok) {
         if (response.status === 429) setCommandDeployUntil(Date.now() + Math.max(1000, Number(data.retryAfterMs) || 30_000));
-        if (response.status === 409) setCommandReview(null);
         throw new Error([data.error || 'Could not deploy slash commands.', data.discordAuthWarning?.message].filter(Boolean).join(' '));
       }
       setCommandDeployUntil(Date.now() + 30_000);
       setCommandReview(null);
       arcEvents.emit('toast:notify', {
         title: 'Commands deployed',
-        message: data.created ? `${data.deployed} graph command${data.deployed === 1 ? '' : 's'} · ${data.created} new` : `${data.deployed} graph command${data.deployed === 1 ? '' : 's'} updated`,
+        message: `${data.deployed} application command${data.deployed === 1 ? '' : 's'} ${commandReview.scope === 'guilds' ? `across ${data.targetCount} server${data.targetCount === 1 ? '' : 's'}` : 'deployed globally'}${data.created ? ` · ${data.created} new` : ''}`,
         type: 'success'
       });
+      return { ok: true };
     } catch (error) {
       const message = commandRequestError(error, 'Could not deploy slash commands.');
       setDeployError(message);
-      arcEvents.emit('toast:notify', { title: 'Command deployment failed', message, type: 'error' });
+      if (!desktopMode && !commandReviewOpenRef.current) arcEvents.emit('toast:notify', { title: 'Command deployment failed', message, type: 'error' });
+      return { ok: false, error: message };
     } finally {
       setDeployingCommands(false);
     }
   };
+  desktopCommandActionRef.current = { deployCommands, updateCommandReviewOptions, graphLookup, onOpenGraph, onTraceIssue };
+
+  useEffect(() => {
+    if (!desktopMode) return undefined;
+    let unlisten;
+    listenTauriEvent('arc:desktop-window-action', async (event) => {
+      const { actionId, action, value = {}, promptLabel } = event.payload || {};
+      if (!['commands-deploy', 'commands-review-options', 'command-open-graph', 'command-open-node'].includes(action)
+        || typeof actionId !== 'string' || typeof promptLabel !== 'string' || !promptLabel.startsWith('arc-prompt-')) return;
+      if (!isDesktopPromptActive(promptLabel)) return;
+      let result = null;
+      let error = '';
+      try {
+        const actions = desktopCommandActionRef.current;
+        if (action === 'commands-deploy') result = await actions.deployCommands();
+        else if (action === 'commands-review-options') result = await actions.updateCommandReviewOptions(value);
+        else if (action === 'command-open-node') result = actions.onTraceIssue?.(value.graphId, value.nodeId);
+        else {
+          const graph = actions.graphLookup.get(value.graphId);
+          if (!graph) throw new Error('That graph is no longer available.');
+          result = actions.onOpenGraph?.(graph);
+        }
+      } catch (reason) { error = reason?.message || 'ARC Studio could not complete this command action.'; }
+      try { await emitTo(promptLabel, 'arc:desktop-window-action-result', { actionId, result, error }); }
+      catch (reason) { console.warn('[ARC] Could not return a command window action result.', reason); }
+    }).then((stop) => { unlisten = stop; }).catch((error) => console.warn('[ARC] Could not receive command window actions.', error));
+    return () => unlisten?.();
+  }, [desktopMode]);
 
   const chooseEmojiFile = async (event) => {
     const file = event.target.files?.[0];
@@ -1109,17 +1584,17 @@ export function ControlDock({
   const beginResize = (event) => {
     if (isLocked) return;
     event.preventDefault();
-    resizeRef.current = { y: event.clientY, height: dockHeight };
+    resizeRef.current = { y: event.clientY, height: dockHeightRef.current };
     setIsResizing(true);
   };
 
   const toggleDockSize = () => {
     if (isLocked) return;
-    setDockHeight((height) => {
-      const next = height > 360 ? 284 : 460;
-      writeAppStorage('arc_dock_height', String(next));
-      return next;
-    });
+    const next = dockHeightRef.current > 360 ? 284 : 460;
+    dockHeightRef.current = next;
+    lastExpandedDockHeightRef.current = next;
+    setDockHeight(next);
+    writeAppStorage('arc_dock_height', String(next));
   };
 
   const handleDockHeaderClick = (event) => {
@@ -1179,13 +1654,13 @@ export function ControlDock({
 
   return (
     <>
-    <section className={`control-dock ${isOpen ? 'is-open' : ''} ${isResizing ? 'is-resizing' : ''}`} style={{ '--dock-height': `${dockHeight}px`, height: isOpen ? `${dockHeight}px` : '45px' }} aria-label="Control dock">
+    <section ref={dockRef} className={`control-dock ${isOpen ? 'is-open' : ''} ${isResizing ? 'is-resizing' : ''}`} style={{ '--dock-height': `${dockHeightRef.current}px`, height: isOpen ? `${dockHeightRef.current}px` : '45px' }} aria-label="Control dock">
       {isOpen && <div className={`dock-resize-handle ${isLocked ? 'is-disabled' : ''}`} onPointerDown={beginResize} onDoubleClick={toggleDockSize} title={isLocked ? 'Canvas is locked' : 'Drag to resize · double-click to toggle size'}><span /></div>}
       <header className="dock-header" onClick={handleDockHeaderClick}>
         <nav className="dock-tabs" aria-label="Control panels">
-          <DockTab active={isOpen && activeTab === 'console'} onClick={() => consolePopupRoot ? closeConsolePopup() : openTab('console')} icon={Terminal} label="Console" count={logs.length} />
-          <DockTab active={isOpen && activeTab === 'simulator'} onClick={() => openTab('simulator')} icon={Cpu} label="Simulate" />
-          <DockTab active={isOpen && activeTab === 'hub'} onClick={() => openTab('hub')} icon={Smile} label="App" />
+          <DockTab tabId="console" active={isOpen && activeTab === 'console'} onClick={() => consolePopupRoot ? closeConsolePopup() : openTab('console')} icon={Terminal} label="Console" count={logs.length} />
+          <DockTab tabId="simulator" active={isOpen && activeTab === 'simulator'} onClick={() => openTab('simulator')} icon={Cpu} label="Simulate" />
+          <DockTab tabId="hub" active={isOpen && activeTab === 'hub'} onClick={() => openTab('hub')} icon={Smile} label="App" />
         </nav>
         <div className="dock-header-right">
           <button className="dock-toggle" onClick={() => setIsOpen((open) => !open)} title={isOpen ? 'Collapse panel' : 'Expand panel'} data-tooltip={isOpen ? 'Collapse panel' : 'Expand panel'} aria-label={isOpen ? 'Collapse panel' : 'Expand panel'}>{isOpen ? <ChevronDown size={16} /> : <ChevronUp size={16} />}</button>
@@ -1313,6 +1788,32 @@ export function ControlDock({
               </div>
             </div>
             <p className="bot-hosting-note">Build and debug here, then export to host independently. Live gateway runs use Studio server resources.</p>
+            <div className="bot-overview-stat-cards">
+              <section className="bot-overview-stat-card" aria-label="Workspace graph checks">
+                <div className="bot-overview-stat-heading"><ShieldCheck size={13} /><strong>Workspace checks</strong></div>
+                <div className="bot-overview-stat-grid">
+                  <div className={graphCheckCounts.errors ? 'has-errors' : ''}><strong>{formatApiCount(graphCheckCounts.errors)}</strong><span>Graph errors</span></div>
+                  <div className={graphCheckCounts.warnings ? 'has-warnings' : ''}><strong>{formatApiCount(graphCheckCounts.warnings)}</strong><span>Warnings</span></div>
+                </div>
+              </section>
+              <section className="bot-overview-stat-card" aria-label="Discord application reach">
+                <div className="bot-overview-stat-heading"><Globe2 size={13} /><strong>Application reach</strong></div>
+                <div className="bot-overview-stat-grid">
+                  <div title="Approximate server installs reported by Discord"><strong>{formatApiCount(botProfile?.application?.approximate_guild_count)}</strong><span>Server installs</span></div>
+                  <div title="Approximate user installs reported by Discord"><strong>{formatApiCount(botProfile?.application?.approximate_user_install_count)}</strong><span>User installs</span></div>
+                  <div title="Approximate users with an OAuth2 authorization reported by Discord"><strong>{formatApiCount(botProfile?.application?.approximate_user_authorization_count)}</strong><span>Authorized users</span></div>
+                </div>
+                <small>Install totals are approximate and may be unavailable.</small>
+              </section>
+            </div>
+          </section>
+          {deployError && !commandReview && !desktopMode && <p className="command-review-error" role="alert"><AlertTriangle size={14} /><span><strong>Command request failed</strong>{deployError}</span></p>}
+          <div className="bot-gateway-column">
+            <div className="bot-intent-list">
+              <div className="panel-section-heading">Gateway intents</div>
+              {(botProfile?.intentSummary || []).filter((intent) => intent.required).map((intent) => <div className={`bot-intent-row ${intent.portalEnabled === false ? 'is-missing' : ''}`} key={intent.key} title={intent.privileged ? 'Privileged intent setting from the Discord Developer Portal' : 'Standard gateway intent'}><span>{intent.portalEnabled === false ? <CircleX size={12} /> : intent.portalEnabled === true ? <CircleCheck size={12} /> : <AlertTriangle size={12} />}{intent.label}</span><small>{intent.portalEnabled === false ? 'Disabled in Developer Portal' : intent.portalEnabled === true ? 'Enabled in Developer Portal' : intent.privileged ? 'Status unavailable' : 'Requested'}</small></div>)}
+              {!(botProfile?.intentSummary || []).some((intent) => intent.required) && <span className="bot-intent-empty">Connect an app to inspect required intents.</span>}
+            </div>
             {botStatus === 'ONLINE' && <section className="gateway-metrics" aria-label="Gateway network metrics">
               <div className="gateway-metrics-heading"><Activity size={13} /><strong>Network</strong></div>
               <div className="gateway-metrics-values">
@@ -1322,12 +1823,6 @@ export function ControlDock({
               </div>
               <div className={`gateway-api-status ${isDiscordRateLimited ? 'is-limited' : ''}`}><span>Discord API</span><strong>{isDiscordRateLimited ? `Cooldown · ${rateLimitSeconds}s` : 'Available'}</strong></div>
             </section>}
-          </section>
-          {deployError && <p className="command-review-error" role="alert"><AlertTriangle size={14} /><span><strong>Command request failed</strong>{deployError}</span></p>}
-          <div className="bot-intent-list">
-            <div className="panel-section-heading">Gateway intents</div>
-            {(botProfile?.intentSummary || []).filter((intent) => intent.required).map((intent) => <div className={`bot-intent-row ${intent.portalEnabled === false ? 'is-missing' : ''}`} key={intent.key} title={intent.privileged ? 'Privileged intent setting from the Discord Developer Portal' : 'Standard gateway intent'}><span>{intent.portalEnabled === false ? <CircleX size={12} /> : intent.portalEnabled === true ? <CircleCheck size={12} /> : <AlertTriangle size={12} />}{intent.label}</span><small>{intent.portalEnabled === false ? 'Disabled in Developer Portal' : intent.portalEnabled === true ? 'Enabled in Developer Portal' : intent.privileged ? 'Status unavailable' : 'Requested'}</small></div>)}
-            {!(botProfile?.intentSummary || []).some((intent) => intent.required) && <span className="bot-intent-empty">Connect an app to inspect required intents.</span>}
           </div>
           <div className="emoji-panel">
             <div className="emoji-heading"><div className="panel-section-heading">App emojis</div><span>{appEmojis.length} / {emojiLimit}</span></div>
@@ -1373,12 +1868,36 @@ export function ControlDock({
         <button role="menuitem" onClick={() => copyConsoleText(`${formatTime(consoleContextLog?.timestamp)}  ${consoleContextLog?.level || 'INFO'}  ${consoleContextLog?.message || ''}`)}><ClipboardCopy size={13} />Copy full line</button>
         <button role="menuitem" onClick={() => copyConsoleText(filteredLogs.map((log) => `${formatTime(log.timestamp)}  ${log.level || 'INFO'}  ${log.message}`).join('\n'))}><FileText size={13} />Copy visible output</button>
       </div>, document.body)}
-      {modalRoot && createPortal(<Modal isOpen={Boolean(commandReview)} onClose={() => { setCommandReview(null); setDeployError(''); }} title="Deployment review" subtitle={`${reviewCommandItems.length} commands · ${reviewIssueCount('error')} errors · ${reviewIssueCount('warning')} warnings`} icon={ShieldCheck} maxWidth="max-w-2xl" footer={commandReview && <><button className="studio-button" onClick={() => setCommandReview(null)}>Cancel</button><button className="studio-button studio-button-primary" onClick={deployCommands} disabled={!networkOnline || !commandReview.valid || commandReview.noChanges || deployingCommands || commandDeploySeconds > 0 || isDiscordRateLimited || graphValidationReports.some(({ report }) => report.errors.length)}>{deployingCommands ? 'Deploying…' : !networkOnline ? 'Offline' : isDiscordRateLimited ? `Cooldown · ${rateLimitSeconds}s` : commandReview.noChanges ? 'No changes' : `Deploy ${commandReview.commands?.length || 0} commands`}</button></>}>
+      {modalRoot && createPortal(<Modal isOpen={Boolean(commandReview)} onClose={() => { setCommandReview(null); setDeployError(''); }} title="Deployment review" subtitle={`${reviewCommandItems.length} commands · ${reviewIssueCount('error')} errors · ${reviewIssueCount('warning')} warnings`} icon={ShieldCheck} maxWidth="max-w-2xl" footer={commandReview && <><button className="studio-button" onClick={() => { setCommandReview(null); setDeployError(''); }}>Cancel</button><button className="studio-button studio-button-primary" onClick={deployCommands} disabled={!networkOnline || !commandReview.valid || commandReview.noChanges || commandReview.scope === 'guilds' && !commandReview.guildIds?.length || deployingCommands || updatingCommandReview || commandDeploySeconds > 0 || isDiscordRateLimited || graphValidationReports.some(({ report }) => report.errors.length)}>{deployingCommands ? 'Deploying…' : updatingCommandReview ? 'Updating review…' : !networkOnline ? 'Offline' : isDiscordRateLimited ? `Cooldown · ${rateLimitSeconds}s` : commandReview.noChanges ? 'No changes' : `Deploy ${commandReview.commands?.length || 0} commands`}</button></>}>
         {commandReview && <div className="deployment-review-content">
+          {deployError && <p className="command-review-error is-in-review" role="alert"><AlertTriangle size={14} /><span><strong>Command request failed</strong>{deployError}</span></p>}
           {(commandReview.discordAuthWarning || discordAuthWarning) && <div className="discord-auth-warning is-review" role="status">
             <AlertTriangle size={17} />
             <div><strong>{(commandReview.discordAuthWarning || discordAuthWarning).title || 'Discord rejected the bot token'}</strong><span>{(commandReview.discordAuthWarning || discordAuthWarning).message}</span></div>
           </div>}
+          <section className="command-review-section deployment-target-section"><strong>Deploy scope</strong><div className="deployment-scope-toggle"><button type="button" className={commandReview.scope !== 'guilds' ? 'is-selected' : ''} disabled={updatingCommandReview} onClick={() => void updateCommandReviewOptions({ scope: 'global', guildIds: [], commandKeys: commandReview.commandKeys ?? null })}><Globe2 size={14} />Global</button><button type="button" className={commandReview.scope === 'guilds' ? 'is-selected' : ''} disabled={updatingCommandReview} onClick={() => { if (commandReview.scope !== 'guilds') void updateCommandReviewOptions({ scope: 'guilds', guildIds: commandReview.guildIds || [], commandKeys: commandReview.commandKeys ?? null }); }}><Server size={14} />Specific servers</button></div>
+            {commandReview.scope === 'guilds' && <>
+              {commandReview.guildOptions?.length ? <>
+                <p className="command-review-empty">The application must be authorized in each selected server. Choose up to 25 servers per deployment.</p>
+                <AnimatedDropdown multiple maxSelections={25} searchable searchThreshold={0} disabled={updatingCommandReview} value={commandReview.guildIds || []} options={commandReview.guildOptions.map((guild) => ({ value: guild.id, label: guild.name || `Server ${guild.id}` }))} onChange={(guildIds) => void updateCommandReviewOptions({ scope: 'guilds', guildIds, commandKeys: commandReview.commandKeys ?? null })} ariaLabel="Servers to receive commands" placeholder="Choose one or more servers" className="command-review-guild-dropdown" />
+                {commandReview.guildSelectionError && <small className="command-review-guild-hint" role="alert">{commandReview.guildSelectionError}</small>}
+              </> : <div className="command-review-empty">
+                <p>{commandReview.guildDirectoryError || (botStatus === 'ONLINE' ? 'No servers are cached from the connected bot yet. Wait for server data to arrive or enter a server ID below.' : botStatus === 'CONNECTING' ? 'Connecting to Discord. Server suggestions will appear when the gateway reports its servers.' : 'The bot token does not include a server list. Connect the bot gateway to load server suggestions.')}</p>
+                <div className="command-review-guild-actions">
+                  {botStatus !== 'ONLINE' && <button type="button" className="studio-button studio-button-primary" disabled={!networkOnline || botStatus === 'CONNECTING'} onClick={() => void onStartBot?.()}>{botStatus === 'CONNECTING' ? 'Connecting…' : <><Play size={13} fill="currentColor" />Connect bot gateway</>}</button>}
+                </div>
+                <p>Or enter a server ID below. Choose up to 25 servers per deployment.</p>
+              </div>}
+              {!!commandReview.guildIds?.length && <div className="command-review-selected-guilds" aria-label="Selected servers">{commandReview.guildIds.map((id) => {
+                const guild = (commandReview.guildOptions || []).find((item) => String(item.id) === String(id));
+                const label = guild?.name || `Server ${id}`;
+                return <span className="command-review-guild-chip" key={id} title={`${label} · ${id}`}><span>{label}</span><button type="button" disabled={updatingCommandReview} aria-label={`Remove ${label}`} onClick={() => void updateCommandReviewOptions({ scope: 'guilds', guildIds: commandReview.guildIds.filter((guildId) => guildId !== id), commandKeys: commandReview.commandKeys ?? null })}><X size={12} /></button></span>;
+              })}</div>}
+              <form className="command-review-add-guild" onSubmit={async (event) => { event.preventDefault(); const id = guildIdDraft.trim(); if (!/^\d{17,20}$/.test(id) || (commandReview.guildIds || []).includes(id) || commandReview.guildIds?.length >= 25) return; const known = (commandReview.guildOptions || []).find((guild) => guild.id === id); const guild = known || { id, name: `Server ${id}` }; setGuildIdError(''); const result = await updateCommandReviewOptions({ scope: 'guilds', guildIds: [...(commandReview.guildIds || []), id], commandKeys: commandReview.commandKeys ?? null, addedGuild: guild }); if (result?.requestError) { setGuildIdError(result.requestError); return; } setGuildIdDraft(''); }}><input value={guildIdDraft} inputMode="numeric" aria-invalid={Boolean(guildIdDraft && !/^\d{17,20}$/.test(guildIdDraft)) || Boolean(guildIdError)} onChange={(event) => { setGuildIdDraft(event.target.value.replace(/\D/g, '').slice(0, 20)); setGuildIdError(''); setDeployError(''); }} placeholder="Enter a server ID" aria-label="Server ID" /><button className="studio-button" type="submit" disabled={updatingCommandReview || !/^\d{17,20}$/.test(guildIdDraft) || (commandReview.guildIds || []).includes(guildIdDraft) || commandReview.guildIds?.length >= 25}>Add server ID</button></form>
+              {guildIdError ? <small className="command-review-guild-hint" role="alert">{guildIdError}</small> : guildIdDraft && !/^\d{17,20}$/.test(guildIdDraft) && <small className="command-review-guild-hint" role="status">A Discord server ID must contain 17 to 20 digits.</small>}
+            </>}
+          </section>
+          <div className="command-review-section"><strong>Commands · {includedReviewCommandKeys.length} selected</strong><div className="deployment-command-selection">{availableReviewCommands.map((command) => { const key = `${Number(command.type || 1)}:${String(command.name || '').toLowerCase()}`; const included = includedReviewCommandKeys.includes(key); const label = Number(command.type || 1) === 2 ? `User · ${command.name}` : Number(command.type || 1) === 3 ? `Message · ${command.name}` : `/${command.name}`; return <label key={key}><input type="checkbox" checked={included} onChange={(event) => { const next = new Set(includedReviewCommandKeys); if (event.target.checked) next.add(key); else next.delete(key); void updateCommandReviewOptions({ scope: commandReview.scope || 'global', guildIds: commandReview.guildIds || [], commandKeys: next.size === allReviewCommandKeys.length ? null : [...next] }); }} /><span><code>{label}</code><small>{command.description || (Number(command.type || 1) === 2 ? 'User context command' : Number(command.type || 1) === 3 ? 'Message context command' : 'Slash command')}</small></span></label>; })}{!availableReviewCommands.length && <p className="command-review-empty">No configured commands.</p>}</div>{!updatingCommandReview && commandReview.noChanges && !includedReviewCommandKeys.length && <p className="command-review-empty">Select at least one command to deploy.</p>}</div>
           <section className="command-review-section"><strong>Graph checks</strong>
             {reviewIssueGroups.length ? <div className="deployment-review-issues">{reviewIssueGroups.map((group) => {
               const expanded = expandedReviewIssues.has(group.key);
@@ -1397,9 +1916,8 @@ export function ControlDock({
               </article>;
             })}</div> : <p className="command-review-empty">No graph errors or warnings.</p>}
           </section>
-          <div className="command-review-section"><strong>Commands · {reviewCommandItems.length}</strong>{reviewCommandItems.length > 5 ? <div className="command-review-command-summary"><span>{reviewCommandItems.length} commands in this review</span><button onClick={() => showCommandList()}><FileText size={12} />View list</button></div> : reviewCommandItems.length ? <div className="command-review-command-list">{reviewCommandItems.map((command) => <button key={`${command.status}-${command.type || 1}-${command.name}`} onClick={() => showCommandList(command)}><code>{Number(command.type || 1) === 2 ? `User: ${command.name}` : Number(command.type || 1) === 3 ? `Message: ${command.name}` : `/${command.name}`}</code><span className={`command-review-status is-${command.status.toLowerCase()}`}>{command.status}</span></button>)}</div> : <p className="command-review-empty">No commands in the current graphs.</p>}{(commandReview.changes?.preserved || []).length > 0 && <p className="command-review-empty">{commandReview.changes.preserved.length} unmanaged Discord command{commandReview.changes.preserved.length === 1 ? '' : 's'} will be preserved.</p>}{commandReview.noChanges && <p className="command-review-empty">Discord commands already match these graphs.</p>}</div>
           <div className="command-review-section"><strong>Required intents</strong>{commandReview.intents?.length ? commandReview.intents.map((intent) => <div className={`command-review-requirement ${intent.portalEnabled === false ? 'is-missing' : ''}`} key={intent.key}><span>{intent.label}</span><small>{intent.portalEnabled === false ? 'Disabled in Developer Portal' : intent.portalEnabled === true ? 'Enabled in Developer Portal' : intent.privileged ? 'Status unavailable' : 'Requested on connection'}</small></div>) : <p className="command-review-empty">No gateway intents required.</p>}</div>
-          <div className="command-review-section"><strong>Bot permissions</strong>{commandReview.permissions?.length ? <><div className="command-review-permissions">{commandReview.permissions.map((permission) => <code key={permission}>{permission}</code>)}</div><p className="command-review-empty">Verify these permissions in each server where the app is installed.</p></> : <p className="command-review-empty">No server permissions required by the current graph actions.</p>}</div>
+          <div className="command-review-section"><strong>Bot permissions</strong>{commandReview.permissions?.length ? <div className="command-review-permissions">{commandReview.permissions.map((permission) => <code key={permission}>{permission}</code>)}</div> : <p className="command-review-empty">No server permissions required by the current graph actions.</p>}</div>
         </div>}
       </Modal>, modalRoot)}
       {modalRoot && createPortal(<Modal isOpen={commandListOpen} onClose={() => { setCommandListOpen(false); setSelectedReviewCommand(null); setCommandDirectoryItems(null); }} title={selectedReviewCommand ? (Number(selectedReviewCommand.type || 1) === 2 ? `User command: ${selectedReviewCommand.name}` : Number(selectedReviewCommand.type || 1) === 3 ? `Message command: ${selectedReviewCommand.name}` : `/${selectedReviewCommand.name}`) : commandDirectoryItems ? 'Commands' : 'Reviewed commands'} subtitle={selectedReviewCommand ? `${selectedReviewCommand.status} · command details and usage` : `${commandListItems.length} commands`} icon={selectedReviewCommand ? Activity : FileText} maxWidth="max-w-2xl">
@@ -1546,8 +2064,8 @@ function defaultMockCustomId(eventName) {
   return `mock_${String(eventName || 'button_click').toLowerCase()}`;
 }
 
-function DockTab({ active, onClick, icon: Icon, label, count }) {
-  return <button className={`dock-tab ${active ? 'is-active' : ''}`} onClick={onClick}><Icon size={15} /><span>{label}</span>{count > 0 && <small>{count}</small>}</button>;
+function DockTab({ tabId, active, onClick, icon: Icon, label, count }) {
+  return <button data-dock-tab={tabId} className={`dock-tab ${active ? 'is-active' : ''}`} onClick={onClick}><Icon size={15} /><span>{label}</span>{count > 0 && <small>{count}</small>}</button>;
 }
 
 function formatTime(timestamp) {
@@ -1557,3 +2075,7 @@ function formatTime(timestamp) {
 }
 
 function clamp(value, minimum, maximum) { return Math.max(minimum, Math.min(value, maximum)); }
+function formatApiCount(value) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return '—';
+  return new Intl.NumberFormat().format(Number(value));
+}
