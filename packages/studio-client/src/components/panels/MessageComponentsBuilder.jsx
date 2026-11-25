@@ -3,6 +3,7 @@ import { ArrowLeft, ArrowRight, ChevronDown, ChevronUp, ExternalLink, Plus, Tras
 import { AnimatedCheckbox, AnimatedDropdown } from '../ui/CustomControls.jsx';
 import { DiscordTextField } from '../ui/DiscordTextField.jsx';
 import { CustomEmoji } from '../ui/CustomEmoji.jsx';
+import { setNativePaletteDragPreview } from '../../core/nativeDragPreview.js';
 //
 export const BUTTON_STYLES = [
   { value: 'primary', label: 'Primary (Blurple)', color: '#5865F2' },
@@ -215,7 +216,8 @@ export function MessageComponentsBuilder({
   focusedRowId = null,
   onFocusRow = null,
   focusOnly = false,
-  canAddComponent = true
+  canAddComponent = true,
+  desktopPointerDragFallback = false
 }) {
   const [internalSelectedId, setInternalSelectedId] = useState(null);
   const activeSelectedId = selectedComponentId !== null ? selectedComponentId : internalSelectedId;
@@ -348,7 +350,7 @@ export function MessageComponentsBuilder({
             ? row.components.length < 5 && !row.components.some((component) => SELECT_COMPONENT_TYPES[component.type])
             : type === 'select' && row.components.length === 0);
           const disabled = !canAddComponent || (type === 'row' ? rows.length >= 5 : rows.length >= 5 && !hasCompatibleRow);
-          return <button key={type} type="button" draggable={!disabled} disabled={disabled} onClick={() => addPaletteItem(type)} onDragStart={(event) => { event.dataTransfer.effectAllowed = 'copy'; event.dataTransfer.setData('application/x-arc-studio-palette', JSON.stringify({ kind: 'palette', scope: 'components', type })); }} title={disabled ? 'Discord supports at most 5 action rows' : `Add or drag ${label.toLowerCase()} to the preview`}><Plus size={13} />{label}</button>;
+          return <button key={type} type="button" draggable={!desktopPointerDragFallback && !disabled} disabled={disabled} data-studio-palette-drag={desktopPointerDragFallback && !disabled ? JSON.stringify({ kind: 'palette', scope: 'components', type }) : undefined} onClick={() => addPaletteItem(type)} onDragStart={(event) => { event.dataTransfer.effectAllowed = 'copy'; event.dataTransfer.setData('application/x-arc-studio-palette', JSON.stringify({ kind: 'palette', scope: 'components', type })); setNativePaletteDragPreview(event); }} title={disabled ? 'Discord supports at most 5 action rows' : `Add or drag ${label.toLowerCase()} to the preview`}><Plus size={13} />{label}</button>;
         })}
       </div>}
 
