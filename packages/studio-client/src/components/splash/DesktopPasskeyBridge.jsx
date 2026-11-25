@@ -1,5 +1,5 @@
-import React, { useMemo, useState } from 'react';
-import { ArrowRight, Fingerprint, LoaderCircle, ShieldCheck, TriangleAlert } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowRight, LoaderCircle } from 'lucide-react';
 import { startAuthentication, startRegistration } from '@simplewebauthn/browser';
 import { apiUrl } from '../../core/api.js';
 import { passkeyCeremonyError, passkeyRequest } from '../../core/passkeys.js';
@@ -39,8 +39,16 @@ export function DesktopPasskeyBridge() {
   const [message, setMessage] = useState('');
   const [status, setStatus] = useState('');
   const [callbackUrl, setCallbackUrl] = useState('');
+  const returnAttemptedRef = useRef(false);
   const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches || false;
   const registration = request.purpose === 'registration';
+
+  useEffect(() => {
+    if (phase !== 'complete' || !callbackUrl || returnAttemptedRef.current) return undefined;
+    returnAttemptedRef.current = true;
+    const timer = window.setTimeout(() => { window.location.assign(callbackUrl); }, 250);
+    return () => window.clearTimeout(timer);
+  }, [callbackUrl, phase]);
 
   const finish = async () => {
     if (!STATE_PATTERN.test(request.state) || phase === 'working') return;
@@ -107,10 +115,6 @@ export function DesktopPasskeyBridge() {
         <div className="auth-intro-copy"><h1>One quick check to connect your desktop.</h1></div>
       </section>
       <section className="auth-card passkey-bridge-card" aria-labelledby="passkey-bridge-title">
-        <div className="passkey-bridge-icon" aria-hidden="true">
-          {phase === 'complete' ? <ShieldCheck size={22} /> : phase === 'error' || phase === 'invalid' ? <TriangleAlert size={22} /> : <Fingerprint size={22} />}
-        </div>
-        <span className="auth-kicker">PASSKEY</span>
         <h1 id="passkey-bridge-title">{phase === 'invalid' ? 'This link cannot be used' : heading}</h1>
         <p className="passkey-bridge-description">
           {phase === 'invalid'
