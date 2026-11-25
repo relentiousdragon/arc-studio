@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run dev:desktop:services --prefix ../..",
     "beforeBuildCommand": "npm run prepare:desktop --prefix ../..",
-    "devUrl": "http://localhost:5173",
+    "devUrl": "http://localhost:5174",
     "frontendDist": "../../studio-client/dist"
   },
   "app": {
@@ -16,7 +16,7 @@
         "create": false,
         "title": "ARC Studio",
         "titleBarStyle": "Overlay",
-        "hiddenTitle": true,
+        "hiddenTitle": false,
         "trafficLightPosition": {
           "x": 17,
           "y": 20
