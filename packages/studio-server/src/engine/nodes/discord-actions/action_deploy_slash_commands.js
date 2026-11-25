@@ -1,5 +1,5 @@
 export default {
-  "description": "Deploys workspace slash commands when triggered by a server manager with Manage Server or Administrator.",
+  "description": "Deploys selected workspace application commands globally or to a Discord server when triggered by a server manager.",
   "type": "action_deploy_slash_commands",
   "category": "Discord Actions",
   "label": "Deploy Slash Commands",
@@ -9,7 +9,21 @@ export default {
       "id": "exec",
       "label": "Exec",
       "type": "exec",
-      description: "Starts Deploy Slash Commands."}
+      description: "Starts Deploy Slash Commands."},
+    {
+      "id": "guild_id",
+      "label": "Guild ID",
+      "type": "string",
+      "defaultValue": "",
+      "description": "Optional Discord guild ID. Leave blank to deploy globally."
+    },
+    {
+      "id": "command_keys",
+      "label": "Commands",
+      "type": "array",
+      "defaultValue": [],
+      "description": "Optional array of type:name keys. An empty array deploys every configured command."
+    }
   ],
   "outputs": [
     {
