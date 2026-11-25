@@ -18,7 +18,7 @@
     "start:server": "npm run start:server --workspace=packages/studio-server",
     "dev:server": "npm run dev --workspace=packages/studio-server",
     "dev:client": "npm run dev --workspace=packages/studio-client",
-    "dev:desktop:services": "concurrently -k -n server,client \"npm:dev:desktop --workspace=packages/studio-server\" \"npm:dev:client\"",
+    "dev:desktop:services": "node scripts/dev-desktop-services.mjs",
     "dev:desktop": "npm run dev --workspace=packages/studio-desktop",
     "prepare:desktop-runtime": "npm run sync:version && node packages/studio-desktop/scripts/prepare-runtime.mjs",
     "prepare:desktop": "npm run sync:version && npm run build:client && npm run prepare:desktop-runtime",
