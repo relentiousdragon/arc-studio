@@ -1,5 +1,5 @@
 export default {
-  "description": "Times out, kicks, bans, or unbans a server member. Route failures through the Failed output.",
+  "description": "Times out, kicks, bans, or unbans a server member. Check Success to branch on the result.",
   "type": "action_moderate_member",
   "category": "Discord Actions",
   "label": "Moderate Member",
@@ -55,14 +55,9 @@ export default {
   "outputs": [
     {
       "id": "exec",
-      "label": "Succeeded",
+      "label": "Exec",
       "type": "exec",
-      description: "Continues after Moderate Member completes."},
-    {
-      "id": "failure_exec",
-      "label": "Failed",
-      "type": "exec",
-      description: "Runs when Discord rejects the moderation action."},
+      description: "Continues after the moderation attempt."},
     {
       "id": "success",
       "label": "Success",
