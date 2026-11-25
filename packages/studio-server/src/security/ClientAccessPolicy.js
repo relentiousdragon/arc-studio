@@ -4,7 +4,11 @@ import { dataDir } from '../storage.js';
 import { CLIENT_PROTOCOL_VERSION } from '../engine/NodeRegistryContract.js';
 
 const SETTINGS_FILE = path.join(dataDir, 'client-access.json');
-const TAURI_ORIGINS = new Set(['tauri://localhost', 'http://tauri.localhost', 'https://tauri.localhost']);
+const TAURI_ORIGINS = new Set([
+  'tauri://localhost',
+  'http://tauri.localhost',
+  'https://tauri.localhost'
+]);
 //
 function normalizeSettings(value) {
   return { allowUnknownClients: value?.allowUnknownClients === true };
