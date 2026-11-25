@@ -8,3 +8,16 @@ Name=ARC Studio
 Terminal=false
 Type=Application
 MimeType=application/vnd.arc-studio.project+zip;application/vnd.arc-studio.graph+zip;x-scheme-handler/arcstudio;
+Actions=NewGraph;ImportProject;EditorSettings;
+
+[Desktop Action NewGraph]
+Name=New Graph
+Exec=arc-studio-desktop --arc-menu-action=file.new-graph
+
+[Desktop Action ImportProject]
+Name=Import Project File
+Exec=arc-studio-desktop --arc-menu-action=file.open-project
+
+[Desktop Action EditorSettings]
+Name=Editor Settings
+Exec=arc-studio-desktop --arc-menu-action=view.settings
