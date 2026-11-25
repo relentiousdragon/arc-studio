@@ -17,7 +17,7 @@ function withAlpha(color, alpha, context) {
   return rgb ? `rgba(${rgb.join(', ')}, ${alpha})` : `rgba(112, 185, 232, ${alpha})`;
 }
 
-export function AuthGridCanvas({ reducedMotion = false }) {
+export function AuthGridCanvas({ reducedMotion = false, ambientHotspots = true }) {
   const canvasRef = useRef(null);
   const cardCanvasRef = useRef(null);
 
@@ -363,7 +363,7 @@ export function AuthGridCanvas({ reducedMotion = false }) {
       : AMBIENT_INFLUENCE_RADIUS;
 
     const updateHotspotCount = () => {
-      if (isPhonePortrait()) {
+      if (!ambientHotspots || isPhonePortrait()) {
         hotspotCount = 0;
         return;
       }
@@ -683,7 +683,7 @@ export function AuthGridCanvas({ reducedMotion = false }) {
       window.removeEventListener('orientationchange', onResize);
       dots = [];
     };
-  }, [reducedMotion]);
+  }, [ambientHotspots, reducedMotion]);
 
   return (
     <>
