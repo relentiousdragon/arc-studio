@@ -932,6 +932,7 @@ export function NodeCanvas({
   const pasteCascadeRef = useRef(0);
   const uiScale = getArcUiScale();
   const contextMenuRef = useRef(null);
+  const contextMenuDismissedEventRef = useRef(null);
   const shakeTimerRef = useRef(null);
   const wireCutTimersRef = useRef(new Map());
   const panStartRef = useRef({ x: 0, y: 0 });
@@ -1323,7 +1324,13 @@ export function NodeCanvas({
     setIsPanning(false);
     rightPanOriginRef.current = null;
     const close = (event) => {
-      if (event.target instanceof Node && contextMenuRef.current?.contains(event.target)) return;
+      if (event?.type === 'pointerdown') {
+        if (event.target instanceof Node && contextMenuRef.current?.contains(event.target)) return;
+        contextMenuDismissedEventRef.current = event;
+        window.queueMicrotask?.(() => {
+          if (contextMenuDismissedEventRef.current === event) contextMenuDismissedEventRef.current = null;
+        });
+      }
       setContextMenu(null);
     };
     const onKeyDown = (event) => { if (event.key === 'Escape') close(); };
@@ -2395,7 +2402,9 @@ export function NodeCanvas({
 
   const startPan = (event) => {
     if (event.target instanceof Element && event.target.closest('.canvas-chat-bubble')) return;
-    if (contextMenu || document.querySelector('.arc-dropdown.is-open, .canvas-context-menu')) return;
+    const contextMenuDismissed = event.nativeEvent === contextMenuDismissedEventRef.current;
+    if (contextMenuDismissed) contextMenuDismissedEventRef.current = null;
+    if ((!contextMenuDismissed && (contextMenu || document.querySelector('.canvas-context-menu'))) || document.querySelector('.arc-dropdown.is-open')) return;
     const isCanvasTarget = isCanvasBackgroundTarget(event.target);
     const textPopupOpen = textInputPopupOpen();
     if (textPopupOpen && event.pointerType === 'touch' && isCanvasTarget) return;
@@ -3807,6 +3816,7 @@ export function NodeCanvas({
   const getArrowMarkerId = (id) => `${arrowMarkerId}-${String(id).replace(/[^a-zA-Z0-9_-]/g, '')}`;
 
   const openContextMenu = (event) => {
+    contextMenuDismissedEventRef.current = null;
     event.preventDefault();
     event.stopPropagation();
     if (rightPanMovedRef.current) { rightPanMovedRef.current = false; rightPanOriginRef.current = null; return; }
@@ -3826,6 +3836,12 @@ export function NodeCanvas({
     const groupId = tagGroupElement?.dataset.tagGroupId || null;
     if (nodeId && !selectedNodeIds.includes(nodeId)) selectNodes([nodeId], nodeId);
     if (noteId && !selectedNoteIds.includes(noteId)) selectNotes([noteId]);
+    const menuNodeIds = nodeId
+      ? selectedNodeIds.includes(nodeId) ? selectedNodeIds : [nodeId]
+      : selectedNodeIds;
+    const menuNodeId = nodeId || (selectedNodeIds.length > 1
+      ? selectedNodeIds.includes(selectedNodeId) ? selectedNodeId : selectedNodeIds.at(-1)
+      : null);
     if (arrowId) {
       const nextArrowIds = selectedArrowIds.includes(arrowId) ? selectedArrowIds : [arrowId];
       if (!selectedArrowIds.includes(arrowId)) {
@@ -3844,14 +3860,14 @@ export function NodeCanvas({
         const displayScale = getCanvasDisplayScale(containerRef.current);
         return { x: Math.round(((event.clientX - bounds.left) / displayScale - pan.x) / zoom), y: Math.round(((event.clientY - bounds.top) / displayScale - pan.y) / zoom) };
       })(),
-      nodeId,
+      nodeId: menuNodeId,
       noteId,
       arrowId,
       arrowIds: arrowId ? (selectedArrowIds.includes(arrowId) ? selectedArrowIds : [arrowId]) : selectedArrowIds,
-      nodeIds: nodeId ? (selectedNodeIds.includes(nodeId) ? selectedNodeIds : [nodeId]) : selectedNodeIds,
+      nodeIds: menuNodeIds,
       groupId,
       wireId: wireGroup?.dataset.wireId || indexedWire?.id || null,
-      node: nodeId ? nodes.find((node) => node.id === nodeId) : null
+      node: menuNodeId ? nodes.find((node) => node.id === menuNodeId) : null
     });
   };
 
@@ -3874,8 +3890,17 @@ export function NodeCanvas({
 
   const gridSize = GRID_SIZE;
   const viewportZoom = viewportRef.current.zoom;
-  const gridPatternSize = gridSize * viewportZoom * Math.max(1, Math.round(15 / (gridSize * viewportZoom)));
-  const gridDotSize = Math.max(0.7, 1.2 * viewportZoom);
+  const gridPatternSize = gridSize * Math.max(1, Math.round(15 / (gridSize * viewportZoom)));
+  const gridDotSize = Math.max(1.2, 0.7 / viewportZoom);
+  const gridOverscan = gridPatternSize * 2;
+  const gridWorldLeft = -viewportRef.current.pan.x / viewportZoom - gridOverscan;
+  const gridWorldTop = -viewportRef.current.pan.y / viewportZoom - gridOverscan;
+  const gridViewportWidth = canvasGeometryRef.current.width || containerRef.current?.clientWidth || 0;
+  const gridViewportHeight = canvasGeometryRef.current.height || containerRef.current?.clientHeight || 0;
+  const gridWorldWidth = gridViewportWidth / viewportZoom + gridOverscan * 2;
+  const gridWorldHeight = gridViewportHeight / viewportZoom + gridOverscan * 2;
+  const gridBackgroundX = -gridWorldLeft - gridPatternSize / 2;
+  const gridBackgroundY = -gridWorldTop - gridPatternSize / 2;
   const inputConnectionByNodePin = connectionByNodePin.incoming;
   const tagGroupLayouts = useMemo(() => tagGroups.map((group) => {
     const members = nodes.filter((node) => (group.nodeIds || []).includes(node.id));
@@ -4953,10 +4978,10 @@ const previewOutput = (node, outputId, seen = new Set()) => {
         <span>{selectedNodeIds.length} nodes selected</span>
         <button type="button" aria-label="Clear node selection" onPointerDown={(event) => event.stopPropagation()} onClick={() => selectNodes([])}><X size={15} /></button>
       </div>}
-      <div className={`canvas-surface ${settings.showGrid === false ? 'is-grid-hidden' : ''}`} aria-hidden="true" style={{ '--grid-size': `${gridPatternSize}px`, '--grid-dot-size': `${gridDotSize}px`, '--grid-x': `${viewportRef.current.pan.x - gridPatternSize / 2}px`, '--grid-y': `${viewportRef.current.pan.y - gridPatternSize / 2}px` }} />
       {connectingWire?.clickToConnect && <div className="wire-connect-hint">Click or tap a matching socket to connect <kbd>Esc</kbd></div>}
 
       <div ref={canvasWorldRef} className="canvas-world" style={{ transform: `translate3d(${viewportRef.current.pan.x}px, ${viewportRef.current.pan.y}px, 0) scale(${viewportRef.current.zoom})` }}>
+        <div className={`canvas-surface ${settings.showGrid === false ? 'is-grid-hidden' : ''}`} aria-hidden="true" style={{ left: gridWorldLeft, top: gridWorldTop, width: gridWorldWidth, height: gridWorldHeight, '--grid-size': `${gridPatternSize}px`, '--grid-dot-size': `${gridDotSize}px`, '--grid-dot-gap': `${0.2 / viewportZoom}px`, '--grid-x': `${gridBackgroundX}px`, '--grid-y': `${gridBackgroundY}px` }} />
         {tagGroupLayouts.map((group) => <div key={group.id} className="canvas-tag-group" aria-hidden="true" style={{ left: group.left, top: group.top, width: group.width, height: group.height, '--tag-group-color': group.color }} />)}
         {remoteActions.filter((peer) => peer.action?.kind === 'selection' && peer.action.selectionRect).map((peer) => {
           const rect = peer.action.selectionRect;
@@ -5157,7 +5182,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
                 <button type="button" title="Delete note" disabled={!mayEdit || lockHeldByOther} onClick={(event) => { event.stopPropagation(); onNotesChange?.(notes.filter((item) => item.id !== note.id)); }} aria-label="Delete note">×</button>
               </span>
             </header>
-            <textarea aria-label="Graph note" value={note.text || ''} readOnly={!canEditText} placeholder="Add a note…" autoCapitalize="off" autoCorrect="off" spellCheck={false} maxLength={4000} onFocus={() => { focusedNoteRef.current = { roomKey: collaborationRoomKey, noteId: note.id }; noteEditHistoryRef.current = { noteId: note.id, historyStarted: false }; setFocusedNote(focusedNoteRef.current); }} onBlur={() => { if (focusedNoteRef.current?.roomKey === collaborationRoomKey && focusedNoteRef.current.noteId === note.id) focusedNoteRef.current = null; if (noteEditHistoryRef.current?.noteId === note.id) { if (noteEditHistoryRef.current.historyStarted) onHistoryGroupEnd?.(); noteEditHistoryRef.current = null; } setFocusedNote((current) => current?.roomKey === collaborationRoomKey && current.noteId === note.id ? null : current); if (ownsNoteLock) onReleaseNoteEditLock?.(note.id); }} onChange={(event) => { if (canEditText) { if (noteEditHistoryRef.current?.noteId === note.id && !noteEditHistoryRef.current.historyStarted) { onHistoryGroupStart?.(); noteEditHistoryRef.current.historyStarted = true; } updateNote(note.id, { text: event.target.value }); } }} />
+            <DiscordTextField as="textarea" aria-label="Graph note" value={note.text || ''} readOnly={!canEditText} placeholder="Add a note…" autoCapitalize="off" autoCorrect="off" spellCheck={false} maxLength={4000} discordAutocomplete appEmojis={appEmojis} onKeyDown={(event) => event.stopPropagation()} onFocus={() => { focusedNoteRef.current = { roomKey: collaborationRoomKey, noteId: note.id }; noteEditHistoryRef.current = { noteId: note.id, historyStarted: false }; setFocusedNote(focusedNoteRef.current); }} onBlur={() => { if (focusedNoteRef.current?.roomKey === collaborationRoomKey && focusedNoteRef.current.noteId === note.id) focusedNoteRef.current = null; if (noteEditHistoryRef.current?.noteId === note.id) { if (noteEditHistoryRef.current.historyStarted) onHistoryGroupEnd?.(); noteEditHistoryRef.current = null; } setFocusedNote((current) => current?.roomKey === collaborationRoomKey && current.noteId === note.id ? null : current); if (ownsNoteLock) onReleaseNoteEditLock?.(note.id); }} onChange={(event) => { if (canEditText) { if (noteEditHistoryRef.current?.noteId === note.id && !noteEditHistoryRef.current.historyStarted) { onHistoryGroupStart?.(); noteEditHistoryRef.current.historyStarted = true; } updateNote(note.id, { text: event.target.value }); } }} />
             <div className="canvas-note-colors" aria-label="Note color">
               {['#f6d365', '#fca5a5', '#93c5fd', '#86efac', '#c4b5fd', '#f0abfc'].map((color) => <button key={color} type="button" aria-label={`Set note color ${color}`} title="Change note color" disabled={!mayEdit || lockHeldByOther} className={note.color === color ? 'is-selected' : ''} style={{ '--note-color': color }} onClick={() => updateNote(note.id, { color })} />)}
             </div>
@@ -5178,10 +5203,10 @@ const previewOutput = (node, outputId, seen = new Set()) => {
           const definition = definitionsByType.get(peer.action.nodeType);
           if (!definition) return null;
           const node = { id: `remote-preview-${peer.userId}`, type: peer.action.nodeType, label: peer.action.label || definition.label, data: {}, x: 0, y: 0 };
-          return <div key={`remote-library-preview-${peer.userId}`} className="node-position node-drag-preview is-remote" style={{ transform: `translate3d(${peer.action.cursor.x}px, ${peer.action.cursor.y}px, 0)`, '--collaborator-color': peer.color }} aria-hidden="true"><CanvasNode node={node} definition={definition} connectedInputIds={EMPTY_PIN_SET} pinRevealEnabled={false} graphVariables={canvasGraphVariables} callableGraphs={callableGraphs} appEmojis={appEmojis} /></div>;
+          return <div key={`remote-library-preview-${peer.userId}`} className="node-position node-drag-preview is-remote" style={{ transform: `translate3d(${peer.action.cursor.x}px, ${peer.action.cursor.y}px, 0)`, '--collaborator-color': peer.color }} aria-hidden="true"><CanvasNode node={node} definition={definition} connectedInputIds={EMPTY_PIN_SET} pinRevealEnabled={false} compactNodes={settings.compactNodes === true} graphVariables={canvasGraphVariables} callableGraphs={callableGraphs} appEmojis={appEmojis} /></div>;
         })}
         {libraryDragPreview && <div className="node-position node-drag-preview" style={{ transform: `translate3d(${libraryDragPreview.x}px, ${libraryDragPreview.y}px, 0)` }} aria-hidden="true">
-          <CanvasNode node={libraryDragPreview.node} definition={libraryDragPreview.definition} connectedInputIds={EMPTY_PIN_SET} pinRevealEnabled={false} graphVariables={canvasGraphVariables} callableGraphs={callableGraphs} appEmojis={appEmojis} />
+          <CanvasNode node={libraryDragPreview.node} definition={libraryDragPreview.definition} connectedInputIds={EMPTY_PIN_SET} pinRevealEnabled={false} compactNodes={settings.compactNodes === true} graphVariables={canvasGraphVariables} callableGraphs={callableGraphs} appEmojis={appEmojis} />
         </div>}
         <div className="canvas-chat-bubble-layer" aria-live="polite">
           {graphChatEnabled && settings.disableChatBubbles !== true && graphChatBubbles.filter((bubble) => bubble.projectId === projectId && bubble.graphId === graphId && bubble.expiresAt > Date.now()).map((bubble) => <GraphChatBubble
@@ -5396,9 +5421,10 @@ const previewOutput = (node, outputId, seen = new Set()) => {
             const ignoredWarnings = ignoredWarningItems.filter((item) => targetIds.includes(item.nodeId));
             if (!currentWarnings.length && !ignoredWarnings.length) return null;
             return <>
-              <div className="context-menu-heading">Graph warnings</div>
+              <div className="context-menu-heading" data-native-submenu>Graph warnings</div>
               {currentWarnings.map((item) => <button key={`ignore-${item.nodeId}-${item.message}`} role="menuitem" title={item.message} onClick={() => { onSetGraphWarningIgnored?.(item, true); setContextMenu(null); }}><span className="context-menu-item-label">Ignore warning · {item.message}</span></button>)}
               {ignoredWarnings.map((item) => <button key={`restore-${item.nodeId}-${item.message}`} role="menuitem" title={item.message} onClick={() => { onSetGraphWarningIgnored?.(item, false); setContextMenu(null); }}><span className="context-menu-item-label">Show warning · {item.message}</span></button>)}
+              <span hidden data-native-submenu-end aria-hidden="true" />
             </>;
           })()}
           <button role="menuitem" disabled={isLocked || contextMenu.nodeIds?.some(isNodeBeingMovedByOther)} onClick={() => { onRequestCreateTagGroup?.(contextMenu.nodeIds); setContextMenu(null); }}>Create color section… <span className="context-shortcut"><kbd>Shift</kbd><kbd>G</kbd></span></button>
@@ -5413,7 +5439,9 @@ const previewOutput = (node, outputId, seen = new Set()) => {
           })()}
           <button role="menuitem" disabled={isLocked || isNodeBeingMovedByOther(contextMenu.nodeId)} onClick={() => { onSaveNodePrefab?.(contextMenu.node); setContextMenu(null); }}>Save as node prefab</button>
           <button role="menuitem" disabled={isLocked || isNodeBeingMovedByOther(contextMenu.nodeId)} onClick={() => { duplicateNode(contextMenu.nodeId); setContextMenu(null); }}>Duplicate node</button>
-          <button role="menuitem" className="is-danger" disabled={isLocked || isNodeBeingMovedByOther(contextMenu.nodeId)} onClick={() => { deleteNode(contextMenu.nodeId); setContextMenu(null); }}>Delete node <span className="context-shortcut"><kbd>Delete</kbd></span></button>
+          {contextMenu.nodeIds?.length > 1
+            ? <button role="menuitem" className="is-danger" disabled={isLocked || canvasLocked || !canWriteGraphs || contextMenu.nodeIds.some(isNodeBeingMovedByOther)} onClick={() => { deleteSelectedItems(contextMenu.nodeIds, [], false, []); setContextMenu(null); }}>Delete selected nodes ({contextMenu.nodeIds.length}) <span className="context-shortcut"><kbd>Delete</kbd></span></button>
+            : <button role="menuitem" className="is-danger" disabled={isLocked || isNodeBeingMovedByOther(contextMenu.nodeId)} onClick={() => { deleteNode(contextMenu.nodeId); setContextMenu(null); }}>Delete node <span className="context-shortcut"><kbd>Delete</kbd></span></button>}
         </> : <>
           <button role="menuitem" disabled={isLocked} onClick={() => { onOpenPalette?.(contextMenu.position); setContextMenu(null); }}>Add node <span className="context-shortcut" aria-label="Shift plus A"><kbd>Shift</kbd><kbd>A</kbd></span></button>
           <button role="menuitem" disabled={isLocked} onClick={() => addNote(contextMenu.position)}>Add note <span className="context-shortcut"><kbd>{formatShortcut(settings.shortcuts?.addNote || DEFAULT_SHORTCUTS.addNote, shortcutPlatform)}</kbd></span></button>
@@ -5427,7 +5455,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
               return <button key={`remove-selected-${group.id}`} role="menuitem" disabled={isLocked} onClick={() => { onTagGroupsChange?.(tagGroups.map((item) => item.id === group.id ? { ...item, nodeIds: groupNodeIds.filter((id) => !removeIds.includes(id)) } : item)); setContextMenu(null); }}>Remove {removeIds.length > 1 ? 'selected from' : 'from'} {group.name}</button>;
             });
           })()}
-          <button role="menuitem" disabled={!clipboardRef.current || isLocked} onClick={() => { pasteNodes(); setContextMenu(null); }}>Paste {clipboardRef.current?.nodes?.length > 1 ? `${clipboardRef.current.nodes.length} nodes` : 'node'} <kbd>{shortcutModifier} V</kbd></button>
+          <button role="menuitem" disabled={!clipboardRef.current || isLocked} onClick={() => { pasteNodes(); setContextMenu(null); }}>Paste {clipboardRef.current?.nodes?.length > 1 ? `${clipboardRef.current.nodes.length} nodes` : 'node'} <span className="context-shortcut"><kbd>{shortcutModifier}</kbd><kbd>V</kbd></span></button>
           <button role="menuitem" onClick={() => { fitView(); setContextMenu(null); }}>Frame graph <span className="context-shortcut"><kbd>F</kbd></span></button>
         </>}
       </div>, document.body)}
