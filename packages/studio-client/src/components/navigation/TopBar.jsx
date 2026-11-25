@@ -17,7 +17,7 @@ function getCollaboratorColor(userId) {
 }
 export function TopBar({
   tabs = [], loadingGraphIds = [], isWorkspaceLoading = false, graphTabStatuses = new Map(), projectCollaborators = [], activeTabId, saveFeedbackGraphId, hideGraphSave = false, botStatus = 'DISCONNECTED', botProfile, currentUser, graphTemplates = [], defaultGraphId = 'tab_slash_help',
-  desktopMode = false, localWorkspace = false, workspaceLabel = '', activeProjectId = '', uploadProgress = null, shortcutPlatform = 'windows',
+  desktopMode = false, localWorkspace = false, workspaceLabel = '', activeProjectId = '', uploadProgress = null, shortcutPlatform = 'windows', canManageTeam = false,
   isLocked = false, onToggleLock, onSelectTab, onFollowCollaborator,
   onAddTab, onAddBlankGraph, onAddFunctionGraph, onNewEmbed, onUseTemplate, onCloseTab, onSaveGraph, onRenameGraph, onDuplicateGraph, onSetDefault, onOpenSettings, onOpenUsers, onLogout,
   onOpenBotSettings, onStartBot, onStopBot, onUndo, onRedo, canUndo = false, canRedo = false, onValidate, validationStatus = 'warning', validationErrors = 0, validationWarnings = 0, onSwitchWorkspace, networkOnline = true, appUpdate = null, downloadedUpdateReady = null, updateInstalling = false, serverUpdateAvailable = false, onOpenStudioUpdate
@@ -25,7 +25,6 @@ export function TopBar({
   const [tabMenu, setTabMenu] = useState(null);
   const [newGraphMenu, setNewGraphMenu] = useState(null);
   const [brandExpanded, setBrandExpanded] = useState(true);
-  const brandHovered = useRef(false);
   const tabMenuRef = useRef(null);
   const newGraphMenuRef = useRef(null);
   const uiScale = getArcUiScale();
@@ -57,18 +56,16 @@ export function TopBar({
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
   const activeGraphUnsaved = graphTabStatuses.get(activeTabId)?.unsaved ?? Boolean(activeTab?.isDirty);
   const showSavedFeedback = Boolean(activeTabId && saveFeedbackGraphId === activeTabId && !activeGraphUnsaved);
-  const profileInitial = !desktopMode || !localWorkspace ? Array.from(String(currentUser?.username || '').trim())[0]?.toLocaleUpperCase() : '';
+  const profileInitial = Array.from(String(currentUser?.username || '').trim())[0]?.toLocaleUpperCase() || '';
+  const useProfileAvatarImage = Boolean(currentUser?.avatar) && !desktopMode;
   const peerColor = projectCollaborators.find((peer) => peer.userId === currentUser?.id)?.color;
   const profileColor = !profileInitial || !currentUser?.id
     ? ''
     : typeof peerColor === 'string' && /^#[\da-f]{6}$/i.test(peerColor) ? peerColor : getCollaboratorColor(currentUser.id);
 
   useEffect(() => {
-    brandHovered.current = false;
     setBrandExpanded(true);
-    const timer = window.setTimeout(() => {
-      if (!brandHovered.current) setBrandExpanded(false);
-    }, 2800);
+    const timer = window.setTimeout(() => setBrandExpanded(false), 2800);
     return () => window.clearTimeout(timer);
   }, [activeProjectId, workspaceLabel]);
 
@@ -98,11 +95,7 @@ export function TopBar({
 
   return (
     <header className="topbar" onMouseDown={startWindowDragging} onDoubleClick={handleTopbarDoubleClick}>
-      <div
-        className={`brand-lockup ${brandExpanded ? 'is-expanded' : 'is-collapsed'}`}
-        onMouseEnter={() => { brandHovered.current = true; setBrandExpanded(true); }}
-        onMouseLeave={() => { brandHovered.current = false; setBrandExpanded(false); }}
-      >
+      <div className={`brand-lockup ${brandExpanded ? 'is-expanded' : 'is-collapsed'}`}>
         <div className="brand-mark"><img src="/arc.png" alt="" /></div>
         <span className="brand-name">ARC</span>
         <span className="brand-divider" />
@@ -110,7 +103,13 @@ export function TopBar({
         {workspaceLabel && <span className="desktop-workspace-label">{workspaceLabel}</span>}
       </div>
 
-      <div className="graph-tabs" role="tablist" aria-label="Graphs">
+      <div className={`graph-tabs${desktopMode ? ' is-desktop' : ''}`} role="tablist" aria-label="Graphs" onWheel={(event) => {
+        if (!desktopMode || event.ctrlKey || event.deltaX || !event.deltaY) return;
+        const tabsElement = event.currentTarget;
+        if (tabsElement.scrollWidth <= tabsElement.clientWidth) return;
+        event.preventDefault();
+        tabsElement.scrollLeft += event.deltaY;
+      }}>
         {!tabs.length && isWorkspaceLoading && <div className="graph-tab is-active is-loading" role="presentation"><button className="graph-tab-select" role="tab" aria-selected="true" aria-busy="true" disabled><LoaderCircle className="graph-tab-loading-icon" size={13} /><span className="graph-tab-name">Loading graph…</span></button></div>}
         {tabs.map((tab) => {
           const active = tab.id === activeTabId;
@@ -156,12 +155,13 @@ export function TopBar({
         <button disabled={isWorkspaceLoading} onClick={() => { onAddFunctionGraph?.(); setNewGraphMenu(null); }}><Calculator size={14} /> New function graph</button>
         <button onClick={() => { onNewEmbed?.(); setNewGraphMenu(null); }}><Sparkles size={14} /> New embed graph</button>
         {graphTemplates.length > 0 && <>
-          <div className="context-menu-heading"><BookmarkPlus size={13} /> Templates</div>
+          <div className="context-menu-heading" data-native-submenu><BookmarkPlus size={13} /> Templates</div>
           {graphTemplates.slice(0, 4).map((template) => <button key={template.id} onClick={() => { onUseTemplate?.(template); setNewGraphMenu(null); }}><FilePlus2 size={14} /><span className="context-menu-item-label">{template.name || 'Untitled template'}</span></button>)}
         </>}
       </div>, document.body)}
 
       {tabMenu && createPortal(<div ref={tabMenuRef} className="graph-context-menu tab-context-menu" style={{ left: tabMenu.x, top: tabMenu.y, transform: `scale(${uiScale})`, transformOrigin: 'top left' }} onPointerDown={(event) => event.stopPropagation()}>
+        {desktopMode && (graphTabStatuses.get(tabMenu.tab.id)?.unsaved ?? Boolean(tabMenu.tab.isDirty)) && <button onClick={() => { onSaveGraph?.(tabMenu.tab); setTabMenu(null); }}><Save size={14} /> Save graph</button>}
         <button onClick={() => { onRenameGraph?.(tabMenu.tab); setTabMenu(null); }}><Pencil size={14} /> Rename graph</button>
         <button onClick={() => { onDuplicateGraph?.(tabMenu.tab); setTabMenu(null); }}><Copy size={14} /> Duplicate graph</button>
         <button onClick={() => { onSetDefault?.(tabMenu.tab); setTabMenu(null); }}><Star size={14} fill={defaultGraphId === tabMenu.tab.id ? 'currentColor' : 'none'} /> {defaultGraphId === tabMenu.tab.id ? 'Default for new graphs' : 'Set as new graph default'}</button>
@@ -194,22 +194,22 @@ export function TopBar({
         <button className={`topbar-icon-button ${isLocked ? 'is-selected' : ''}`} onClick={onToggleLock} title={isLocked ? 'Unlock canvas' : 'Lock canvas'} aria-label={isLocked ? 'Unlock canvas' : 'Lock canvas'}>
           {isLocked ? <LockKeyhole size={16} /> : <LockOpen size={16} />}
         </button>
-        <button className={`topbar-icon-button${serverUpdateAvailable ? ' has-update-notice' : ''}`} onClick={onOpenSettings} title={serverUpdateAvailable ? 'Editor settings · ARC Studio Server update available' : 'Editor settings'} aria-label={serverUpdateAvailable ? 'Editor settings. ARC Studio Server update available' : 'Editor settings'}><Settings2 size={16} />{serverUpdateAvailable && <span className="update-indicator-dot" aria-hidden="true" />}</button>
         {uploadProgress && <div className="topbar-upload-progress" role="status" aria-live="polite"><span>Uploading attachments</span><progress max="100" value={uploadProgress.percent} /><b>{uploadProgress.percent}%</b></div>}
         {!hideGraphSave && (activeGraphUnsaved || showSavedFeedback) && <button className={`save-button ${showSavedFeedback ? 'is-saved' : ''}`} onClick={showSavedFeedback ? undefined : onSaveGraph} disabled={showSavedFeedback} title={showSavedFeedback ? 'Saved' : `Save graph (${shortcutModifier} + S)`}><>{showSavedFeedback ? <Check size={15} /> : <Save size={15} />}<span>{showSavedFeedback ? 'Saved' : 'Save'}</span></></button>}
 
-        <div className="profile-menu">
+        {!desktopMode && <div className="profile-menu">
           <button className="profile-trigger" title={`${currentUser?.username || 'Account'} · ${currentUser?.role || ''}`}>
-            <span className={`profile-avatar ${profileInitial && profileColor ? 'has-initial' : ''}`} style={profileInitial && profileColor ? { '--collaborator-color': profileColor, '--collaborator-text-color': getContrastTextColor(profileColor), color: getContrastTextColor(profileColor) } : undefined}>{currentUser?.avatar ? <img src={apiUrl(currentUser.avatar)} alt="" /> : profileInitial && profileColor ? profileInitial : <CircleUserRound size={17} />}</span>
+            <span className={`profile-avatar ${profileInitial && profileColor ? 'has-initial' : ''}`} style={profileInitial && profileColor ? { '--collaborator-color': profileColor, '--collaborator-text-color': getContrastTextColor(profileColor), color: getContrastTextColor(profileColor) } : undefined}>{useProfileAvatarImage ? <img src={apiUrl(currentUser.avatar)} alt="" /> : profileInitial && profileColor ? profileInitial : <CircleUserRound size={17} />}</span>
             <span className="profile-name">{currentUser?.username || 'Account'}</span>
             <ChevronDown size={13} className="profile-chevron" />
           </button>
           <div className="profile-popover" role="menu" aria-label="Account menu">
+            {onOpenSettings && <button onClick={onOpenSettings}><Settings2 size={15} /> Editor settings{serverUpdateAvailable && <span className="profile-menu-update-dot" aria-label="ARC Studio Server update available" />}</button>}
             {desktopMode && <button onClick={onSwitchWorkspace}><ArrowLeftRight size={15} /> Switch workspace</button>}
-            {!desktopMode && currentUser?.role === 'admin' && <button onClick={onOpenUsers}><Users size={15} /> Team access</button>}
+            {canManageTeam && <button onClick={onOpenUsers}><Users size={15} /> Team access</button>}
             <button onClick={onLogout}><LogOut size={15} /> Sign out</button>
           </div>
-        </div>
+        </div>}
       </div>
     </header>
   );
