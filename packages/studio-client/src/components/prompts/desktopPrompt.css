@@ -1,0 +1,153 @@
+:root {
+  --prompt-page: var(--page, #14171b);
+  --prompt-panel: var(--panel, #1c2025);
+  --prompt-panel-raised: var(--panel-raised, #252a31);
+  --prompt-border: var(--line, #30353d);
+  --prompt-text: var(--text, #e8ebef);
+  --prompt-muted: var(--muted, #7e8793);
+  --prompt-accent: var(--accent, #70b9e8);
+  --prompt-danger: var(--danger, #e18484);
+}
+
+* { box-sizing: border-box; }
+html, body, #root { width: 100%; height: 100%; margin: 0; }
+body { background: var(--prompt-page); }
+button, input { font: inherit; }
+
+.desktop-prompt-frame { width: 100%; height: 100%; padding: 22px 24px 18px; overflow: auto; }
+.desktop-team-access { padding: 0; overflow: hidden; }
+.desktop-prompt-form { display: flex; flex-direction: column; width: 100%; height: 100%; gap: 18px; }
+.desktop-project-export-body { min-height: 0; flex: 1 1 auto; align-content: start; overflow: auto; padding-right: 4px; }
+.desktop-prompt-heading { flex: 0 0 auto; }
+.desktop-prompt-heading h1 { margin: 0; color: var(--prompt-text); font-size: 19px; font-weight: 650; letter-spacing: -.02em; }
+.desktop-prompt-subtitle { margin: 5px 0 0; color: var(--prompt-muted); }
+.desktop-prompt-message { margin: 10px 0 0; color: var(--prompt-text); white-space: pre-wrap; }
+.desktop-prompt-field { display: grid; gap: 7px; color: var(--prompt-muted); font-size: 12px; font-weight: 600; }
+.desktop-prompt-field input { width: 100%; min-height: 36px; padding: 7px 10px; border: 1px solid var(--prompt-border); border-radius: 7px; outline: none; color: var(--prompt-text); background: var(--prompt-panel); }
+.desktop-prompt-field input:focus { border-color: var(--prompt-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--prompt-accent) 24%, transparent); }
+.desktop-prompt-password-fields { display: grid; gap: 12px; }
+.desktop-prompt-hint { margin: -5px 0 0; color: var(--prompt-muted); font-size: 11px; }
+.desktop-prompt-option { display: flex; align-items: flex-start; gap: 10px; padding: 11px; border: 1px solid var(--prompt-border); border-radius: 8px; background: var(--prompt-panel); }
+.desktop-prompt-option input { margin: 3px 0 0; accent-color: var(--prompt-accent); }
+.desktop-prompt-option span { display: grid; gap: 4px; color: var(--prompt-text); }
+.desktop-prompt-option strong { font-size: 12px; font-weight: 620; }
+.desktop-prompt-option small { color: var(--prompt-muted); font-size: 11px; line-height: 1.45; }
+.desktop-prompt-option.is-disabled { opacity: .6; }
+.desktop-prompt-scroll { min-height: 0; flex: 1; display: grid; align-content: start; gap: 10px; overflow: auto; padding-right: 4px; }
+.desktop-prompt-stats { display: flex; gap: 8px; }
+.desktop-prompt-stats span { flex: 1; padding: 8px; border: 1px solid var(--prompt-border); border-radius: 7px; color: var(--prompt-muted); background: var(--prompt-panel); text-align: center; }
+.desktop-prompt-stats strong { color: var(--prompt-text); }
+.desktop-prompt-scroll details { padding: 9px 10px; border: 1px solid var(--prompt-border); border-radius: 7px; color: var(--prompt-muted); background: var(--prompt-panel); }
+.desktop-prompt-scroll summary { color: var(--prompt-text); cursor: pointer; font-weight: 600; }
+.desktop-prompt-scroll details p { margin: 9px 0 0; line-height: 1.45; }
+.desktop-prompt-scroll ul { margin: 8px 0 0; padding-left: 20px; }
+.desktop-prompt-scroll li { margin: 3px 0; overflow-wrap: anywhere; }
+.desktop-prompt-issues { display: grid; gap: 6px; }
+.desktop-prompt-issues h2 { margin: 5px 0 0; color: var(--prompt-text); font-size: 13px; }
+.desktop-prompt-issue { display: flex; align-items: start; gap: 8px; padding: 8px 9px; border-left: 2px solid var(--prompt-border); color: var(--prompt-muted); background: var(--prompt-panel); font-size: 11px; }
+.desktop-prompt-issue.is-error { border-left-color: var(--prompt-danger); color: var(--prompt-danger); }
+.desktop-prompt-issue.is-warning { border-left-color: #dfb469; }
+.desktop-prompt-issue button { margin-left: auto; border: 0; color: var(--prompt-accent); background: none; cursor: pointer; }
+.desktop-prompt-error { margin: 0; color: var(--prompt-danger); font-size: 12px; }
+.desktop-prompt-actions { flex: 0 0 auto; display: flex; justify-content: flex-end; gap: 8px; margin-top: auto; padding-top: 3px; }
+.desktop-prompt-button { min-height: 34px; }
+.desktop-prompt-loading { color: var(--prompt-muted); }
+.desktop-window-help-content { height: 100%; overflow: auto; padding: 2px 4px 6px; }
+.desktop-window-help-content h1,
+.desktop-template-help > h1 { margin: 0 0 5px; color: var(--prompt-text); font-size: 20px; font-weight: 650; letter-spacing: -.02em; }
+.desktop-window-help-content .keyboard-shortcut-list { margin-top: 18px; }
+.desktop-window-help-content .keyboard-shortcut-row { grid-template-columns: minmax(0, 1fr) auto; gap: 18px; }
+.desktop-template-help { padding: 2px 5px 8px; }
+.desktop-template-help .template-syntax-help-content { color: var(--prompt-text); }
+.desktop-template-help .template-syntax-help-content h3 { color: var(--prompt-text); }
+.desktop-template-help .template-syntax-help-content pre { overflow-x: auto; }
+.desktop-create-project-form { min-height: 0; }
+.desktop-create-project-starters { min-height: 0; display: grid; gap: 8px; align-content: start; overflow: auto; padding-right: 3px; }
+.desktop-create-project-starters .splash-project-template { width: 100%; text-align: left; transform: none; transition-property: border-color, color, background; }
+.desktop-create-project-starters .splash-project-template:hover { transform: none; }
+.desktop-plugin-permissions input { accent-color: var(--prompt-accent); }
+.desktop-command-browser, .desktop-deployment-review { display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; padding: 22px 24px 18px; gap: 13px; }
+.desktop-command-browser .desktop-prompt-heading, .desktop-deployment-review .desktop-prompt-heading { flex: 0 0 auto; }
+.desktop-command-search { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 10px; border: 1px solid var(--prompt-border); border-radius: 8px; color: var(--prompt-muted); background: var(--prompt-panel); }
+.desktop-command-search input { width: 100%; border: 0; outline: 0; color: var(--prompt-text); background: transparent; }
+.desktop-command-list, .desktop-deployment-scroll, .desktop-command-detail { min-height: 0; flex: 1; overflow: auto; }
+.desktop-command-list { border: 1px solid var(--prompt-border); border-radius: 8px; background: var(--prompt-panel); }
+.desktop-command-list > button { display: flex; align-items: center; justify-content: space-between; gap: 16px; width: 100%; padding: 10px 12px; border: 0; border-bottom: 1px solid var(--prompt-border); color: var(--prompt-text); background: transparent; text-align: left; cursor: pointer; }
+.desktop-command-list > button:last-of-type { border-bottom: 0; }
+.desktop-command-list > button:hover, .desktop-command-graph:hover, .desktop-command-back:hover { background: var(--prompt-panel-raised); }
+.desktop-command-list > button span { min-width: 0; display: grid; gap: 2px; }
+.desktop-command-list > button strong, .desktop-command-list > button small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.desktop-command-list > button small, .desktop-command-list > button b { color: var(--prompt-muted); font-size: 11px; font-weight: 500; }
+.desktop-command-list > p, .desktop-command-detail > p { padding: 10px 12px; color: var(--prompt-muted); }
+.desktop-command-detail { display: flex; flex-direction: column; align-items: flex-start; gap: 9px; }
+.desktop-command-detail > strong { font-size: 16px; }
+.desktop-command-detail > p { padding: 0; margin: 0; }
+.desktop-command-back, .desktop-command-graph { display: inline-flex; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid var(--prompt-border); border-radius: 7px; color: var(--prompt-text); background: var(--prompt-panel); cursor: pointer; }
+.desktop-command-detail details, .desktop-command-usage { width: 100%; padding: 10px; border: 1px solid var(--prompt-border); border-radius: 8px; color: var(--prompt-muted); background: var(--prompt-panel); }
+.desktop-command-detail summary { color: var(--prompt-text); cursor: pointer; font-weight: 600; }
+.desktop-command-detail ul { margin-bottom: 0; padding-left: 20px; }
+.desktop-command-usage strong { color: var(--prompt-text); }
+.desktop-deployment-scroll { display: grid; align-content: start; gap: 12px; padding-right: 4px; }
+.desktop-deployment-scroll > section { padding: 11px; border: 1px solid var(--prompt-border); border-radius: 8px; color: var(--prompt-muted); background: var(--prompt-panel); }
+.desktop-deployment-scroll > section > strong, .desktop-review-section-heading strong { color: var(--prompt-text); }
+.desktop-deployment-scroll > section > p { margin: 7px 0 0; }
+.desktop-review-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.desktop-review-section-heading button { border: 0; color: var(--prompt-accent); background: none; cursor: pointer; }
+.desktop-review-issue { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 7px; padding: 8px 0; border-bottom: 1px solid var(--prompt-border); font-size: 11px; }
+.desktop-review-issue:last-child { border-bottom: 0; }
+.desktop-review-issue.is-error > span { color: var(--prompt-danger); }
+.desktop-review-issue button { grid-column: 2; border: 0; color: var(--prompt-accent); background: none; cursor: pointer; }
+.desktop-review-command-list { display: grid; max-height: 190px; overflow: auto; margin-top: 7px; }
+.desktop-review-command-list > div, .desktop-review-requirement { display: flex; justify-content: space-between; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--prompt-border); }
+.desktop-review-command-list span, .desktop-review-requirement small { color: var(--prompt-muted); }
+.desktop-review-scope-options { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 8px; }
+.desktop-review-scope-options button { display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; border: 1px solid var(--prompt-border); border-radius: 7px; color: var(--prompt-muted); background: var(--prompt-panel); cursor: pointer; }
+.desktop-review-scope-options button.is-selected { border-color: color-mix(in srgb, var(--prompt-accent) 55%, var(--prompt-border)); color: var(--prompt-text); background: color-mix(in srgb, var(--prompt-accent) 13%, var(--prompt-panel)); }
+.desktop-review-scope-options button:disabled { opacity: .6; cursor: wait; }
+.desktop-review-search { display: flex; align-items: center; gap: 7px; min-height: 32px; margin-top: 8px; padding: 0 8px; border: 1px solid var(--prompt-border); border-radius: 7px; color: var(--prompt-muted); background: var(--prompt-panel); }
+.desktop-review-search input, .desktop-review-add-guild input { width: 100%; min-width: 0; border: 0; outline: 0; color: var(--prompt-text); background: transparent; }
+.desktop-review-guild-list { display: grid; max-height: 150px; overflow: auto; margin-top: 7px; border: 1px solid var(--prompt-border); border-radius: 7px; background: var(--prompt-panel); }
+.desktop-review-guild-list > label { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 7px; min-height: 31px; padding: 5px 8px; border-bottom: 1px solid var(--prompt-border); }
+.desktop-review-guild-list > label:last-of-type { border-bottom: 0; }
+.desktop-review-guild-list input, .desktop-review-command-list input { accent-color: var(--prompt-accent); }
+.desktop-review-guild-list span { overflow: hidden; color: var(--prompt-text); text-overflow: ellipsis; white-space: nowrap; }
+.desktop-review-guild-list small { color: var(--prompt-muted); font-size: 9px; }
+.desktop-review-guild-list > p { padding: 8px; }
+.desktop-review-add-guild { display: flex; gap: 6px; margin-top: 7px; }
+.desktop-review-add-guild input { min-height: 32px; padding: 0 8px; border: 1px solid var(--prompt-border); border-radius: 7px; background: var(--prompt-panel); }
+.desktop-review-add-guild button { padding: 0 9px; border: 1px solid var(--prompt-border); border-radius: 7px; color: var(--prompt-text); background: var(--prompt-panel-raised); }
+.desktop-review-command-list.is-selectable { max-height: 210px; }
+.desktop-review-command-list.is-selectable > label { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 6px 2px; border-bottom: 1px solid var(--prompt-border); }
+.desktop-review-command-list.is-selectable > label > span { display: grid; min-width: 0; gap: 2px; }
+.desktop-review-command-list.is-selectable code, .desktop-review-command-list.is-selectable small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.desktop-review-command-list.is-selectable code { color: var(--prompt-text); }
+.desktop-review-command-list.is-selectable small { color: var(--prompt-muted); font-size: 9px; }
+.desktop-review-command-list.is-selectable b { color: var(--prompt-muted); font-size: 9px; font-weight: 500; }
+.desktop-review-permissions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.desktop-review-permissions code { padding: 3px 6px; border-radius: 5px; color: var(--prompt-text); background: var(--prompt-panel-raised); }
+.desktop-plugin-summary { display: grid; gap: 4px; padding: 11px; border: 1px solid var(--prompt-border); border-radius: 8px; color: var(--prompt-muted); background: var(--prompt-panel); overflow-wrap: anywhere; }
+.desktop-plugin-summary strong { color: var(--prompt-text); font-size: 14px; }
+.desktop-plugin-summary small { color: var(--prompt-accent); }
+.desktop-plugin-warning { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 10px; border: 1px solid color-mix(in srgb, #dfb469 35%, var(--prompt-border)); border-radius: 8px; color: var(--prompt-text); background: color-mix(in srgb, #dfb469 8%, var(--prompt-panel)); }
+.desktop-plugin-warning svg { flex: 0 0 auto; color: #dfb469; }
+.desktop-plugin-permissions { display: grid; gap: 7px; padding: 10px; border: 1px solid var(--prompt-border); border-radius: 8px; background: var(--prompt-panel); }
+.desktop-plugin-permissions > strong { color: var(--prompt-text); }
+.desktop-plugin-permissions > p { margin: -3px 0 3px; color: var(--prompt-muted); font-size: 11px; }
+.desktop-plugin-permissions > label { display: flex; align-items: flex-start; gap: 8px; padding: 7px 0; border-top: 1px solid var(--prompt-border); }
+.desktop-plugin-permissions > label span { display: grid; gap: 2px; }
+.desktop-plugin-permissions > label b { color: var(--prompt-text); font-size: 12px; }
+.desktop-plugin-permissions > label small { color: var(--prompt-muted); font-size: 11px; }
+.modal-panel.modal-editor-settings.is-native-window {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+  background: var(--page);
+  box-shadow: none;
+  animation: none;
+}
+.modal-editor-settings.is-native-window .modal-body {
+  height: 100%;
+  padding: 20px 24px 24px;
+}
