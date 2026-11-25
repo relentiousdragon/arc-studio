@@ -31,7 +31,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost https://cdn.discordapp.com data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src ipc: http://ipc.localhost http://localhost:5173 ws://localhost:5173 http://localhost:* ws://localhost:* http://127.0.0.1:5173 ws://127.0.0.1:5173 http://127.0.0.1:* ws://127.0.0.1:* https: wss: https://cdn.discordapp.com;"
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost https: http://localhost:* http://127.0.0.1:* data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src ipc: http://ipc.localhost http://localhost:5173 ws://localhost:5173 http://localhost:* ws://localhost:* http://127.0.0.1:5173 ws://127.0.0.1:5173 http://127.0.0.1:* ws://127.0.0.1:* https: wss: https://cdn.discordapp.com;"
     }
   },
   "bundle": {
