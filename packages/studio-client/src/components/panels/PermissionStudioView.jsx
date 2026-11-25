@@ -4,7 +4,7 @@ import { DISCORD_PERMISSION_GROUPS, bitfieldToPermissions, permissionsToBitfield
 import { AnimatedCheckbox, AnimatedDropdown } from '../ui/CustomControls.jsx';
 import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
-import { notifyStudioSwitchCancelled, useStudioEscape, useStudioSwitchClose } from './useStudioEscape.js';
+import { notifyStudioSwitchCancelled, useStudioDiscardConfirmation, useStudioEscape, useStudioSwitchClose } from './useStudioEscape.js';
 //
 const MAX_OVERWRITES = 100;
 const KNOWN_PERMISSION_MASK = DISCORD_PERMISSION_GROUPS.flatMap((group) => group.permissions).reduce((mask, [, , bit]) => mask | (1n << BigInt(bit)), 0n);
@@ -24,7 +24,7 @@ const canonicalBitfield = (value) => {
   return parsed === null ? null : parsed.toString();
 };
 
-export function PermissionStudioView({ mode = 'role', nodeName = 'Permissions', data = {}, connectedTargetIds = [], permissionsConnected = false, variables = [], onApply, onClose }) {
+export function PermissionStudioView({ mode = 'role', nodeName = 'Permissions', data = {}, connectedTargetIds = [], permissionsConnected = false, variables = [], desktopMode = false, requestConfirmation, onApply, onClose }) {
   const [draft, setDraft] = useState(() => structuredClone(data || {}));
   const [search, setSearch] = useState('');
   const [copiedField, setCopiedField] = useState('');
@@ -35,7 +35,12 @@ export function PermissionStudioView({ mode = 'role', nodeName = 'Permissions', 
   const initialCount = Math.max(1, Number(draft.overwriteCount) || 0, ...connectedTargetIds.map((id) => Number(/target_id_(\d+)/.exec(id)?.[1]) || 0), ...Object.keys(draft).map((id) => Number(/^target_id_(\d+)$/.exec(id)?.[1]) || 0).filter((index) => index > 0 && draft[`target_id_${index}`]));
   const [targetCount, setTargetCount] = useState(Math.min(MAX_OVERWRITES, initialCount));
   const hasUnappliedChanges = JSON.stringify(draft) !== JSON.stringify(data || {}) || targetCount !== Math.min(MAX_OVERWRITES, initialCount);
-  const close = () => hasUnappliedChanges ? setDiscardPromptOpen(true) : onClose?.();
+  const requestNativeDiscard = useStudioDiscardConfirmation({ desktopMode, requestConfirmation, title: 'Discard permission changes?', subtitle: 'These edits have not been applied to the graph.', message: 'Your permission changes will be lost.', onClose });
+  const close = async () => {
+    if (!hasUnappliedChanges) return onClose?.();
+    if (await requestNativeDiscard()) return;
+    setDiscardPromptOpen(true);
+  };
   useStudioEscape(close);
   useStudioSwitchClose('permission', close);
   const query = search.trim().toLowerCase();
