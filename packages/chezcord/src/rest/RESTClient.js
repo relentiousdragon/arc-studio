@@ -310,12 +310,27 @@ export class RESTClient {
     return this.request('GET', `/applications/${applicationId}/commands`);
   }
 
+  getGuildApplicationCommands(applicationId, guildId) {
+    if (!applicationId) throw new TypeError('An application ID is required.');
+    if (!/^\d{17,20}$/.test(String(guildId || ''))) throw new TypeError('A valid guild ID is required.');
+    return this.request('GET', `/applications/${applicationId}/guilds/${guildId}/commands`);
+  }
+
   /**
    * @param {string} applicationId
    * @param {Array<object>} commands
    * @returns {Promise<Array<object>>}
    */
-  async bulkOverwriteGlobalApplicationCommands(applicationId, commands) {
+  async bulkOverwriteGlobalApplicationCommands(applicationId, commands, currentCommands = null) {
+    return this.bulkOverwriteApplicationCommands(applicationId, '', commands, currentCommands);
+  }
+
+  async bulkOverwriteGuildApplicationCommands(applicationId, guildId, commands, currentCommands = null) {
+    if (!/^\d{17,20}$/.test(String(guildId || ''))) throw new TypeError('A valid guild ID is required.');
+    return this.bulkOverwriteApplicationCommands(applicationId, String(guildId), commands, currentCommands);
+  }
+
+  async bulkOverwriteApplicationCommands(applicationId, guildId, commands, knownCurrentCommands = null) {
     if (!applicationId) throw new TypeError('An application ID is required.');
     if (!Array.isArray(commands)) throw new TypeError('Commands must be an array.');
     const seen = new Set();
@@ -339,10 +354,10 @@ export class RESTClient {
     }
     const typeLimits = new Map([[1, 100], [2, 15], [3, 15], [4, 1]]);
     for (const [type, count] of counts) {
-      if (count > typeLimits.get(type)) throw new RangeError(`Discord allows at most ${typeLimits.get(type)} global commands of type ${type}.`);
+      if (count > typeLimits.get(type)) throw new RangeError(`Discord allows at most ${typeLimits.get(type)} commands of type ${type} in each deployment scope.`);
     }
 
-    const key = String(applicationId);
+    const key = guildId ? `${applicationId}:guild:${guildId}` : String(applicationId);
     let state = commandDeployments.get(key);
     if (!state) {
       state = { lastAttemptAt: 0, created: [], inFlight: false };
@@ -367,18 +382,24 @@ export class RESTClient {
     state.inFlight = true;
     state.created = state.created.filter((entry) => now - entry.at < COMMAND_CREATE_WINDOW_MS);
     try {
-      const existing = await this.getGlobalApplicationCommands(applicationId);
+      const existing = Array.isArray(knownCurrentCommands) ? knownCurrentCommands : guildId
+        ? await this.getGuildApplicationCommands(applicationId, guildId)
+        : await this.getGlobalApplicationCommands(applicationId);
       const existingKeys = new Set((Array.isArray(existing) ? existing : []).map(applicationCommandKey));
       const createCount = commands.filter((command) => !existingKeys.has(applicationCommandKey(command))).length;
       const usedToday = state.created.reduce((total, entry) => total + entry.count, 0);
       if (usedToday + createCount > COMMAND_CREATE_LIMIT) {
-        const error = new Error(`This application has reached the safety limit of ${COMMAND_CREATE_LIMIT} new global commands per 24 hours.`);
+        const scopeLabel = guildId ? `guild ${guildId}` : 'global commands';
+        const error = new Error(`This application has reached the safety limit of ${COMMAND_CREATE_LIMIT} new command creates per 24 hours for ${scopeLabel}.`);
         error.status = 429;
         error.retryAfterMs = Math.max(1000, COMMAND_CREATE_WINDOW_MS - (now - (state.created[0]?.at || now)));
         throw error;
       }
 
-      const result = await this.request('PUT', `/applications/${applicationId}/commands`, { body: commands });
+      const endpoint = guildId
+        ? `/applications/${applicationId}/guilds/${guildId}/commands`
+        : `/applications/${applicationId}/commands`;
+      const result = await this.request('PUT', endpoint, { body: commands });
       if (createCount) state.created.push({ at: Date.now(), count: createCount });
       return result;
     } finally {
