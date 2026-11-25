@@ -482,7 +482,7 @@ export function ControlDock({
   const commandReviewOpen = Boolean(commandReview);
   const cachedGuildOptionCount = commandReview?.guildOptions?.length || 0;
   useEffect(() => {
-    if (!commandReviewOpen || cachedGuildOptionCount || botStatus !== 'ONLINE') return undefined;
+    if (!commandReviewOpen || !commandReview?.supportsScopedDeployment || cachedGuildOptionCount || botStatus !== 'ONLINE') return undefined;
     let current = true;
     let attempts = 0;
     let timer = 0;
@@ -504,7 +504,7 @@ export function ControlDock({
     };
     void refresh();
     return () => { current = false; window.clearTimeout(timer); };
-  }, [activeProjectId, authToken, botStatus, cachedGuildOptionCount, commandReviewOpen]);
+  }, [activeProjectId, authToken, botStatus, cachedGuildOptionCount, commandReview?.supportsScopedDeployment, commandReviewOpen]);
   const reviewCommandItems = useMemo(() => {
     if (!commandReview) return [];
     const commandKey = (cmd) => `${Number(cmd?.type || 1)}:${String(cmd?.name || '').toLowerCase()}`;
@@ -1338,24 +1338,29 @@ export function ControlDock({
     const requestId = ++commandPreviewRequestRef.current;
     setReviewingCommands(true);
     setDeployError('');
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 15000);
     try {
-      const [response, guildResponse] = await Promise.all([
-        fetch(apiUrl('/api/bot/commands/preview'), { method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken }, body: JSON.stringify({ graphs }) }),
-        fetch(apiUrl('/api/bot/commands/guilds'), { cache: 'no-store', headers: { 'x-arc-token': authToken } })
-      ]);
+      const response = await fetch(apiUrl('/api/bot/commands/preview'), { method: 'POST', cache: 'no-store', signal: controller.signal, headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken }, body: JSON.stringify({ graphs }) });
       const data = await response.json();
       if (!response.ok) throw new Error([data.error || 'Could not review command changes.', data.discordAuthWarning?.message].filter(Boolean).join(' '));
-      const guildData = await guildResponse.json().catch(() => ({}));
       if (requestId !== commandPreviewRequestRef.current || lastProjectIdRef.current !== requestProjectId) return;
+      const supportsScopedDeployment = Array.isArray(data.availableCommands)
+        && Array.isArray(data.guildIds)
+        && typeof data.scope === 'string'
+        && Object.hasOwn(data, 'commandKeys');
       setExpandedReviewIssues(new Set());
-      setCommandReview({ ...data, guildOptions: Array.isArray(guildData.guilds) ? guildData.guilds : [], gatewayConnected: Boolean(guildData.gatewayConnected), guildDirectoryError: guildData.guildDirectoryError || (!guildResponse.ok ? guildData.error : ''), graphs });
+      setCommandReview({ ...data, supportsScopedDeployment, guildOptions: [], gatewayConnected: false, guildDirectoryError: '', graphs });
       setGuildIdDraft('');
     } catch (error) {
       if (requestId !== commandPreviewRequestRef.current || lastProjectIdRef.current !== requestProjectId) return;
       const message = commandRequestError(error, 'Could not review command changes.');
       setDeployError(message);
       arcEvents.emit('toast:notify', { title: 'Command review failed', message, type: 'error' });
-    } finally { if (requestId === commandPreviewRequestRef.current) setReviewingCommands(false); }
+    } finally {
+      window.clearTimeout(timeout);
+      if (requestId === commandPreviewRequestRef.current) setReviewingCommands(false);
+    }
   };
 
   const updateCommandReviewOptions = async ({ scope = 'global', guildIds = [], commandKeys = null, addedGuild = null } = {}) => {
@@ -1875,7 +1880,7 @@ export function ControlDock({
             <AlertTriangle size={17} />
             <div><strong>{(commandReview.discordAuthWarning || discordAuthWarning).title || 'Discord rejected the bot token'}</strong><span>{(commandReview.discordAuthWarning || discordAuthWarning).message}</span></div>
           </div>}
-          <section className="command-review-section deployment-target-section"><strong>Deploy scope</strong><div className="deployment-scope-toggle"><button type="button" className={commandReview.scope !== 'guilds' ? 'is-selected' : ''} disabled={updatingCommandReview} onClick={() => void updateCommandReviewOptions({ scope: 'global', guildIds: [], commandKeys: commandReview.commandKeys ?? null })}><Globe2 size={14} />Global</button><button type="button" className={commandReview.scope === 'guilds' ? 'is-selected' : ''} disabled={updatingCommandReview} onClick={() => { if (commandReview.scope !== 'guilds') void updateCommandReviewOptions({ scope: 'guilds', guildIds: commandReview.guildIds || [], commandKeys: commandReview.commandKeys ?? null }); }}><Server size={14} />Specific servers</button></div>
+          {commandReview.supportsScopedDeployment && <section className="command-review-section deployment-target-section"><strong>Deploy scope</strong><div className="deployment-scope-toggle"><button type="button" className={commandReview.scope !== 'guilds' ? 'is-selected' : ''} disabled={updatingCommandReview} onClick={() => void updateCommandReviewOptions({ scope: 'global', guildIds: [], commandKeys: commandReview.commandKeys ?? null })}><Globe2 size={14} />Global</button><button type="button" className={commandReview.scope === 'guilds' ? 'is-selected' : ''} disabled={updatingCommandReview} onClick={() => { if (commandReview.scope !== 'guilds') void updateCommandReviewOptions({ scope: 'guilds', guildIds: commandReview.guildIds || [], commandKeys: commandReview.commandKeys ?? null }); }}><Server size={14} />Specific servers</button></div>
             {commandReview.scope === 'guilds' && <>
               {commandReview.guildOptions?.length ? <>
                 <p className="command-review-empty">The application must be authorized in each selected server. Choose up to 25 servers per deployment.</p>
@@ -1896,8 +1901,9 @@ export function ControlDock({
               <form className="command-review-add-guild" onSubmit={async (event) => { event.preventDefault(); const id = guildIdDraft.trim(); if (!/^\d{17,20}$/.test(id) || (commandReview.guildIds || []).includes(id) || commandReview.guildIds?.length >= 25) return; const known = (commandReview.guildOptions || []).find((guild) => guild.id === id); const guild = known || { id, name: `Server ${id}` }; setGuildIdError(''); const result = await updateCommandReviewOptions({ scope: 'guilds', guildIds: [...(commandReview.guildIds || []), id], commandKeys: commandReview.commandKeys ?? null, addedGuild: guild }); if (result?.requestError) { setGuildIdError(result.requestError); return; } setGuildIdDraft(''); }}><input value={guildIdDraft} inputMode="numeric" aria-invalid={Boolean(guildIdDraft && !/^\d{17,20}$/.test(guildIdDraft)) || Boolean(guildIdError)} onChange={(event) => { setGuildIdDraft(event.target.value.replace(/\D/g, '').slice(0, 20)); setGuildIdError(''); setDeployError(''); }} placeholder="Enter a server ID" aria-label="Server ID" /><button className="studio-button" type="submit" disabled={updatingCommandReview || !/^\d{17,20}$/.test(guildIdDraft) || (commandReview.guildIds || []).includes(guildIdDraft) || commandReview.guildIds?.length >= 25}>Add server ID</button></form>
               {guildIdError ? <small className="command-review-guild-hint" role="alert">{guildIdError}</small> : guildIdDraft && !/^\d{17,20}$/.test(guildIdDraft) && <small className="command-review-guild-hint" role="status">A Discord server ID must contain 17 to 20 digits.</small>}
             </>}
-          </section>
-          <div className="command-review-section"><strong>Commands · {includedReviewCommandKeys.length} selected</strong><div className="deployment-command-selection">{availableReviewCommands.map((command) => { const key = `${Number(command.type || 1)}:${String(command.name || '').toLowerCase()}`; const included = includedReviewCommandKeys.includes(key); const label = Number(command.type || 1) === 2 ? `User · ${command.name}` : Number(command.type || 1) === 3 ? `Message · ${command.name}` : `/${command.name}`; return <label key={key}><input type="checkbox" checked={included} onChange={(event) => { const next = new Set(includedReviewCommandKeys); if (event.target.checked) next.add(key); else next.delete(key); void updateCommandReviewOptions({ scope: commandReview.scope || 'global', guildIds: commandReview.guildIds || [], commandKeys: next.size === allReviewCommandKeys.length ? null : [...next] }); }} /><span><code>{label}</code><small>{command.description || (Number(command.type || 1) === 2 ? 'User context command' : Number(command.type || 1) === 3 ? 'Message context command' : 'Slash command')}</small></span></label>; })}{!availableReviewCommands.length && <p className="command-review-empty">No configured commands.</p>}</div>{!updatingCommandReview && commandReview.noChanges && !includedReviewCommandKeys.length && <p className="command-review-empty">Select at least one command to deploy.</p>}</div>
+          </section>}
+          {!commandReview.supportsScopedDeployment && <p className="command-review-empty">This workspace supports global deployment only. Update the workspace to choose servers or individual commands.</p>}
+          <div className="command-review-section"><strong>Commands · {commandReview.supportsScopedDeployment ? `${includedReviewCommandKeys.length} selected` : availableReviewCommands.length}</strong><div className={`deployment-command-selection ${commandReview.supportsScopedDeployment ? '' : 'is-readonly'}`}>{availableReviewCommands.map((command) => { const key = `${Number(command.type || 1)}:${String(command.name || '').toLowerCase()}`; const included = includedReviewCommandKeys.includes(key); const label = Number(command.type || 1) === 2 ? `User · ${command.name}` : Number(command.type || 1) === 3 ? `Message · ${command.name}` : `/${command.name}`; return <label key={key}>{commandReview.supportsScopedDeployment && <input type="checkbox" checked={included} onChange={(event) => { const next = new Set(includedReviewCommandKeys); if (event.target.checked) next.add(key); else next.delete(key); void updateCommandReviewOptions({ scope: commandReview.scope || 'global', guildIds: commandReview.guildIds || [], commandKeys: next.size === allReviewCommandKeys.length ? null : [...next] }); }} />}<span><code>{label}</code><small>{command.description || (Number(command.type || 1) === 2 ? 'User context command' : Number(command.type || 1) === 3 ? 'Message context command' : 'Slash command')}</small></span></label>; })}{!availableReviewCommands.length && <p className="command-review-empty">No configured commands.</p>}</div>{commandReview.supportsScopedDeployment && !updatingCommandReview && commandReview.noChanges && !includedReviewCommandKeys.length && <p className="command-review-empty">Select at least one command to deploy.</p>}</div>
           <section className="command-review-section"><strong>Graph checks</strong>
             {reviewIssueGroups.length ? <div className="deployment-review-issues">{reviewIssueGroups.map((group) => {
               const expanded = expandedReviewIssues.has(group.key);
