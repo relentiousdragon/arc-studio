@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/capabilities.json",
+  "identifier": "desktop-prompt",
+  "description": "access for ARC Studio prompt windows.",
+  "windows": ["arc-prompt-*"],
+  "permissions": ["core:default", "core:event:default"]
+}
