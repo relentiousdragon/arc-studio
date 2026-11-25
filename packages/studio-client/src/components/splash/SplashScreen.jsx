@@ -871,7 +871,7 @@ export function SplashScreen({
         <section className="auth-card" aria-labelledby={remotePending ? undefined : 'auth-title'} aria-label={remotePending ? 'Connect to an external workspace' : undefined}>
           {!needsProjectOnboarding && desktopMode && <div className="workspace-switcher" role="tablist" aria-label="Workspace type">
             {localSessionAvailable && <button type="button" className="workspace-back-editor" onClick={onBackToEditor}><ArrowLeft size={14} /> Back to editor</button>}
-            {!localSessionAvailable && <button type="button" role="tab" aria-selected={workspaceChoice === 'local'} className={workspaceChoice === 'local' ? 'is-active' : ''} onClick={handleSelectLocal}><Laptop2 size={14} /> Local</button>}
+            <button type="button" role="tab" aria-selected={workspaceChoice === 'local'} className={workspaceChoice === 'local' ? 'is-active' : ''} onClick={handleSelectLocal}><Laptop2 size={14} /> Local</button>
             <button type="button" role="tab" aria-selected={workspaceChoice === 'remote'} className={workspaceChoice === 'remote' ? 'is-active' : ''} disabled={!networkOnline} title={!networkOnline ? 'External workspaces are unavailable offline' : undefined} onClick={handleSelectRemote}><Globe2 size={14} /> Connect to workspace</button>
           </div>}
           {desktopMode && !networkOnline && <p className="workspace-offline-note" role="status">Offline. You can continue with the Local Workspace.</p>}
