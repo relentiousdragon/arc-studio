@@ -75,7 +75,7 @@ const BotTokenForm = React.memo(function BotTokenForm({ isOpen, authToken, onPro
   </form>;
 });
 
-export function BotSettingsModal({ isOpen, onClose, authToken, profile, onProfileChange, onViewCommands, presentation = 'modal', sidebarWidth = 340, onSidebarResize }) {
+export function BotSettingsModal({ isOpen, onClose, authToken, profile, onProfileChange, onViewCommands, presentation = 'modal', sidebarWidth = 340, onSidebarResize, nativeWindow = false }) {
   const [statistics, setStatistics] = useState({ enabled: true, retentionDays: 30, commandUsage: true, uniqueUsers: true, returningUsers: true });
   const [statisticsLoading, setStatisticsLoading] = useState(false);
   const [statisticsSaving, setStatisticsSaving] = useState(false);
@@ -182,5 +182,5 @@ export function BotSettingsModal({ isOpen, onClose, authToken, profile, onProfil
     <div className="bot-settings-sidebar-content">{content}</div>
   </aside> : null;
 
-  return <Modal isOpen={isOpen} onClose={onClose} title="App settings" subtitle="Credentials and Discord profile" icon={Bot} maxWidth="max-w-2xl" panelClassName="modal-bot-settings">{content}</Modal>;
+  return <Modal isOpen={isOpen} onClose={onClose} title="App settings" subtitle="Credentials and Discord profile" icon={Bot} maxWidth="max-w-2xl" panelClassName="modal-bot-settings" nativeWindow={nativeWindow} hideHeader={nativeWindow}>{content}</Modal>;
 }
