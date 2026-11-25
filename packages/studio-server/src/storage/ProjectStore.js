@@ -126,7 +126,8 @@ function migrateLegacyProjectFiles(destination) {
     const target = path.join(destination, filename);
     if (fs.existsSync(target)) {
       if (!fs.readFileSync(source).equals(fs.readFileSync(target))) {
-        throw new Error(`The old ${filename} and the project copy contain different data. The old file was kept at ${source}.`);
+        console.warn(`The legacy ${filename} differs from the project copy. ARC Studio will use ${target} and keep the legacy file at ${source} for recovery.`);
+        continue;
       }
     } else {
       const temporary = path.join(destination, `.${filename}.legacy-migration.tmp`);
