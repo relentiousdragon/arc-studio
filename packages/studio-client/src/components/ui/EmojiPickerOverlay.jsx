@@ -67,6 +67,7 @@ export function EmojiPickerOverlay({ appEmojis = [], shortcut = DEFAULT_SHORTCUT
 
   useEffect(() => {
     const onKeyDown = (event) => {
+      if (window.__ARC_STUDIO_PROMPT_BLOCKED__) return;
       if (isOpen && event.key === 'Escape') {
         event.preventDefault();
         event.stopPropagation();
