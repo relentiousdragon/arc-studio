@@ -51,6 +51,10 @@ export default defineConfig({
     emptyOutDir: false,
     chunkSizeWarningLimit: 2500,
     rollupOptions: {
+      input: {
+        main: resolve(clientDirectory, 'index.html'),
+        prompt: resolve(clientDirectory, 'prompt.html')
+      },
       output: {
         manualChunks(id) {
           const normalizedId = id.replaceAll(String.fromCharCode(92), '/');
