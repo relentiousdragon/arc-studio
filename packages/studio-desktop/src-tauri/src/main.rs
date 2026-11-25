@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
-use tauri::{Emitter, Manager, RunEvent, State, Webview, WebviewWindowBuilder, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State, Webview, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_updater::UpdaterExt;
 use tokio::io::AsyncReadExt;
 use tokio::sync::Notify;
@@ -502,6 +502,165 @@ struct ProjectExportReceipt {
     revealed: bool,
 }
 
+struct GraphExportUpload {
+    temporary_path: PathBuf,
+    directory: PathBuf,
+    filename: String,
+    file: fs::File,
+}
+
+static GRAPH_EXPORT_UPLOADS: OnceLock<Mutex<HashMap<String, GraphExportUpload>>> = OnceLock::new();
+
+fn graph_export_uploads() -> &'static Mutex<HashMap<String, GraphExportUpload>> {
+    GRAPH_EXPORT_UPLOADS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn safe_graph_export_filename(filename: &str) -> Result<String, String> {
+    let safe_name = filename
+        .chars()
+        .filter(|character| !character.is_control() && !matches!(character, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+        .collect::<String>()
+        .trim_matches(|character| character == ' ' || character == '.')
+        .to_string();
+    let stem = if safe_name.to_ascii_lowercase().ends_with(".arcgraph") {
+        &safe_name[..safe_name.len() - ".arcgraph".len()]
+    } else {
+        &safe_name
+    };
+    if stem.trim().is_empty() || stem == "." || stem == ".." {
+        return Err("Choose a valid graph name before exporting.".to_string());
+    }
+    Ok(format!("{stem}.arcgraph"))
+}
+
+#[tauri::command]
+fn begin_graph_export<R: tauri::Runtime>(app: tauri::AppHandle<R>, filename: String) -> Result<String, String> {
+    let filename = safe_graph_export_filename(&filename)?;
+    let directory = app.path().download_dir()
+        .map_err(|error| format!("Could not locate your Downloads folder: {error}"))?;
+    fs::create_dir_all(&directory).map_err(|error| format!("Could not access your Downloads folder: {error}"))?;
+    let export_id = uuid::Uuid::new_v4().to_string();
+    let temporary_path = directory.join(format!(".arc-graph-export-{export_id}.partial"));
+    let file = OpenOptions::new().write(true).create_new(true).open(&temporary_path)
+        .map_err(|error| format!("Could not prepare the graph export: {error}"))?;
+    #[cfg(unix)]
+    if let Err(error) = file.set_permissions(fs::Permissions::from_mode(0o600)) {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(format!("Could not secure the graph export: {error}"));
+    }
+    let upload = GraphExportUpload { temporary_path: temporary_path.clone(), directory, filename, file };
+    match graph_export_uploads().lock() {
+        Ok(mut uploads) => { uploads.insert(export_id.clone(), upload); }
+        Err(_) => {
+            let _ = fs::remove_file(temporary_path);
+            return Err("Could not prepare the graph export.".to_string());
+        }
+    }
+    Ok(export_id)
+}
+
+#[tauri::command]
+fn write_graph_export_chunk(export_id: String, contents: Vec<u8>) -> Result<(), String> {
+    if uuid::Uuid::parse_str(&export_id).is_err() || contents.len() > 1024 * 1024 {
+        return Err("The graph export chunk is invalid.".to_string());
+    }
+    let mut uploads = graph_export_uploads().lock().map_err(|_| "Could not continue the graph export.".to_string())?;
+    let upload = uploads.get_mut(&export_id).ok_or_else(|| "The graph export is no longer active.".to_string())?;
+    if let Err(error) = upload.file.write_all(&contents) {
+        let temporary_path = upload.temporary_path.clone();
+        uploads.remove(&export_id);
+        let _ = fs::remove_file(temporary_path);
+        return Err(format!("Could not write the graph export: {error}"));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn cancel_graph_export(export_id: String) -> Result<(), String> {
+    if uuid::Uuid::parse_str(&export_id).is_err() { return Ok(()); }
+    let upload = graph_export_uploads().lock()
+        .map_err(|_| "Could not cancel the graph export.".to_string())?
+        .remove(&export_id);
+    if let Some(upload) = upload { fs::remove_file(upload.temporary_path).map_err(|error| format!("Could not remove the partial graph export: {error}"))?; }
+    Ok(())
+}
+
+#[tauri::command]
+fn finish_graph_export(export_id: String) -> Result<ProjectExportReceipt, String> {
+    if uuid::Uuid::parse_str(&export_id).is_err() { return Err("The graph export is invalid.".to_string()); }
+    let upload = graph_export_uploads().lock()
+        .map_err(|_| "Could not finish the graph export.".to_string())?
+        .remove(&export_id)
+        .ok_or_else(|| "The graph export is no longer active.".to_string())?;
+    if let Err(error) = upload.file.sync_all() {
+        drop(upload.file);
+        let _ = fs::remove_file(&upload.temporary_path);
+        return Err(format!("Could not finish writing the graph export: {error}"));
+    }
+    drop(upload.file);
+
+    let stem = upload.filename.strip_suffix(".arcgraph").unwrap_or(&upload.filename);
+    let path_result = (|| -> Result<PathBuf, String> {
+        let mut suffix = 0u32;
+        loop {
+            let name = if suffix == 0 { upload.filename.clone() } else { format!("{stem} ({suffix}).arcgraph") };
+            let path = upload.directory.join(name);
+            match fs::hard_link(&upload.temporary_path, &path) {
+                Ok(()) => {
+                    if let Err(error) = fs::remove_file(&upload.temporary_path) {
+                        eprintln!("Graph export saved at {}, but its temporary file could not be removed: {error}", path.display());
+                    }
+                    return Ok(path);
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => suffix += 1,
+                Err(_) => match OpenOptions::new().write(true).create_new(true).open(&path) {
+                    Ok(mut destination) => {
+                        #[cfg(unix)]
+                        if let Err(error) = destination.set_permissions(fs::Permissions::from_mode(0o600)) {
+                            let _ = fs::remove_file(&path);
+                            return Err(format!("Could not secure the graph export: {error}"));
+                        }
+                        let mut source = match fs::File::open(&upload.temporary_path) {
+                            Ok(source) => source,
+                            Err(error) => {
+                                let _ = fs::remove_file(&path);
+                                return Err(format!("Could not open the completed graph export: {error}"));
+                            }
+                        };
+                        if let Err(error) = io::copy(&mut source, &mut destination).and_then(|_| destination.sync_all()) {
+                            let _ = fs::remove_file(&path);
+                            return Err(format!("Could not save the graph export: {error}"));
+                        }
+                        if let Err(error) = fs::remove_file(&upload.temporary_path) {
+                            eprintln!("Graph export saved at {}, but its temporary file could not be removed: {error}", path.display());
+                        }
+                        return Ok(path);
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => suffix += 1,
+                    Err(error) => return Err(format!("Could not save the graph export: {error}")),
+                },
+            }
+        }
+    })();
+    let path = match path_result {
+        Ok(path) => path,
+        Err(error) => {
+            let _ = fs::remove_file(&upload.temporary_path);
+            return Err(error);
+        }
+    };
+
+    #[cfg(target_os = "macos")]
+    let reveal = Command::new("open").arg("-R").arg(&path).spawn();
+    #[cfg(target_os = "windows")]
+    let reveal = Command::new("explorer").arg(format!("/select,{}", path.display())).spawn();
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let reveal = Command::new("xdg-open").arg(&upload.directory).spawn();
+    let revealed = reveal.is_ok();
+    if let Err(error) = reveal { eprintln!("Graph export saved at {}, but its folder could not be opened: {error}", path.display()); }
+    Ok(ProjectExportReceipt { path: path.to_string_lossy().into_owned(), revealed })
+}
+
 #[tauri::command]
 fn save_project_export<R: tauri::Runtime>(app: tauri::AppHandle<R>, filename: String, contents: Vec<u8>) -> Result<ProjectExportReceipt, String> {
     let safe_name = filename
@@ -937,7 +1096,7 @@ fn cancel_project_import_upload(upload_id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn open_project_window(project_id: String) -> Result<(), String> {
+fn open_project_window<R: tauri::Runtime>(app: AppHandle<R>, project_id: String, api_base_url: String) -> Result<(), String> {
     let valid_id = project_id.strip_prefix("project_").is_some_and(|uuid| {
         uuid.len() == 36 && uuid.chars().enumerate().all(|(index, character)| {
             if [8, 13, 18, 23].contains(&index) { character == '-' }
@@ -945,13 +1104,441 @@ fn open_project_window(project_id: String) -> Result<(), String> {
         })
     });
     if !valid_id { return Err("That project ID is not valid.".to_string()); }
-    let executable = std::env::current_exe().map_err(|error| format!("Could not locate ARC Studio: {error}"))?;
-    Command::new(executable)
-        .arg("--arc-project-id")
-        .arg(project_id)
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("Could not open the project in a new window: {error}"))
+    let api_url = url::Url::parse(&api_base_url).map_err(|_| "Could not locate the Local Workspace service.".to_string())?;
+    let loopback = matches!(api_url.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
+    if !loopback || api_url.scheme() != "http" || !api_url.username().is_empty() || api_url.password().is_some()
+        || !matches!(api_url.path(), "" | "/") || api_url.query().is_some() || api_url.fragment().is_some()
+    {
+        return Err("Project windows are available only in the Local Workspace.".to_string());
+    }
+    let label = format!("project{}", project_id.strip_prefix("project_").unwrap_or_default().replace('-', ""));
+    if let Some(window) = app.get_webview_window(&label) {
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+    let mut window_config = app.config().app.windows.first().cloned()
+        .ok_or_else(|| "ARC Studio window configuration is missing.".to_string())?;
+    window_config.label = label;
+    window_config.create = false;
+    let platform = if cfg!(target_os = "macos") { "macos" } else if cfg!(target_os = "windows") { "windows" } else if cfg!(target_os = "linux") { "linux" } else { "other" };
+    let desktop_target = option_env!("ARC_DESKTOP_TARGET")
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS));
+    let init_script = format!(
+        "window.__ARC_STUDIO_CONFIG__ = Object.freeze({{ desktop: true, platform: {}, target: {}, releaseChannel: {}, localUsername: {}, apiBaseUrl: {}, startupError: null, startupProjectId: {} }}); window.__ARC_STUDIO_OPEN_FILES__ = []; window.__ARC_STUDIO_MENU_ACTION__ = null;",
+        js_string_literal(platform),
+        js_string_literal(&desktop_target),
+        js_string_literal(build_release_channel()),
+        js_string_literal(&os_login_name()),
+        js_string_literal(api_url.origin().ascii_serialization().as_str()),
+        js_string_literal(&project_id)
+    );
+    let window = WebviewWindowBuilder::from_config(&app, &window_config)
+        .map_err(|error| format!("Could not prepare the project window: {error}"))?
+        .initialization_script(init_script)
+        .background_color(tauri::webview::Color(20, 23, 27, 255))
+        .build()
+        .map_err(|error| format!("Could not open the project in a new window: {error}"))?;
+    let window_app = app.clone();
+    let window_label = window.label().to_string();
+    window.on_window_event(move |event| {
+        if matches!(event, WindowEvent::CloseRequested { .. }) {
+            close_desktop_prompt_sessions(&window_app, Some(&window_label));
+        }
+    });
+    let _ = window.set_focus();
+    Ok(())
+}
+
+struct DesktopPromptSession {
+    request_id: String,
+    parent_label: String,
+    payload: serde_json::Value,
+    blocking: bool,
+    dismiss_on_parent_focus: bool,
+    blocked_window_labels: Vec<String>,
+}
+
+#[derive(Default)]
+struct DesktopPromptManager {
+    sessions: Mutex<HashMap<String, DesktopPromptSession>>,
+}
+
+const DESKTOP_PROMPT_GUARD_SCRIPT: &str = r#"(() => {
+  if (window.__ARC_STUDIO_PROMPT_GUARD__) return;
+  const guard = document.createElement('div');
+  guard.id = 'arc-studio-native-prompt-guard';
+  guard.setAttribute('aria-hidden', 'true');
+  Object.assign(guard.style, { position: 'fixed', inset: '0', zIndex: '2147483647', background: 'rgba(0, 0, 0, .18)', pointerEvents: 'auto', cursor: 'default' });
+  const blockInput = (event) => {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  };
+  const blockedEvents = ['keydown', 'keyup', 'keypress', 'pointerdown', 'pointerup', 'click', 'dblclick', 'contextmenu', 'wheel', 'touchstart', 'touchmove', 'dragstart'];
+  window.__ARC_STUDIO_PROMPT_BLOCKED__ = true;
+  window.__ARC_STUDIO_PROMPT_GUARD__ = { guard, blockInput, blockedEvents };
+  document.activeElement?.blur?.();
+  for (const eventName of blockedEvents) document.addEventListener(eventName, blockInput, { capture: true, passive: false });
+  document.documentElement.appendChild(guard);
+})()"#;
+
+const DESKTOP_PROMPT_UNGUARD_SCRIPT: &str = r#"(() => {
+  const current = window.__ARC_STUDIO_PROMPT_GUARD__;
+  if (!current) return;
+  for (const eventName of current.blockedEvents || []) document.removeEventListener(eventName, current.blockInput, true);
+  current.guard?.remove();
+  delete window.__ARC_STUDIO_PROMPT_GUARD__;
+  delete window.__ARC_STUDIO_PROMPT_BLOCKED__;
+})()"#;
+
+fn restore_prompt_windows<R: tauri::Runtime>(app: &AppHandle<R>, labels: &[String]) {
+    for label in labels {
+        if let Some(window) = app.get_webview_window(label) {
+            let _ = window.eval(DESKTOP_PROMPT_UNGUARD_SCRIPT);
+        }
+    }
+}
+
+fn clear_desktop_prompt<R: tauri::Runtime>(app: &AppHandle<R>, label: &str, response: serde_json::Value, close_window: bool) {
+    let session = app.state::<DesktopPromptManager>().sessions.lock().ok().and_then(|mut sessions| sessions.remove(label));
+    let Some(session) = session else { return; };
+    let _ = app.emit_to(&session.parent_label, "arc:desktop-prompt-response", serde_json::json!({
+        "requestId": session.request_id,
+        "response": response,
+    }));
+    if close_window {
+        if let Some(window) = app.get_webview_window(label) {
+            let _ = window.hide();
+            let _ = window.close();
+        }
+    }
+    restore_prompt_windows(app, &session.blocked_window_labels);
+    if session.blocking {
+        if let Some(parent) = app.get_webview_window(&session.parent_label) {
+            let _ = parent.set_focus();
+        }
+    }
+}
+
+fn close_desktop_prompt_sessions<R: tauri::Runtime>(app: &AppHandle<R>, parent_label: Option<&str>) {
+    let labels = app.state::<DesktopPromptManager>().sessions.lock().ok().map(|sessions| {
+        sessions.iter()
+            .filter(|(_, session)| parent_label.map_or(true, |parent| session.parent_label == parent))
+            .map(|(label, _)| label.clone())
+            .collect::<Vec<_>>()
+    }).unwrap_or_default();
+    for label in labels {
+        let session = app.state::<DesktopPromptManager>().sessions.lock().ok().and_then(|mut sessions| sessions.remove(&label));
+        let Some(session) = session else { continue; };
+        let _ = app.emit_to(&session.parent_label, "arc:desktop-prompt-response", serde_json::json!({
+            "requestId": session.request_id,
+            "response": serde_json::Value::Null,
+        }));
+        if let Some(window) = app.get_webview_window(&label) {
+            let _ = window.hide();
+            let _ = window.close();
+        }
+        restore_prompt_windows(app, &session.blocked_window_labels);
+    }
+}
+
+fn discard_desktop_prompt<R: tauri::Runtime>(app: &AppHandle<R>, label: &str) {
+    let session = app.state::<DesktopPromptManager>().sessions.lock().ok().and_then(|mut sessions| sessions.remove(label));
+    if let Some(session) = session {
+        restore_prompt_windows(app, &session.blocked_window_labels);
+    }
+}
+
+fn dismiss_desktop_prompt_when_parent_focused<R: tauri::Runtime>(app: AppHandle<R>, prompt_label: String, parent_label: String) {
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(80));
+        let main_thread_app = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let parent_focused = main_thread_app.get_webview_window(&parent_label)
+                .and_then(|parent| parent.is_focused().ok())
+                .unwrap_or(false);
+            if !parent_focused { return; }
+            let dismissible = main_thread_app.state::<DesktopPromptManager>().sessions.lock().ok()
+                .and_then(|sessions| sessions.get(&prompt_label).map(|session| {
+                    session.dismiss_on_parent_focus && session.parent_label == parent_label
+                }))
+                .unwrap_or(false);
+            if dismissible {
+                clear_desktop_prompt(&main_thread_app, &prompt_label, serde_json::Value::Null, true);
+            }
+        });
+    });
+}
+
+#[tauri::command]
+fn open_desktop_prompt(
+    app: AppHandle,
+    parent: WebviewWindow,
+    state: State<'_, DesktopPromptManager>,
+    request_id: String,
+    payload: serde_json::Value,
+) -> Result<(), String> {
+    let request_uuid = uuid::Uuid::parse_str(&request_id).map_err(|_| "That prompt request is not valid.".to_string())?;
+    let request_id = request_uuid.to_string();
+    let kind = payload.get("kind").and_then(serde_json::Value::as_str).unwrap_or_default();
+    if !["text", "text-confirm", "project-export", "bot-export", "editor-settings", "app-settings", "shortcuts-help", "template-syntax-help", "template-inputs-help", "create-project", "deployment-review", "command-browser", "plugin-action", "canvas-section", "graph-name", "graph-close", "graph-validation", "team-access"].contains(&kind) {
+        return Err("That prompt type is not supported.".to_string());
+    }
+    if serde_json::to_vec(&payload).map_err(|_| "The prompt could not be prepared.".to_string())?.len() > 512 * 1024 {
+        return Err("The prompt contains too much data to display.".to_string());
+    }
+
+    let blocking = payload.get("blocking").and_then(serde_json::Value::as_bool).unwrap_or(true);
+    let dismiss_on_parent_focus = matches!(kind, "editor-settings" | "app-settings" | "command-browser" | "graph-validation");
+    if !blocking && matches!(kind, "editor-settings" | "shortcuts-help" | "template-syntax-help") {
+        let existing_label = {
+            let sessions = state.sessions.lock().map_err(|_| "A desktop prompt could not be opened.".to_string())?;
+            sessions.iter().find_map(|(existing_label, session)| {
+                let existing_kind = session.payload.get("kind").and_then(serde_json::Value::as_str).unwrap_or_default();
+                (!session.blocking && session.parent_label == parent.label() && existing_kind == kind).then(|| existing_label.clone())
+            })
+        };
+        if let Some(existing_label) = existing_label {
+            if let Some(existing_window) = app.get_webview_window(&existing_label) {
+                let _ = existing_window.show();
+                let _ = existing_window.set_focus();
+                let _ = app.emit_to(parent.label(), "arc:desktop-prompt-response", serde_json::json!({ "requestId": request_id, "response": null }));
+                return Ok(());
+            }
+        }
+    }
+    let label = {
+        let mut sessions = state.sessions.lock().map_err(|_| "A desktop prompt could not be opened.".to_string())?;
+        if blocking && sessions.values().any(|session| session.blocking) {
+            return Err("Another blocking desktop prompt is already open.".to_string());
+        }
+        let label = format!("arc-prompt-{request_id}");
+        if sessions.contains_key(&label) {
+            return Err("Another desktop prompt is already open.".to_string());
+        }
+        sessions.insert(label.clone(), DesktopPromptSession {
+            request_id: request_id.clone(),
+            parent_label: parent.label().to_string(),
+            payload: payload.clone(),
+            blocking,
+            dismiss_on_parent_focus,
+            blocked_window_labels: Vec::new(),
+        });
+        label
+    };
+
+    let mut blocked_window_labels = Vec::new();
+    if blocking {
+        for (window_label, window) in app.webview_windows() {
+            if window_label == label { continue; }
+            if let Err(error) = window.eval(DESKTOP_PROMPT_GUARD_SCRIPT) {
+                discard_desktop_prompt(&app, &label);
+                restore_prompt_windows(&app, &blocked_window_labels);
+                return Err(format!("Could not prepare the prompt window: {error}"));
+            }
+            blocked_window_labels.push(window_label);
+        }
+    }
+    if let Ok(mut sessions) = state.sessions.lock() {
+        if let Some(session) = sessions.get_mut(&label) {
+            session.blocked_window_labels = blocked_window_labels.clone();
+        }
+    }
+
+    let about_only = payload.get("aboutOnly").and_then(serde_json::Value::as_bool).unwrap_or(false);
+    let title = payload.get("title").and_then(serde_json::Value::as_str).unwrap_or("ARC Studio");
+    let title = title.chars().filter(|character| !character.is_control()).take(80).collect::<String>();
+    let height = match kind {
+        "text" | "graph-name" => 250.0,
+        "graph-close" => 300.0,
+        "text-confirm" => 320.0,
+        "bot-export" => 640.0,
+        "project-export" => 520.0,
+        "editor-settings" if about_only => 660.0,
+        "editor-settings" => 700.0,
+        "app-settings" => 720.0,
+        "deployment-review" => 720.0,
+        "command-browser" => 700.0,
+        "plugin-action" => 700.0,
+        "team-access" => 760.0,
+        "canvas-section" => 620.0,
+        "shortcuts-help" | "template-syntax-help" => 660.0,
+        "template-inputs-help" => 600.0,
+        "create-project" => 620.0,
+        _ => 320.0,
+    };
+    let minimum_height = match kind {
+        "text" | "graph-name" => 220.0,
+        "graph-close" => 260.0,
+        "text-confirm" => 280.0,
+        _ => 320.0,
+    };
+    let width = match kind {
+        "editor-settings" if about_only => 620.0,
+        "editor-settings" => 720.0,
+        "app-settings" => 700.0,
+        "deployment-review" | "command-browser" | "plugin-action" => 680.0,
+        "team-access" => 800.0,
+        "canvas-section" => 560.0,
+        "shortcuts-help" | "template-syntax-help" => 640.0,
+        "create-project" => 580.0,
+        "graph-close" => 520.0,
+        _ => 480.0,
+    };
+    let theme = payload.get("theme").and_then(serde_json::Value::as_str).filter(|theme| *theme == "light" || *theme == "dark").unwrap_or("dark");
+    let release_channel = payload.get("releaseChannel").and_then(serde_json::Value::as_str).filter(|channel| *channel == "stable" || *channel == "nightly").unwrap_or(build_release_channel());
+    let (background_color, background_css) = if theme == "light" {
+        (tauri::webview::Color(233, 235, 238, 255), "#e9ebee")
+    } else {
+        (tauri::webview::Color(20, 23, 27, 255), "#14171b")
+    };
+    let theme_choice = payload.get("themeChoice").and_then(serde_json::Value::as_str).unwrap_or("system");
+    let native_theme = match theme_choice {
+        "light" => Some(tauri::Theme::Light),
+        "dark" => Some(tauri::Theme::Dark),
+        _ => None,
+    };
+    let initialization_script = format!(
+        "document.documentElement.dataset.theme = {}; document.documentElement.dataset.releaseChannel = {}; document.documentElement.style.backgroundColor = {};",
+        js_string_literal(theme),
+        js_string_literal(release_channel),
+        js_string_literal(background_css),
+    );
+    let prompt = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("prompt.html".into()))
+        .title(if title.is_empty() { "ARC Studio" } else { &title })
+        .inner_size(width, height)
+        .theme(native_theme)
+        .background_color(background_color)
+        .initialization_script(initialization_script)
+        .min_inner_size(width, minimum_height)
+        .resizable(false)
+        .maximizable(false)
+        .minimizable(false)
+        .closable(true)
+        .decorations(true)
+        .always_on_top(payload.get("alwaysOnTop").and_then(serde_json::Value::as_bool).unwrap_or(false))
+        .focused(true)
+        .visible(false)
+        .parent(&parent)
+        .map_err(|error| {
+            discard_desktop_prompt(&app, &label);
+            format!("Could not prepare the prompt window: {error}")
+        })?
+        .build()
+        .map_err(|error| {
+            discard_desktop_prompt(&app, &label);
+            format!("Could not create the prompt window: {error}")
+        })?;
+
+    let close_label = label.clone();
+    let close_app = app.clone();
+    let close_parent_label = parent.label().to_string();
+    prompt.on_window_event(move |event| {
+        match event {
+            WindowEvent::Focused(false) if dismiss_on_parent_focus => {
+                dismiss_desktop_prompt_when_parent_focused(close_app.clone(), close_label.clone(), close_parent_label.clone());
+            }
+            WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => {
+                clear_desktop_prompt(&close_app, &close_label, serde_json::Value::Null, false);
+            }
+            _ => {}
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn show_desktop_prompt_window(window: WebviewWindow, state: State<'_, DesktopPromptManager>) -> Result<(), String> {
+    let label = window.label();
+    if !label.starts_with("arc-prompt-") {
+        return Err("Only a desktop prompt window can be shown this way.".to_string());
+    }
+    if !state.sessions.lock().map_err(|_| "This desktop prompt is unavailable.".to_string())?.contains_key(label) {
+        return Err("This desktop prompt is no longer active.".to_string());
+    }
+    window.show().map_err(|error| format!("Could not show the desktop prompt: {error}"))?;
+    let _ = window.set_focus();
+    Ok(())
+}
+
+#[tauri::command]
+fn take_desktop_prompt_data(window: WebviewWindow, state: State<'_, DesktopPromptManager>) -> Result<serde_json::Value, String> {
+    let label = window.label();
+    if !label.starts_with("arc-prompt-") {
+        return Err("Prompt data is only available in a prompt window.".to_string());
+    }
+    let sessions = state.sessions.lock().map_err(|_| "The prompt data is unavailable.".to_string())?;
+    let Some(session) = sessions.get(label) else { return Err("This prompt is no longer active.".to_string()); };
+    let mut payload = session.payload.clone();
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("_desktopPrompt".to_string(), serde_json::json!({
+            "requestId": session.request_id,
+            "parentLabel": session.parent_label,
+            "windowLabel": label,
+            "blocking": session.blocking,
+        }));
+    }
+    Ok(payload)
+}
+
+#[tauri::command]
+fn dispatch_desktop_prompt_action(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: State<'_, DesktopPromptManager>,
+    action_id: String,
+    action: String,
+    value: serde_json::Value,
+) -> Result<(), String> {
+    let label = window.label();
+    if !label.starts_with("arc-prompt-") { return Err("Only a prompt window can send desktop actions.".to_string()); }
+    let action_id = uuid::Uuid::parse_str(&action_id).map_err(|_| "That desktop action is not valid.".to_string())?.to_string();
+    if serde_json::to_vec(&value).map_err(|_| "That desktop action could not be prepared.".to_string())?.len() > 256 * 1024 {
+        return Err("That desktop action contains too much data.".to_string());
+    }
+    let (parent_label, kind) = {
+        let sessions = state.sessions.lock().map_err(|_| "The prompt action is unavailable.".to_string())?;
+        sessions.get(label).map(|session| (session.parent_label.clone(), session.payload.get("kind").and_then(serde_json::Value::as_str).unwrap_or_default().to_string())).ok_or_else(|| "This prompt is no longer active.".to_string())?
+    };
+    let allowed = match kind.as_str() {
+        "editor-settings" => matches!(action.as_str(), "settings-update" | "settings-theme" | "settings-auto-layout" | "settings-export-graph" | "settings-reset-local-data" | "settings-open-studio-update" | "settings-check-for-updates" | "settings-idle-disconnect"),
+        "create-project" => action == "projects-create-from-template",
+        "app-settings" => matches!(action.as_str(), "app-settings-profile" | "app-settings-view-commands"),
+        "deployment-review" => matches!(action.as_str(), "commands-deploy" | "commands-review-options" | "command-open-graph" | "command-open-node"),
+        "command-browser" => action == "command-open-graph",
+        "plugin-action" => action == "plugin-confirm",
+        "team-access" => action == "team-current-user-updated",
+        "graph-name" => action == "graph-name-submit",
+        "graph-validation" => action == "validation-open-node",
+        _ => false,
+    };
+    if !allowed { return Err("This desktop prompt cannot perform that action.".to_string()); }
+    app.emit_to(&parent_label, "arc:desktop-window-action", serde_json::json!({
+        "actionId": action_id,
+        "action": action,
+        "value": value,
+        "promptLabel": label,
+    })).map_err(|error| format!("Could not send the desktop action: {error}"))
+}
+
+#[tauri::command]
+fn complete_desktop_prompt(window: WebviewWindow, app: AppHandle, response: serde_json::Value) -> Result<(), String> {
+    let label = window.label().to_string();
+    if !label.starts_with("arc-prompt-") {
+        return Err("Only a prompt window can complete a desktop prompt.".to_string());
+    }
+    if !app.state::<DesktopPromptManager>().sessions.lock().map_err(|_| "The prompt could not be completed.".to_string())?.contains_key(&label) {
+        return Err("This prompt is no longer active.".to_string());
+    }
+    clear_desktop_prompt(&app, &label, response, true);
+    Ok(())
+}
+
+#[tauri::command]
+fn close_desktop_prompts(app: AppHandle) -> Result<(), String> {
+    close_desktop_prompt_sessions(&app, None);
+    Ok(())
 }
 
 fn is_arc_project_path(path: &Path) -> bool {
@@ -963,8 +1550,20 @@ fn is_arc_project_path(path: &Path) -> bool {
 
 fn notify_project_file_opened<R: tauri::Runtime>(app: &tauri::AppHandle<R>, path: &Path) {
     if !is_arc_project_path(path) && !is_arc_graph_path(path) { return; }
-    let Some(window) = app.get_webview_window("main") else { return; };
-    let path = js_string_literal(&path.to_string_lossy());
+    let path = path.to_string_lossy().into_owned();
+    let pending = app.state::<PendingProjectFiles>();
+    if !pending.main_window_ready.load(Ordering::SeqCst) {
+        let Ok(mut paths) = pending.paths.lock() else { return; };
+        if !pending.main_window_ready.load(Ordering::SeqCst) {
+            paths.push(path);
+            return;
+        }
+    }
+    let Some(window) = app.get_webview_window("main") else {
+        if let Ok(mut paths) = pending.paths.lock() { paths.push(path); }
+        return;
+    };
+    let path = js_string_literal(&path);
     let script = format!(
         "window.__ARC_STUDIO_OPEN_FILES__ ||= []; window.__ARC_STUDIO_OPEN_FILES__.push({path}); window.dispatchEvent(new CustomEvent('arc:desktop-file-opened', {{ detail: {path} }}));"
     );
@@ -1102,6 +1701,125 @@ unsafe fn set_macos_dock_icon(icon_png: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+static MACOS_DOCK_MENU_APP: OnceLock<Mutex<Option<AppHandle>>> = OnceLock::new();
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" fn arc_application_dock_menu(_this: *mut std::ffi::c_void, _selector: *mut std::ffi::c_void, _application: *mut std::ffi::c_void) -> *mut std::ffi::c_void {
+    use std::ffi::c_void;
+    #[link(name = "AppKit", kind = "framework")]
+    extern "C" {}
+    #[link(name = "objc")]
+    extern "C" {
+        fn objc_getClass(name: *const std::ffi::c_char) -> *mut c_void;
+        fn sel_registerName(name: *const std::ffi::c_char) -> *mut c_void;
+        fn objc_msgSend(receiver: *mut c_void, selector: *mut c_void, ...) -> *mut c_void;
+    }
+
+    let class_name = CString::new("NSMenu").unwrap();
+    let menu_class = objc_getClass(class_name.as_ptr());
+    let alloc_name = CString::new("alloc").unwrap();
+    let alloc = objc_msgSend(menu_class, sel_registerName(alloc_name.as_ptr()));
+    let title_name = CString::new("ARC Studio").unwrap();
+    let title = objc_msgSend(objc_getClass(CString::new("NSString").unwrap().as_ptr()), sel_registerName(CString::new("stringWithUTF8String:").unwrap().as_ptr()), title_name.as_ptr());
+    let menu = objc_msgSend(alloc, sel_registerName(CString::new("initWithTitle:").unwrap().as_ptr()), title);
+    if menu.is_null() { return std::ptr::null_mut(); }
+    let action_selector = sel_registerName(CString::new("arcDockMenuAction:").unwrap().as_ptr());
+    let item_class = objc_getClass(CString::new("NSMenuItem").unwrap().as_ptr());
+    let autorelease = sel_registerName(CString::new("autorelease").unwrap().as_ptr());
+    let add_item = sel_registerName(CString::new("addItem:").unwrap().as_ptr());
+    let set_target = sel_registerName(CString::new("setTarget:").unwrap().as_ptr());
+    let set_represented_object = sel_registerName(CString::new("setRepresentedObject:").unwrap().as_ptr());
+    let string_class = objc_getClass(CString::new("NSString").unwrap().as_ptr());
+    let string_from_utf8 = sel_registerName(CString::new("stringWithUTF8String:").unwrap().as_ptr());
+    for (label, action) in [
+        ("New Graph", "file.new-graph"),
+        ("Import Project File…", "file.open-project"),
+        ("Editor Settings…", "view.settings"),
+        ("Keyboard Shortcuts", "help.shortcuts"),
+    ] {
+        let label = CString::new(label).unwrap();
+        let action_value = CString::new(action).unwrap();
+        let label_object = objc_msgSend(string_class, string_from_utf8, label.as_ptr());
+        let item = objc_msgSend(
+            objc_msgSend(item_class, sel_registerName(CString::new("alloc").unwrap().as_ptr())),
+            sel_registerName(CString::new("initWithTitle:action:keyEquivalent:").unwrap().as_ptr()),
+            label_object,
+            action_selector,
+            objc_msgSend(string_class, string_from_utf8, CString::new("").unwrap().as_ptr()),
+        );
+        if item.is_null() { continue; }
+        objc_msgSend(item, set_target, _this);
+        let represented = objc_msgSend(string_class, string_from_utf8, action_value.as_ptr());
+        objc_msgSend(item, set_represented_object, represented);
+        objc_msgSend(menu, add_item, objc_msgSend(item, autorelease));
+    }
+    objc_msgSend(menu, autorelease)
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" fn arc_dock_menu_action(_this: *mut std::ffi::c_void, _selector: *mut std::ffi::c_void, sender: *mut std::ffi::c_void) {
+    use std::ffi::{c_void, CStr};
+    #[link(name = "AppKit", kind = "framework")]
+    extern "C" {}
+    #[link(name = "objc")]
+    extern "C" {
+        fn sel_registerName(name: *const std::ffi::c_char) -> *mut c_void;
+        fn objc_msgSend(receiver: *mut c_void, selector: *mut c_void, ...) -> *mut c_void;
+    }
+    let Some(state) = MACOS_DOCK_MENU_APP.get() else { return; };
+    let Ok(app_slot) = state.lock() else { return; };
+    let Some(app) = app_slot.as_ref() else { return; };
+    let represented = objc_msgSend(sender, sel_registerName(CString::new("representedObject").unwrap().as_ptr()));
+    let bytes = objc_msgSend(represented, sel_registerName(CString::new("UTF8String").unwrap().as_ptr())) as *const std::ffi::c_char;
+    if bytes.is_null() { return; }
+    let action = CStr::from_ptr(bytes).to_string_lossy().into_owned();
+    dispatch_desktop_menu_action(app, action);
+}
+
+#[cfg(target_os = "macos")]
+fn install_macos_dock_menu(app: &AppHandle) -> Result<(), String> {
+    use std::ffi::{c_void, CString};
+    #[link(name = "AppKit", kind = "framework")]
+    extern "C" {}
+    #[link(name = "objc")]
+    extern "C" {
+        fn objc_getClass(name: *const std::ffi::c_char) -> *mut c_void;
+        fn object_getClass(object: *mut c_void) -> *mut c_void;
+        fn sel_registerName(name: *const std::ffi::c_char) -> *mut c_void;
+        fn objc_msgSend(receiver: *mut c_void, selector: *mut c_void, ...) -> *mut c_void;
+        fn class_addMethod(class: *mut c_void, selector: *mut c_void, implementation: unsafe extern "C" fn(), types: *const std::ffi::c_char) -> i8;
+        fn class_replaceMethod(class: *mut c_void, selector: *mut c_void, implementation: unsafe extern "C" fn(), types: *const std::ffi::c_char) -> *mut c_void;
+    }
+
+    let slot = MACOS_DOCK_MENU_APP.get_or_init(|| Mutex::new(None));
+    *slot.lock().map_err(|_| "The Dock menu state is unavailable.".to_string())? = Some(app.clone());
+    unsafe {
+        let application_class = objc_getClass(CString::new("NSApplication").unwrap().as_ptr());
+        let application = objc_msgSend(application_class, sel_registerName(CString::new("sharedApplication").unwrap().as_ptr()));
+        let delegate = objc_msgSend(application, sel_registerName(CString::new("delegate").unwrap().as_ptr()));
+        if delegate.is_null() { return Err("macOS did not provide an application delegate.".to_string()); }
+        let delegate_class = object_getClass(delegate);
+        let dock_selector = sel_registerName(CString::new("applicationDockMenu:").unwrap().as_ptr());
+        let dock_types = CString::new("@@:@").unwrap();
+        let dock_imp: unsafe extern "C" fn() = std::mem::transmute(arc_application_dock_menu as *const ());
+        if class_addMethod(delegate_class, dock_selector, dock_imp, dock_types.as_ptr()) == 0 {
+            if class_replaceMethod(delegate_class, dock_selector, dock_imp, dock_types.as_ptr()).is_null() {
+                return Err("macOS could not register the Dock menu handler.".to_string());
+            }
+        }
+        let action_selector = sel_registerName(CString::new("arcDockMenuAction:").unwrap().as_ptr());
+        let action_types = CString::new("v@:@").unwrap();
+        let action_imp: unsafe extern "C" fn() = std::mem::transmute(arc_dock_menu_action as *const ());
+        if class_addMethod(delegate_class, action_selector, action_imp, action_types.as_ptr()) == 0 {
+            if class_replaceMethod(delegate_class, action_selector, action_imp, action_types.as_ptr()).is_null() {
+                return Err("macOS could not register the Dock menu action handler.".to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn reset_local_data<R: tauri::Runtime>(app: tauri::AppHandle<R>, server: State<'_, StudioServer>, username: String, password: String, server_port: Option<u16>) -> Result<(), String> {
     let is_dev = cfg!(debug_assertions);
@@ -1214,7 +1932,16 @@ use std::os::unix::fs::PermissionsExt;
 struct StudioServer {
     child: Mutex<Option<Child>>,
     port: Mutex<Option<u16>>,
+    shutting_down: AtomicBool,
 }
+#[derive(Default)]
+struct PendingProjectFiles {
+    paths: Mutex<Vec<String>>,
+    main_window_ready: AtomicBool,
+}
+
+#[derive(Default)]
+struct PendingDesktopMenuActions(Mutex<Vec<String>>);
 struct DiscordPresence {
     client: Mutex<Option<DiscordIpcClient>>,
     started_at_ms: Mutex<Option<i64>>,
@@ -1235,6 +1962,17 @@ impl AppState {
 struct WindowSizeState(Arc<Mutex<WindowDimensions>>);
 #[derive(Clone, Copy)]
 struct WindowDimensions { width: f64, height: f64, maximized: bool }
+struct MainWindowLaunch {
+    window_config: tauri::utils::config::WindowConfig,
+    window_size: WindowDimensions,
+    window_size_path: PathBuf,
+    local_username: String,
+    desktop_target: String,
+    release_channel: &'static str,
+    startup_project_files: String,
+    startup_project_id: String,
+    startup_menu_action: Option<String>,
+}
 const DISCORD_APPLICATION_ID: &str = "1559947417699360821";
 const ARC_GITHUB_URL: &str = "https://github.com/relentiousdragon/arc-studio";
 const NIGHTLY_RPC_ICON_URL: &str = "https://raw.githubusercontent.com/relentiousdragon/arc-studio/main/packages/studio-desktop/src-tauri/icons/nightly-icon.png";
@@ -1245,9 +1983,11 @@ fn update_discord_presence(
     details: String,
     state_text: String,
     activity_type: u8,
+    button_label: String,
 ) -> Result<(), String> {
     let details = presence_text(&details);
     let state_text = presence_text(&state_text);
+    let button_label = presence_text(&button_label);
     let activity_type = match activity_type {
         0 => activity::ActivityType::Playing,
         2 => activity::ActivityType::Listening,
@@ -1276,8 +2016,10 @@ fn update_discord_presence(
         .activity_type(activity_type)
         .details(details)
         .state(state_text)
-        .timestamps(activity::Timestamps::new().start(started_at_ms))
-        .buttons(vec![activity::Button::new("GitHub", ARC_GITHUB_URL)]);
+        .timestamps(activity::Timestamps::new().start(started_at_ms));
+    if !button_label.is_empty() {
+        activity = activity.buttons(vec![activity::Button::new(button_label, ARC_GITHUB_URL)]);
+    }
     if build_release_channel() == "nightly" {
         activity = activity.assets(
             activity::Assets::new()
@@ -1369,6 +2111,225 @@ fn set_menu_context(app: tauri::AppHandle, surface: String) -> Result<(), String
 }
 
 #[tauri::command]
+fn set_application_theme(app: AppHandle, choice: String) -> Result<Option<String>, String> {
+    let theme = match choice.as_str() {
+        "system" => None,
+        "light" => Some(tauri::Theme::Light),
+        "dark" => Some(tauri::Theme::Dark),
+        _ => return Err("Choose the system, light, or dark theme.".to_string()),
+    };
+    app.set_theme(theme);
+    #[cfg(target_os = "macos")]
+    if choice == "system" {
+        let output = Command::new("/usr/bin/defaults")
+            .args(["read", "-g", "AppleInterfaceStyle"])
+            .output()
+            .ok();
+        if let Some(output) = output {
+            let system_theme = if output.status.success()
+                && String::from_utf8_lossy(&output.stdout).trim().eq_ignore_ascii_case("dark")
+            { "dark" } else { "light" };
+            return Ok(Some(system_theme.to_string()));
+        }
+    }
+    Ok(None)
+}
+
+fn dispatch_desktop_menu_action<R: tauri::Runtime>(app: &AppHandle<R>, action: String) {
+    if app.try_state::<DesktopPromptManager>()
+        .and_then(|manager| manager.sessions.lock().ok().map(|sessions| sessions.values().any(|session| session.blocking)))
+        .unwrap_or(false)
+    {
+        return;
+    }
+    if app.get_webview_window("main").is_none() {
+        if let Some(pending) = app.try_state::<PendingDesktopMenuActions>() {
+            if let Ok(mut actions) = pending.0.lock() { actions.push(action); }
+        }
+        return;
+    }
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(window) = handle.get_webview_window("main") {
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+            let script = format!(
+                "window.__ARC_STUDIO_MENU_ACTION__ = {}; window.dispatchEvent(new CustomEvent('arc:desktop-menu-action', {{ detail: window.__ARC_STUDIO_MENU_ACTION__ }}));",
+                js_string_literal(&action)
+            );
+            let _ = window.eval(&script);
+        }
+    });
+}
+
+fn desktop_menu_action_argument(argument: &std::ffi::OsStr) -> Option<String> {
+    argument.to_str()?.strip_prefix("--arc-menu-action=").map(str::to_owned)
+}
+
+#[cfg(target_os = "windows")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct WindowsGuid { data1: u32, data2: u16, data3: u16, data4: [u8; 8] }
+
+#[cfg(target_os = "windows")]
+#[repr(C)]
+union WindowsPropVariantValue {
+    string: *mut u16,
+    #[cfg(target_pointer_width = "64")]
+    words64: [u64; 2],
+    #[cfg(target_pointer_width = "32")]
+    words32: [u32; 4],
+}
+
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct WindowsPropVariant { kind: u16, reserved1: u16, reserved2: u16, reserved3: u16, value: WindowsPropVariantValue }
+
+#[cfg(target_os = "windows")]
+unsafe fn windows_com_release(object: *mut std::ffi::c_void) {
+    if object.is_null() { return; }
+    let vtable = *(object as *mut *mut usize);
+    let release: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32 = std::mem::transmute(*vtable.add(2));
+    release(object);
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn windows_shell_link_title(link: *mut std::ffi::c_void, title: &[u16]) -> Result<(), String> {
+    use std::ffi::c_void;
+    #[link(name = "ole32")]
+    unsafe extern "system" { fn PropVariantClear(value: *mut WindowsPropVariant) -> i32; }
+    const IID_PROPERTY_STORE: WindowsGuid = WindowsGuid { data1: 0x886d8eeb, data2: 0x8cf2, data3: 0x4446, data4: [0x8d, 0x02, 0xcd, 0xba, 0x1d, 0xbd, 0xcf, 0x99] };
+    const PKEY_TITLE: WindowsGuid = WindowsGuid { data1: 0xf29f85e0, data2: 0x4ff9, data3: 0x1068, data4: [0xab, 0x91, 0x08, 0x00, 0x2b, 0x27, 0xb3, 0xd9] };
+    #[repr(C)]
+    struct PropertyKey { format: WindowsGuid, id: u32 }
+    let vtable = *(link as *mut *mut usize);
+    let query_interface: unsafe extern "system" fn(*mut c_void, *const WindowsGuid, *mut *mut c_void) -> i32 = std::mem::transmute(*vtable);
+    let mut store = std::ptr::null_mut();
+    let result = query_interface(link, &IID_PROPERTY_STORE, &mut store);
+    if result < 0 { return Err(format!("Could not create a Windows task label (0x{:08X}).", result as u32)); }
+    let store_vtable = *(store as *mut *mut usize);
+    let set_value: unsafe extern "system" fn(*mut c_void, *const PropertyKey, *const WindowsPropVariant) -> i32 = std::mem::transmute(*store_vtable.add(6));
+    let commit: unsafe extern "system" fn(*mut c_void) -> i32 = std::mem::transmute(*store_vtable.add(7));
+    let property_key = PropertyKey { format: PKEY_TITLE, id: 2 };
+    let mut variant = WindowsPropVariant {
+        kind: 31,
+        reserved1: 0,
+        reserved2: 0,
+        reserved3: 0,
+        value: WindowsPropVariantValue { string: title.as_ptr() as *mut u16 },
+    };
+    let set_result = set_value(store, &property_key, &variant);
+    let result = if set_result < 0 { set_result } else { commit(store) };
+    variant.value.string = std::ptr::null_mut();
+    let _ = PropVariantClear(&mut variant);
+    windows_com_release(store);
+    if result < 0 { Err(format!("Could not save a Windows task label (0x{:08X}).", result as u32)) } else { Ok(()) }
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn install_windows_jump_list_inner() -> Result<(), String> {
+    use std::ffi::c_void;
+    use std::os::windows::ffi::OsStrExt;
+    const CLSID_DESTINATION_LIST: WindowsGuid = WindowsGuid { data1: 0x77f10cf0, data2: 0x3db5, data3: 0x4966, data4: [0xb5, 0x20, 0xb7, 0xc5, 0x4f, 0xd3, 0x5e, 0xd6] };
+    const IID_CUSTOM_DESTINATION_LIST: WindowsGuid = WindowsGuid { data1: 0x6332debf, data2: 0x87b5, data3: 0x4670, data4: [0x90, 0xc0, 0x5e, 0x57, 0xb4, 0x08, 0xa4, 0x9e] };
+    const CLSID_OBJECT_COLLECTION: WindowsGuid = WindowsGuid { data1: 0x2d3468c1, data2: 0x36a7, data3: 0x43b6, data4: [0xac, 0x24, 0xd3, 0xf0, 0x2f, 0xd9, 0x60, 0x7a] };
+    const IID_OBJECT_COLLECTION: WindowsGuid = WindowsGuid { data1: 0x5632b1a4, data2: 0xe38a, data3: 0x400a, data4: [0x92, 0x8a, 0xd4, 0xcd, 0x63, 0x23, 0x02, 0x95] };
+    const IID_OBJECT_ARRAY: WindowsGuid = WindowsGuid { data1: 0x92ca9dcd, data2: 0x5622, data3: 0x4bba, data4: [0xa8, 0x05, 0x5e, 0x9f, 0x54, 0x1b, 0xd8, 0xc9] };
+    const CLSID_SHELL_LINK: WindowsGuid = WindowsGuid { data1: 0x00021401, data2: 0x0000, data3: 0x0000, data4: [0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46] };
+    const IID_SHELL_LINK_W: WindowsGuid = WindowsGuid { data1: 0x000214f9, data2: 0x0000, data3: 0x0000, data4: [0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46] };
+    const CLSCTX_INPROC_SERVER: u32 = 1;
+    #[link(name = "ole32")]
+    unsafe extern "system" { fn CoCreateInstance(class_id: *const WindowsGuid, outer: *mut c_void, context: u32, interface_id: *const WindowsGuid, result: *mut *mut c_void) -> i32; }
+    let executable = std::env::current_exe().map_err(|error| format!("Could not locate ARC Studio for the Windows taskbar menu: {error}"))?;
+    let executable_wide = executable.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
+    let mut destination_list = std::ptr::null_mut();
+    let result = CoCreateInstance(&CLSID_DESTINATION_LIST, std::ptr::null_mut(), CLSCTX_INPROC_SERVER, &IID_CUSTOM_DESTINATION_LIST, &mut destination_list);
+    if result < 0 { return Err(format!("Windows did not create the ARC Studio taskbar menu (0x{:08X}).", result as u32)); }
+    let mut maximum_slots = 0u32;
+    let mut removed_items = std::ptr::null_mut();
+    let destination_vtable = *(destination_list as *mut *mut usize);
+    let begin_list: unsafe extern "system" fn(*mut c_void, *mut u32, *const WindowsGuid, *mut *mut c_void) -> i32 = std::mem::transmute(*destination_vtable.add(4));
+    let result = begin_list(destination_list, &mut maximum_slots, &IID_OBJECT_ARRAY, &mut removed_items);
+    if !removed_items.is_null() { windows_com_release(removed_items); }
+    if result < 0 {
+        windows_com_release(destination_list);
+        return Err(format!("Windows could not start the ARC Studio taskbar menu (0x{:08X}).", result as u32));
+    }
+    let mut collection = std::ptr::null_mut();
+    let result = CoCreateInstance(&CLSID_OBJECT_COLLECTION, std::ptr::null_mut(), CLSCTX_INPROC_SERVER, &IID_OBJECT_COLLECTION, &mut collection);
+    if result < 0 {
+        let abort: unsafe extern "system" fn(*mut c_void) -> i32 = std::mem::transmute(*destination_vtable.add(11));
+        let _ = abort(destination_list);
+        windows_com_release(destination_list);
+        return Err(format!("Windows could not create the ARC Studio task list (0x{:08X}).", result as u32));
+    }
+    let collection_vtable = *(collection as *mut *mut usize);
+    let add_object: unsafe extern "system" fn(*mut c_void, *mut c_void) -> i32 = std::mem::transmute(*collection_vtable.add(5));
+    let set_path_at = 20usize;
+    let set_arguments_at = 11usize;
+    let set_description_at = 7usize;
+    let set_icon_at = 17usize;
+    let tasks = [
+        ("New Graph", "file.new-graph", "Create a graph in ARC Studio"),
+        ("Import Project File", "file.open-project", "Import an ARC Studio project"),
+        ("Editor Settings", "view.settings", "Open ARC Studio settings"),
+    ];
+    let mut task_error = None;
+    for (title, action, description) in tasks {
+        let mut link = std::ptr::null_mut();
+        let result = CoCreateInstance(&CLSID_SHELL_LINK, std::ptr::null_mut(), CLSCTX_INPROC_SERVER, &IID_SHELL_LINK_W, &mut link);
+        if result < 0 { task_error = Some(format!("Windows could not create the {title} task (0x{:08X}).", result as u32)); break; }
+        let shell_vtable = *(link as *mut *mut usize);
+        let set_path: unsafe extern "system" fn(*mut c_void, *const u16) -> i32 = std::mem::transmute(*shell_vtable.add(set_path_at));
+        let set_arguments: unsafe extern "system" fn(*mut c_void, *const u16) -> i32 = std::mem::transmute(*shell_vtable.add(set_arguments_at));
+        let set_description: unsafe extern "system" fn(*mut c_void, *const u16) -> i32 = std::mem::transmute(*shell_vtable.add(set_description_at));
+        let set_icon: unsafe extern "system" fn(*mut c_void, *const u16, i32) -> i32 = std::mem::transmute(*shell_vtable.add(set_icon_at));
+        let arguments = format!("--arc-menu-action={action}").encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+        let title_wide = title.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+        let description_wide = description.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+        let result = set_path(link, executable_wide.as_ptr());
+        let result = if result < 0 { result } else { set_arguments(link, arguments.as_ptr()) };
+        let result = if result < 0 { result } else { set_description(link, description_wide.as_ptr()) };
+        let result = if result < 0 { result } else { set_icon(link, executable_wide.as_ptr(), 0) };
+        let result = if result < 0 { result } else { windows_shell_link_title(link, &title_wide).map_or_else(|_| -1, |_| 0) };
+        if result < 0 { task_error = Some(format!("Windows could not configure the {title} task (0x{:08X}).", result as u32)); windows_com_release(link); break; }
+        let result = add_object(collection, link);
+        windows_com_release(link);
+        if result < 0 { task_error = Some(format!("Windows could not add the {title} task (0x{:08X}).", result as u32)); break; }
+    }
+    if let Some(error) = task_error {
+        let abort: unsafe extern "system" fn(*mut c_void) -> i32 = std::mem::transmute(*destination_vtable.add(11));
+        let _ = abort(destination_list);
+        windows_com_release(collection);
+        windows_com_release(destination_list);
+        return Err(error);
+    }
+    let add_user_tasks: unsafe extern "system" fn(*mut c_void, *mut c_void) -> i32 = std::mem::transmute(*destination_vtable.add(7));
+    let commit: unsafe extern "system" fn(*mut c_void) -> i32 = std::mem::transmute(*destination_vtable.add(8));
+    let result = add_user_tasks(destination_list, collection);
+    let result = if result < 0 { result } else { commit(destination_list) };
+    if result < 0 {
+        let abort: unsafe extern "system" fn(*mut c_void) -> i32 = std::mem::transmute(*destination_vtable.add(11));
+        let _ = abort(destination_list);
+    }
+    windows_com_release(collection);
+    windows_com_release(destination_list);
+    if result < 0 { Err(format!("Windows could not publish the ARC Studio taskbar menu (0x{:08X}).", result as u32)) } else { Ok(()) }
+}
+
+#[cfg(target_os = "windows")]
+fn install_windows_jump_list() -> Result<(), String> {
+    use std::ptr::null_mut;
+    #[link(name = "ole32")]
+    unsafe extern "system" { fn CoInitializeEx(reserved: *mut std::ffi::c_void, apartment: u32) -> i32; fn CoUninitialize(); }
+    let initialized = unsafe { CoInitializeEx(null_mut(), 2) };
+    if initialized < 0 { return Err(format!("Windows could not initialize the taskbar menu (0x{:08X}).", initialized as u32)); }
+    let result = unsafe { install_windows_jump_list_inner() };
+    unsafe { CoUninitialize(); }
+    result
+}
+
+#[tauri::command]
 fn open_macos_files_folders_settings() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -1449,7 +2410,7 @@ fn build_menu<R: tauri::Runtime>(handle: &tauri::AppHandle<R>, surface: &str) ->
     let menu_builder = MenuBuilder::new(handle);
     #[cfg(target_os = "macos")]
     let menu_builder = {
-        let about = PredefinedMenuItem::about(handle, None, None)?;
+        let about = MenuItemBuilder::with_id("help.about", "About ARC Studio").build(handle)?;
         let hide = PredefinedMenuItem::hide(handle, None)?;
         let hide_others = PredefinedMenuItem::hide_others(handle, None)?;
         let quit = PredefinedMenuItem::quit(handle, None)?;
@@ -1475,14 +2436,19 @@ fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             for argument in argv.iter().skip(1) {
+                if let Some(action) = desktop_menu_action_argument(std::ffi::OsStr::new(argument.as_str())) {
+                    dispatch_desktop_menu_action(app, action);
+                    continue;
+                }
                 notify_project_file_opened(app, Path::new(argument));
             }
-            if let Some(window) = app.get_webview_window("main") {
+            if let Some(window) = app.get_webview_window("main").or_else(|| app.get_webview_window("boot")) {
                 let _ = window.unminimize();
                 let _ = window.set_focus();
             }
         }))
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
@@ -1507,16 +2473,28 @@ fn main() {
             set_release_channel_icon,
             read_arc_project_file,
             read_arc_graph_file,
+            begin_graph_export,
+            write_graph_export_chunk,
+            finish_graph_export,
+            cancel_graph_export,
             save_project_export,
             download_project_export,
             download_bot_export,
             upload_project_import_file,
             cancel_project_import_upload,
             open_project_window,
+            open_desktop_prompt,
+            show_desktop_prompt_window,
+            take_desktop_prompt_data,
+            dispatch_desktop_prompt_action,
+            complete_desktop_prompt,
+            close_desktop_prompts,
+            show_main_window_after_startup,
             reset_local_data,
             open_external_url,
             open_passkey_auth_url,
             set_menu_context,
+            set_application_theme,
             open_macos_files_folders_settings,
             check_channel_update,
             install_channel_update,
@@ -1533,16 +2511,13 @@ fn main() {
                 let _ = open_external_url("https://github.com/relentiousdragon/arc-studio".to_string());
                 return;
             }
-            if let Some(window) = app.get_webview_window("main") {
-                let script = format!(
-                    "window.dispatchEvent(new CustomEvent('arc:desktop-menu-action', {{ detail: {} }}));",
-                    js_string_literal(action)
-                );
-                let _ = window.eval(&script);
-            }
+            dispatch_desktop_menu_action(app, action.to_string());
         })
-        .manage(StudioServer { child: Mutex::new(None), port: Mutex::new(None) })
+        .manage(StudioServer { child: Mutex::new(None), port: Mutex::new(None), shutting_down: AtomicBool::new(false) })
+        .manage(PendingProjectFiles::default())
+        .manage(PendingDesktopMenuActions::default())
         .manage(DiscordPresence { client: Mutex::new(None), started_at_ms: Mutex::new(None) })
+        .manage(DesktopPromptManager::default())
         .manage(AppState::new())
         .setup(|app| {
             mark_update_starting(app.handle());
@@ -1550,6 +2525,18 @@ fn main() {
             let surface = app.state::<AppState>().surface();
             let menu = build_menu(handle, &surface)?;
             app.set_menu(menu)?;
+            #[cfg(target_os = "macos")]
+            if let Err(error) = install_macos_dock_menu(handle) {
+                eprintln!("Could not install the ARC Studio Dock menu: {error}");
+            }
+            #[cfg(target_os = "windows")]
+            {
+                let _ = thread::Builder::new().name("arc-taskbar-menu".to_string()).spawn(|| {
+                    if let Err(error) = install_windows_jump_list() {
+                        eprintln!("Could not install the ARC Studio taskbar menu: {error}");
+                    }
+                });
+            }
             let window_config = app
                 .config()
                 .app
@@ -1561,33 +2548,7 @@ fn main() {
             fs::create_dir_all(&config_dir)?;
             let window_size_path = config_dir.join("window-size.txt");
             let window_size = restore_window_size(app, &window_config, &window_size_path);
-            let (api_base_url, startup_error) = if !cfg!(debug_assertions) {
-                match start_studio_server(app) {
-                    Ok(url) => (Some(url), None),
-                    Err(error) => {
-                        eprintln!("ARC Studio local service failed to start: {error}");
-                        (None, Some(format!("{error} Check desktop-server-process.log in the app logs folder for details.")))
-                    }
-                }
-            } else {
-                (None, None)
-            };
-            let mut window = WebviewWindowBuilder::from_config(app.handle(), &window_config)?
-                .inner_size(window_size.width, window_size.height);
-            #[cfg(target_os = "linux")]
-            if let Some(icon) = app.default_window_icon().cloned() {
-                window = window.icon(icon)?;
-            }
             let local_username = os_login_name();
-            let api_base_url = api_base_url
-                .as_deref()
-                .map(js_string_literal)
-                .unwrap_or_else(|| "null".to_string());
-            let startup_error = startup_error
-                .as_deref()
-                .map(js_string_literal)
-                .unwrap_or_else(|| "null".to_string());
-            let platform = if cfg!(target_os = "macos") { "macos" } else if cfg!(target_os = "windows") { "windows" } else if cfg!(target_os = "linux") { "linux" } else { "other" };
             let desktop_target = option_env!("ARC_DESKTOP_TARGET")
                 .map(str::to_owned)
                 .unwrap_or_else(|| format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS));
@@ -1599,84 +2560,59 @@ fn main() {
                 .collect::<Vec<_>>()
                 .join(",");
             let startup_args = std::env::args_os().skip(1).collect::<Vec<_>>();
+            let startup_menu_action = startup_args.iter().find_map(|argument| desktop_menu_action_argument(argument));
             let startup_project_id = startup_args.windows(2)
                 .find(|pair| pair[0] == "--arc-project-id")
                 .and_then(|pair| pair[1].to_str())
                 .filter(|id| id.strip_prefix("project_").is_some_and(|uuid| uuid.len() == 36))
                 .map(js_string_literal)
                 .unwrap_or_else(|| "null".to_string());
-            let init_script = format!(
-                "window.__ARC_STUDIO_CONFIG__ = Object.freeze({{ desktop: true, platform: {}, target: {}, releaseChannel: {}, localUsername: {}, apiBaseUrl: {}, startupError: {}, startupProjectId: {} }}); window.__ARC_STUDIO_OPEN_FILES__ = [{}];",
-                js_string_literal(platform),
-                js_string_literal(&desktop_target),
-                js_string_literal(release_channel),
-                js_string_literal(&local_username),
-                api_base_url,
-                startup_error,
-                startup_project_id,
-                startup_project_files
-            );
-            window = window.initialization_script(init_script);
+            let _boot_window = WebviewWindowBuilder::new(app, "boot", WebviewUrl::App("boot.html".into()))
+                .title("ARC Studio")
+                .inner_size(240.0, 200.0)
+                .resizable(false)
+                .maximizable(false)
+                .minimizable(false)
+                .closable(false)
+                .decorations(false)
+                .transparent(true)
+                .shadow(false)
+                .always_on_top(false)
+                .center()
+                .build()?;
 
-            let window = window.build()?;
-            if window_size.maximized { let _ = window.maximize(); }
-            let window_dimensions = Arc::new(Mutex::new(window_size));
-            app.manage(WindowSizeState(window_dimensions.clone()));
-            let app_handle = app.handle().clone();
-            let window_label = window_config.label.clone();
-            let save_path = window_size_path.clone();
-            window.on_window_event(move |event| {
-                let next_size = match event {
-                    WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
-                        if let Some(window) = app_handle.get_webview_window(&window_label) {
-                            for path in paths.iter().filter(|path| is_arc_project_path(path) || is_arc_graph_path(path)) {
-                                let path = js_string_literal(&path.to_string_lossy());
-                                let script = format!("window.__ARC_STUDIO_OPEN_FILES__ ||= []; window.__ARC_STUDIO_OPEN_FILES__.push({path}); window.dispatchEvent(new CustomEvent('arc:desktop-file-opened', {{ detail: {path} }}));");
-                                let _ = window.eval(&script);
-                            }
+            let launch_args = MainWindowLaunch {
+                window_config,
+                window_size,
+                window_size_path,
+                local_username,
+                desktop_target,
+                release_channel,
+                startup_project_files,
+                startup_project_id,
+                startup_menu_action,
+            };
+            if cfg!(debug_assertions) {
+                let callback_handle = handle.clone();
+                handle.run_on_main_thread(move || create_main_window(callback_handle, launch_args, None, None))?;
+            } else {
+                let handle = handle.clone();
+                thread::spawn(move || {
+                    let (api_base_url, startup_error) = match start_studio_server(&handle) {
+                        Ok(url) => (Some(url), None),
+                        Err(error) => {
+                            eprintln!("ARC Studio local service failed to start: {error}");
+                            (None, Some(format!("{error} Check desktop-server-process.log in the app logs folder for details.")))
                         }
-                        None
+                    };
+                    let callback_handle = handle.clone();
+                    if let Err(error) = handle.run_on_main_thread(move || {
+                        create_main_window(callback_handle, launch_args, api_base_url, startup_error)
+                    }) {
+                        eprintln!("Could not open the ARC Studio window after startup: {error}");
                     }
-                    WindowEvent::Resized(size) => Some((size.width, size.height, None)),
-                    WindowEvent::ScaleFactorChanged { scale_factor, new_inner_size, .. } => Some((new_inner_size.width, new_inner_size.height, Some(*scale_factor))),
-                    WindowEvent::CloseRequested { .. } => {
-                        if let Some(window) = app_handle.get_webview_window(&window_label) {
-                            if let Ok(mut dimensions) = window_dimensions.lock() {
-                                dimensions.maximized = window.is_maximized().unwrap_or(false);
-                            }
-                        }
-                        save_window_dimensions(&save_path, &window_dimensions);
-                        None
-                    }
-                    _ => None,
-                };
-                let Some((width, height, event_scale_factor)) = next_size else { return; };
-                let Some(window) = app_handle.get_webview_window(&window_label) else { return; };
-                let maximized = window.is_maximized().unwrap_or(false);
-                if maximized || window.is_fullscreen().unwrap_or(false) {
-                    if let Ok(mut dimensions) = window_dimensions.lock() {
-                        dimensions.maximized = maximized;
-                    }
-                    save_window_dimensions(&save_path, &window_dimensions);
-                    return;
-                }
-                let scale_factor = event_scale_factor.unwrap_or_else(|| window.scale_factor().unwrap_or(1.0));
-                let logical_width = width as f64 / scale_factor;
-                let logical_height = height as f64 / scale_factor;
-                let fills_monitor = window.current_monitor().ok().flatten().is_some_and(|monitor| {
-                    let monitor_scale = monitor.scale_factor().max(1.0);
-                    let monitor_width = monitor.size().width as f64 / monitor_scale;
-                    let monitor_height = monitor.size().height as f64 / monitor_scale;
-                    logical_width >= monitor_width * 0.88 && logical_height >= monitor_height * 0.82
                 });
-                if fills_monitor { return; }
-                if let Ok(mut dimensions) = window_dimensions.lock() {
-                    dimensions.width = logical_width;
-                    dimensions.height = logical_height;
-                    dimensions.maximized = false;
-                }
-                save_window_dimensions(&save_path, &window_dimensions);
-            });
+            }
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -1691,6 +2627,9 @@ fn main() {
         }
         RunEvent::Exit => {
             clear_discord_presence_inner(&app.state::<DiscordPresence>());
+            if let Some(server) = app.try_state::<StudioServer>() {
+                server.shutting_down.store(true, Ordering::SeqCst);
+            }
             if let (Ok(config_dir), Some(window_size)) = (app.path().app_config_dir(), app.try_state::<WindowSizeState>()) {
                 save_window_dimensions(&config_dir.join("window-size.txt"), &window_size.0);
             }
@@ -1698,6 +2637,161 @@ fn main() {
         }
         _ => {}
     });
+}
+
+fn create_main_window<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    launch: MainWindowLaunch,
+    api_base_url: Option<String>,
+    startup_error: Option<String>,
+) {
+    let MainWindowLaunch {
+        window_config,
+        window_size,
+        window_size_path,
+        local_username,
+        desktop_target,
+        release_channel,
+        startup_project_files,
+        startup_project_id,
+        startup_menu_action,
+    } = launch;
+    let create_result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        let mut window = WebviewWindowBuilder::from_config(&app, &window_config)?
+            .inner_size(window_size.width, window_size.height)
+            .maximized(window_size.maximized)
+            .background_color(tauri::webview::Color(20, 23, 27, 255))
+            .visible(false);
+        #[cfg(target_os = "linux")]
+        if let Some(icon) = app.default_window_icon().cloned() {
+            window = window.icon(icon)?;
+        }
+        let platform = if cfg!(target_os = "macos") { "macos" } else if cfg!(target_os = "windows") { "windows" } else if cfg!(target_os = "linux") { "linux" } else { "other" };
+        let api_base_url = api_base_url
+            .as_deref()
+            .map(js_string_literal)
+            .unwrap_or_else(|| "null".to_string());
+        let startup_error = startup_error
+            .as_deref()
+            .map(js_string_literal)
+            .unwrap_or_else(|| "null".to_string());
+        let startup_menu_action = startup_menu_action
+            .as_deref()
+            .map(js_string_literal)
+            .unwrap_or_else(|| "null".to_string());
+        let init_script = format!(
+            "window.__ARC_STUDIO_CONFIG__ = Object.freeze({{ desktop: true, platform: {}, target: {}, releaseChannel: {}, localUsername: {}, apiBaseUrl: {}, startupError: {}, startupProjectId: {} }}); window.__ARC_STUDIO_OPEN_FILES__ = [{}]; window.__ARC_STUDIO_MENU_ACTION__ = {};",
+            js_string_literal(platform),
+            js_string_literal(&desktop_target),
+            js_string_literal(release_channel),
+            js_string_literal(&local_username),
+            api_base_url,
+            startup_error,
+            startup_project_id,
+            startup_project_files,
+            startup_menu_action
+        );
+        window = window.initialization_script(init_script);
+
+        let window = window.build()?;
+        if let Some(pending_actions) = app.try_state::<PendingDesktopMenuActions>() {
+            let actions = pending_actions.0.lock().map(|mut actions| std::mem::take(&mut *actions)).unwrap_or_default();
+            for action in actions { dispatch_desktop_menu_action(&app, action); }
+        }
+        let pending_paths = {
+            let pending = app.state::<PendingProjectFiles>();
+            let mut paths = pending.paths.lock().map_err(|_| {
+                io::Error::new(io::ErrorKind::Other, "Pending project files are unavailable.")
+            })?;
+            pending.main_window_ready.store(true, Ordering::SeqCst);
+            std::mem::take(&mut *paths)
+        };
+        for path in pending_paths {
+            let path = js_string_literal(&path);
+            let script = format!("window.__ARC_STUDIO_OPEN_FILES__ ||= []; window.__ARC_STUDIO_OPEN_FILES__.push({path}); window.dispatchEvent(new CustomEvent('arc:desktop-file-opened', {{ detail: {path} }}));");
+            let _ = window.eval(&script);
+        }
+        let window_dimensions = Arc::new(Mutex::new(window_size));
+        app.manage(WindowSizeState(window_dimensions.clone()));
+        let app_handle = app.clone();
+        let window_label = window_config.label.clone();
+        let save_path = window_size_path.clone();
+        let initial_fullscreen = cfg!(target_os = "macos") && window.is_fullscreen().unwrap_or(false);
+        if cfg!(target_os = "macos") {
+            let _ = window.set_title(if initial_fullscreen { "ARC Studio" } else { "" });
+            let value = if initial_fullscreen { "true" } else { "false" };
+            let _ = window.eval(&format!("document.documentElement.dataset.arcMacosFullscreen='{value}';"));
+        }
+        let fullscreen_state = Arc::new(AtomicBool::new(initial_fullscreen));
+        let fullscreen_state_for_window = fullscreen_state.clone();
+        window.on_window_event(move |event| {
+            if cfg!(target_os = "macos") && matches!(event, WindowEvent::Resized(_)) {
+                if let Some(event_window) = app_handle.get_webview_window(&window_label) {
+                    let fullscreen = event_window.is_fullscreen().unwrap_or(false);
+                    if fullscreen_state_for_window.swap(fullscreen, Ordering::SeqCst) != fullscreen {
+                        let _ = event_window.set_title(if fullscreen { "ARC Studio" } else { "" });
+                        let value = if fullscreen { "true" } else { "false" };
+                        let _ = event_window.eval(&format!("document.documentElement.dataset.arcMacosFullscreen='{value}';"));
+                    }
+                }
+            }
+            let next_size = match event {
+                WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
+                    if let Some(window) = app_handle.get_webview_window(&window_label) {
+                        for path in paths.iter().filter(|path| is_arc_project_path(path) || is_arc_graph_path(path)) {
+                            let path = js_string_literal(&path.to_string_lossy());
+                            let script = format!("window.__ARC_STUDIO_OPEN_FILES__ ||= []; window.__ARC_STUDIO_OPEN_FILES__.push({path}); window.dispatchEvent(new CustomEvent('arc:desktop-file-opened', {{ detail: {path} }}));");
+                            let _ = window.eval(&script);
+                        }
+                    }
+                    None
+                }
+                WindowEvent::Resized(size) => Some((size.width, size.height, None)),
+                WindowEvent::ScaleFactorChanged { scale_factor, new_inner_size, .. } => Some((new_inner_size.width, new_inner_size.height, Some(*scale_factor))),
+                WindowEvent::CloseRequested { .. } => {
+                    close_desktop_prompt_sessions(&app_handle, Some(&window_label));
+                    if let Some(window) = app_handle.get_webview_window(&window_label) {
+                        if let Ok(mut dimensions) = window_dimensions.lock() {
+                            dimensions.maximized = window.is_maximized().unwrap_or(false);
+                        }
+                    }
+                    save_window_dimensions(&save_path, &window_dimensions);
+                    None
+                }
+                _ => None,
+            };
+            let Some((width, height, event_scale_factor)) = next_size else { return; };
+            let Some(window) = app_handle.get_webview_window(&window_label) else { return; };
+            let maximized = window.is_maximized().unwrap_or(false);
+            if maximized || window.is_fullscreen().unwrap_or(false) {
+                if let Ok(mut dimensions) = window_dimensions.lock() {
+                    dimensions.maximized = maximized;
+                }
+                save_window_dimensions(&save_path, &window_dimensions);
+                return;
+            }
+            let scale_factor = event_scale_factor.unwrap_or_else(|| window.scale_factor().unwrap_or(1.0));
+            let logical_width = width as f64 / scale_factor;
+            let logical_height = height as f64 / scale_factor;
+            let fills_monitor = window.current_monitor().ok().flatten().is_some_and(|monitor| {
+                let monitor_scale = monitor.scale_factor().max(1.0);
+                let monitor_width = monitor.size().width as f64 / monitor_scale;
+                let monitor_height = monitor.size().height as f64 / monitor_scale;
+                logical_width >= monitor_width * 0.88 && logical_height >= monitor_height * 0.82
+            });
+            if fills_monitor { return; }
+            if let Ok(mut dimensions) = window_dimensions.lock() {
+                dimensions.width = logical_width;
+                dimensions.height = logical_height;
+                dimensions.maximized = false;
+            }
+            save_window_dimensions(&save_path, &window_dimensions);
+        });
+        Ok(())
+    })();
+    if let Err(error) = create_result {
+        eprintln!("Could not create the ARC Studio main window: {error}");
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -1746,6 +2840,19 @@ fn show_windows_10_required_message() {
     #[link(name = "user32")]
     unsafe extern "system" { fn MessageBoxW(window: *mut std::ffi::c_void, text: *const u16, title: *const u16, kind: u32) -> i32; }
     unsafe { MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), MB_ICONERROR | MB_OK); }
+}
+
+#[tauri::command]
+fn show_main_window_after_startup(window: WebviewWindow, app: AppHandle) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("Only the main ARC Studio window can be shown after startup.".to_string());
+    }
+    window.show().map_err(|error| format!("Could not show ARC Studio: {error}"))?;
+    if let Some(boot_window) = app.get_webview_window("boot") {
+        let _ = boot_window.close();
+    }
+    window.set_focus().map_err(|error| format!("Could not focus ARC Studio: {error}"))?;
+    Ok(())
 }
 
 fn restore_window_size<R: tauri::Runtime>(app: &tauri::App<R>, config: &tauri::utils::config::WindowConfig, path: &Path) -> WindowDimensions {
@@ -1962,8 +3069,11 @@ fn local_documents_permission_error(message: String) -> String {
 }
 
 fn start_studio_server<R: tauri::Runtime>(
-    app: &mut tauri::App<R>,
+    app: &AppHandle<R>,
 ) -> Result<String, Box<dyn std::error::Error>> {
+    if app.state::<StudioServer>().shutting_down.load(Ordering::SeqCst) {
+        return Err(io::Error::new(io::ErrorKind::Interrupted, "ARC Studio is closing.").into());
+    }
     let resource_dir = node_compatible_path(&app.path().resource_dir()?);
     let runtime_dir = resource_dir.join("resources/runtime");
     let app_root = runtime_dir.join("app");
@@ -1989,6 +3099,9 @@ fn start_studio_server<R: tauri::Runtime>(
     let documents_root = node_compatible_path(&documents_directory).join("ARC Studio");
     migrate_local_project_directories(&data_dir.join("projects"), &documents_root)
         .map_err(|message| io::Error::other(local_documents_permission_error(message)))?;
+    if app.state::<StudioServer>().shutting_down.load(Ordering::SeqCst) {
+        return Err(io::Error::new(io::ErrorKind::Interrupted, "ARC Studio is closing.").into());
+    }
     let logs_dir = data_dir.join("logs");
     fs::create_dir_all(&data_dir)?;
     fs::create_dir_all(&config_dir)?;
@@ -2052,8 +3165,21 @@ fn start_studio_server<R: tauri::Runtime>(
             "ARC Studio server state is unavailable.",
         )
     })?;
+    let mut server_port = server_state.port.lock().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            "ARC Studio server state is unavailable.",
+        )
+    })?;
+    if server_state.shutting_down.load(Ordering::SeqCst) {
+        drop(server_port);
+        drop(server);
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(io::Error::new(io::ErrorKind::Interrupted, "ARC Studio is closing.").into());
+    }
     *server = Some(child);
-    *server_state.port.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "ARC Studio server state is unavailable."))? = Some(port);
+    *server_port = Some(port);
     Ok(format!("http://127.0.0.1:{port}"))
 }
 
@@ -2091,6 +3217,9 @@ fn stop_studio_server<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     let Ok(mut server) = server_state.child.lock() else {
         return;
     };
+    if let Ok(mut port) = server_state.port.lock() {
+        *port = None;
+    }
     let Some(mut child) = server.take() else {
         return;
     };
