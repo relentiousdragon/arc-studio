@@ -44,7 +44,7 @@ function DiscordDeliveryStatus({ status }) {
   return <span className={`team-activity-delivery team-activity-delivery-${status}`} title={`Discord log: ${label.toLowerCase()}`} aria-label={`Discord log ${label.toLowerCase()}`}><Icon size={12} /></span>;
 }
 
-export function UserManagementModal({ isOpen, onClose, authToken, currentUsername = '', currentUserId = '', onCurrentUserChange }) {
+export function UserManagementModal({ isOpen, onClose, authToken, currentUsername = '', currentUserId = '', workspaceName = '', onCurrentUserChange, nativeWindow = false }) {
   const [users, setUsers] = useState([]);
   const [activity, setActivity] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -273,7 +273,7 @@ export function UserManagementModal({ isOpen, onClose, authToken, currentUsernam
         if (data.availableAt) setUsernameAvailableAt(Number(data.availableAt));
         throw new Error(data.error || 'Could not rename the owner account.');
       }
-      onCurrentUserChange?.(data.user);
+      await onCurrentUserChange?.(data.user);
       setUsernameTarget(null);
       await fetchUsers();
       arcEvents.emit('toast:notify', { title: data.changed ? 'Owner account renamed' : 'Username unchanged', message: data.user.username, type: 'success' });
@@ -283,7 +283,7 @@ export function UserManagementModal({ isOpen, onClose, authToken, currentUsernam
   };
 
   return <>
-  <Modal isOpen={isOpen} onClose={onClose} title="Team access" subtitle="Manage studio accounts and roles" icon={Users} maxWidth="max-w-2xl" panelClassName="modal-team-access">
+  <Modal isOpen={isOpen} onClose={onClose} title="Team access" subtitle={`Manage studio accounts and roles${workspaceName ? ` · ${workspaceName}` : ''}`} icon={Users} maxWidth="max-w-2xl" panelClassName="modal-team-access" nativeWindow={nativeWindow} showCloseButton={!nativeWindow}>
     <form ref={createFormRef} className="team-create-form" noValidate onSubmit={createUser}>
       <div className="team-form-title"><span><UserPlus size={16} /></span><div><strong>Add a member</strong><small>Create a separate sign-in for a collaborator.</small></div></div>
       <div className="team-form-grid">
