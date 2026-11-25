@@ -486,6 +486,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
   router.get('/system/status', (req, res) => {
     const registry = getNodeRegistryPayload();
     res.json({
+      desktopMode: serverConfig.desktopMode,
       isSetupCompleted: userStore.isSetupCompleted(),
       hasLocalAccount: !serverConfig.desktopMode || userStore.hasLocalAccount(),
       localUsername: serverConfig.desktopMode ? userStore.getLocalAccount()?.username || null : null,
@@ -1727,9 +1728,10 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     res.json({ success: true, status: botManager.status });
   });
 
-  router.get('/bot/commands/guilds', requirePermission('bot:control'), (req, res) => {
-    res.set('Cache-Control', 'private, max-age=15, stale-while-revalidate=60');
-    res.json({ guilds: botManager.getKnownBotGuilds(), gatewayConnected: botManager.status === 'ONLINE' });
+  router.get('/bot/commands/guilds', requirePermission('bot:control'), async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const directory = await botManager.refreshKnownBotGuilds();
+    res.json({ guilds: directory.guilds, gatewayConnected: botManager.status === 'ONLINE', guildDirectoryError: directory.error });
   });
 
   router.post('/bot/commands/deploy', requirePermission('bot:control'), async (req, res) => {
