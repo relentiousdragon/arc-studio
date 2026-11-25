@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Download, ExternalLink, Github, Keyboard, RefreshCw, RotateCcw, Scale } from 'lucide-react';
+import { confirm as confirmNative } from '@tauri-apps/plugin-dialog';
 import { Modal } from '../ui/Modal.jsx';
 import { Toggle, SelectInput, TextInput } from '../ui/Inputs.jsx';
 import { Button } from '../ui/Button.jsx';
@@ -10,6 +11,7 @@ import { DEFAULT_SHORTCUTS, formatShortcut, getDefaultShortcut, getShortcutReser
 import { apiUrl } from '../../core/api.js';
 import studioPackage from '../../../package.json';
 import chezcordPackage from '../../../../chezcord/package.json';
+import thirdPartyNotices from '../../../../../THIRD_PARTY_NOTICES.md?raw';
 //
 const tabs = [
   { id: 'canvas', label: 'Canvas' },
@@ -61,14 +63,20 @@ function openDiscordInvite() {
   window.open(DISCORD_INVITE_URL, '_blank', 'noopener,noreferrer');
 }
 
-export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSettings, onAutoLayout, onExportGraph, onResetLocalData, themeChoice = 'system', onThemeChange, desktopMode = false, localWorkspace = false, externalWorkspace = false, passkeysSupported = false, canResetLocalWorkspace = false, canManageClientAccess = false, platform = '', appUpdate = null, serverUpdate = null, stableUpdateReady = null, downloadedUpdateReady = null, updateInstalling = false, checkingForUpdates = false, releaseChannel = 'stable', onOpenStudioUpdate, onCheckForUpdates, networkOnline = true, authToken = '', activeProjectId = '', workspaceOrigin = '', canManageLogRetention = false, canManageActivityWebhook = false, idleDisconnectMinutes = 15, canManageIdleDisconnect = false, onSetIdleDisconnectMinutes }) {
-  const [activeTab, setActiveTab] = useState('canvas');
+export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSettings, onAutoLayout, onExportGraph, onResetLocalData, themeChoice = 'system', onThemeChange, desktopMode = false, hideWindowClose = false, nativeWindow = false, initialTab = 'canvas', aboutOnly = false, localWorkspace = false, externalWorkspace = false, passkeysSupported = false, canResetLocalWorkspace = false, canManageClientAccess = false, platform = '', appUpdate = null, serverUpdate = null, stableUpdateReady = null, downloadedUpdateReady = null, updateInstalling = false, checkingForUpdates = false, updateCheckCooldownUntil: externalUpdateCheckCooldownUntil = 0, updateCheckError = '', releaseChannel = 'stable', onOpenStudioUpdate, onCheckForUpdates, networkOnline = true, authToken = '', activeProjectId = '', workspaceOrigin = '', canManageLogRetention = false, canManageActivityWebhook = false, idleDisconnectMinutes = 15, canManageIdleDisconnect = false, onSetIdleDisconnectMinutes }) {
+  const [activeTab, setActiveTab] = useState(() => tabs.some((tab) => tab.id === initialTab) ? initialTab : 'canvas');
   const [recording, setRecording] = useState(null);
   const [shortcutCaptureError, setShortcutCaptureError] = useState('');
   const [resetPassword, setResetPassword] = useState('');
   const [resetError, setResetError] = useState('');
   const [resetPending, setResetPending] = useState(false);
   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
+  const [updateCheckCooldownUntil, setUpdateCheckCooldownUntil] = useState(() => Number(externalUpdateCheckCooldownUntil) || 0);
+  const [updateCheckClock, setUpdateCheckClock] = useState(Date.now());
+  const updateCheckStartingRef = useRef(false);
+  useEffect(() => {
+    if (isOpen && tabs.some((tab) => tab.id === initialTab)) setActiveTab(initialTab);
+  }, [initialTab, isOpen]);
   const [logRetention, setLogRetention] = useState('default');
   const [logRetentionMessage, setLogRetentionMessage] = useState('');
   const [activityWebhookStatus, setActivityWebhookStatus] = useState({ configured: false, enabled: false, environmentConfigured: false, source: 'none' });
@@ -80,6 +88,32 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
   const [clientAccessLoading, setClientAccessLoading] = useState(false);
   const [clientAccessSaving, setClientAccessSaving] = useState(false);
   const [clientAccessMessage, setClientAccessMessage] = useState('');
+  const updateCheckCooldownSeconds = Math.max(0, Math.ceil((updateCheckCooldownUntil - updateCheckClock) / 1000));
+  useEffect(() => {
+    const incomingUntil = Number(externalUpdateCheckCooldownUntil) || 0;
+    if (incomingUntil > Date.now()) setUpdateCheckCooldownUntil((current) => Math.max(current, incomingUntil));
+  }, [externalUpdateCheckCooldownUntil]);
+  useEffect(() => {
+    if (!updateCheckCooldownUntil) return undefined;
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      setUpdateCheckClock(now);
+      if (now >= updateCheckCooldownUntil) setUpdateCheckCooldownUntil(0);
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [updateCheckCooldownUntil]);
+  const handleCheckForUpdates = async () => {
+    if (checkingForUpdates || updateCheckCooldownSeconds || updateCheckStartingRef.current || !networkOnline) return;
+    updateCheckStartingRef.current = true;
+    setUpdateCheckCooldownUntil(Date.now() + 5000);
+    try {
+      const result = await onCheckForUpdates?.();
+      const returnedUntil = Number(result?.cooldownUntil) || 0;
+      if (returnedUntil) setUpdateCheckCooldownUntil(returnedUntil);
+    } finally {
+      updateCheckStartingRef.current = false;
+    }
+  };
   const update = (key, value) => onUpdateSettings({ ...settings, [key]: value });
   const shortcuts = { ...DEFAULT_SHORTCUTS, redo: getDefaultShortcut('redo', platform), ...(settings.shortcuts || {}) };
   if (!settings.shortcuts?.redo || settings.shortcuts.redo === DEFAULT_SHORTCUTS.redo) shortcuts.redo = getDefaultShortcut('redo', platform);
@@ -94,6 +128,26 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
       setConfirmResetOpen(false);
     }
   };
+  const requestLocalReset = async (event) => {
+    event.preventDefault();
+    if (!resetPassword || resetPending || !localWorkspace || !canResetLocalWorkspace) return;
+    setResetError('');
+    if (desktopMode) {
+      try {
+        const accepted = await confirmNative('This deletes local projects, graphs, bot tokens, credentials, plugins, snapshots, variables, and editor settings. ARC Studio will restart and return to first time setup.', {
+          title: 'Delete all Local Workspace data?',
+          kind: 'warning',
+          okLabel: 'Delete everything',
+          cancelLabel: 'Cancel'
+        });
+        if (accepted) await confirmLocalReset();
+        return;
+      } catch (error) {
+        console.warn('[ARC] Native reset confirmation is unavailable. Using the in app confirmation.', error);
+      }
+    }
+    setConfirmResetOpen(true);
+  };
 
   useEffect(() => {
     if (activeTab === 'security' && (!externalWorkspace || !passkeysSupported)) setActiveTab('canvas');
@@ -102,6 +156,7 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
   useEffect(() => {
     if (!recording || !isOpen) return undefined;
     const onKeyDown = (event) => {
+      if (window.__ARC_STUDIO_PROMPT_BLOCKED__) return;
       event.preventDefault();
       event.stopPropagation();
       if (event.key === 'Escape') { setRecording(null); setShortcutCaptureError(''); return; }
@@ -218,8 +273,8 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
     } catch (error) { setLogRetentionMessage(error.message || 'Could not save the retention setting.'); }
   };
 
-  return <Modal isOpen={isOpen} onClose={onClose} title="Editor settings" subtitle="Customize your workspace" panelClassName="modal-editor-settings">
-    <div className="settings-tabs" role="tablist" aria-label="Editor settings sections">
+  return <Modal isOpen={isOpen} onClose={onClose} title={aboutOnly ? 'About ARC Studio' : 'Editor settings'} subtitle={aboutOnly ? undefined : 'Customize your workspace'} panelClassName={`modal-editor-settings${aboutOnly ? ' is-about-only' : ''}`} showCloseButton={!hideWindowClose} nativeWindow={nativeWindow} hideHeader={nativeWindow}>
+    {!aboutOnly && <div className="settings-tabs" role="tablist" aria-label="Editor settings sections">
       {tabs.map((tab) => {
         const securityDisabledReason = !externalWorkspace
           ? 'Passkeys are available in hosted and external workspaces.'
@@ -228,7 +283,7 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
           || (tab.id === 'security' && Boolean(securityDisabledReason));
         return <button key={tab.id} type="button" role="tab" aria-selected={!disabled && activeTab === tab.id} aria-disabled={disabled || undefined} disabled={disabled} title={tab.id === 'security' && securityDisabledReason ? securityDisabledReason : undefined} className={`settings-tab ${activeTab === tab.id && !disabled ? 'is-active' : ''} ${disabled ? 'is-disabled' : ''}`} onClick={() => !disabled && setActiveTab(tab.id)}>{tab.label}{tab.id === 'about' && serverUpdate && <span className="update-indicator-dot" aria-label="Server update available" />}</button>;
       })}
-    </div>
+    </div>}
 
     {activeTab === 'canvas' && <div className="settings-section settings-tab-content">
       <div className="settings-section-heading"><span>Canvas behavior</span></div>
@@ -254,12 +309,13 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
       <div className="settings-section-heading"><span>Appearance and interaction</span></div>
       <SelectInput label="Color theme" value={themeChoice} options={[{ value: 'system', label: 'Use system setting' }, { value: 'dark', label: 'Dark' }, { value: 'light', label: 'Light' }]} onChange={onThemeChange} />
       <Toggle label="Interface sounds" description="Play subtle sounds for controls and notifications" checked={settings.uiSounds ?? false} onChange={(value) => update('uiSounds', value)} />
+      <Toggle label="Resize dock while scrolling" description="Scroll down on the dock to open and expand it. Scroll back up to collapse and close it." checked={settings.autoResizeDockOnScroll !== false} onChange={(value) => update('autoResizeDockOnScroll', value)} />
       {desktopMode && <Toggle label="Background notifications" description="On by default. Notify when exports finish, an update is ready, or the local server fails to start. Requires system permission." checked={settings.desktopNotifications ?? true} onChange={async (value) => {
         if (!value) { update('desktopNotifications', false); return; }
         if (await requestDesktopNotificationPermission() === 'granted') update('desktopNotifications', true);
         else arcEvents.emit('toast:notify', { title: 'Notifications unavailable', message: 'Allow ARC Studio notifications in your system settings, then enable them here.', type: 'warning' });
       }} />}
-      <Toggle label="Compact context menus" description="Use tighter spacing in right-click menus" checked={settings.compactContextMenus ?? false} onChange={(value) => update('compactContextMenus', value)} />
+      <Toggle label="Compact context menus" description={desktopMode ? 'Native context menus use your operating system style.' : 'Use tighter spacing in right-click menus'} checked={settings.compactContextMenus ?? false} disabled={desktopMode} onChange={(value) => update('compactContextMenus', value)} />
       <Toggle label="Compact nodes" description="Show node names in the header and hide extra unused fallback fields until revealed" checked={settings.compactNodes ?? false} onChange={(value) => update('compactNodes', value)} />
     </div>}
 
@@ -392,7 +448,8 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
       <p className="settings-about-disclaimer">ARC Studio is an independent, open source project. It is not affiliated with, endorsed by, or sponsored by Discord Inc. Discord and its logo are trademarks of Discord Inc.</p>
       <section className="settings-about-section" aria-label="Updates">
         <Toggle label="Check for updates automatically" description={desktopMode ? 'Checks for ARC Studio releases when you’re online.' : undefined} checked={settings.autoUpdateChecks !== false} onChange={(value) => update('autoUpdateChecks', value)} />
-        {desktopMode && localWorkspace && <button type="button" className="settings-about-update-button" disabled={checkingForUpdates || !networkOnline} onClick={onCheckForUpdates}><RefreshCw size={14} className={checkingForUpdates ? 'is-spinning' : ''} /><span>{checkingForUpdates ? 'Checking for updates…' : 'Check for updates now'}</span></button>}
+        {desktopMode && localWorkspace && <button type="button" className="settings-about-update-button" aria-busy={checkingForUpdates} disabled={checkingForUpdates || updateCheckCooldownSeconds > 0 || !networkOnline} onClick={handleCheckForUpdates}><RefreshCw size={14} className={checkingForUpdates ? 'is-spinning' : ''} /><span role="status" aria-live="polite">{checkingForUpdates ? 'Checking for updates…' : updateCheckCooldownSeconds > 0 ? `Check again in ${updateCheckCooldownSeconds}s` : 'Check for updates now'}</span></button>}
+        {updateCheckError && <p className="field-error" role="alert">{updateCheckError}</p>}
         {desktopMode && <><div className="settings-about-credit"><strong>Release channel</strong><span>{releaseChannel === 'nightly' ? 'Nightly' : 'Stable'}</span></div></>}
         {serverUpdate && <a href={serverUpdate.url} target="_blank" rel="noreferrer" onClick={openExternal}><Download size={14} /><span>ARC Studio Server update · v{serverUpdate.version}</span><ExternalLink size={12} /></a>}
         {(downloadedUpdateReady || stableUpdateReady) && <div className="settings-update-explainer"><strong>ARC Studio v{downloadedUpdateReady?.version || stableUpdateReady.version} is ready</strong><span>It will be applied the next time you launch the app.</span></div>}
@@ -401,25 +458,6 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
           : appUpdate ? <a href={appUpdate.url} target="_blank" rel="noreferrer" onClick={openExternal}><Download size={14} /><span>{`${appUpdate.kind === 'major' ? 'Major' : appUpdate.kind === 'feature' ? 'Feature' : 'Maintenance'} update · v${appUpdate.version}`}</span><ExternalLink size={12} /></a>
           : null}
       </section>
-        {!desktopMode
-          ? <></>
-          : <>
-                <section className="settings-about-section" aria-labelledby="about-local-data-heading">
-        <h3 id="about-local-data-heading">Local data</h3>
-            <p className="settings-danger-copy">Reset Local Workspace removes local projects, graphs, credentials, plugins, snapshots, and editor settings, then restarts ARC Studio.</p>
-            {!localWorkspace && <p className="settings-danger-copy">Switch to Local Workspace to reset its data.</p>}
-            {localWorkspace && !canResetLocalWorkspace && <p className="settings-danger-copy">Only the Local Workspace owner can delete its data.</p>}
-            <form className="settings-reset-form" onSubmit={(event) => {
-              event.preventDefault();
-              if (!resetPassword || resetPending || !localWorkspace || !canResetLocalWorkspace) return;
-              setResetError('');
-              setConfirmResetOpen(true);
-            }}>
-              <TextInput label="ARC Studio password" type="password" autoComplete="current-password" value={resetPassword} onChange={(event) => { setResetPassword(event.target.value); setResetError(''); }} disabled={!canResetLocalWorkspace || resetPending} error={resetError} />
-              <Button type="submit" variant="danger" icon={RotateCcw} loading={resetPending} disabled={!canResetLocalWorkspace || !resetPassword || resetPending}>Delete all local data</Button>
-            </form>
-             </section>
-          </>}
       <section className="settings-about-section" aria-labelledby="about-project-heading">
         <h3 id="about-project-heading">Project</h3>
         <a href="https://github.com/relentiousdragon/arc-studio" target="_blank" rel="noreferrer" onClick={openExternal}><Github size={14} /><span>ARC Studio on GitHub</span><ExternalLink size={12} /></a>
@@ -437,12 +475,31 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
         <div><strong>Apache License 2.0</strong><span>© 2026 relentiousdragon</span></div>
         <span className="settings-about-card-link"><ExternalLink size={13} aria-hidden="true" /></span>
       </a>
+      <a className="settings-about-license" href="https://github.com/relentiousdragon/arc-studio/blob/main/THIRD_PARTY_NOTICES.md" target="_blank" rel="noreferrer" onClick={openExternal}>
+        <Github size={15} aria-hidden="true" />
+        <div><strong>Third party licenses and attributions</strong><span>View the notices on GitHub</span></div>
+        <span className="settings-about-card-link"><ExternalLink size={13} aria-hidden="true" /></span>
+      </a>
       <button type="button" className="settings-about-license settings-about-discord" onClick={openDiscordInvite}>
         <svg viewBox="0 0 24 24" fill="currentColor" width={15} height={15} aria-hidden="true"><path d="M20.317 4.369a19.79 19.79 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.249a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.249.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.056 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128c.126-.094.252-.192.372-.291a.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.009c.12.099.246.198.373.292a.077.077 0 0 1-.006.127 12.3 12.3 0 0 1-1.873.891.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.029zM8.02 15.331c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z" /></svg>
         <div><strong>Discord community</strong><span>Join the ARC Studio server</span></div>
         <span className="settings-about-card-link"><ExternalLink size={13} aria-hidden="true" /></span>
       </button>
-      <Modal isOpen={confirmResetOpen} onClose={() => !resetPending && setConfirmResetOpen(false)} onConfirm={confirmLocalReset} title="Delete all Local Workspace data?" subtitle="This cannot be undone." icon={AlertTriangle} footer={<><Button variant="secondary" disabled={resetPending} onClick={() => setConfirmResetOpen(false)}>Cancel</Button><Button variant="danger" icon={RotateCcw} loading={resetPending} onClick={confirmLocalReset}>Delete everything</Button></>}>
+      <details className="settings-about-notices">
+        <summary>Third party notices included in this app</summary>
+        <pre>{thirdPartyNotices}</pre>
+      </details>
+      {desktopMode && !aboutOnly && <section className="settings-about-section settings-about-local-data" aria-labelledby="about-local-data-heading">
+        <h3 id="about-local-data-heading">Local data</h3>
+        <p className="settings-danger-copy">Reset Local Workspace removes local projects, graphs, credentials, plugins, snapshots, and editor settings, then restarts ARC Studio.</p>
+        {!localWorkspace && <p className="settings-danger-copy">Switch to Local Workspace to reset its data.</p>}
+        {localWorkspace && !canResetLocalWorkspace && <p className="settings-danger-copy">Only the Local Workspace owner can delete its data.</p>}
+        <form className="settings-reset-form" onSubmit={requestLocalReset}>
+          <TextInput label="ARC Studio password" type="password" autoComplete="current-password" value={resetPassword} onChange={(event) => { setResetPassword(event.target.value); setResetError(''); }} disabled={!canResetLocalWorkspace || resetPending} error={resetError} />
+          <Button type="submit" variant="danger" icon={RotateCcw} loading={resetPending} disabled={!canResetLocalWorkspace || !resetPassword || resetPending}>Delete all local data</Button>
+        </form>
+      </section>}
+      <Modal isOpen={confirmResetOpen} onClose={() => !resetPending && setConfirmResetOpen(false)} onConfirm={confirmLocalReset} title="Delete all Local Workspace data?" subtitle="This cannot be undone." icon={AlertTriangle} showCloseButton={!hideWindowClose} footer={<><Button variant="secondary" disabled={resetPending} onClick={() => setConfirmResetOpen(false)}>Cancel</Button><Button variant="danger" icon={RotateCcw} loading={resetPending} onClick={confirmLocalReset}>Delete everything</Button></>}>
         <p className="settings-danger-copy">This deletes every local project and its graphs, bot tokens, credentials, plugins, snapshots, variables, and editor settings. Projects without a backup somewhere else will be lost permanently.</p>
         <p className="settings-danger-copy">ARC Studio will restart and return to first-time setup.</p>
       </Modal>
