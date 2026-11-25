@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 
-const origins = 'tauri://localhost,http://tauri.localhost,http://localhost:5173';
+const origins = 'tauri://localhost,http://tauri.localhost,http://localhost:5173,http://localhost:5174,http://127.0.0.1:5174';
 let stopping = false;
 let server = null;
 let restartTimer = null;
