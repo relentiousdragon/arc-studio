@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, ArrowLeft, ArrowLeftRight, ArrowRight, Eye, EyeOff, Fingerprint, Globe2, KeyRound, Laptop2, LoaderCircle, LockKeyhole, Moon, Pencil, ShieldCheck, Sparkles, Sun } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, ArrowLeftRight, ArrowRight, Eye, EyeOff, Fingerprint, Globe2, KeyRound, Laptop2, LoaderCircle, LockKeyhole, Moon, Pencil, Sparkles, Sun } from 'lucide-react';
 import { arcEvents } from '../../core/ArcEvents.js';
 import { apiUrl, normalizeWorkspaceUrl } from '../../core/api.js';
 import { getClientBuildInfo } from '../../core/clientBuildInfo.js';
@@ -53,6 +53,7 @@ export function SplashScreen({
   onToggleTheme,
   onAuthComplete,
   workspaceMode = 'local',
+  startOnRemoteWorkspace = false,
   localAccountUsername = '',
   remoteWorkspaceUrl = '',
   workspaceName = '',
@@ -142,8 +143,8 @@ export function SplashScreen({
   const [recoveryMessage, setRecoveryMessage] = useState('');
   const [ownerResetPromptForUsername, setOwnerResetPromptForUsername] = useState('');
   const [passwordChangeSession, setPasswordChangeSession] = useState(null);
-  const [workspaceChoice, setWorkspaceChoice] = useState(workspaceMode);
-  const [showWorkspaceUrl, setShowWorkspaceUrl] = useState(workspaceMode !== 'remote');
+  const [workspaceChoice, setWorkspaceChoice] = useState(() => startOnRemoteWorkspace ? 'remote' : workspaceMode);
+  const [showWorkspaceUrl, setShowWorkspaceUrl] = useState(() => startOnRemoteWorkspace || workspaceMode !== 'remote');
   const [remoteUrl, setRemoteUrl] = useState(remoteWorkspaceUrl);
   const [lowPower, setLowPower] = useState(false);
   const [reducedMotion, setReducedMotion] = useState(() => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches || false);
@@ -188,7 +189,7 @@ export function SplashScreen({
   const [validatingRememberedUser, setValidatingRememberedUser] = useState(false);
 
   useEffect(() => {
-    setWorkspaceChoice(workspaceMode);
+    setWorkspaceChoice(startOnRemoteWorkspace ? 'remote' : workspaceMode);
     if (desktopMode) {
       if (workspaceMode === 'local') {
         setUsername(getLocalUsername());
@@ -199,7 +200,13 @@ export function SplashScreen({
         setLocalUsernameEditable(true);
       }
     }
-  }, [workspaceMode, desktopMode]);
+  }, [workspaceMode, desktopMode, startOnRemoteWorkspace]);
+  useEffect(() => {
+    if (startOnRemoteWorkspace) {
+      setWorkspaceChoice('remote');
+      setShowWorkspaceUrl(true);
+    }
+  }, [startOnRemoteWorkspace]);
   useEffect(() => {
     if (desktopMode && workspaceMode === 'local' && localAccountUsername) {
       setUsername(localAccountUsername);
@@ -807,7 +814,11 @@ export function SplashScreen({
   const startupError = desktopMode && workspaceMode === 'local' ? desktopConfig.startupError : null;
   const documentsPermissionRequired = String(startupError || '').startsWith('ARC_DOCUMENTS_PERMISSION_REQUIRED:');
   const startupErrorMessage = documentsPermissionRequired ? String(startupError).slice('ARC_DOCUMENTS_PERMISSION_REQUIRED:'.length) : startupError;
-  const desktopServerError = desktopMode && /\b500\b/.test(`${workspaceError} ${startupError || ''}`);
+  const desktopServerMismatch = /Local Workspace is connected to the wrong server/i.test(workspaceError);
+  const desktopServerError = desktopMode && (/\b500\b/.test(`${workspaceError} ${startupError || ''}`) || desktopServerMismatch);
+  const desktopServerErrorMessage = desktopServerMismatch
+    ? 'ARC Studio connected to the wrong local service. Restart the app and try again.'
+    : 'The workspace hit an internal server error.';
   const unsupportedNodeCompatibilityError = desktopMode && isUnsupportedNodeCompatibilityError(connectError || workspaceError);
   const activeWorkspaceName = desktopMode && workspaceMode === 'local' ? 'Local Workspace' : 'Private Workspace';
   const compatibilityDetailsLink = (message) => <>
@@ -823,8 +834,8 @@ export function SplashScreen({
   const showRememberedUserCard = Boolean(rememberedProfile) && !needsSetup && !(desktopMode && workspaceMode === 'local');
 
   return (
-    <main className={`auth-screen ${desktopMode ? 'is-desktop' : ''}`} data-release-channel={releaseChannel} data-initial-setup={needsSetup ? 'true' : undefined} data-low-power={lowPower ? 'true' : undefined}>
-      <AuthGridCanvas reducedMotion={reducedMotion} />
+    <main className={`auth-screen ${desktopMode ? 'is-desktop' : ''}`} data-release-channel={releaseChannel} data-initial-setup={needsSetup ? 'true' : undefined} data-low-power={lowPower ? 'true' : undefined} data-server-error={desktopServerError ? 'true' : undefined}>
+      <AuthGridCanvas reducedMotion={reducedMotion} ambientHotspots={!desktopServerError} />
       {fall && seasonalEffectsEnabled && !reducedMotion && (
         <FallingLeaves
           fullScreen
@@ -849,7 +860,7 @@ export function SplashScreen({
         <div className="desktop-server-error-icon" aria-hidden="true">💩</div>
         <span className="auth-kicker">ARC STUDIO</span>
         <h1 id="desktop-server-error-title">Uh oh, we ran into a problem.</h1>
-        <p>The workspace hit an internal server error.</p>
+        <p>{desktopServerErrorMessage}</p>
         <details><summary>Details</summary><code>{workspaceError || startupError}</code></details>
         <button className="auth-submit" type="button" onClick={onRetryWorkspace}>Try again <ArrowRight size={16} /></button>
       </section> : <div className="auth-layout">
@@ -887,7 +898,7 @@ export function SplashScreen({
 
           {!needsProjectOnboarding && !remotePending && needsSetup && !(desktopMode && workspaceMode === 'local') && <div className="setup-progress" aria-label={`Step ${setupStep} of 2`}><span className={setupStep >= 1 ? 'is-current' : ''} /><span className={setupStep >= 2 ? 'is-current' : ''} /></div>}
 
-          {!needsProjectOnboarding && !remotePending && startupError && <div className="auth-startup-error" role="alert"><strong>{documentsPermissionRequired ? 'ARC Studio needs Documents access' : 'Local workspace unavailable'}</strong><span>{documentsPermissionRequired ? 'Allow ARC Studio to access Documents/ARC Studio in Privacy & Security, then restart the app.' : startupErrorMessage}</span>
+          {!needsProjectOnboarding && !remotePending && startupError && <div className="auth-startup-error" role="alert"><strong>{documentsPermissionRequired ? 'ARC Studio needs Documents access' : 'Local workspace unavailable'}</strong><span>{documentsPermissionRequired ? 'If you denied or canceled the macOS request, enable ARC Studio in System Settings under Privacy & Security, then restart the app.' : startupErrorMessage}</span>
             {documentsPermissionRequired && <button className="auth-retry" type="button" onClick={() => {
               const invoke = window.__TAURI_INTERNALS__?.invoke;
               invoke?.('open_macos_files_folders_settings').catch((error) => arcEvents.emit('toast:notify', { title: 'Could not open System Settings', message: String(error?.message || error), type: 'error', duration: 8000 }));
@@ -1030,7 +1041,6 @@ export function SplashScreen({
         onClose={() => { if (!connecting) { setTrustPrompt(null); setTrustConfirmed(false); } }}
         title="Trust this workspace?"
         subtitle={trustPrompt || ''}
-        icon={ShieldCheck}
         footer={<><Button variant="secondary" disabled={connecting} onClick={() => { setTrustPrompt(null); setTrustConfirmed(false); }}>Cancel</Button><Button loading={connecting} disabled={!trustConfirmed || connecting} onClick={confirmWorkspaceTrust}>{connecting ? 'Connecting' : 'Trust and connect'}</Button></>}
       >
         <div className="workspace-trust-content">
