@@ -27,9 +27,11 @@ export function getDefaultShortcut(action, platform = '') {
 }
 
 const keyAliases = { ' ': 'space', '+': 'plus', '-': 'minus', ',': 'comma', '.': 'period', '/': 'slash', '\\': 'backslash', '[': 'bracketleft', ']': 'bracketright' };
+const codeAliases = { Comma: 'comma', Period: 'period', Slash: 'slash', Backslash: 'backslash', BracketLeft: 'bracketleft', BracketRight: 'bracketright' };
 const displayAliases = { plus: '+', minus: '−', comma: ',', period: '.', slash: '/', backslash: '\\', bracketleft: '[', bracketright: ']' };
 const arrowLabels = { arrowup: '↑', arrowdown: '↓', arrowleft: '←', arrowright: '→' };
 const normalizeKey = (key) => keyAliases[key] || key.toLowerCase();
+const getEventKey = (event) => codeAliases[event.code] || normalizeKey(event.key);
 //
 export function normalizeShortcutBinding(binding, platform = '') {
   const parts = String(binding || '').toLowerCase().split('+').filter(Boolean);
@@ -42,13 +44,13 @@ export function normalizeShortcutBinding(binding, platform = '') {
 export function shortcutMatches(event, binding) {
   if (!binding) return false;
   const parts = String(binding).toLowerCase().split('+');
-  const key = parts.at(-1);
+  const key = normalizeKey(parts.at(-1));
   const wantsMod = parts.includes('mod');
   const wantsCtrl = parts.includes('ctrl');
   const wantsShift = parts.includes('shift');
   const wantsAlt = parts.includes('alt');
   const hasMod = event.metaKey || event.ctrlKey;
-  return normalizeKey(event.key) === key
+  return getEventKey(event) === key
     && (wantsCtrl ? event.ctrlKey && !event.metaKey : hasMod === wantsMod)
     && event.shiftKey === wantsShift
     && event.altKey === wantsAlt;
@@ -76,7 +78,7 @@ export function shortcutFromEvent(event) {
   if (event.altKey) modifiers.push('alt');
   const key = event.key.toLowerCase();
   if (['control', 'meta', 'shift', 'alt'].includes(key)) return null;
-  const normalized = normalizeKey(event.key);
+  const normalized = getEventKey(event);
   return [...modifiers, normalized].join('+');
 }
 
