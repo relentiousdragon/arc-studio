@@ -408,17 +408,21 @@ function PropertySuggestInput({ value, onChange, placeholder, ariaLabel, suggest
     }
     if (event.key === 'ArrowDown') {
       event.preventDefault();
+      event.stopPropagation();
       setSelectedIndex((prev) => (prev + 1) % Math.max(1, filtered.length));
     } else if (event.key === 'ArrowUp') {
       event.preventDefault();
+      event.stopPropagation();
       setSelectedIndex((prev) => (prev - 1 + filtered.length) % Math.max(1, filtered.length));
     } else if (event.key === 'Enter' || event.key === 'Tab') {
       if (filtered[selectedIndex]) {
         event.preventDefault();
+        event.stopPropagation();
         selectItem(filtered[selectedIndex]);
       }
     } else if (event.key === 'Escape') {
       event.preventDefault();
+      event.stopPropagation();
       setOpen(false);
     }
   };
@@ -475,11 +479,14 @@ function PropertySuggestInput({ value, onChange, placeholder, ariaLabel, suggest
     <div className="property-suggest-wrap" ref={containerRef}>
         {draftedField}
       {open && filtered.length > 0 && (
-        <div className="property-suggest-menu" onPointerDown={(e) => e.stopPropagation()}>
+        <div className="property-suggest-menu" role="listbox" aria-label={`${ariaLabel} suggestions`} onPointerDown={(e) => e.stopPropagation()}>
           {filtered.map((item, idx) => (
             <div
               key={`${item.key}-${idx}`}
               className={`property-suggest-item${idx === selectedIndex ? ' is-selected' : ''}`}
+              role="option"
+              aria-selected={idx === selectedIndex}
+              onPointerDown={(event) => { event.preventDefault(); event.stopPropagation(); }}
               onMouseEnter={() => setSelectedIndex(idx)}
               onClick={() => selectItem(item)}
             >
@@ -494,6 +501,53 @@ function PropertySuggestInput({ value, onChange, placeholder, ariaLabel, suggest
       )}
     </div>
   );
+}
+
+function CommandMultiSelect({ options = [], value = [], onChange, ariaLabel }) {
+  const [query, setQuery] = React.useState('');
+  const [open, setOpen] = React.useState(false);
+  const rootRef = React.useRef(null);
+  const selected = Array.isArray(value) ? value : [];
+  const selectedSet = new Set(selected);
+  const normalizedQuery = query.trim().toLowerCase();
+  const filtered = options.filter((option) => !selectedSet.has(option.value)
+    && (!normalizedQuery || `${option.label} ${option.description}`.toLowerCase().includes(normalizedQuery))).slice(0, 32);
+
+  React.useEffect(() => {
+    const close = (event) => {
+      if (rootRef.current && !rootRef.current.contains(event.target)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', close, true);
+    return () => document.removeEventListener('pointerdown', close, true);
+  }, []);
+
+  const toggle = (option) => {
+    const next = new Set(selected);
+    if (next.has(option.value)) next.delete(option.value);
+    else next.add(option.value);
+    onChange([...next]);
+    setQuery('');
+    setOpen(true);
+  };
+
+  return <div className="command-multiselect" ref={rootRef} onPointerDown={(event) => event.stopPropagation()}>
+    <div className="command-multiselect-selected">
+      {selected.length ? selected.map((key) => {
+        const option = options.find((item) => item.value === key);
+        return <span className="command-multiselect-chip" key={key}>{option?.label || key}<button type="button" aria-label={`Remove ${option?.label || key}`} onClick={() => onChange(selected.filter((item) => item !== key))}><X size={10} /></button></span>;
+      }) : <span className="command-multiselect-all">All configured commands</span>}
+    </div>
+    <div className="command-multiselect-search"><input value={query} onFocus={() => setOpen(true)} onChange={(event) => { setQuery(event.target.value); setOpen(true); }} onKeyDown={(event) => {
+      if (event.key === 'Enter' && filtered[0]) { event.preventDefault(); toggle(filtered[0]); }
+      if (event.key === 'Escape') setOpen(false);
+    }} placeholder={options.length ? 'Search commands to include' : 'No command graphs found'} aria-label={ariaLabel} disabled={!options.length} />
+    {open && options.length > 0 && <div className="command-multiselect-options" role="listbox" aria-label="Workspace commands">
+      {filtered.map((option) => <button type="button" role="option" aria-selected="false" key={option.value} onClick={() => toggle(option)}><span>{option.label}</span><small>{option.description}</small></button>)}
+      {!filtered.length && <span className="command-multiselect-empty">No matching commands.</span>}
+      {options.length > 32 && !normalizedQuery && <span className="command-multiselect-empty">Type to search the remaining {options.length - 32} commands.</span>}
+    </div>}</div>
+    <small className="node-config-hint">An empty selection deploys every configured slash, user, and message command.</small>
+  </div>;
 }
 
 function CanvasNodeView({
@@ -550,7 +604,11 @@ function CanvasNodeView({
   }, [pinRevealEnabled]);
   const execFirst = (pins = []) => [...pins].sort((left, right) => Number(right.type === 'exec') - Number(left.type === 'exec'));
   const inputs = loadFailed ? [] : execFirst(nodeDef.inputs.filter((pin) => !LEGACY_WEB_SERVER_PIN_IDS.includes(pin.id) || showLegacyWebServerInputs));
-  const outputs = loadFailed ? [] : execFirst(nodeDef.outputs);
+  const legacyModerateFailureConnected = node.type === 'action_moderate_member' && connectedOutputIds?.has?.('failure_exec');
+  const outputs = loadFailed ? [] : execFirst([
+    ...nodeDef.outputs,
+    ...(legacyModerateFailureConnected ? [{ id: 'failure_exec', label: 'Failed (legacy)', type: 'exec' }] : [])
+  ]);
   const inputSocketView = getVisibleNodeSockets(inputs, connectedInputIds, false, pinRevealEnabled);
   const outputSocketView = getVisibleNodeSockets(outputs, connectedOutputIds, false, pinRevealEnabled);
   const rows = Math.max(
@@ -985,6 +1043,24 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
   const serverOptions = [...(nodeById?.values?.() || [])]
     .filter((item) => item.type === 'action_web_server_start')
     .map((item) => ({ value: item.id, label: `${item.label || 'Web Server'} · ${item.id.slice(0, 8)}` }));
+  if (node.type === 'action_deploy_slash_commands') {
+    const commandOptions = (callableGraphs || []).filter((graph) => graph?.enabled !== false).flatMap((graph) => (graph.nodes || [])
+      .filter((item) => ['event_slash_command', 'event_user_command', 'event_message_command'].includes(item.type))
+      .map((item) => {
+        const type = item.type === 'event_user_command' ? 2 : item.type === 'event_message_command' ? 3 : 1;
+        const name = String(item.data?.commandName || '').trim();
+        return name ? {
+          value: `${type}:${name.toLowerCase()}`,
+          label: type === 1 ? `/${name}` : `${type === 2 ? 'User' : 'Message'} · ${name}`,
+          description: graph.name || 'Untitled graph'
+        } : null;
+      }).filter(Boolean)).filter((option, index, list) => list.findIndex((item) => item.value === option.value) === index);
+    return <div className="node-config node-config-stack">
+      {!isConnected('guild_id') && <FallbackField label="Guild ID · blank deploys globally"><input value={node.data?.guild_id || ''} onChange={(event) => update('guild_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Discord server ID" aria-label="Guild ID for command deployment" inputMode="numeric" /></FallbackField>}
+      {!isConnected('command_keys') && <FallbackField label="Commands"><CommandMultiSelect options={commandOptions} value={node.data?.command_keys || []} onChange={(value) => update('command_keys', value)} ariaLabel="Commands to deploy" /></FallbackField>}
+      <span className="node-config-hint">The user who triggers this node must have Manage Server or Administrator. Discord must authorize the app in the selected guild.</span>
+    </div>;
+  }
   const serverSelector = (placeholder = 'Select a started web server') => isConnected('web_server_id') ? null : <FallbackField label="Web Server">
     <AnimatedDropdown value={node.data?.web_server_id || ''} options={serverOptions} onChange={(value) => update('web_server_id', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Web server" placeholder={placeholder} className="node-select" disabled={!serverOptions.length} />
   </FallbackField>;
@@ -1793,6 +1869,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
         {node.data?.operation === 'timeout' && !isConnected('duration_minutes') && <FallbackField label="Timeout (minutes)"><NodeNumberInput min="1" max="40320" value={node.data?.duration_minutes ?? 10} onChange={(event) => update('duration_minutes', numericNodeInputValue(event.target.value, { min: 1, max: 40320, integer: true, fallback: 1 }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Timeout duration in minutes" /></FallbackField>}
         {node.data?.operation === 'ban' && !isConnected('delete_message_seconds') && <FallbackField label="Delete recent messages (seconds)"><NodeNumberInput min="0" max="604800" value={node.data?.delete_message_seconds ?? 0} onChange={(event) => update('delete_message_seconds', numericNodeInputValue(event.target.value, { min: 0, max: 604800, integer: true }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Ban message deletion period" /></FallbackField>}
         {textField('reason', 'Audit Log Reason')}
+        <span className="node-config-hint">Use Success with a Branch node to route based on the result.</span>
         <span className="node-config-warning"><AlertTriangle size={12} /> Discord checks the bot’s role position and server permissions.</span>
       </>}
       {node.type === 'action_voice_channel_status' && <>{textField('channel_id', 'Voice channel ID')}{templateInput('status', 'Status (blank clears)')}{reason}</>}
