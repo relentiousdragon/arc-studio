@@ -1,11 +1,14 @@
-import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertCircle, AppWindow, Bot, Braces, ChevronDown, CircleHelp, Database, Download, FileCode2, FileUp, Folder, FolderTree, LayoutGrid, LoaderCircle, LockKeyhole, MoreHorizontal, PackageOpen, Pencil, Plus, Save, Search, ShieldCheck, SlidersHorizontal, Sparkles, Ticket, TrendingUp, Trash2, Users, X } from 'lucide-react';
+import { AlertCircle, AppWindow, ArrowLeftRight, Bot, Braces, ChevronDown, CircleHelp, Database, Download, FileCode2, FileUp, Folder, FolderTree, LayoutGrid, LoaderCircle, LockKeyhole, LogOut, MoreHorizontal, PackageOpen, Pencil, Plus, Save, Search, ShieldCheck, SlidersHorizontal, Sparkles, Ticket, TrendingUp, Trash2, Users, X } from 'lucide-react';
 import { DISCORD_OBJECT_PROPERTIES } from 'chezcord';
 import { TopBar } from './components/navigation/TopBar.jsx';
 import { NodeCanvas } from './components/canvas/NodeCanvas.jsx';
 import { ControlDock } from './components/dock/ControlDock.jsx';
 import { onPageBlur } from './core/pageFocus.js';
+import { installNativeContextMenuBridge } from './core/nativeContextMenus.js';
+import { closeDesktopPrompts, isDesktopPromptActive, showDesktopPrompt } from './core/desktopPrompts.js';
+import { ask as showNativeAsk, message as showNativeMessage } from '@tauri-apps/plugin-dialog';
 import { mergeRemoteCollaborationActions } from './core/collaborationActions.js';
 import { createCollaborationGraphPatch } from './core/collaborationGraphPatch.js';
 import { mergeCollaborativeValue } from './core/collaborationMerge.js';
@@ -33,6 +36,59 @@ const lazyNamed = (loader, name) => {
   Component.preload = load;
   return Component;
 };
+function DesktopRailAccountMenu({ user, onOpenSettings, onSwitchWorkspace, onLogout, canManageTeam, onOpenUsers }) {
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState(null);
+  const [avatarFailed, setAvatarFailed] = useState(false);
+  const triggerRef = useRef(null);
+  const menuRef = useRef(null);
+  const closeTimerRef = useRef(0);
+  const username = String(user?.username || 'Account');
+  const initial = Array.from(username.trim())[0]?.toLocaleUpperCase() || 'A';
+  const avatarUrl = user?.avatar ? apiUrl(user.avatar) : '';
+  const cancelClose = () => window.clearTimeout(closeTimerRef.current);
+  const closeSoon = () => {
+    cancelClose();
+    closeTimerRef.current = window.setTimeout(() => setOpen(false), 140);
+  };
+  const close = (action) => {
+    cancelClose();
+    setOpen(false);
+    action?.();
+  };
+  useEffect(() => setAvatarFailed(false), [avatarUrl]);
+  useLayoutEffect(() => {
+    if (!open || !triggerRef.current || !menuRef.current) return undefined;
+    const placeMenu = () => {
+      const trigger = triggerRef.current?.getBoundingClientRect();
+      const menu = menuRef.current?.getBoundingClientRect();
+      if (!trigger || !menu) return;
+      const margin = 12;
+      const gap = 8;
+      const right = trigger.right + gap;
+      const left = right + menu.width <= window.innerWidth - margin
+        ? right
+        : Math.max(margin, trigger.left - menu.width - gap);
+      const centeredTop = trigger.top + trigger.height / 2 - menu.height / 2 - 8;
+      const top = Math.max(margin, Math.min(centeredTop, window.innerHeight - menu.height - margin));
+      setPosition((current) => current?.left === left && current?.top === top ? current : { left, top });
+    };
+    placeMenu();
+    window.addEventListener('resize', placeMenu);
+    return () => window.removeEventListener('resize', placeMenu);
+  }, [open]);
+  useEffect(() => () => window.clearTimeout(closeTimerRef.current), []);
+  return <div className={`workspace-rail-account${open ? ' is-open' : ''}`} onMouseEnter={() => { cancelClose(); setOpen(true); }} onMouseLeave={closeSoon}>
+    <button ref={triggerRef} className="rail-button workspace-rail-account-trigger" type="button" aria-label="Account menu" aria-haspopup="menu" aria-expanded={open} onClick={() => { cancelClose(); setOpen((value) => !value); }} onFocus={() => { cancelClose(); setOpen(true); }}>{avatarUrl && !avatarFailed ? <img src={avatarUrl} alt="" onError={() => setAvatarFailed(true)} /> : <span>{initial}</span>}</button>
+    {open && createPortal(<div ref={menuRef} className="workspace-rail-account-popover" role="menu" aria-label="Account menu" style={position || { left: -10000, top: -10000 }} onMouseEnter={cancelClose} onMouseLeave={closeSoon}>
+      <div className="workspace-rail-account-identity">{username} · {String(user?.role || 'user')}</div>
+      <button role="menuitem" onClick={() => close(onOpenSettings)}><SlidersHorizontal size={15} />Editor settings</button>
+      <button role="menuitem" onClick={() => close(onSwitchWorkspace)}><ArrowLeftRight size={15} />Switch workspace</button>
+      {canManageTeam && <button role="menuitem" onClick={() => close(onOpenUsers)}><Users size={15} />Team access</button>}
+      <button role="menuitem" onClick={() => close(onLogout)}><LogOut size={15} />Sign out</button>
+    </div>, document.body)}
+  </div>;
+}
 function formatCompactLastSeen(value) {
   const timestamp = typeof value === 'number' ? value : Date.parse(value || '');
   if (!Number.isFinite(timestamp) || timestamp <= 0) return '';
@@ -182,7 +238,7 @@ import { SelectionContextMenu } from './components/ui/SelectionContextMenu.jsx';
 import { SidebarResizeHandle } from './components/ui/SidebarResizeHandle.jsx';
 import { ReleaseNotes } from './components/ui/ReleaseNotes.jsx';
 import { arcEvents } from './core/ArcEvents.js';
-import { listen as listenTauriEvent } from '@tauri-apps/api/event';
+import { emitTo, listen as listenTauriEvent } from '@tauri-apps/api/event';
 import { apiUrl, normalizeWorkspaceUrl, studioWebSocketUrl } from './core/api.js';
 import { parseDesktopPasskeyCallback, peekDesktopPasskeyFlow, redeemDesktopPasskey, subscribeDesktopPasskeyCallbacks, subscribeDesktopPasskeyTickets } from './core/desktopPasskeys.js';
 import { probeInternetConnectivity } from './core/networkConnectivity.js';
@@ -214,6 +270,7 @@ const LEGACY_EMBED_PIN_FIELDS = {
   author_name: ['author', 'name'], author_url: ['author', 'url'], author_icon: ['author', 'icon'],
   footer_text: ['footer', 'text'], footer_icon: ['footer', 'icon'], thumbnail_url: ['thumbnail', 'url'], image_url: ['image', 'url']
 };
+const DISCORD_RPC_BUTTON_LABELS = ['Get ARC Studio', 'Create your Discord bot', 'Build bots visually', 'Explore ARC Studio'];
 const DEFAULT_SETTINGS = {
   snapToGrid: true,
   zoomCanvasWithScroll: false,
@@ -236,6 +293,7 @@ const DEFAULT_SETTINGS = {
   snapshotIntervalMinutes: 30,
   snapshotRetentionHours: 12,
   uiSounds: false,
+  autoResizeDockOnScroll: true,
   desktopNotifications: true,
   autoUpdateChecks: true,
   compactContextMenus: false,
@@ -286,6 +344,41 @@ const TAG_GROUP_COLORS = [
 
 function getShortcutDisplayTokens(shortcut) {
   return String(shortcut).replace(/([⌘⇧⌥])/g, ' $1 ').trim().split(/\s+/).filter(Boolean);
+}
+
+function getShortcutHelpRows({ settings, desktopMode, localDesktopWorkspace, shortcutPlatform }) {
+  const shortcuts = settings?.shortcuts || {};
+  const mod = shortcutPlatform === 'macos' ? '⌘' : 'Ctrl';
+  const platform = shortcutPlatform || 'browser';
+  const binding = (name) => formatShortcut((desktopMode ? shortcuts[name] : null) || DEFAULT_SHORTCUTS[name], platform);
+  return [
+    ['New graph', binding('newGraph')],
+    ['New blank graph', binding('newBlankGraph')],
+    ['Next / previous graph tab', `${binding('switchTabNext')} / ${binding('switchTabPrevious')}`],
+    ['Close active graph tab', binding('closeTab')],
+    ['Add node', binding('addNode')],
+    ['Add note', binding('addNote')],
+    ['Find in sidebar or canvas', mod === '⌘' ? '⌘F' : 'Ctrl+F'],
+    ['Next / previous find result', mod === '⌘' ? '⌘G / ⌘⇧G' : 'Ctrl+G / Ctrl+Shift+G'],
+    ['Draw arrow', `${platform === 'macos' ? '⌥ Option' : 'Alt'} + Shift + drag`],
+    ['Cut wires', `${platform === 'macos' ? '⌥ Option' : 'Alt'} + click or drag`],
+    ...(localDesktopWorkspace ? [['Arrange nodes', formatShortcut(shortcuts.arrangeNodes || DEFAULT_SHORTCUTS.arrangeNodes, platform)]] : []),
+    ['Move nodes between colored sections', `${platform === 'macos' ? '⌥ Option' : 'Alt'} + drag`],
+    ['Toggle Library', binding('toggleLibrary')],
+    ['Open node search', binding('openSearch')],
+    ['Open emoji picker in a text field', binding('emojiPicker')],
+    ['Export bot', binding('exportBot')],
+    ['Toggle server console', binding('toggleConsole')],
+    ['Connect / disconnect gateway', binding('connectGateway')],
+    ['Rename selected node', binding('renameNode')],
+    ['Reload ARC Studio', binding('reloadStudio')],
+    ...(localDesktopWorkspace ? [['Save graph', formatShortcut((desktopMode ? shortcuts.saveGraph : null) || DEFAULT_SHORTCUTS.saveGraph, platform)]] : []),
+    ['Undo', binding('undo')],
+    ['Redo', formatShortcut((desktopMode && shortcuts.redo && shortcuts.redo !== DEFAULT_SHORTCUTS.redo ? shortcuts.redo : getDefaultShortcut('redo', platform)), platform)],
+    ['Copy / paste selected node', `${mod} + C / V`],
+    ['Increase / decrease UI scale', `${mod} + + / −`],
+    ['Pan canvas', 'Space + drag']
+  ];
 }
 
 function ExportReviewDisclosure({ title, summary, expanded, onToggle, children }) {
@@ -803,6 +896,13 @@ function getInitialTheme() {
   return window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
 }
 
+function updateNativeTheme(choice) {
+  const invoke = window.__TAURI_INTERNALS__?.invoke;
+  return typeof invoke === 'function'
+    ? invoke('set_application_theme', { choice })
+    : Promise.resolve();
+}
+
 function hasSavedThemeChoice() {
   const savedTheme = readAppStorage('arc_theme');
   return savedTheme === 'dark' || savedTheme === 'light';
@@ -1016,6 +1116,10 @@ export function App() {
     return () => observer.disconnect();
   }, []);
   const desktopMode = Boolean(window.__ARC_STUDIO_CONFIG__?.desktop);
+  useEffect(() => {
+    if (!desktopMode) return undefined;
+    return installNativeContextMenuBridge();
+  }, [desktopMode]);
   const desktopReleaseChannel = window.__ARC_STUDIO_CONFIG__?.releaseChannel === 'nightly' ? 'nightly' : 'stable';
   const initialBrowserRouteRef = useRef(null);
   if (!desktopMode && initialBrowserRouteRef.current === null) initialBrowserRouteRef.current = readBrowserStudioRoute();
@@ -1025,7 +1129,6 @@ export function App() {
   const browserStudioRestorePendingRef = useRef(Boolean(initialBrowserRouteRef.current?.studio?.kind));
   const shortcutPlatform = window.__ARC_STUDIO_CONFIG__?.platform || (/Mac|iPhone|iPad/.test(navigator.platform) ? 'macos' : 'windows');
   const macOSDesktop = desktopMode && shortcutPlatform === 'macos';
-  const shortcutModifier = shortcutPlatform === 'macos' ? '⌘' : 'Ctrl';
   const [workspaceMode, setWorkspaceMode] = useState(() => {
     try { return desktopMode && localStorage.getItem('arc_workspace_mode') === 'remote' ? 'remote' : 'local'; }
     catch { return 'local'; }
@@ -1065,6 +1168,8 @@ export function App() {
   const [networkOnline, setNetworkOnline] = useState(() => navigator.onLine !== false);
   const [appUpdate, setAppUpdate] = useState(null);
   const [desktopUpdateChecking, setDesktopUpdateChecking] = useState(false);
+  const [desktopUpdateCooldownUntil, setDesktopUpdateCooldownUntil] = useState(0);
+  const desktopUpdateCooldownUntilRef = useRef(0);
   const [serverUpdate, setServerUpdate] = useState(null);
   const [downloadedUpdateReady, setDownloadedUpdateReady] = useState(null);
   const [releaseNotesNotice, setReleaseNotesNotice] = useState(null);
@@ -1160,6 +1265,14 @@ export function App() {
     ? desktopReleaseChannel
     : /-(?:alpha|beta|rc|nightly)(?:[.-]|$)/i.test(studioServerVersion || studioVersion) ? 'nightly' : 'stable';
   const [isReady, setIsReady] = useState(false);
+  const desktopStartupRevealRef = useRef(false);
+  useEffect(() => {
+    if (!desktopMode || (!isReady && !desktopPasskeyBridgeState) || desktopStartupRevealRef.current) return;
+    const invoke = window.__TAURI_INTERNALS__?.invoke;
+    if (typeof invoke !== 'function') return;
+    desktopStartupRevealRef.current = true;
+    invoke('show_main_window_after_startup').catch(() => { desktopStartupRevealRef.current = false; });
+  }, [desktopMode, desktopPasskeyBridgeState, isReady]);
   const [theme, setTheme] = useState(getInitialTheme);
   const [hasThemeChoice, setHasThemeChoice] = useState(hasSavedThemeChoice);
   const [settings, setSettings] = useState(() => readStoredJson('arc_editor_settings', { ...DEFAULT_SETTINGS, uiSounds: desktopMode }));
@@ -1176,6 +1289,8 @@ export function App() {
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState('canvas');
+  const [settingsAboutOnly, setSettingsAboutOnly] = useState(false);
   const [consoleOpenRequest, setConsoleOpenRequest] = useState(0);
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
   const [isProjectsOpen, setIsProjectsOpen] = useState(false);
@@ -1214,6 +1329,7 @@ export function App() {
   const projectWorkspaceConnected = localDesktopWorkspace || collaborationSocketStatus === 'connected';
   const projectActionsDisabled = projectBusy || !projectWorkspaceConnected;
   const canManageProjects = Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write') || currentUser?.role === 'admin');
+  const canManageTeam = Boolean((!desktopMode || workspaceMode === 'remote') && (currentUser?.isPrimaryAdmin === true || currentUser?.permissions?.includes('*')));
   const [exportInProgress, setExportInProgress] = useState(false);
   const [exportReview, setExportReview] = useState(null);
   const [exportReviewSections, setExportReviewSections] = useState({});
@@ -1272,7 +1388,20 @@ export function App() {
   const [confirmDialog, setConfirmDialog] = useState(null);
   const [promptDialog, setPromptDialog] = useState(null);
 
-  const requestConfirmation = useCallback(({ title = 'Confirm action', subtitle, message, confirmText = 'Confirm', cancelText = 'Cancel', variant = 'danger', icon = AlertCircle }) => {
+  const requestConfirmation = useCallback(async ({ title = 'Confirm action', subtitle, message, confirmText = 'Confirm', cancelText = 'Cancel', variant = 'danger', icon = AlertCircle }) => {
+    if (desktopMode) {
+      try {
+        const body = [subtitle, message].filter(Boolean).join('\n\n');
+        return await showNativeAsk(body || title, {
+          title,
+          kind: variant === 'danger' ? 'warning' : 'info',
+          okLabel: confirmText,
+          cancelLabel: cancelText
+        });
+      } catch (error) {
+        console.warn('[ARC] Native confirmation dialog is unavailable. Using the in app dialog.', error);
+      }
+    }
     return new Promise((resolve) => {
       setConfirmDialog({
         title,
@@ -1288,26 +1417,38 @@ export function App() {
         }
       });
     });
-  }, []);
+  }, [desktopMode]);
 
-  const requestPrompt = useCallback(({ title = 'Enter value', subtitle, label, defaultValue = '', placeholder = '', confirmText = 'Save', cancelText = 'Cancel', icon = FileCode2 }) => {
+  const requestPrompt = useCallback(async ({ title = 'Enter value', subtitle, message, label, defaultValue = '', placeholder = '', confirmText = 'Save', cancelText = 'Cancel', icon = FileCode2, kind = 'text', expectedValue, maxLength, variant, required = false }) => {
+    if (desktopMode) {
+      try {
+        const result = await showDesktopPrompt({ kind, title, subtitle, message, label, defaultValue, placeholder, confirmText, cancelText, expectedValue, maxLength, variant, required });
+        return typeof result === 'string' ? result : null;
+      } catch (error) {
+        console.warn('[ARC] Native prompt window is unavailable. Using the in app prompt.', error);
+      }
+    }
     return new Promise((resolve) => {
       setPromptDialog({
         title,
         subtitle,
+        message,
         label,
         value: defaultValue,
         placeholder,
         confirmText,
         cancelText,
         icon,
+        expectedValue,
+        maxLength,
+        variant,
         resolve: (value) => {
           setPromptDialog(null);
           resolve(value);
         }
       });
     });
-  }, []);
+  }, [desktopMode]);
   const [fileDropCanvasBounds, setFileDropCanvasBounds] = useState(null);
   const [projectTemplateDialog, setProjectTemplateDialog] = useState(false);
   const [newProjectTemplate, setNewProjectTemplate] = useState('ticket');
@@ -1327,6 +1468,121 @@ export function App() {
   const [isControlDockOpen, setIsControlDockOpen] = useState(false);
   const [librarySection, setLibrarySection] = useState('graphs');
   const [sidebarWidths, setSidebarWidths] = useState(readSidebarWidths);
+  const canvasWorkspaceRef = useRef(null);
+  useEffect(() => {
+    const workspace = canvasWorkspaceRef.current?.parentElement;
+    if (!workspace) return undefined;
+
+    let gesture = null;
+    let railGesture = null;
+    const openRailSidebar = (sidebar) => {
+      setProjectError('');
+      setIsProjectsOpen(sidebar === 'projects');
+      setIsLibraryOpen(sidebar === 'library');
+      setIsVariablesOpen(sidebar === 'variables');
+      setIsBotSidebarOpen(sidebar === 'bot');
+      setIsPluginStoreOpen(sidebar === 'plugins');
+    };
+    const railSidebarFromTarget = (target) => target?.closest('.workspace-rail [data-sidebar]')?.dataset.sidebar || '';
+    const resetGesture = (springBack = true) => {
+      if (!gesture) return;
+      window.clearTimeout(gesture.endTimer);
+      window.clearTimeout(gesture.cleanupTimer);
+      const { panel } = gesture;
+      gesture = null;
+      if (springBack && panel.isConnected) {
+        panel.style.transition = 'translate 190ms cubic-bezier(.2,.8,.2,1)';
+        panel.style.translate = '0px 0px';
+        window.setTimeout(() => {
+          if (!panel.isConnected) return;
+          panel.style.removeProperty('translate');
+          panel.style.removeProperty('transition');
+          panel.style.removeProperty('will-change');
+        }, 210);
+      }
+    };
+    const settleGesture = () => {
+      if (!gesture) return;
+      const { panel, offset } = gesture;
+      const panelWidth = panel.getBoundingClientRect().width;
+      const closeButton = panel.querySelector('button[aria-label^="Close"]');
+      const closeThreshold = Math.max(100, Math.min(170, panelWidth * 0.3));
+      if (offset <= -closeThreshold && closeButton && !closeButton.disabled) {
+        gesture.finishing = true;
+        panel.style.transition = 'translate 170ms cubic-bezier(.2,.8,.2,1)';
+        panel.style.translate = `${-panelWidth}px 0px`;
+        gesture.cleanupTimer = window.setTimeout(() => {
+          const currentCloseButton = panel.querySelector('button[aria-label^="Close"]');
+          if (panel.isConnected && currentCloseButton && !currentCloseButton.disabled) currentCloseButton.click();
+          else resetGesture(true);
+        }, 180);
+      } else {
+        resetGesture(true);
+      }
+    };
+    const onWheel = (event) => {
+      if (event.defaultPrevented || event.deltaMode !== WheelEvent.DOM_DELTA_PIXEL || event.shiftKey || event.ctrlKey || event.metaKey) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target || target.closest('input, textarea, select, [contenteditable="true"], [role="dialog"], [data-no-sidebar-swipe], .modal-overlay')) return;
+      const mostlyHorizontal = Math.abs(event.deltaX) >= Math.max(10, Math.abs(event.deltaY) * 1.6);
+      const railSidebar = railSidebarFromTarget(target);
+      if (railSidebar) {
+        if (!mostlyHorizontal || event.deltaX >= 0) return;
+        event.preventDefault();
+        if (!railGesture || railGesture.sidebar !== railSidebar) railGesture = { sidebar: railSidebar, distance: 0, endTimer: 0, opened: false };
+        railGesture.distance += -event.deltaX;
+        window.clearTimeout(railGesture.endTimer);
+        if (!railGesture.opened && railGesture.distance >= 105) {
+          railGesture.opened = true;
+          openRailSidebar(railSidebar);
+        }
+        railGesture.endTimer = window.setTimeout(() => { railGesture = null; }, 190);
+        return;
+      }
+      const panel = target.closest('.project-sidebar, .graph-library-panel, .plugin-store-sidebar, .bot-settings-sidebar, .graph-variables-sidebar');
+      if (!panel || !workspace.contains(panel)) return;
+      if (gesture?.finishing) {
+        event.preventDefault();
+        return;
+      }
+
+      if (!mostlyHorizontal || event.deltaX <= 0) return;
+
+      for (let element = target; element && element !== panel; element = element.parentElement) {
+        if (element.scrollWidth > element.clientWidth + 2 && element.scrollLeft > 0) return;
+      }
+
+      if (!gesture) {
+        gesture = { panel, offset: 0, endTimer: 0, cleanupTimer: 0 };
+        panel.style.transition = 'none';
+        panel.style.willChange = 'translate';
+      } else if (gesture.panel !== panel) {
+        resetGesture(true);
+        return;
+      }
+
+      event.preventDefault();
+      gesture.offset = Math.min(0, Math.max(-panel.getBoundingClientRect().width, gesture.offset - event.deltaX));
+      panel.style.translate = `${gesture.offset}px 0px`;
+      window.clearTimeout(gesture.endTimer);
+      gesture.endTimer = window.setTimeout(settleGesture, 170);
+    };
+
+    workspace.addEventListener('wheel', onWheel, { passive: false });
+    return () => {
+      workspace.removeEventListener('wheel', onWheel);
+      if (railGesture) window.clearTimeout(railGesture.endTimer);
+      if (gesture) {
+        window.clearTimeout(gesture.endTimer);
+        window.clearTimeout(gesture.cleanupTimer);
+        if (gesture.panel.isConnected) {
+          gesture.panel.style.removeProperty('translate');
+          gesture.panel.style.removeProperty('transition');
+          gesture.panel.style.removeProperty('will-change');
+        }
+      }
+    };
+  }, [isLibraryOpen, isProjectsOpen, isVariablesOpen, isBotSidebarOpen, isPluginStoreOpen]);
   const [nameDialog, setNameDialog] = useState(null);
   const [nameDialogError, setNameDialogError] = useState('');
   const graphNameInputRef = useRef(null);
@@ -1571,7 +1827,7 @@ export function App() {
         const lowerName = name.toLowerCase();
 
         if (lowerName.endsWith('.arcproject')) {
-          setProjectImportPathRef.current = null;
+          projectImportPathRef.current = null;
           setProjectImportTrusted(false);
           setProjectImportError('');
           setProjectImportSharingWarning(null);
@@ -1586,7 +1842,7 @@ export function App() {
             const text = await file.text();
             const parsed = JSON.parse(text);
             if (parsed?.format === 'arc-project' || parsed?.format === 'arc-project-encrypted' || (parsed?.graphs && parsed?.settings)) {
-              setProjectImportPathRef.current = null;
+              projectImportPathRef.current = null;
               setProjectImportTrusted(false);
               setProjectImportError('');
               setProjectImportSharingWarning(null);
@@ -1858,57 +2114,69 @@ export function App() {
       return undefined;
     }
     let active = true;
-    let checkInFlight = false;
-    const checkForDesktopUpdate = async (manual = false) => {
-      if (checkInFlight) return;
-      checkInFlight = true;
-      if (manual) setDesktopUpdateChecking(true);
-      try {
-        const invoke = window.__TAURI_INTERNALS__?.invoke;
-        if (typeof invoke !== 'function') return;
-        if (!active) return;
-        const staged = await invoke('get_staged_update_status', { channel: desktopReleaseChannel });
-        if (!active) return;
-        if (!startupStagedUpdateCheckedRef.current) {
-          startupStagedUpdateCheckedRef.current = true;
-          autoInstallStagedUpdateOnLaunchRef.current = desktopReleaseChannel === 'stable' && Boolean(staged?.staged);
-        }
-        if (staged?.staged) {
-          setAppUpdate(null);
-          setDownloadedUpdateReady({ version: staged.version });
-          return;
-        }
-        setDownloadedUpdateReady(null);
-        if (!manual && (settings.autoUpdateChecks === false || !networkOnline)) {
-          setAppUpdate(null);
-          return;
-        }
-        const metadata = await invoke('check_channel_update', { channel: desktopReleaseChannel });
-        const { Update } = await import('@tauri-apps/plugin-updater');
-        const update = metadata ? new Update(metadata) : null;
-        if (!active) { await update?.close(); return; }
-        const previous = updateRef.current;
-        updateRef.current = update;
-        if (previous && previous !== update) await previous.close().catch(() => {});
-        if (!update) { setAppUpdate(null); return; }
-        const version = String(update.version || '').replace(/^v/i, '');
-        setAppUpdate({
-          native: true,
-          version,
-          title: `ARC Studio ${version}`,
-          notes: String(update.body || '').slice(0, 6000),
-          kind: classifyArcUpdate(version, update.currentVersion || studioVersion),
-          url: `https://github.com/relentiousdragon/arc-studio/releases/tag/v${encodeURIComponent(version)}`
-        });
-      } catch (error) {
-        if (active) {
-          console.warn('ARC Studio update check failed:', error);
-          if (manual) arcEvents.emit('toast:notify', { title: 'Update check failed', message: error?.message || 'ARC Studio could not check for updates.', type: 'error' });
-        }
-      } finally {
-        checkInFlight = false;
-        if (manual && active) setDesktopUpdateChecking(false);
+    let checkInFlight = null;
+    const checkForDesktopUpdate = (manual = false) => {
+      if (checkInFlight) {
+        if (manual) setDesktopUpdateChecking(true);
+        return manual
+          ? checkInFlight.finally(() => { if (active) setDesktopUpdateChecking(false); })
+          : checkInFlight;
       }
+      if (manual) setDesktopUpdateChecking(true);
+      const check = async () => {
+        try {
+          const invoke = window.__TAURI_INTERNALS__?.invoke;
+          if (typeof invoke !== 'function') return;
+          if (!active) return;
+          const staged = await invoke('get_staged_update_status', { channel: desktopReleaseChannel });
+          if (!active) return;
+          if (!startupStagedUpdateCheckedRef.current) {
+            startupStagedUpdateCheckedRef.current = true;
+            autoInstallStagedUpdateOnLaunchRef.current = desktopReleaseChannel === 'stable' && Boolean(staged?.staged);
+          }
+          if (staged?.staged) {
+            setAppUpdate(null);
+            setDownloadedUpdateReady({ version: staged.version });
+            return;
+          }
+          setDownloadedUpdateReady(null);
+          if (!manual && (settings.autoUpdateChecks === false || !networkOnline)) {
+            setAppUpdate(null);
+            return;
+          }
+          const metadata = await invoke('check_channel_update', { channel: desktopReleaseChannel });
+          const { Update } = await import('@tauri-apps/plugin-updater');
+          const update = metadata ? new Update(metadata) : null;
+          if (!active) { await update?.close(); return; }
+          const previous = updateRef.current;
+          updateRef.current = update;
+          if (previous && previous !== update) await previous.close().catch(() => {});
+          if (!update) { setAppUpdate(null); return; }
+          const version = String(update.version || '').replace(/^v/i, '');
+          setAppUpdate({
+            native: true,
+            version,
+            title: `ARC Studio ${version}`,
+            notes: String(update.body || '').slice(0, 6000),
+            kind: classifyArcUpdate(version, update.currentVersion || studioVersion),
+            url: `https://github.com/relentiousdragon/arc-studio/releases/tag/v${encodeURIComponent(version)}`
+          });
+        } catch (error) {
+          if (active) {
+            console.warn('ARC Studio update check failed:', error);
+            if (manual) {
+              const message = error?.message || 'ARC Studio could not check for updates.';
+              arcEvents.emit('toast:notify', { title: 'Update check failed', message, type: 'error' });
+              return { error: message };
+            }
+          }
+        }
+      };
+      checkInFlight = check().finally(() => {
+        checkInFlight = null;
+        if (manual && active) setDesktopUpdateChecking(false);
+      });
+      return checkInFlight;
     };
     desktopUpdateCheckRef.current = () => checkForDesktopUpdate(true);
     checkForDesktopUpdate();
@@ -1925,8 +2193,15 @@ export function App() {
   }, [desktopMode, networkOnline, settings.autoUpdateChecks, studioVersion, desktopReleaseChannel]);
 
   const handleManualDesktopUpdateCheck = useCallback(() => {
-    if (!desktopMode || workspaceMode !== 'local' || !networkOnline) return;
-    void desktopUpdateCheckRef.current?.();
+    if (!desktopMode || workspaceMode !== 'local' || !networkOnline) return Promise.resolve();
+    const now = Date.now();
+    if (now < desktopUpdateCooldownUntilRef.current) return Promise.resolve({ cooldownUntil: desktopUpdateCooldownUntilRef.current });
+    const check = desktopUpdateCheckRef.current;
+    if (typeof check !== 'function') return Promise.resolve();
+    const cooldownUntil = now + 5000;
+    desktopUpdateCooldownUntilRef.current = cooldownUntil;
+    setDesktopUpdateCooldownUntil(cooldownUntil);
+    return Promise.resolve(check()).then((result) => ({ ...(result && typeof result === 'object' ? result : {}), cooldownUntil }));
   }, [desktopMode, networkOnline, workspaceMode]);
 
   useEffect(() => {
@@ -2411,6 +2686,7 @@ export function App() {
   const discordRpcRequestRef = useRef(null);
   const discordRpcRevisionRef = useRef(0);
   const discordRpcInFlightRef = useRef(false);
+  const [discordRpcButtonTitleIndex, setDiscordRpcButtonTitleIndex] = useState(0);
   const historyRef = useRef(new Map());
   const historyGroupRef = useRef(false);
   const [historyRevision, setHistoryRevision] = useState(0);
@@ -2688,6 +2964,14 @@ export function App() {
   }, [activeTabId, embedStudio?.collabId, embedStudioOpenForActiveGraph, historyRevision, slashCommandStudio?.collabId, slashCommandStudioOpenForActiveGraph]);
 
   useEffect(() => {
+    if (!desktopMode || settings.discordRpcEnabled === false) return undefined;
+    const timer = window.setInterval(() => {
+      setDiscordRpcButtonTitleIndex((index) => (index + 1) % DISCORD_RPC_BUTTON_LABELS.length);
+    }, 120_000);
+    return () => window.clearInterval(timer);
+  }, [desktopMode, settings.discordRpcEnabled]);
+
+  useEffect(() => {
     if (!desktopMode) return undefined;
     const invoke = window.__TAURI_INTERNALS__?.invoke;
     if (typeof invoke !== 'function') return undefined;
@@ -2707,7 +2991,7 @@ export function App() {
     const stateText = anonymous ? 'Private workspace' : stateParts.join(' · ') || 'Workspace';
     const revision = ++discordRpcRevisionRef.current;
     discordRpcRequestRef.current = enabled
-      ? { revision, details, stateText }
+      ? { revision, details, stateText, buttonLabel: DISCORD_RPC_BUTTON_LABELS[discordRpcButtonTitleIndex] }
       : { revision, clear: true };
     const publishLatest = async () => {
       if (discordRpcInFlightRef.current) return;
@@ -2720,7 +3004,7 @@ export function App() {
           try {
             if (request.clear) await invoke('clear_discord_presence');
             else {
-              await invoke('update_discord_presence', { details: request.details, stateText: request.stateText, activityType: 0 });
+              await invoke('update_discord_presence', { details: request.details, stateText: request.stateText, activityType: 0, buttonLabel: request.buttonLabel });
             }
           } catch { /* app retries */ }
           if (discordRpcRequestRef.current?.revision === request.revision) break;
@@ -2734,7 +3018,7 @@ export function App() {
     if (!enabled) return undefined;
     const retry = window.setInterval(publishLatest, 20000);
     return () => window.clearInterval(retry);
-  }, [desktopMode, settings.discordRpcEnabled, settings.discordRpcRedactWorkspace, settings.discordRpcRedactProject, settings.discordRpcRedactGraph, settings.discordRpcRedactBot, workspaceLabel, activeProjectName, activeGraph?.id, activeGraph?.name, botProfile?.application?.name, botProfile?.username]);
+  }, [desktopMode, settings.discordRpcEnabled, discordRpcButtonTitleIndex, settings.discordRpcRedactWorkspace, settings.discordRpcRedactProject, settings.discordRpcRedactGraph, settings.discordRpcRedactBot, workspaceLabel, activeProjectName, activeGraph?.id, activeGraph?.name, botProfile?.application?.name, botProfile?.username]);
 
   const triggerLoadingBar = useCallback(() => {
     const bar = document.getElementById('top-loading-bar');
@@ -2890,23 +3174,37 @@ export function App() {
   }, [hasThemeChoice]);
 
   const toggleTheme = useCallback(() => {
+    const nextTheme = theme === 'dark' ? 'light' : 'dark';
     setHasThemeChoice(true);
-    setTheme((value) => value === 'dark' ? 'light' : 'dark');
-  }, []);
+    setTheme(nextTheme);
+    if (desktopMode) updateNativeTheme(nextTheme).catch(() => {});
+  }, [desktopMode, theme]);
 
-  const handleThemeChange = useCallback((choice) => {
+  const handleThemeChange = useCallback(async (choice) => {
     if (choice === 'system') {
       safeStorageRemove('arc_theme');
+      let nativeSystemTheme = null;
+      if (desktopMode) {
+        try { nativeSystemTheme = await updateNativeTheme('system'); } catch {}
+      }
       setHasThemeChoice(false);
       const preference = window.matchMedia?.('(prefers-color-scheme: light)');
-      setTheme(preference?.matches ? 'light' : 'dark');
-      return;
+      const nextTheme = nativeSystemTheme === 'light' || nativeSystemTheme === 'dark'
+        ? nativeSystemTheme
+        : preference?.matches ? 'light' : 'dark';
+      setTheme(nextTheme);
+      return nextTheme;
     }
     if (choice === 'dark' || choice === 'light') {
       setHasThemeChoice(true);
       setTheme(choice);
+      if (desktopMode) {
+        try { await updateNativeTheme(choice); } catch {}
+      }
+      return choice;
     }
-  }, []);
+    return null;
+  }, [desktopMode]);
 
   useEffect(() => {
     if (!desktopMode || workspaceMode !== 'local') {
@@ -2972,6 +3270,9 @@ export function App() {
       .then(async (system) => {
         if (cancelled) return;
         if (typeof system.isSetupCompleted !== 'boolean') throw new Error('Workspace returned an invalid status response.');
+        if (desktopMode && workspaceMode === 'local' && system.desktopMode === false) {
+          throw new Error('The Local Workspace is connected to the wrong server. Restart ARC Studio and try again. Your saved account has not been changed.');
+        }
         const serverVersion = String(system.version || '').trim();
         const requiredClientVersion = String(system.minimumClientVersion || serverVersion).trim();
         setMinimumRequiredClientVersion(requiredClientVersion);
@@ -3026,12 +3327,10 @@ export function App() {
         if (authToken && serverNodeTypes?.length && serverNodeTypes.every((type) => typeof type === 'string')) {
           const serverNodeTypeSet = new Set(serverNodeTypes);
           setSupportedWorkspaceNodeTypes(serverNodeTypeSet);
-          const workspaceOnlyNodeCount = hasWorkspaceSchemas ? [...serverNodeTypeSet].filter((type) => !BundledNodeTypes.has(type)).length : 0;
-          setWorkspaceCompatibilityNotice(workspaceOnlyNodeCount
-            ? `${workspaceOnlyNodeCount} workspace node type${workspaceOnlyNodeCount === 1 ? '' : 's'} use server-provided schemas and generic editors. Node behavior runs on the workspace server.`
-            : registryLoadIssue ? registryLoadIssue
-            : versionOrder === null ? 'Connected using workspace-provided node support metadata.'
-              : versionOrder < 0 ? `Connected to older workspace version ${serverVersion}. Node behavior runs on the workspace server.`
+          setWorkspaceCompatibilityNotice(registryLoadIssue
+            ? registryLoadIssue
+            : versionOrder === null ? ''
+              : versionOrder < 0 ? `Connected to older workspace version ${serverVersion}.`
                 : versionOrder > 0 ? `Connected to newer workspace version ${serverVersion}. Some editor-specific controls may not be available.` : '');
         } else if (!authToken) {
           setWorkspaceNodeDefinitions(null);
@@ -4312,7 +4611,7 @@ export function App() {
               return;
             }
             const knownGraphs = new Map([...remoteProjectTabGraphsRef.current.values(), ...savedGraphsRef.current, ...tabsRef.current].map((graph) => [graph.id, graph]));
-            const dirtyLocalTabsToPreserve = localDesktopWorkspace ? tabsRef.current.filter((tab) => tab.isDirty && !graphIds.includes(tab.id)
+            const unsavedLocalTabsToPreserve = localDesktopWorkspace ? tabsRef.current.filter((tab) => (tab.isDirty || !savedGraphsRef.current.some((graph) => graph.id === tab.id)) && !graphIds.includes(tab.id)
               && !deletedGraphsRef.current.has(`${payload.projectId}:${tab.id}`)) : [];
             let effectiveGraphIds = graphIds;
             if (!localDesktopWorkspace) {
@@ -4323,7 +4622,7 @@ export function App() {
               effectiveGraphIds = [...new Set([...stillOpenLocalIds, ...newlySharedIds])];
               projectTabStartupBaselineRef.current = new Set(graphIds);
             }
-            effectiveGraphIds = [...effectiveGraphIds, ...dirtyLocalTabsToPreserve.map((tab) => tab.id)];
+            effectiveGraphIds = [...effectiveGraphIds, ...unsavedLocalTabsToPreserve.map((tab) => tab.id)];
             projectTabSyncRef.current = { projectId: payload.projectId, socketRevision: socketReadyRevisionRef.current, graphIds: effectiveGraphIds };
             const nextTabs = effectiveGraphIds.map((id) => knownGraphs.get(id)).filter(Boolean);
             const retainedGraphIds = new Set(effectiveGraphIds);
@@ -4909,9 +5208,16 @@ export function App() {
     }));
   }, [tabs, activeTabId, recordHistory]);
 
-  const openNodeRename = (node) => {
+  const openNodeRename = async (node) => {
     if (!node) return;
     const definition = BuiltInNodeDefinitions.find((item) => item.type === node.type);
+    if (desktopMode) {
+      const label = await requestPrompt({ title: 'Rename node', subtitle: 'This name is saved with this graph.', label: 'Node name', defaultValue: node.label || definition?.label || node.type, maxLength: 64, confirmText: 'Rename' });
+      if (label === null) return;
+      const nextLabel = Array.from(label.trim()).slice(0, 64).join('') || definition?.label || node.type;
+      handleNodesChange(activeNodes.map((item) => item.id === node.id ? { ...item, label: nextLabel } : item));
+      return;
+    }
     setNodeRenameValue(node.label || definition?.label || node.type);
     setNodeRenameDialog({ nodeId: node.id, fallback: definition?.label || node.type });
   };
@@ -4924,12 +5230,40 @@ export function App() {
     setNodeRenameDialog(null);
   };
 
-  const openTagGroupDialog = (nodeId = null, existingGroup = null, noteIds = []) => {
+  const openTagGroupDialog = async (nodeId = null, existingGroup = null, noteIds = []) => {
+    const nodeIds = existingGroup ? [...(existingGroup.nodeIds || [])] : Array.isArray(nodeId) ? [...nodeId] : nodeId ? [nodeId] : [];
+    const selectedNoteIds = existingGroup ? [...(existingGroup.noteIds || [])] : [...noteIds];
+    if (desktopMode) {
+      try {
+        const result = await showDesktopPrompt({
+          kind: 'canvas-section',
+          title: existingGroup ? 'Edit canvas section' : 'Create canvas section',
+          subtitle: 'Group related nodes with a colored frame.',
+          confirmText: existingGroup ? 'Save section' : 'Create section',
+          name: existingGroup?.name || '',
+          color: existingGroup?.color || TAG_GROUP_COLORS[0].value,
+          colors: TAG_GROUP_COLORS,
+          nodeIds,
+          noteIds: selectedNoteIds,
+          notes: (activeGraph?.notes || []).map((note, index) => ({ id: note.id, text: String(note.text || `Note ${index + 1}`).split('\n')[0].slice(0, 48), createdBy: note.createdBy || 'Unknown' }))
+        });
+        if (!result || typeof result !== 'object') return;
+        const validNodeIds = [...new Set(nodeIds)].filter((id) => activeNodes.some((node) => node.id === id));
+        const validNoteIds = [...new Set(result.noteIds || [])].filter((id) => (activeGraph?.notes || []).some((note) => note.id === id));
+        if (!validNodeIds.length && !validNoteIds.length) return;
+        const group = { id: existingGroup?.id || `tag_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, name: String(result.name || '').trim().slice(0, 48), color: result.color || TAG_GROUP_COLORS[0].value, nodeIds: validNodeIds, noteIds: validNoteIds };
+        const currentGroups = activeGraph?.tagGroups || [];
+        handleTagGroupsChange(existingGroup ? currentGroups.map((item) => item.id === group.id ? group : item) : [...currentGroups, group]);
+        return;
+      } catch (error) {
+        console.warn('[ARC] Native canvas section window is unavailable. Using the in app form.', error);
+      }
+    }
     setTagGroupDialog(existingGroup ? { id: existingGroup.id } : { id: null });
     setTagGroupName(existingGroup?.name || '');
     setTagGroupColor(existingGroup?.color || TAG_GROUP_COLORS[0].value);
-    setTagGroupNodeIds(existingGroup ? [...(existingGroup.nodeIds || [])] : Array.isArray(nodeId) ? [...nodeId] : nodeId ? [nodeId] : []);
-    setTagGroupNoteIds(existingGroup ? [...(existingGroup.noteIds || [])] : [...noteIds]);
+    setTagGroupNodeIds(nodeIds);
+    setTagGroupNoteIds(selectedNoteIds);
     setTagGroupSearch('');
     setTagGroupError('');
   };
@@ -5245,17 +5579,29 @@ export function App() {
     } catch {}
   }, [authToken, activeProjectId, localDesktopWorkspace, recoveryLoadedKey, recoveryStorageKey, savedGraphs, tabs]);
 
-  const handleSaveGraph = useCallback(async () => {
-    if (!activeTabId || !authToken) return;
-    const graph = tabs.find((tab) => tab.id === activeTabId);
+  const handleSaveGraph = useCallback(async (targetGraph = null) => {
+    if ((!activeTabId && !targetGraph) || !authToken) return;
+    const graph = targetGraph
+      ? tabs.find((tab) => tab.id === targetGraph.id) || targetGraph
+      : tabs.find((tab) => tab.id === activeTabId);
     if (!graph) return;
     if (!savedGraphs.some((saved) => saved.id === graph.id)) {
+      if (desktopMode) {
+        try {
+          await showDesktopPrompt({ kind: 'graph-name', title: 'Save graph', subtitle: 'Choose a name for this graph.', confirmText: 'Save graph', graphId: graph.id, mode: 'save', defaultValue: graph.name || '' });
+        } catch (error) {
+          console.warn('[ARC] Native graph name window is unavailable. Using the in app form.', error);
+          setNameDialogError('');
+          setNameDialog({ graphId: graph.id, value: graph.name || '', mode: 'save' });
+        }
+        return;
+      }
       setNameDialogError('');
       setNameDialog({ graphId: graph.id, value: graph.name || '', mode: 'save' });
       return;
     }
     await persistGraph(graph);
-  }, [activeTabId, authToken, persistGraph, savedGraphs, tabs]);
+  }, [activeTabId, authToken, desktopMode, persistGraph, savedGraphs, tabs]);
 
   const setGraphEnabled = useCallback(async (graph, enabled) => {
     if (!graph || !authToken) return false;
@@ -5290,11 +5636,21 @@ export function App() {
     }
   }, [authToken]);
 
-  const handleRenameGraph = useCallback((graph) => {
+  const handleRenameGraph = useCallback(async (graph) => {
     if (!graph) return;
+    if (desktopMode) {
+      try {
+        await showDesktopPrompt({ kind: 'graph-name', title: 'Rename graph', subtitle: 'Update the graph name.', confirmText: 'Rename graph', graphId: graph.id, mode: 'rename', defaultValue: graph.name || '' });
+      } catch (error) {
+        console.warn('[ARC] Native graph name window is unavailable. Using the in app form.', error);
+        setNameDialogError('');
+        setNameDialog({ graphId: graph.id, value: graph.name || '', mode: 'rename' });
+      }
+      return;
+    }
     setNameDialogError('');
     setNameDialog({ graphId: graph.id, value: graph.name || '', mode: 'rename' });
-  }, []);
+  }, [desktopMode]);
 
   const handleDuplicateGraph = useCallback(async (sourceGraph) => {
     if (!sourceGraph) return;
@@ -5343,25 +5699,31 @@ export function App() {
     if (activeTabId === id) setActiveTabId(remaining[Math.min(index, remaining.length - 1)]?.id || null);
   }, [activeTabId, tabs]);
 
-  const handleNameDialogSubmit = useCallback(async (event) => {
+  const handleNameDialogSubmit = useCallback(async (event, submittedDialog = null) => {
     event?.preventDefault?.();
-    const name = String(nameDialog?.value || '').trim();
-    if (!name) { setNameDialogError('Enter a graph name.'); return; }
-    if (isReservedTemplateRoot(name)) { setNameDialogError('“chezcord” is reserved for the system template namespace.'); return; }
-    const graph = tabs.find((tab) => tab.id === nameDialog?.graphId) || savedGraphs.find((item) => item.id === nameDialog?.graphId);
-    if (!graph) { setNameDialog(null); setNameDialogError(''); return; }
+    const dialog = submittedDialog || nameDialog;
+    const fromNativePrompt = Boolean(submittedDialog);
+    const rejectName = (message) => {
+      if (!fromNativePrompt) setNameDialogError(message);
+      return fromNativePrompt ? { ok: false, error: message } : undefined;
+    };
+    const name = String(submittedDialog?.name ?? dialog?.value ?? '').trim();
+    if (!name) return rejectName('Enter a graph name.');
+    if (isReservedTemplateRoot(name)) return rejectName('“chezcord” is reserved for the system template namespace.');
+    const graph = tabs.find((tab) => tab.id === dialog?.graphId) || savedGraphs.find((item) => item.id === dialog?.graphId);
+    if (!graph) { setNameDialog(null); setNameDialogError(''); return { ok: true }; }
     const isFunctionGraph = graph.graphType === 'function' || (graph.nodes || []).some((node) => isFunctionGraphNodeType(node.type));
     const previouslySavedGraph = savedGraphs.find((item) => item.id === graph.id);
     if (isFunctionGraph && (!previouslySavedGraph || previouslySavedGraph.name !== name)) {
       const nameError = validateTemplateFunctionName(name);
-      if (nameError) { setNameDialogError(nameError); return; }
+      if (nameError) return rejectName(nameError);
       const duplicate = [...savedGraphs, ...tabs].some((item) => item.id !== graph.id
         && (item.graphType === 'function' || (item.nodes || []).some((node) => isFunctionGraphNodeType(node.type)))
         && item.name?.toLowerCase() === name.toLowerCase());
-      if (duplicate) { setNameDialogError(`A function graph named “${name}” already exists.`); return; }
+      if (duplicate) return rejectName(`A function graph named “${name}” already exists.`);
     }
     const renamed = { ...graph, name, isDirty: true };
-    const isSaveMode = nameDialog.mode === 'save' || nameDialog.mode === 'save-close';
+    const isSaveMode = dialog.mode === 'save' || dialog.mode === 'save-close';
     const wasAlreadySaved = savedGraphs.some((item) => item.id === graph.id);
 
     setNameDialog(null);
@@ -5372,12 +5734,13 @@ export function App() {
 
     if (isSaveMode || wasAlreadySaved) {
       const saved = await persistGraph(renamed, name);
-      if (saved && nameDialog.mode === 'save-close') {
+      if (saved && dialog.mode === 'save-close') {
         closeTabImmediately(graph.id);
       }
     } else {
       arcEvents.emit('toast:notify', { title: 'Name updated', message: `${name} · save to keep this change.`, type: 'success' });
     }
+    return { ok: true };
   }, [nameDialog, persistGraph, savedGraphs, tabs, closeTabImmediately]);
 
   const handleAutoLayout = useCallback(() => {
@@ -5436,18 +5799,86 @@ export function App() {
       arcEvents.emit('toast:notify', { title: 'Graph export failed', message: error.message || 'Could not calculate the file integrity check.', type: 'error' });
       return;
     }
+    const filename = `${(graph.name || 'graph').replace(/[^a-z0-9]/gi, '_').toLowerCase()}.arcgraph`;
+    if (desktopMode) {
+      const invoke = window.__TAURI_INTERNALS__?.invoke;
+      if (typeof invoke !== 'function') {
+        arcEvents.emit('toast:notify', { title: 'Graph export failed', message: 'ARC Studio could not save the graph file.', type: 'error' });
+        return;
+      }
+      let exportId = null;
+      const toastId = createEditorId('graph_export');
+      try {
+        exportId = await invoke('begin_graph_export', { filename });
+        let writtenBytes = 0;
+        let lastReportedProgress = -1;
+        arcEvents.emit('toast:notify', { id: toastId, title: 'Saving graph', message: 'Writing the graph file to Downloads.', type: 'info', persistent: true, dismissible: true, loading: true, progress: 0 });
+        const writeChunk = async (bytes) => {
+          for (let offset = 0; offset < bytes.length; offset += 1024 * 1024) {
+            const chunk = bytes.subarray(offset, Math.min(offset + 1024 * 1024, bytes.length));
+            await invoke('write_graph_export_chunk', {
+              exportId,
+              contents: Array.from(chunk)
+            });
+            writtenBytes += chunk.length;
+            const progress = Math.min(99, Math.floor((writtenBytes / blob.size) * 100));
+            if (progress !== lastReportedProgress) {
+              lastReportedProgress = progress;
+              arcEvents.emit('toast:notify', { id: toastId, title: 'Saving graph', message: 'Writing the graph file to Downloads.', type: 'info', persistent: true, dismissible: true, loading: true, progress });
+            }
+          }
+        };
+        if (typeof blob.stream === 'function') {
+          const reader = blob.stream().getReader();
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              await writeChunk(value);
+            }
+          } catch (error) {
+            await reader.cancel().catch(() => {});
+            throw error;
+          } finally {
+            reader.releaseLock();
+          }
+        } else {
+          for (let offset = 0; offset < blob.size; offset += 1024 * 1024) {
+            await writeChunk(new Uint8Array(await blob.slice(offset, offset + 1024 * 1024).arrayBuffer()));
+          }
+        }
+        const receipt = await invoke('finish_graph_export', { exportId });
+        exportId = null;
+        const savedName = String(receipt?.path || filename).split(/[\\/]/).pop();
+        arcEvents.emit('toast:notify', {
+          id: toastId,
+          title: 'Graph exported',
+          message: `${receipt?.revealed ? `Saved ${savedName} to Downloads and opened its location.` : `Saved ${savedName} to Downloads.`}`,
+          type: 'success',
+          persistent: false,
+          duration: 5000,
+          loading: false,
+          progress: 100
+        });
+        void notifyDesktopInBackground({
+          enabled: settings.desktopNotifications,
+          title: 'Graph export complete',
+          body: `${savedName} is ready in Downloads.`
+        });
+        if (typeof receipt?.path === 'string') console.info(`ARC Studio graph export saved to ${receipt.path}`);
+      } catch (error) {
+        if (exportId) await invoke('cancel_graph_export', { exportId }).catch(() => {});
+        arcEvents.emit('toast:notify', { id: toastId, title: 'Graph export failed', message: error.message || 'Could not save the graph file.', type: 'error', persistent: false, loading: false, progress: null });
+      }
+      return;
+    }
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = `${(graph.name || 'graph').replace(/[^a-z0-9]/gi, '_').toLowerCase()}.arcgraph`;
+    anchor.download = filename;
     anchor.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    void notifyDesktopInBackground({
-      enabled: settings.desktopNotifications,
-      title: 'Graph export complete',
-      body: 'Your graph file is ready.'
-    });
-  }, [activeTabId, authToken, settings.desktopNotifications, tabs]);
+  }, [activeTabId, authToken, desktopMode, settings.desktopNotifications, tabs]);
 
   const ensureWorkspaceGraphsSaved = useCallback(async () => {
     if (!authToken) throw new Error('Sign in again before saving graphs.');
@@ -5610,6 +6041,27 @@ export function App() {
     }
   }, [authToken, defaultGraphId, graphTemplates, persistGraph, savedGraphs]);
 
+  const saveAndCloseGraph = useCallback(async (graph) => {
+    if (!graph) return;
+    const isSaved = savedGraphs.some((saved) => saved.id === graph.id);
+    if (!isSaved) {
+      if (desktopMode) {
+        try {
+          await showDesktopPrompt({ kind: 'graph-name', title: 'Save graph', subtitle: 'Choose a name for this graph.', confirmText: 'Save and close', graphId: graph.id, mode: 'save-close', defaultValue: graph.name || '' });
+        } catch (error) {
+          console.warn('[ARC] Native graph name window is unavailable. Using the in app form.', error);
+          setNameDialogError('');
+          setNameDialog({ graphId: graph.id, value: graph.name || '', mode: 'save-close' });
+        }
+        return;
+      }
+      setNameDialogError('');
+      setNameDialog({ graphId: graph.id, value: graph.name || '', mode: 'save-close' });
+      return;
+    }
+    if (await persistGraph(graph)) closeTabImmediately(graph.id);
+  }, [closeTabImmediately, desktopMode, persistGraph, savedGraphs]);
+
   const handleCloseTab = useCallback((id) => {
     const closingGraph = tabs.find((tab) => tab.id === id);
     if (!closingGraph) return;
@@ -5620,22 +6072,33 @@ export function App() {
       closeTabImmediately(id);
       return;
     }
+    if (desktopMode) {
+      const name = closingGraph.name || 'Untitled graph';
+      void showNativeMessage(`“${name}” has unsaved changes.\n\nSave this graph to your Library before closing?`, {
+        title: 'Save changes?',
+        kind: 'warning',
+        buttons: { yes: 'Save and close', no: 'Discard', cancel: 'Cancel' }
+      })
+        .then(async (choice) => {
+          if (choice === 'Discard') closeTabImmediately(id);
+          else if (choice === 'Save and close') await saveAndCloseGraph(closingGraph);
+        })
+        .catch((error) => {
+          console.warn('[ARC] Native save changes dialog is unavailable. Using the in app dialog.', error);
+          setCloseGraphDialog({ id, name });
+        });
+      return;
+    }
     setCloseGraphDialog({ id, name: closingGraph.name || 'Untitled graph' });
-  }, [closeTabImmediately, savedGraphs, tabs]);
+  }, [closeTabImmediately, desktopMode, savedGraphs, saveAndCloseGraph, tabs]);
 
   const handleSaveAndCloseGraph = useCallback(async () => {
     if (!closeGraphDialog) return;
     const graph = tabs.find((tab) => tab.id === closeGraphDialog.id);
     if (!graph) { setCloseGraphDialog(null); return; }
-    const isSaved = savedGraphs.some((saved) => saved.id === graph.id);
     setCloseGraphDialog(null);
-    if (!isSaved) {
-      setNameDialogError('');
-      setNameDialog({ graphId: graph.id, value: graph.name || '', mode: 'save-close' });
-      return;
-    }
-    if (await persistGraph(graph)) closeTabImmediately(graph.id);
-  }, [closeGraphDialog, tabs, savedGraphs, persistGraph, closeTabImmediately]);
+    await saveAndCloseGraph(graph);
+  }, [closeGraphDialog, saveAndCloseGraph, tabs]);
 
   const handleDiscardAndCloseGraph = useCallback(() => {
     if (!closeGraphDialog) return;
@@ -5789,9 +6252,9 @@ export function App() {
       : `Delete these ${targets.length} saved graphs from the Library? ${names}${extra}. This cannot be undone.`;
     const confirmed = await requestConfirmation({
       title: targets.length === 1 ? 'Delete saved graph?' : 'Delete saved graphs?',
-      subtitle: 'Library deletion',
+      subtitle: `${[desktopMode && workspaceMode === 'remote' ? externalWorkspaceName : workspaceLabel, activeProjectName].filter(Boolean).join('/')}/`,
       message: confirmation,
-      confirmText: 'Delete',
+      confirmText: 'Yes',
       cancelText: 'Cancel',
       variant: 'danger',
       icon: Trash2
@@ -5836,7 +6299,7 @@ export function App() {
       type: 'success'
     });
     return true;
-  }, [activeTabId, authToken, requestConfirmation, tabs]);
+  }, [activeProjectName, activeTabId, authToken, desktopMode, externalWorkspaceName, requestConfirmation, tabs, workspaceLabel, workspaceMode]);
   const handleDeleteSavedGraph = useCallback((graph) => handleDeleteSavedGraphs([graph]), [handleDeleteSavedGraphs]);
 
   const handleExportBot = useCallback(async (projectId = activeProjectId, skipReview = false, exportOptions = {}) => {
@@ -5924,13 +6387,14 @@ export function App() {
         included: ['graphs.json and project-variables.json', 'integrity.json with SHA-256 file hashes', 'src/index.js, src/env.js, and src/engine/{GraphRunner,NodeRegistry,MathOperations,CronSchedule,SafeHttpRequest,PluginStore}.js', 'src/security/CryptoEngine.js', 'Chezcord source and package metadata under chezcord/', 'package.json, README.md, .env, .env.example, and LICENSE']
       };
       setExportReviewSections({});
-      setExportReview({
+      const review = {
         projectId: exportProjectId,
         issues,
         summary,
         includeCryptoSecret: usesCryptoNodes,
         includeBotToken: false
-      });
+      };
+      setExportReview(review);
       return;
     }
     exportInFlightRef.current = true;
@@ -6036,7 +6500,7 @@ export function App() {
       exportInFlightRef.current = false;
       setExportInProgress(false);
     }
-  }, [activeProjectId, authToken, botProfile?.intentSummary, currentUser, desktopMode, graphLookup, projectVariables, savedGraphs, settings.desktopNotifications, tabs]);
+  }, [activeProjectId, authToken, botProfile?.intentSummary, currentUser, desktopMode, graphLookup, projectVariables, savedGraphs, settings.desktopNotifications, tabs, traceGraphNode]);
 
   const applyHistorySnapshot = useCallback((snapshot, graphId) => {
     const saved = savedGraphsRef.current.find((graph) => graph.id === graphId);
@@ -6293,11 +6757,24 @@ export function App() {
     }
   }, [activeGraph, activeProjectId, appendNodeToGraph, availableVariables, canWriteGraphs, graphLookup, handleAddBlankGraph, isLocked, makeNode, nodePrefabs, supportedWorkspaceNodeTypes]);
 
-  const handleRequestSaveNodePrefab = useCallback((node) => {
+  const handleRequestSaveNodePrefab = useCallback(async (node) => {
     if (!node) return;
+    const defaultName = node.label || BuiltInNodeDefinitions.find((definition) => definition.type === node.type)?.label || 'Node';
+    if (desktopMode) {
+      const name = await requestPrompt({ title: 'Save node prefab', subtitle: 'Add this configured node to Saved nodes.', label: 'Node name', defaultValue: defaultName, maxLength: 80, confirmText: 'Save node', required: true });
+      if (name === null || !name.trim()) return;
+      const cleanName = name.trim();
+      const savedNode = { ...structuredClone(node), id: undefined, x: undefined, y: undefined };
+      const prefab = { id: `prefab_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, name: cleanName, node: savedNode };
+      const next = [prefab, ...nodePrefabs];
+      setNodePrefabs(next);
+      safeStorageSet('arc_node_prefabs', JSON.stringify(next));
+      arcEvents.emit('toast:notify', { title: 'Node saved', message: `${cleanName} added to Saved nodes.`, type: 'success' });
+      return;
+    }
     setNodePrefabError('');
-    setNodePrefabDialog({ node: structuredClone(node), name: node.label || BuiltInNodeDefinitions.find((definition) => definition.type === node.type)?.label || 'Node' });
-  }, []);
+    setNodePrefabDialog({ node: structuredClone(node), name: defaultName });
+  }, [desktopMode, nodePrefabs, requestPrompt]);
 
   const handleSaveNodePrefab = useCallback((event) => {
     event?.preventDefault?.();
@@ -7048,8 +7525,21 @@ export function App() {
       } catch {}
       const unavailablePrivileged = currentIntents.filter((intent) => intent.required && intent.privileged && intent.portalEnabled === false);
       if (unavailablePrivileged.length && confirmed !== true) {
-        setGatewayIntentConfirm(unavailablePrivileged);
-        return;
+        if (desktopMode) {
+          const accepted = await requestConfirmation({
+            title: 'Connect with limited gateway access?',
+            subtitle: 'Discord currently reports these privileged intents as disabled.',
+            message: `Graphs that need ${unavailablePrivileged.map((intent) => intent.label).join(' and ')} may not receive the required events or data. Enable them in the Discord Developer Portal for full functionality.`,
+            confirmText: 'Connect anyway',
+            cancelText: 'Cancel',
+            variant: 'primary',
+            icon: AlertCircle
+          });
+          if (!accepted) return;
+        } else {
+          setGatewayIntentConfirm(unavailablePrivileged);
+          return;
+        }
       }
       const newlySaved = [];
       for (const graph of tabs) {
@@ -7073,7 +7563,7 @@ export function App() {
       botStartPendingRef.current = false;
       arcEvents.emit('toast:notify', { title: 'Gateway error', message: error.message, type: 'error' });
     }
-  }, [authToken, networkOnline, savedGraphs, saveGraphWithProgress, tabs, triggerLoadingBar, botProfile?.intentSummary]);
+  }, [authToken, desktopMode, networkOnline, requestConfirmation, savedGraphs, saveGraphWithProgress, tabs, triggerLoadingBar, botProfile?.intentSummary]);
 
   const handleStopBot = useCallback(async () => {
     if (!authToken) return;
@@ -7104,7 +7594,8 @@ export function App() {
     }
   }, [authToken]);
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    if (desktopMode) await closeDesktopPrompts().catch(() => {});
     if (authToken) {
       fetch(apiUrl('/api/auth/logout'), { method: 'POST', headers: { 'x-arc-token': authToken } }).catch(() => {});
     }
@@ -7122,6 +7613,7 @@ export function App() {
   };
 
   const forceSignOut = useCallback(() => {
+    if (desktopMode) void closeDesktopPrompts().catch(() => {});
     safeStorageRemove('arc_token');
     if (desktopMode && workspaceMode === 'local') {
       removeLocalDesktopSessionToken();
@@ -7212,12 +7704,12 @@ export function App() {
     finally { setProjectBusy(false); }
   };
 
-  const handleCreateProjectFromTemplate = async () => {
-    if (projectActionsDisabled || !newProjectName.trim()) return;
+  const handleCreateProjectFromTemplate = async ({ name = newProjectName, templateId = newProjectTemplate, throwOnError = false } = {}) => {
+    if (projectActionsDisabled || !String(name || '').trim()) throw new Error('Enter a project name before creating the project.');
     setProjectBusy(true);
     setProjectError('');
     try {
-      const response = await fetch(apiUrl('/api/projects'), { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken }, body: JSON.stringify({ name: newProjectName.trim(), templateId: newProjectTemplate }) });
+      const response = await fetch(apiUrl('/api/projects'), { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken }, body: JSON.stringify({ name: String(name).trim(), templateId }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Could not create the project.');
       setProjects(data.projects || []);
@@ -7226,8 +7718,34 @@ export function App() {
       setProjectTemplateDialog(false);
       setNewProjectName('');
       if (project?.id) await handleActivateProject(project.id, true);
-    } catch (error) { setProjectError(error.message); }
+    } catch (error) {
+      setProjectError(error.message);
+      if (throwOnError) throw error;
+    }
     finally { setProjectBusy(false); }
+  };
+
+  const openCreateProjectFromTemplate = async () => {
+    setNewProjectTemplate('ticket');
+    setNewProjectName('Ticket Bot');
+    setProjectNameManuallyEdited(false);
+    setProjectError('');
+    setProjectNameInvalid(false);
+    if (!desktopMode) { setProjectTemplateDialog(true); return; }
+    try {
+      await showDesktopPrompt({
+        kind: 'create-project',
+        title: 'Create from template',
+        subtitle: 'Pick a starter project and give it a name.',
+        blocking: true,
+        defaultName: 'Ticket Bot',
+        defaultTemplateId: 'ticket',
+        starters: projectStarters.map(({ id, name, description }) => ({ id, name, description }))
+      });
+    } catch (error) {
+      console.warn('[ARC] Native project template window is unavailable. Using the in app dialog.', error);
+      setProjectTemplateDialog(true);
+    }
   };
 
   const handleExportProject = async (project) => {
@@ -7238,7 +7756,7 @@ export function App() {
       const response = await fetch(apiUrl(`/api/projects/${encodeURIComponent(project.id)}/export?summary=1`), { headers: { 'x-arc-token': authToken } });
       if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Could not export the project.'); }
       const bundle = await response.json();
-      setProjectExportDialog({
+      const exportDialog = {
         project,
         bundle,
         omittedFields: bundle.sensitiveData?.omittedFields || 0,
@@ -7248,7 +7766,27 @@ export function App() {
         confirmPassword: '',
         error: '',
         isSubmitting: false
-      });
+      };
+      if (desktopMode) {
+        let options;
+        try {
+          options = await showDesktopPrompt({
+            kind: 'project-export',
+            title: 'Export project',
+            subtitle: `${project.name || 'Project'} (.arcproject)`,
+            omittedFields: exportDialog.omittedFields,
+            confirmText: 'Export project',
+            cancelText: 'Cancel'
+          });
+        } catch (error) {
+          console.warn('[ARC] Native project export options are unavailable. Using the in app options.', error);
+          setProjectExportDialog(exportDialog);
+          return;
+        }
+        if (options) await handleExecuteProjectExport(options.passwordProtect, { ...exportDialog, ...options });
+      } else {
+        setProjectExportDialog(exportDialog);
+      }
     } catch (error) {
       arcEvents.emit('toast:notify', { title: 'Project export failed', message: error.message || 'Could not prepare the project export.', type: 'error' });
     } finally {
@@ -7256,21 +7794,26 @@ export function App() {
     }
   };
 
-  const handleExecuteProjectExport = async (forceEncryption) => {
-    if (!projectExportDialog || projectExportDialog.isSubmitting) return;
-    const shouldEncrypt = typeof forceEncryption === 'boolean' ? forceEncryption : projectExportDialog.passwordProtect;
-    const { project, includeSecrets, password, confirmPassword } = projectExportDialog;
+  const handleExecuteProjectExport = async (forceEncryption, preparedDialog = null) => {
+    const currentDialog = preparedDialog || projectExportDialog;
+    if (!currentDialog || currentDialog.isSubmitting) return;
+    const shouldEncrypt = typeof forceEncryption === 'boolean' ? forceEncryption : currentDialog.passwordProtect;
+    const { project, includeSecrets, password, confirmPassword } = currentDialog;
     if (shouldEncrypt) {
       if (!password || password.length < 12 || password.length > 1024) {
-        setProjectExportDialog((cur) => ({ ...cur, passwordProtect: true, error: 'Use an export password between 12 and 1,024 characters.' }));
+        const error = 'Use an export password between 12 and 1,024 characters.';
+        if (preparedDialog) arcEvents.emit('toast:notify', { title: 'Project export failed', message: error, type: 'error' });
+        else setProjectExportDialog((cur) => ({ ...cur, passwordProtect: true, error }));
         return;
       }
       if (password !== confirmPassword) {
-        setProjectExportDialog((cur) => ({ ...cur, passwordProtect: true, error: 'The export passwords do not match.' }));
+        const error = 'The export passwords do not match.';
+        if (preparedDialog) arcEvents.emit('toast:notify', { title: 'Project export failed', message: error, type: 'error' });
+        else setProjectExportDialog((cur) => ({ ...cur, passwordProtect: true, error }));
         return;
       }
     }
-    setProjectExportDialog((cur) => ({ ...cur, isSubmitting: true, error: '' }));
+    if (!preparedDialog) setProjectExportDialog((cur) => ({ ...cur, isSubmitting: true, error: '' }));
     try {
       const filename = `${String(project.name || 'project').replace(/[\\/:*?"<>|]/g, '_')}.arcproject`;
       if (desktopMode) {
@@ -7336,12 +7879,13 @@ export function App() {
       }
       setProjectExportDialog(null);
     } catch (error) {
-      setProjectExportDialog((cur) => cur ? { ...cur, error: error.message || 'Could not export the project.', isSubmitting: false } : null);
+      if (preparedDialog) arcEvents.emit('toast:notify', { title: 'Project export failed', message: error.message || 'Could not export the project.', type: 'error' });
+      else setProjectExportDialog((cur) => cur ? { ...cur, error: error.message || 'Could not export the project.', isSubmitting: false } : null);
     }
   };
 
   const handleImportProject = async () => {
-    if (!projectWorkspaceConnected || !projectImportFile || projectImportAnalysisStatus !== 'ready' || !projectImportTrusted || projectBusy || projectImportRenameRequired && !projectImportName.trim() || projectImportSharingWarning && !projectImportSharingApproved || projectImportPlugins.length && !projectImportPluginsApproved || projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && !projectImportOldVersionApproved) return;
+    if (!projectWorkspaceConnected || !projectImportFile || projectImportAnalysisStatus === 'checking' || !projectImportTrusted || projectBusy || projectImportRenameRequired && !projectImportName.trim() || projectImportSharingWarning && !projectImportSharingApproved || projectImportPlugins.length && !projectImportPluginsApproved || projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && !projectImportOldVersionApproved) return;
     projectImportActiveRef.current = true;
     projectImportCancelRequestedRef.current = false;
     setProjectBusy(true);
@@ -7355,7 +7899,7 @@ export function App() {
       if ((percent >= 0 && percent === lastUploadPercent) || (percent < 0 && now - lastUploadProgressAt < 200)) return;
       lastUploadPercent = percent;
       lastUploadProgressAt = now;
-      setProjectImportProgress({ phase: 'uploading', loaded, total });
+      setProjectImportProgress({ phase: total > 0 && loaded >= total ? 'processing' : 'uploading', loaded, total });
     };
     const requestJson = (headers, body, trackUpload = false) => new Promise((resolve, reject) => {
       const request = new XMLHttpRequest();
@@ -7392,62 +7936,68 @@ export function App() {
       error.name = 'AbortError';
       throw error;
     };
+    const stageProjectImport = async (sessionId) => {
+      if (desktopMode && projectImportFile.path) {
+        const invoke = window.__TAURI_INTERNALS__?.invoke;
+        if (typeof invoke !== 'function') throw new Error('ARC Studio could not upload this project file.');
+        const uploadId = globalThis.crypto?.randomUUID?.() || sessionId;
+        let unlisten = null;
+        try {
+          unlisten = await listenTauriEvent('arc-project-import-upload', ({ payload }) => {
+            if (payload?.uploadId !== uploadId) return;
+            updateUploadProgress(Number(payload.loaded) || 0, Number(payload.total) || 0);
+          });
+        } catch {}
+        throwIfImportCancelled();
+        projectImportNativeUploadRef.current = uploadId;
+        setProjectImportProgress({ phase: 'uploading', loaded: 0, total: 0 });
+        try {
+          return await invoke('upload_project_import_file', {
+            endpoint: new URL(importUrl, window.location.href).toString(),
+            token: authToken,
+            path: projectImportFile.path,
+            uploadId,
+            sessionId
+          });
+        } finally {
+          projectImportNativeUploadRef.current = '';
+          unlisten?.();
+        }
+      }
+      if (!projectImportFile || typeof projectImportFile.slice !== 'function') throw new Error('Choose a project file that ARC Studio can read.');
+      return requestJson({
+        'Content-Type': 'application/vnd.arc-studio.project+zip',
+        'x-arc-token': authToken,
+        'x-arc-import-session-create': sessionId
+      }, projectImportFile, true);
+    };
+    const rememberStagedProject = (staged) => {
+      const stagedData = staged?.data || {};
+      if (staged.status !== 202) {
+        projectImportSessionRef.current = '';
+        throw new Error(stagedData.error || stagedData.detail || 'Could not stage this project file.');
+      }
+      const stagedSessionId = String(stagedData.importSessionId || '');
+      if (!stagedSessionId) throw new Error('The server did not create a project import session.');
+      projectImportSessionRef.current = stagedSessionId;
+      setProjectImportEncrypted(stagedData.encrypted === true);
+      setProjectImportHasText(stagedData.hasImportableTextContent === true);
+      setProjectImportPlugins(Array.isArray(stagedData.plugins) ? stagedData.plugins : []);
+      if (stagedData.hasImportableTextContent && !localDesktopWorkspace) {
+        setProjectImportSharingWarning({ workspaceName: String(stagedData.workspaceName || externalWorkspaceName).trim() || externalWorkspaceName });
+      }
+      setProjectImportProgress(null);
+      return stagedData;
+    };
     try {
       let sessionId = projectImportSessionRef.current;
       if (!sessionId) {
         sessionId = globalThis.crypto?.randomUUID?.() || `import_${Date.now()}_${Math.random().toString(36).slice(2)}`;
         projectImportSessionRef.current = sessionId;
-        let staged;
-        if (desktopMode && projectImportFile.path) {
-          const invoke = window.__TAURI_INTERNALS__?.invoke;
-          if (typeof invoke !== 'function') throw new Error('ARC Studio could not upload this project file.');
-          const uploadId = globalThis.crypto?.randomUUID?.() || sessionId;
-          let unlisten = null;
-          try {
-            unlisten = await listenTauriEvent('arc-project-import-upload', ({ payload }) => {
-              if (payload?.uploadId !== uploadId) return;
-              updateUploadProgress(Number(payload.loaded) || 0, Number(payload.total) || 0);
-            });
-          } catch {}
-          throwIfImportCancelled();
-          projectImportNativeUploadRef.current = uploadId;
-          setProjectImportProgress({ phase: 'uploading', loaded: 0, total: 0 });
-          try {
-            staged = await invoke('upload_project_import_file', {
-              endpoint: importUrl,
-              token: authToken,
-              path: projectImportFile.path,
-              uploadId,
-              sessionId
-            });
-          } finally {
-            projectImportNativeUploadRef.current = '';
-            unlisten?.();
-          }
-          throwIfImportCancelled();
-        } else {
-          if (!projectImportFile || typeof projectImportFile.slice !== 'function') throw new Error('Choose a project file that ARC Studio can read.');
-          staged = await requestJson({
-            'Content-Type': 'application/vnd.arc-studio.project+zip',
-            'x-arc-token': authToken,
-            'x-arc-import-session-create': sessionId
-          }, projectImportFile, true);
-          throwIfImportCancelled();
-        }
-        const stagedData = staged?.data || {};
-        if (staged.status !== 202) {
-          projectImportSessionRef.current = '';
-          throw new Error(stagedData.error || stagedData.detail || 'Could not stage this project file.');
-        }
-        sessionId = String(stagedData.importSessionId || sessionId);
-        projectImportSessionRef.current = sessionId;
-        setProjectImportEncrypted(stagedData.encrypted === true);
-        setProjectImportHasText(stagedData.hasImportableTextContent === true);
-        setProjectImportPlugins(Array.isArray(stagedData.plugins) ? stagedData.plugins : []);
-        if (stagedData.hasImportableTextContent && !localDesktopWorkspace) {
-          setProjectImportSharingWarning({ workspaceName: String(stagedData.workspaceName || externalWorkspaceName).trim() || externalWorkspaceName });
-        }
-        setProjectImportProgress(null);
+        const staged = await stageProjectImport(sessionId);
+        throwIfImportCancelled();
+        const stagedData = rememberStagedProject(staged);
+        sessionId = projectImportSessionRef.current;
         if (stagedData.encrypted === true) {
           setProjectImportError('');
           return;
@@ -7470,11 +8020,35 @@ export function App() {
         'x-arc-project-password': encodeHeaderValue(projectImportPassword),
         ...(projectImportRenameRequired ? { 'x-arc-project-name': encodeHeaderValue(projectImportName.trim()) } : {})
       };
-      const response = await requestJson(headers, null, false);
+      let response = await requestJson(headers, null, false);
       throwIfImportCancelled();
-      const { data } = response;
+      let data = response.data || {};
+      if (response.status === 410 && data.code === 'PROJECT_IMPORT_SESSION_EXPIRED') {
+        const replacementSessionId = globalThis.crypto?.randomUUID?.() || `import_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        projectImportSessionRef.current = replacementSessionId;
+        const staged = await stageProjectImport(replacementSessionId);
+        throwIfImportCancelled();
+        const stagedData = rememberStagedProject(staged);
+        sessionId = projectImportSessionRef.current;
+        if (stagedData.encrypted && projectImportPassword.length < 12
+          || stagedData.hasImportableTextContent && !localDesktopWorkspace && !projectImportSharingApproved
+          || Array.isArray(stagedData.plugins) && stagedData.plugins.length > 0 && !projectImportPluginsApproved) {
+          setProjectImportError('');
+          return;
+        }
+        headers['x-arc-import-session'] = sessionId;
+        response = await requestJson(headers, null, false);
+        throwIfImportCancelled();
+        data = response.data || {};
+        if (response.status === 410 && data.code === 'PROJECT_IMPORT_SESSION_EXPIRED') {
+          projectImportSessionRef.current = '';
+          throw new Error('The project upload session expired again. Choose Import project to upload the file again.');
+        }
+      }
       if (response.status === 409 && data.code === 'IMPORT_SHARED_CONTENT_CONFIRMATION_REQUIRED') {
         projectImportSessionRef.current = String(data.importSessionId || sessionId);
+        setProjectImportEncrypted(false);
+        setProjectImportHasText(true);
         setProjectImportSharingWarning({ workspaceName: String(data.workspaceName || externalWorkspaceName).trim() || externalWorkspaceName });
         setProjectImportSharingApproved(false);
         setProjectImportProgress(null);
@@ -7604,6 +8178,7 @@ export function App() {
       input.click();
     };
     const onMenuAction = (event) => {
+      if (window.__ARC_STUDIO_PROMPT_BLOCKED__) return;
       switch (event.detail) {
         case 'file.new-graph': handleAddTab(); break;
         case 'file.new-blank-graph': handleAddBlankGraph(); break;
@@ -7631,15 +8206,30 @@ export function App() {
           break;
         }
         case 'view.console': setConsoleOpenRequest((request) => request + 1); break;
-        case 'view.settings': setIsSettingsOpen(true); break;
-        case 'help.shortcuts': setIsShortcutsOpen(true); break;
+        case 'view.settings': window.dispatchEvent(new Event('arc:open-editor-settings')); break;
+        case 'help.about': window.dispatchEvent(new Event('arc:open-editor-settings-about')); break;
+        case 'help.shortcuts': window.dispatchEvent(new Event('arc:open-shortcuts-help')); break;
         case 'help.discord': window.open('https://discord.gg/FMv3T6XSyq', '_blank', 'noopener'); break;
         default: break;
       }
     };
-    window.addEventListener('arc:desktop-menu-action', onMenuAction);
-    return () => window.removeEventListener('arc:desktop-menu-action', onMenuAction);
-  }, [activeProjectId, desktopMode, handleAddBlankGraph, handleAddTab, handleExportGraph, handleExportProject, handleImportGraph, handleRedo, handleSaveGraph, handleUndo, isLibraryOpen, projects]);
+    const dispatchMenuAction = (event) => {
+      if (window.__ARC_STUDIO_MENU_ACTION__ === event.detail) window.__ARC_STUDIO_MENU_ACTION__ = null;
+      if (!projectWorkspaceConnected) {
+        window.__ARC_STUDIO_PENDING_MENU_ACTION__ = event.detail;
+        return;
+      }
+      onMenuAction(event);
+    };
+    window.addEventListener('arc:desktop-menu-action', dispatchMenuAction);
+    const startupAction = window.__ARC_STUDIO_MENU_ACTION__ || window.__ARC_STUDIO_PENDING_MENU_ACTION__;
+    if (desktopMode && projectWorkspaceConnected && startupAction) {
+      window.__ARC_STUDIO_MENU_ACTION__ = null;
+      window.__ARC_STUDIO_PENDING_MENU_ACTION__ = null;
+      queueMicrotask(() => onMenuAction({ detail: startupAction }));
+    }
+    return () => window.removeEventListener('arc:desktop-menu-action', dispatchMenuAction);
+  }, [activeProjectId, desktopMode, handleAddBlankGraph, handleAddTab, handleExportGraph, handleExportProject, handleImportGraph, handleRedo, handleSaveGraph, handleUndo, isLibraryOpen, projectWorkspaceConnected, projects]);
 
   const handleSetProjectLimit = async (value) => {
     if (localDesktopWorkspace || !projectWorkspaceConnected) return;
@@ -7901,7 +8491,7 @@ export function App() {
   }, [activeConnections, activeGraph, activeNodes, activeProjectId, activeTabId, authToken, createEmbedAsset, desktopMode, discordTextStudio, embedAssets, embedStudio, modalStudio, openDiscordTextStudio, openEmbedAsset, openEmbedStudioForNode, openModalStudioForNode, openPermissionStudio, openSlashCommandStudio, openVariableTextEditor, permissionStudio, projectVariables, slashCommandStudio, updateEmbedStudioBlockValue]);
 
   useEffect(() => {
-    if (desktopMode || !browserRouteHandledRef.current || browserStudioRestorePendingRef.current || !authToken || !activeProjectId) return;
+    if (desktopMode || desktopPasskeyBridgeState || !browserRouteHandledRef.current || browserStudioRestorePendingRef.current || !authToken || !activeProjectId) return;
     if (!browserInitialRouteSettledRef.current) {
       const initialRoute = initialBrowserRouteRef.current;
       if (initialRoute?.projectId && initialRoute.projectId !== activeProjectId) return;
@@ -7929,7 +8519,7 @@ export function App() {
             : modalStudioOpenForActiveGraph ? modalStudio.route : null;
     writeStudioRouteParams(url.searchParams, studioRoute);
     if (url.pathname !== window.location.pathname || url.search !== window.location.search) window.history.replaceState(window.history.state, '', url);
-  }, [activeProjectId, activeTabId, desktopMode, discordTextStudio, discordTextStudioOpenForActiveGraph, embedStudio, embedStudioOpenForActiveGraph, isBotSidebarOpen, isLibraryOpen, isPluginStoreOpen, isProjectsOpen, isVariablesOpen, librarySection, modalStudio, modalStudioOpenForActiveGraph, permissionStudio, permissionStudioOpenForActiveGraph, selectedCanvasNodeId, slashCommandStudio, slashCommandStudioOpenForActiveGraph, tabs, variableScope, authToken]);
+  }, [activeProjectId, activeTabId, desktopMode, desktopPasskeyBridgeState, discordTextStudio, discordTextStudioOpenForActiveGraph, embedStudio, embedStudioOpenForActiveGraph, isBotSidebarOpen, isLibraryOpen, isPluginStoreOpen, isProjectsOpen, isVariablesOpen, librarySection, modalStudio, modalStudioOpenForActiveGraph, permissionStudio, permissionStudioOpenForActiveGraph, selectedCanvasNodeId, slashCommandStudio, slashCommandStudioOpenForActiveGraph, tabs, variableScope, authToken]);
 
   useEffect(() => {
     const startupProjectId = window.__ARC_STUDIO_CONFIG__?.startupProjectId;
@@ -7948,7 +8538,10 @@ export function App() {
     try {
       const invoke = window.__TAURI_INTERNALS__?.invoke;
       if (typeof invoke !== 'function') throw new Error('Desktop window controls are unavailable.');
-      await invoke('open_project_window', { projectId: project.id });
+      await invoke('open_project_window', {
+        projectId: project.id,
+        apiBaseUrl: window.__ARC_STUDIO_CONFIG__?.apiBaseUrl || window.location.origin
+      });
       arcEvents.emit('toast:notify', { title: 'Project window opened', message: project.name, type: 'success' });
     } catch (error) {
       arcEvents.emit('toast:notify', { title: 'Could not open project window', message: error.message, type: 'error' });
@@ -7973,22 +8566,25 @@ export function App() {
     setProjectMenu({ project, kind: project ? 'project' : 'create', x: Math.max(8, Math.min(x, rootWidth - menuWidth - 8)), y: Math.max(8, Math.min(y, rootHeight - menuHeight - 8)) });
   };
 
-  const handleRenameProject = async (event) => {
+  const handleRenameProject = async (event, projectOverride = null, nameOverride = null) => {
     event?.preventDefault?.();
-    if (!projectRename || projectActionsDisabled || !canManageProjects) return;
-    const name = projectRenameName.trim();
+    const targetProject = projectOverride || projectRename;
+    if (!targetProject || projectActionsDisabled || !canManageProjects) return;
+    const name = String(nameOverride ?? projectRenameName).trim();
     if (!name) {
-      setProjectRenameError('Enter a project name.');
+      if (projectOverride) arcEvents.emit('toast:notify', { title: 'Project not renamed', message: 'Enter a project name.', type: 'warning' });
+      else setProjectRenameError('Enter a project name.');
       return;
     }
     if (name.length > 64) {
-      setProjectRenameError('Project names can be up to 64 characters.');
+      if (projectOverride) arcEvents.emit('toast:notify', { title: 'Project not renamed', message: 'Project names can be up to 64 characters.', type: 'warning' });
+      else setProjectRenameError('Project names can be up to 64 characters.');
       return;
     }
     setProjectBusy(true);
     setProjectRenameError('');
     try {
-      const response = await fetch(apiUrl(`/api/projects/${encodeURIComponent(projectRename.id)}/rename`), {
+      const response = await fetch(apiUrl(`/api/projects/${encodeURIComponent(targetProject.id)}/rename`), {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
         body: JSON.stringify({ name })
@@ -8001,30 +8597,33 @@ export function App() {
       setProjectRename(null);
       setProjectRenameName('');
     } catch (error) {
-      setProjectRenameError(error.message || 'Could not rename the project.');
+      if (projectOverride) arcEvents.emit('toast:notify', { title: 'Project not renamed', message: error.message || 'Could not rename the project.', type: 'error' });
+      else setProjectRenameError(error.message || 'Could not rename the project.');
     } finally {
       setProjectBusy(false);
     }
   };
 
-  const handleDeleteProject = async () => {
-    if (!projectDelete || projectActionsDisabled) return;
+  const handleDeleteProject = async (projectOverride = null, confirmedNameOverride = null) => {
+    const targetProject = projectOverride || projectDelete;
+    const confirmedName = confirmedNameOverride ?? projectDeleteName;
+    if (!targetProject || projectActionsDisabled) return;
     setProjectBusy(true);
     setProjectDeleteError('');
     try {
-      if (projectDelete.id === activeProjectId) await ensureWorkspaceGraphsSaved();
-      const response = await fetch(apiUrl(`/api/projects/${encodeURIComponent(projectDelete.id)}`), {
+      if (targetProject.id === activeProjectId) await ensureWorkspaceGraphsSaved();
+      const response = await fetch(apiUrl(`/api/projects/${encodeURIComponent(targetProject.id)}`), {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
-        body: JSON.stringify({ confirmName: projectDeleteName })
+        body: JSON.stringify({ confirmName: confirmedName })
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Could not delete the project.');
       setProjects((data.projects || []).filter((project) => project.id !== data.deletedProjectId));
       setMaxProjects(localDesktopWorkspace ? null : data.maxProjects === undefined ? maxProjects : data.maxProjects);
-      safeStorageRemove(`arc_project_${projectDelete.id}_arc_open_graph_ids`);
-      safeStorageRemove(`arc_project_${projectDelete.id}_arc_active_graph_id`);
-      if (projectDelete.id === activeProjectId) {
+      safeStorageRemove(`arc_project_${targetProject.id}_arc_open_graph_ids`);
+      safeStorageRemove(`arc_project_${targetProject.id}_arc_active_graph_id`);
+      if (targetProject.id === activeProjectId) {
         setActiveProjectId(data.activeProjectId || '');
         setNeedsProjectOnboarding(!(data.projects || []).length);
         setSavedGraphs((data.graphs || []).map(migrateFunctionGraphEntry));
@@ -8047,7 +8646,10 @@ export function App() {
       }
       setProjectDelete(null);
       setProjectDeleteName('');
-    } catch (error) { setProjectDeleteError(error.message); }
+    } catch (error) {
+      if (projectOverride) arcEvents.emit('toast:notify', { title: 'Project not deleted', message: error.message || 'Could not delete the project.', type: 'error' });
+      else setProjectDeleteError(error.message);
+    }
     finally { setProjectBusy(false); }
   };
 
@@ -8114,7 +8716,8 @@ export function App() {
     setWorkspaceRevision((revision) => revision + 1);
   };
 
-  const activateWorkspace = (mode, url = '') => {
+  const activateWorkspace = async (mode, url = '') => {
+    if (desktopMode) await closeDesktopPrompts().catch(() => {});
     try {
       localStorage.setItem('arc_workspace_mode', mode);
       if (mode === 'remote') localStorage.setItem('arc_remote_workspace_url', url);
@@ -8219,13 +8822,13 @@ export function App() {
         if (Array.isArray(serverNodeTypes) && serverNodeTypes.length && serverNodeTypes.every((type) => typeof type === 'string')) {
           supportedNodeTypes = new Set(serverNodeTypes);
         }
-        if (versionOrder < 0) compatibilityNotice = `Connected to older workspace version ${serverVersion}. Node behavior runs on the workspace server.`;
-        else if (versionOrder > 0) compatibilityNotice = `Connected to newer workspace version ${serverVersion}. The server provides node schemas and runtime behavior.`;
+        if (versionOrder < 0) compatibilityNotice = `Connected to older workspace version ${serverVersion}.`;
+        else if (versionOrder > 0) compatibilityNotice = `Connected to newer workspace version ${serverVersion}. Some editor-specific controls may not be available.`;
       }
       const name = (typeof status.workspaceName === 'string' && status.workspaceName.trim() ? status.workspaceName.trim() : new URL(url).host).slice(0, 35);
       setRemoteWorkspaceName(name);
       try { localStorage.setItem('arc_remote_workspace_name', name); } catch {}
-      activateWorkspace('remote', url);
+      await activateWorkspace('remote', url);
       setTransientCanvasMotionSupported(status.collaborationFeatures?.transientCanvasMotion === true);
       setWorkspaceSupportsPasskeys(status.securityFeatures?.passkeys === true);
       setSupportedWorkspaceNodeTypes(supportedNodeTypes);
@@ -8263,6 +8866,8 @@ export function App() {
           arcEvents.emit('toast:notify', { title: 'Passkey added', message: 'You can use it the next time you sign in.', type: 'success' });
           arcEvents.emit('passkeys:changed', { passkeys: result.passkeys });
         }
+        const invoke = window.__TAURI_INTERNALS__?.invoke;
+        if (typeof invoke === 'function') await invoke('show_main_window_after_startup').catch(() => {});
         arcEvents.emit('desktop-passkey:finished', { ok: true, kind });
       } catch (error) {
         const message = error?.message || 'The passkey request could not be completed.';
@@ -8317,8 +8922,8 @@ export function App() {
     return undefined;
   }, [authToken, currentUser, desktopMode, needsProjectOnboarding, needsSetup, workspaceSwitchOpen]);
 
-  const handleSelectWorkspace = (mode) => {
-    if (mode === 'local' && workspaceMode !== 'local') activateWorkspace('local');
+  const handleSelectWorkspace = async (mode) => {
+    if (mode === 'local' && workspaceMode !== 'local') await activateWorkspace('local');
   };
 
   const handleRetryWorkspace = () => {
@@ -8328,6 +8933,7 @@ export function App() {
   };
 
   const handleSwitchWorkspace = async () => {
+    if (desktopMode) await closeDesktopPrompts().catch(() => {});
     if (workspaceMode === 'local' && authToken && currentUser) {
       localSessionRef.current = { token: authToken, user: currentUser };
       try {
@@ -8344,6 +8950,7 @@ export function App() {
   };
 
   const handleBackToLocalEditor = async () => {
+    if (desktopMode) await closeDesktopPrompts().catch(() => {});
     const session = localSessionRef.current;
     if (!session?.token) return;
     try { localStorage.setItem('arc_workspace_mode', 'local'); } catch {}
@@ -8440,6 +9047,7 @@ export function App() {
   useEffect(() => {
     if (remoteWorkspaceBlocked) return undefined;
     const onKeyDown = (event) => {
+      if (window.__ARC_STUDIO_PROMPT_BLOCKED__) return;
       if (typeof event.key !== 'string') return;
       const target = event.target;
       const command = event.metaKey || event.ctrlKey;
@@ -8643,6 +9251,154 @@ export function App() {
     else window.open(url, '_blank', 'noopener,noreferrer');
   }, [appUpdate, desktopMode, downloadedUpdateReady?.version]);
 
+  const openEditorSettings = useCallback(async (initialTab = 'canvas', aboutOnly = false) => {
+    setSettingsInitialTab(initialTab);
+    setSettingsAboutOnly(aboutOnly);
+    if (!desktopMode) { setIsSettingsOpen(true); return; }
+    setIsSettingsOpen(false);
+    const workspaceProject = projects.find((project) => project.id === activeProjectId);
+    try {
+      await showDesktopPrompt({
+        kind: 'editor-settings',
+        title: aboutOnly ? 'About ARC Studio' : 'Editor Settings',
+        initialTab,
+        aboutOnly,
+        blocking: true,
+        alwaysOnTop: false,
+        settings,
+        theme: hasThemeChoice ? theme : (theme || 'dark'),
+        themeChoice: hasThemeChoice ? theme : 'system',
+        localWorkspace: workspaceMode === 'local',
+        externalWorkspace: workspaceMode === 'remote',
+        passkeysSupported: workspaceSupportsPasskeys,
+        canResetLocalWorkspace: workspaceMode === 'local' && currentUser?.isPrimaryAdmin === true,
+        canManageClientAccess: currentUser?.isPrimaryAdmin === true,
+        platform: shortcutPlatform,
+        appUpdate,
+        serverUpdate,
+        stableUpdateReady: null,
+        downloadedUpdateReady,
+        updateInstalling,
+        checkingForUpdates: desktopUpdateChecking,
+        updateCheckCooldownUntil: desktopUpdateCooldownUntil,
+        releaseChannel: currentUpdateChannel,
+        networkOnline,
+        authToken,
+        activeProjectId,
+        workspaceOrigin: workspaceMode === 'remote' ? remoteWorkspaceUrl : window.location.origin,
+        canManageLogRetention: Boolean(currentUser?.permissions?.includes('*')),
+        canManageActivityWebhook: currentUser?.isPrimaryAdmin === true,
+        idleDisconnectMinutes: workspaceProject?.idleDisconnectMinutes ?? 15,
+        canManageIdleDisconnect: Boolean(currentUser?.permissions?.includes('*') || workspaceProject?.ownerId === currentUser?.id),
+        clientContext: { ...(window.__ARC_STUDIO_CONFIG__ || {}), desktop: true }
+      });
+    } catch (error) {
+      console.warn('[ARC] Native settings window is unavailable. Using in app settings.', error);
+      setIsSettingsOpen(true);
+    }
+  }, [activeProjectId, appUpdate, authToken, currentUpdateChannel, currentUser, desktopMode, desktopUpdateChecking, desktopUpdateCooldownUntil, downloadedUpdateReady, hasThemeChoice, networkOnline, projects, remoteWorkspaceUrl, serverUpdate, settings, shortcutPlatform, theme, updateInstalling, workspaceMode, workspaceSupportsPasskeys]);
+
+  const openShortcutHelp = useCallback(async () => {
+    if (!desktopMode) { setIsShortcutsOpen(true); return; }
+    const rows = getShortcutHelpRows({ settings, desktopMode, localDesktopWorkspace, shortcutPlatform });
+    try {
+      await showDesktopPrompt({ kind: 'shortcuts-help', title: 'Keyboard Shortcuts', blocking: false, alwaysOnTop: true, rows });
+    } catch (error) {
+      console.warn('[ARC] Native keyboard help window is unavailable. Using in app help.', error);
+      setIsShortcutsOpen(true);
+    }
+  }, [desktopMode, localDesktopWorkspace, settings, shortcutPlatform]);
+
+  const openAppSettings = useCallback(() => setIsBotSettingsOpen(true), []);
+
+  const handleOpenTeamAccess = useCallback(async () => {
+    if (!canManageTeam) return;
+    if (!desktopMode) {
+      setIsUserMgmtOpen(true);
+      return;
+    }
+    try {
+      await showDesktopPrompt({
+        kind: 'team-access',
+        title: 'Team access',
+        blocking: true,
+        authToken,
+        currentUsername: currentUser?.username || '',
+        currentUserId: currentUser?.id || '',
+        workspaceName: externalWorkspaceName,
+        theme: hasThemeChoice ? theme : (theme || 'dark'),
+        clientContext: { ...(window.__ARC_STUDIO_CONFIG__ || {}), desktop: true }
+      });
+    } catch (error) {
+      console.warn('[ARC] Native Team access window is unavailable. Using the in app view.', error);
+      setIsUserMgmtOpen(true);
+    }
+  }, [authToken, canManageTeam, currentUser?.id, currentUser?.username, desktopMode, externalWorkspaceName, hasThemeChoice, theme]);
+
+  useEffect(() => {
+    const openSettingsFromMenu = () => { void openEditorSettings(); };
+    const openAboutFromMenu = () => { void openEditorSettings('about', true); };
+    const openShortcutsFromMenu = () => { void openShortcutHelp(); };
+    window.addEventListener('arc:open-editor-settings', openSettingsFromMenu);
+    window.addEventListener('arc:open-editor-settings-about', openAboutFromMenu);
+    window.addEventListener('arc:open-shortcuts-help', openShortcutsFromMenu);
+    return () => {
+      window.removeEventListener('arc:open-editor-settings', openSettingsFromMenu);
+      window.removeEventListener('arc:open-editor-settings-about', openAboutFromMenu);
+      window.removeEventListener('arc:open-shortcuts-help', openShortcutsFromMenu);
+    };
+  }, [openEditorSettings, openShortcutHelp]);
+
+  const desktopWindowActionsRef = useRef({});
+  desktopWindowActionsRef.current = {
+    handleAutoLayout, handleCreateProjectFromTemplate, handleExportGraph, handleManualDesktopUpdateCheck,
+    handleOpenStudioUpdate, handleResetLocalData, handleSetIdleDisconnectMinutes, handleThemeChange,
+    handleUpdateSettings, handleNameDialogSubmit, traceGraphNode, setBotProfile, setCurrentUser,
+    currentUserId: currentUser?.id || '',
+    openCommandBrowser: () => setCommandBrowserRequest((request) => request + 1)
+  };
+
+  useEffect(() => {
+    if (!desktopMode) return undefined;
+    let unlisten;
+    listenTauriEvent('arc:desktop-window-action', async (event) => {
+      const { actionId, action, value = {}, promptLabel } = event.payload || {};
+      if (typeof actionId !== 'string' || typeof promptLabel !== 'string' || !promptLabel.startsWith('arc-prompt-')) return;
+      if (!isDesktopPromptActive(promptLabel)) return;
+      if (['commands-deploy', 'commands-review-options', 'command-open-graph', 'command-open-node', 'plugin-confirm'].includes(action)) return;
+      const actions = desktopWindowActionsRef.current;
+      let result = null;
+      let error = '';
+      try {
+        switch (action) {
+          case 'settings-update': actions.handleUpdateSettings(value.settings); break;
+          case 'settings-theme': result = await actions.handleThemeChange(value.choice); break;
+          case 'settings-auto-layout': result = actions.handleAutoLayout(); break;
+          case 'settings-export-graph': result = await actions.handleExportGraph(); break;
+          case 'settings-reset-local-data': result = await actions.handleResetLocalData(value.password); break;
+          case 'settings-open-studio-update': result = actions.handleOpenStudioUpdate(value.url); break;
+          case 'settings-check-for-updates': result = await actions.handleManualDesktopUpdateCheck(); break;
+          case 'settings-idle-disconnect': result = await actions.handleSetIdleDisconnectMinutes(value.minutes); break;
+          case 'projects-create-from-template': result = await actions.handleCreateProjectFromTemplate({ name: value.name, templateId: value.templateId, throwOnError: true }); break;
+          case 'app-settings-profile': actions.setBotProfile(value.profile || null); break;
+          case 'app-settings-view-commands': actions.openCommandBrowser(); break;
+          case 'team-current-user-updated':
+            if (value.id !== actions.currentUserId || typeof value.username !== 'string' || value.username.trim().length < 2 || value.username.trim().length > 32) throw new Error('The account update does not match the signed in user.');
+            actions.setCurrentUser((current) => current?.id === value.id ? { ...current, username: value.username.trim() } : current);
+            result = true;
+            break;
+          case 'graph-name-submit': result = await actions.handleNameDialogSubmit(null, value); break;
+          case 'validation-open-node': result = actions.traceGraphNode(value.graphId, value.nodeId); break;
+          default: throw new Error('This settings action is not supported.');
+        }
+      } catch (reason) {
+        error = reason?.message || 'ARC Studio could not complete this settings action.';
+      }
+      try { await emitTo(promptLabel, 'arc:desktop-window-action-result', { actionId, result, error }); } catch (reason) { console.warn('[ARC] Could not return a native window action result.', reason); }
+    }).then((stop) => { unlisten = stop; }).catch((error) => console.warn('[ARC] Could not receive native window actions.', error));
+    return () => unlisten?.();
+  }, [desktopMode]);
+
   const handleInstallStudioUpdate = useCallback(async () => {
     const update = updateRef.current;
     if (!update || updateInstalling) return;
@@ -8835,6 +9591,7 @@ export function App() {
           projectStarters={projectStarters.map((starter) => ({ ...starter, Icon: PROJECT_STARTER_ICONS[starter.id] || PackageOpen }))}
           theme={theme}
           workspaceMode={workspaceMode}
+          startOnRemoteWorkspace={desktopMode && workspaceSwitchOpen}
           remoteWorkspaceUrl={remoteWorkspaceUrl}
           workspaceName={desktopMode ? workspaceMode === 'remote' ? remoteWorkspaceName : 'Local Workspace' : remoteWorkspaceName}
           localSessionAvailable={desktopMode && (workspaceSwitchOpen || workspaceMode === 'remote') && Boolean(localSessionRef.current?.token)}
@@ -8889,7 +9646,7 @@ export function App() {
         projectCollaborators={projectCollaboration.projectId === activeProjectId ? projectCollaboration.users : []}
         graphTabStatuses={graphTabStatuses}
         saveFeedbackGraphId={saveFeedback?.graphId}
-        hideGraphSave={!localDesktopWorkspace || embedStudioOpenForActiveGraph || discordTextStudioOpenForActiveGraph || permissionStudioOpenForActiveGraph || slashCommandStudioOpenForActiveGraph || modalStudioOpenForActiveGraph}
+        hideGraphSave={desktopMode || !localDesktopWorkspace || embedStudioOpenForActiveGraph || discordTextStudioOpenForActiveGraph || permissionStudioOpenForActiveGraph || slashCommandStudioOpenForActiveGraph || modalStudioOpenForActiveGraph}
         activeTabId={activeTabId}
         botStatus={botStatus}
         networkOnline={networkOnline}
@@ -8938,16 +9695,18 @@ export function App() {
         validationStatus={validationStatus}
         validationErrors={graphValidation.errors.length}
         validationWarnings={graphValidation.warnings.length}
-        onOpenSettings={() => setIsSettingsOpen(true)}
+        onOpenSettings={openEditorSettings}
         serverUpdateAvailable={Boolean(serverUpdate)}
-        onOpenBotSettings={() => setIsBotSettingsOpen(true)}
-        onOpenUsers={() => setIsUserMgmtOpen(true)}
+        onOpenBotSettings={openAppSettings}
+        canManageTeam={canManageTeam}
+        onOpenUsers={handleOpenTeamAccess}
         onLogout={handleLogout}
         onSwitchWorkspace={handleSwitchWorkspace}
         appUpdate={appUpdate}
         downloadedUpdateReady={downloadedUpdateReady}
         updateInstalling={updateInstalling}
         checkingForUpdates={desktopUpdateChecking}
+        updateCheckCooldownUntil={desktopUpdateCooldownUntil}
         onCheckForUpdates={handleManualDesktopUpdateCheck}
         onOpenStudioUpdate={handleOpenStudioUpdate}
         onStartBot={handleStartBot}
@@ -8957,21 +9716,24 @@ export function App() {
 
       <div className="editor-workspace">
         <aside className="workspace-rail" aria-label="Workspace tools">
-          <button className={`rail-button rail-button-primary ${isProjectsOpen ? 'is-selected' : ''}`} onClick={() => { setProjectError(''); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(false); setIsProjectsOpen((open) => !open); }} title={`${projects.find((project) => project.id === activeProjectId)?.name || 'Projects'} · manage projects`} aria-label="Projects"><span className="rail-projects-icon"><Folder size={18} /><i><Plus size={9} strokeWidth={3} /></i></span></button>
+          <button data-sidebar="projects" className={`rail-button rail-button-primary ${isProjectsOpen ? 'is-selected' : ''}`} onClick={() => { setProjectError(''); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(false); setIsProjectsOpen((open) => !open); }} title={`${projects.find((project) => project.id === activeProjectId)?.name || 'Projects'} · manage projects`} aria-label="Projects"><span className="rail-projects-icon"><Folder size={18} /><i><Plus size={9} strokeWidth={3} /></i></span></button>
           <div className="rail-divider" />
-          <button className={`rail-button ${isLibraryOpen ? 'is-selected' : ''}`} onClick={() => { setIsProjectsOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(false); setIsLibraryOpen((open) => !open); }} title="Graph library (Shift + L)" aria-label="Graph library"><FolderTree size={17} /></button>
-          <button className={`rail-button ${isVariablesOpen ? 'is-selected' : ''}`} onClick={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen((open) => !open); }} title="Graph variables" aria-label="Graph variables"><Database size={17} /></button>
-          <button className={`rail-button ${isBotSidebarOpen ? 'is-selected' : ''}`} onClick={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsVariablesOpen(false); setIsBotSidebarOpen((open) => !open); }} title="App settings and profile" aria-label="App settings and profile"><Bot size={17} /></button>
-          <button className={`rail-button ${isPluginStoreOpen ? 'is-selected' : ''}`} onClick={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(false); setIsPluginStoreOpen((open) => !open); }} title="Plugin store" aria-label="Plugin store"><PackageOpen size={17} /></button>
-          <button className="rail-button" onClick={() => setIsSettingsOpen(true)} title="Canvas settings" aria-label="Canvas settings"><SlidersHorizontal size={17} /></button>
+          <button data-sidebar="library" className={`rail-button ${isLibraryOpen ? 'is-selected' : ''}`} onClick={() => { setIsProjectsOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(false); setIsLibraryOpen((open) => !open); }} title="Graph library (Shift + L)" aria-label="Graph library"><FolderTree size={17} /></button>
+          <button data-sidebar="variables" className={`rail-button ${isVariablesOpen ? 'is-selected' : ''}`} onClick={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen((open) => !open); }} title="Graph variables" aria-label="Graph variables"><Database size={17} /></button>
+          <button data-sidebar="bot" className={`rail-button ${isBotSidebarOpen ? 'is-selected' : ''}`} onClick={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsVariablesOpen(false); setIsBotSidebarOpen((open) => !open); }} title="App settings and profile" aria-label="App settings and profile"><Bot size={17} /></button>
+          <button data-sidebar="plugins" className={`rail-button ${isPluginStoreOpen ? 'is-selected' : ''}`} onClick={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(false); setIsPluginStoreOpen((open) => !open); }} title="Plugin store" aria-label="Plugin store"><PackageOpen size={17} /></button>
+          <button className="rail-button" onClick={openEditorSettings} title="Canvas settings" aria-label="Canvas settings"><SlidersHorizontal size={17} /></button>
           {localDesktopWorkspace && <button className="rail-button" onClick={handleAutoLayout} title="Arrange nodes" aria-label="Arrange nodes"><LayoutGrid size={17} /></button>}
           <button className="rail-button" onClick={() => handleExportGraph()} disabled={!activeGraph?.nodes?.length} title={!activeGraph ? 'Open a graph to export it' : activeGraph.nodes?.length ? 'Export graph' : 'Add a node before exporting this graph'} aria-label="Export graph"><Braces size={17} /></button>
           <div className="rail-spacer" />
-          {!desktopMode && currentUser?.role === 'admin' && <button className="rail-button" onClick={() => setIsUserMgmtOpen(true)} title="Team access" aria-label="Team access"><Users size={17} /></button>}
-          <button className="rail-button" onClick={() => setIsShortcutsOpen(true)} title="Keyboard shortcuts" aria-label="Keyboard shortcuts"><CircleHelp size={17} /></button>
+          {canManageTeam && <button className="rail-button" onClick={handleOpenTeamAccess} title="Team access" aria-label="Team access"><Users size={17} /></button>}
+          {desktopMode
+            ? <DesktopRailAccountMenu user={currentUser} onOpenSettings={openEditorSettings} onSwitchWorkspace={handleSwitchWorkspace} onLogout={handleLogout} canManageTeam={canManageTeam} onOpenUsers={handleOpenTeamAccess} />
+            : <button className="rail-button" onClick={openShortcutHelp} title="Keyboard shortcuts" aria-label="Keyboard shortcuts"><CircleHelp size={17} /></button>}
         </aside>
 
         <main
+          ref={canvasWorkspaceRef}
           className="canvas-workspace"
           style={{
             '--arc-active-sidebar-width': `${
@@ -8996,6 +9758,7 @@ export function App() {
             onRecover={() => setEmbedStudio(null)}
           ><EmbedStudioView
             key={embedStudio.collabId || `${embedStudio.graphId}:${embedStudio.nodeId || embedStudio.id || embedStudio.kind || 'new'}`}
+            desktopMode={desktopMode}
             name={embedStudio.name}
             content={embedStudio.content || ''}
             blocks={embedStudio.blocks}
@@ -9044,6 +9807,7 @@ export function App() {
             onSave={handleSaveEmbedStudio}
             onSaveAs={handleSaveEmbedAsAsset}
             onSaveComponentsV2As={handleSaveComponentsV2AsAsset}
+            requestConfirmation={requestConfirmation}
             onClose={() => finishStudioClose('embed', () => setEmbedStudio(null))}
             saveLabel={['node', 'components-node'].includes(embedStudio.mode) ? 'Apply to node' : embedStudio.kind === 'components-v2' ? 'Save Components' : 'Save embed'}
             saveAsLabel={embedStudio.componentsV2Enabled ? 'Save Components to Library' : 'Save to library'}
@@ -9066,6 +9830,8 @@ export function App() {
             templateSuggestions={discordTextStudio.templateSuggestions || []}
             templateFunctions={functionGraphs}
             connectedTemplateArguments={connectedTemplateArguments}
+            desktopMode={desktopMode}
+            requestConfirmation={requestConfirmation}
             collaborators={studioCollaborators}
             remoteCursors={textStudioCursors}
             onDraftChange={(draft, caret) => {
@@ -9096,6 +9862,8 @@ export function App() {
             connectedTargetIds={permissionStudio.connectedTargetIds}
             permissionsConnected={permissionStudio.permissionsConnected}
             variables={availableVariables}
+            desktopMode={desktopMode}
+            requestConfirmation={requestConfirmation}
             onApply={applyPermissionStudio}
             onClose={() => finishStudioClose('permission', () => setPermissionStudio(null))}
           /></StudioErrorGuard>}
@@ -9107,6 +9875,8 @@ export function App() {
             collaborators={studioCollaborators}
             canUndo={historyAvailability.canUndo}
             canRedo={historyAvailability.canRedo}
+            desktopMode={desktopMode}
+            requestConfirmation={requestConfirmation}
             onUndo={handleUndo}
             onRedo={handleRedo}
             onDraftChange={updateSlashCommandStudioDraft}
@@ -9123,6 +9893,8 @@ export function App() {
             graphName={activeGraph?.name || 'Untitled graph'}
             nodeName={modalStudio.nodeName}
             theme={theme}
+            desktopMode={desktopMode}
+            requestConfirmation={requestConfirmation}
             modal={modalStudio.modal}
             graphVariables={availableVariables}
             templateValuePaths={getTemplateValuePaths(activeGraph, activeGraph?.nodes?.find((node) => node.id === modalStudio.nodeId), availableVariables, mediaAssets, callableGraphs)}
@@ -9263,8 +10035,7 @@ export function App() {
           </div>
           {isLocked && <div className="canvas-lock-state"><LockKeyhole size={13} /> Locked</div>}
           </div>
-
-          {isLibraryOpen && <Suspense fallback={<LazyFeatureLoading label="Opening Library…" kind="sidebar" isDesktop={desktopMode} width={sidebarWidths.library} />}><GraphLibraryPanel definitions={availableNodeDefinitions} newNodesUserKey={newNodesUserKey} graphActivity={projectCollaboration.projectId === activeProjectId ? projectCollaboration.graphActivity || [] : []} sidebarWidth={sidebarWidths.library} onSidebarResize={(width) => handleSidebarResize('library', width)} activeSection={librarySection} onActiveSectionChange={setLibrarySection} usageScope={activeProjectId} desktopMode={desktopMode} dockOpen={isControlDockOpen} canImportGraph={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} canEditGraphs={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onSetGraphEnabled={setGraphEnabled} onImportGraph={handleImportGraph} graphs={savedGraphs} graphValidationReports={graphValidationReportsMap} templates={graphTemplates} snapshots={graphSnapshots} nodePrefabs={nodePrefabs} embedAssets={embedAssets} mediaAssets={mediaAssets} graphVariables={availableVariables} defaultGraphId={defaultGraphId} activeGraph={activeGraph} openGraphIds={tabs.map((tab) => tab.id)} activeTabId={activeTabId} onClose={() => setIsLibraryOpen(false)} onOpenGraph={handleOpenGraph} onOpenGraphReview={handleOpenGraphReview} onUseTemplate={(template) => handleAddTab(template)} onCreateGraph={handleAddBlankGraph} onCreateFunction={handleAddFunctionGraph} onDeleteGraph={handleDeleteSavedGraph} onDeleteGraphs={handleDeleteSavedGraphs} onDuplicateGraph={handleDuplicateGraph} onRenameGraph={handleRenameGraph} onSaveTemplate={handleSaveGraphTemplate} onDeleteTemplate={handleDeleteGraphTemplate} onSetDefault={handleSetDefaultGraph} onExportGraph={handleExportGraph} onExportBot={handleExportBot} exportInProgress={exportInProgress} onAddNode={handlePlaceNode} onAddPrefab={(prefab) => handleDropNode({ type: 'prefab', prefabId: prefab.id })} onDeletePrefab={handleDeleteNodePrefab} onCreateEmbed={createEmbedAsset} onCreateComponentsV2={createComponentsV2Asset} onCreateModal={createModalAsset} onOpenEmbed={openEmbedAsset} onOpenModal={openModalAsset} onDeleteEmbed={handleDeleteEmbedAsset} onManageVariables={() => { setRequestedVariableView('variables'); setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(true); }} onManageMedia={() => { setRequestedVariableView('media'); setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(true); }} onCreateSnapshot={async (graph, name) => {
+          {isLibraryOpen && <Suspense fallback={<LazyFeatureLoading label="Opening Library…" kind="sidebar" isDesktop={desktopMode} width={sidebarWidths.library} />}><GraphLibraryPanel definitions={availableNodeDefinitions} newNodesUserKey={newNodesUserKey} graphActivity={projectCollaboration.projectId === activeProjectId ? projectCollaboration.graphActivity || [] : []} sidebarWidth={sidebarWidths.library} onSidebarResize={(width) => handleSidebarResize('library', width)} activeSection={librarySection} onActiveSectionChange={setLibrarySection} usageScope={activeProjectId} desktopMode={desktopMode} dockOpen={isControlDockOpen} canImportGraph={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} canEditGraphs={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} unsavedGraphIds={tabs.filter((tab) => tab.isDirty || !savedGraphs.some((saved) => saved.id === tab.id)).map((tab) => tab.id)} onSetGraphEnabled={setGraphEnabled} onImportGraph={handleImportGraph} graphs={savedGraphs} graphValidationReports={graphValidationReportsMap} templates={graphTemplates} snapshots={graphSnapshots} nodePrefabs={nodePrefabs} embedAssets={embedAssets} mediaAssets={mediaAssets} graphVariables={availableVariables} defaultGraphId={defaultGraphId} activeGraph={activeGraph} openGraphIds={tabs.map((tab) => tab.id)} activeTabId={activeTabId} onClose={() => setIsLibraryOpen(false)} onOpenGraph={handleOpenGraph} onOpenGraphReview={handleOpenGraphReview} onUseTemplate={(template) => handleAddTab(template)} onCreateGraph={handleAddBlankGraph} onCreateFunction={handleAddFunctionGraph} onDeleteGraph={handleDeleteSavedGraph} onDeleteGraphs={handleDeleteSavedGraphs} onDuplicateGraph={handleDuplicateGraph} onRenameGraph={handleRenameGraph} onSaveGraph={handleSaveGraph} onSaveTemplate={handleSaveGraphTemplate} onDeleteTemplate={handleDeleteGraphTemplate} onSetDefault={handleSetDefaultGraph} onExportGraph={handleExportGraph} onExportBot={handleExportBot} exportInProgress={exportInProgress} onAddNode={handlePlaceNode} onAddPrefab={(prefab) => handleDropNode({ type: 'prefab', prefabId: prefab.id })} onDeletePrefab={handleDeleteNodePrefab} onCreateEmbed={createEmbedAsset} onCreateComponentsV2={createComponentsV2Asset} onCreateModal={createModalAsset} onOpenEmbed={openEmbedAsset} onOpenModal={openModalAsset} onDeleteEmbed={handleDeleteEmbedAsset} onManageVariables={() => { setRequestedVariableView('variables'); setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(true); }} onManageMedia={() => { setRequestedVariableView('media'); setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(true); }} onCreateSnapshot={async (graph, name) => {
             await ensureWorkspaceGraphsSaved();
             const response = await fetch(apiUrl(`/api/graphs/${encodeURIComponent(graph.id)}/snapshots`), { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken }, body: JSON.stringify({ graph, name }) });
             const data = await response.json();
@@ -9342,9 +10113,31 @@ export function App() {
             </form>
           </aside>}
           {projectMenu && <div className="project-context-menu" role="menu" style={{ left: projectMenu.x, top: projectMenu.y }} onPointerDown={(event) => event.stopPropagation()}>
-            {projectMenu.kind === 'create' ? <button type="button" role="menuitem" className="project-context-export" disabled={projectActionsDisabled || maxProjects !== null && projects.length >= maxProjects} onClick={() => { setProjectMenu(null); setNewProjectTemplate('ticket'); setNewProjectName('Ticket Bot'); setProjectNameManuallyEdited(false); setProjectError(''); setProjectTemplateDialog(true); }}><FileCode2 size={14} />Create from template</button> : <>
+            {projectMenu.kind === 'create' ? <button type="button" role="menuitem" className="project-context-export" disabled={projectActionsDisabled || maxProjects !== null && projects.length >= maxProjects} onClick={() => { setProjectMenu(null); void openCreateProjectFromTemplate(); }}><FileCode2 size={14} />Create from template</button> : <>
             <button type="button" role="menuitem" className="project-context-export" disabled={projectActionsDisabled} onClick={() => { const project = projectMenu.project; setProjectMenu(null); handleExportProject(project); }}><Download size={14} />Export project</button>
-            {canManageProjects && <button type="button" role="menuitem" className="project-context-export" disabled={projectActionsDisabled} onClick={() => { const project = projectMenu.project; setProjectMenu(null); setProjectRename(project); setProjectRenameName(project.name); setProjectRenameError(''); }}><Pencil size={14} />Rename project</button>}
+            {canManageProjects && <button type="button" role="menuitem" className="project-context-export" disabled={projectActionsDisabled} onClick={() => {
+              const project = projectMenu.project;
+              setProjectMenu(null);
+              if (desktopMode) {
+                void (async () => {
+                  const proposedName = await requestPrompt({
+                    title: 'Rename project',
+                    subtitle: project.name,
+                    label: 'Project name',
+                    defaultValue: project.name,
+                    placeholder: 'Project name',
+                    confirmText: 'Rename project',
+                    cancelText: 'Cancel',
+                    maxLength: 64
+                  });
+                  if (proposedName !== null) await handleRenameProject(null, project, proposedName);
+                })();
+                return;
+              }
+              setProjectRename(project);
+              setProjectRenameName(project.name);
+              setProjectRenameError('');
+            }}><Pencil size={14} />Rename project</button>}
             <button type="button" role="menuitem" className="project-context-export" disabled={exportInProgress || projectActionsDisabled} onClick={() => {
               const projectId = projectMenu.project.id;
               setProjectMenu(null);
@@ -9352,13 +10145,33 @@ export function App() {
             }}><Download size={14} />Export bot</button>
             {desktopMode && localDesktopWorkspace && <button type="button" role="menuitem" className="project-context-export" disabled={projectActionsDisabled} onClick={() => { const project = projectMenu.project; setProjectMenu(null); void handleOpenProjectInNewWindow(project); }}><AppWindow size={14} />Open in new window</button>}
             <button type="button" role="menuitem" className="project-context-delete" disabled={projects.length <= 1 || projectActionsDisabled} onClick={() => {
-              setProjectDelete(projectMenu.project);
+              const project = projectMenu.project;
+              setProjectMenu(null);
+              if (desktopMode) {
+                void (async () => {
+                  const confirmedName = await requestPrompt({
+                    kind: 'text-confirm',
+                    title: 'Delete project?',
+                    subtitle: 'This permanently removes the project and its saved data.',
+                    message: `Type “${project.name}” exactly to confirm deletion.`,
+                    label: 'Project name',
+                    placeholder: project.name,
+                    confirmText: 'Delete project',
+                    cancelText: 'Cancel',
+                    expectedValue: project.name,
+                    maxLength: 64,
+                    variant: 'danger'
+                  });
+                  if (confirmedName === project.name) await handleDeleteProject(project, confirmedName);
+                })();
+                return;
+              }
+              setProjectDelete(project);
               setProjectDeletePromptError('');
               setProjectDeleteError('');
               setProjectDeleteFieldShake(false);
               setProjectDeleteName('');
               setProjectDeleteError('');
-              setProjectMenu(null);
             }}><Trash2 size={14} />Delete project</button>
             </>}
           </div>}
@@ -9386,9 +10199,11 @@ export function App() {
         graphNodes={activeNodes}
         nodeDefinitions={availableNodeDefinitions}
         compactContextMenus={settings.compactContextMenus}
+        autoResizeDockOnScroll={settings.autoResizeDockOnScroll !== false}
         authToken={authToken}
         isLocked={isLocked}
         canControlBot={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('bot:control'))}
+        desktopMode={desktopMode}
         consoleOpenRequest={consoleOpenRequest}
         gatewayStartedRequest={gatewayStartedRequest}
         commandBrowserRequest={commandBrowserRequest}
@@ -9417,6 +10232,8 @@ export function App() {
       <EmojiPickerOverlay appEmojis={appEmojis} shortcut={(desktopMode ? settings.shortcuts?.emojiPicker : null) || DEFAULT_SHORTCUTS.emojiPicker} desktopMode={desktopMode} />
       <LazyMountedFeature Component={EditorSettingsModal} isOpen={isSettingsOpen} loadingLabel="Opening settings…" isDesktop={desktopMode}
         onClose={() => setIsSettingsOpen(false)}
+        initialTab={settingsInitialTab}
+        aboutOnly={settingsAboutOnly}
         settings={settings}
         onUpdateSettings={handleUpdateSettings}
         appUpdate={appUpdate}
@@ -9449,34 +10266,7 @@ export function App() {
       />
       {isShortcutsOpen && <Modal isOpen onClose={() => setIsShortcutsOpen(false)} title="Keyboard shortcuts" subtitle="ARC Studio editor" icon={CircleHelp}>
         <div className="keyboard-shortcut-list">
-          {[
-            ['New graph', formatShortcut((desktopMode ? settings.shortcuts?.newGraph : null) || DEFAULT_SHORTCUTS.newGraph, shortcutPlatform)],
-            ['New blank graph', formatShortcut((desktopMode ? settings.shortcuts?.newBlankGraph : null) || DEFAULT_SHORTCUTS.newBlankGraph, shortcutPlatform)],
-            ['Next / previous graph tab', `${formatShortcut((desktopMode ? settings.shortcuts?.switchTabNext : null) || DEFAULT_SHORTCUTS.switchTabNext, shortcutPlatform)} / ${formatShortcut((desktopMode ? settings.shortcuts?.switchTabPrevious : null) || DEFAULT_SHORTCUTS.switchTabPrevious, shortcutPlatform)}`],
-            ['Close active graph tab', formatShortcut((desktopMode ? settings.shortcuts?.closeTab : null) || DEFAULT_SHORTCUTS.closeTab, shortcutPlatform)],
-            ['Add node', formatShortcut((desktopMode ? settings.shortcuts?.addNode : null) || DEFAULT_SHORTCUTS.addNode, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')],
-            ['Add note', formatShortcut((desktopMode ? settings.shortcuts?.addNote : null) || DEFAULT_SHORTCUTS.addNote, shortcutPlatform)],
-            ['Find in sidebar or canvas', shortcutModifier === '⌘' ? '⌘F' : 'Ctrl+F'],
-            ['Next / previous find result', shortcutModifier === '⌘' ? '⌘G / ⌘⇧G' : 'Ctrl+G / Ctrl+Shift+G'],
-            ['Draw arrow', `${shortcutPlatform === 'macos' ? '⌥ Option' : 'Alt'} + Shift + drag`],
-            ['Cut wires', `${shortcutPlatform === 'macos' ? '⌥ Option' : 'Alt'} + click or drag`],
-            ...(localDesktopWorkspace ? [['Arrange nodes', formatShortcut(settings.shortcuts?.arrangeNodes || DEFAULT_SHORTCUTS.arrangeNodes, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')]] : []),
-            ['Move nodes between colored sections', `${shortcutPlatform === 'macos' ? '⌥ Option' : 'Alt'} + drag`],
-            ['Toggle Library', formatShortcut((desktopMode ? settings.shortcuts?.toggleLibrary : null) || DEFAULT_SHORTCUTS.toggleLibrary, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')],
-            ['Open node search', formatShortcut((desktopMode ? settings.shortcuts?.openSearch : null) || DEFAULT_SHORTCUTS.openSearch, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')],
-            ['Open emoji picker in a text field', formatShortcut((desktopMode ? settings.shortcuts?.emojiPicker : null) || DEFAULT_SHORTCUTS.emojiPicker, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')],
-            ['Export bot', formatShortcut((desktopMode ? settings.shortcuts?.exportBot : null) || DEFAULT_SHORTCUTS.exportBot, shortcutPlatform)],
-            ['Toggle server console', formatShortcut((desktopMode ? settings.shortcuts?.toggleConsole : null) || DEFAULT_SHORTCUTS.toggleConsole, shortcutPlatform)],
-            ['Connect / disconnect gateway', formatShortcut((desktopMode ? settings.shortcuts?.connectGateway : null) || DEFAULT_SHORTCUTS.connectGateway, shortcutPlatform)],
-            ['Rename selected node', formatShortcut((desktopMode ? settings.shortcuts?.renameNode : null) || DEFAULT_SHORTCUTS.renameNode, shortcutPlatform)],
-            ['Reload ARC Studio', formatShortcut((desktopMode ? settings.shortcuts?.reloadStudio : null) || DEFAULT_SHORTCUTS.reloadStudio, shortcutPlatform)],
-            ...(localDesktopWorkspace ? [['Save graph', formatShortcut((desktopMode ? settings.shortcuts?.saveGraph : null) || DEFAULT_SHORTCUTS.saveGraph, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')]] : []),
-            ['Undo', formatShortcut((desktopMode ? settings.shortcuts?.undo : null) || DEFAULT_SHORTCUTS.undo, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')],
-            ['Redo', formatShortcut((desktopMode && settings.shortcuts?.redo && settings.shortcuts.redo !== DEFAULT_SHORTCUTS.redo ? settings.shortcuts.redo : getDefaultShortcut('redo', shortcutPlatform)), shortcutPlatform)],
-            ['Copy / paste selected node', `${shortcutModifier} + C / V`],
-            ['Increase / decrease UI scale', `${shortcutModifier} + + / −`],
-            ['Pan canvas', 'Space + drag']
-          ].map(([label, keys]) => <div className="keyboard-shortcut-row" key={label}><span>{label}</span><span className="keyboard-shortcut-keys" aria-label={keys}>{getShortcutDisplayTokens(keys).map((key, index, tokens) => {
+          {getShortcutHelpRows({ settings, desktopMode, localDesktopWorkspace, shortcutPlatform }).map(([label, keys]) => <div className="keyboard-shortcut-row" key={label}><span>{label}</span><span className="keyboard-shortcut-keys" aria-label={keys}>{getShortcutDisplayTokens(keys).map((key, index, tokens) => {
             const isSeparator = key === '/' || (key === '+' && tokens[index - 1] !== '+');
             if (isSeparator) return <span className="keyboard-shortcut-separator" key={`${key}-${index}`} aria-hidden="true">{key}</span>;
             const isModifier = ['⌘', '⇧', '⌥', 'Ctrl', 'Shift', 'Alt'].includes(key);
@@ -9621,15 +10411,16 @@ export function App() {
         title="Import project file?"
         subtitle={projectImportFile?.name || ''}
         icon={ShieldCheck}
-        footer={<><Button variant="secondary" disabled={projectBusy && !projectImportActiveRef.current} onClick={cancelProjectImport}>{projectImportProgress?.phase === 'uploading' ? 'Cancel upload' : projectImportActiveRef.current ? 'Cancel import' : 'Cancel'}</Button><Button icon={FileUp} loading={projectBusy} disabled={!projectWorkspaceConnected || projectImportAnalysisStatus !== 'ready' || !projectImportTrusted || projectBusy || projectImportRenameRequired && !projectImportName.trim() || projectImportSharingWarning && !projectImportSharingApproved || projectImportPlugins.length > 0 && !projectImportPluginsApproved || !projectImportCompatibility && projectImportEncrypted && projectImportPassword.length < 12 || projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' || projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && !projectImportOldVersionApproved} onClick={handleImportProject}>{projectImportAnalysisStatus === 'checking' ? 'Checking file…' : projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' ? 'Newer ARC Studio required' : projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' ? 'Import older project' : projectImportRenameRequired ? 'Import with new name' : projectImportPlugins.length > 0 && projectImportPluginsApproved ? 'Import with plugins' : projectImportPlugins.length > 0 ? 'Review plugin requirements' : projectImportSharingWarning ? 'Import project' : projectImportTrusted ? 'Import project' : 'Trust and continue'}</Button></>}
+        footer={<><Button variant="secondary" disabled={projectBusy && !projectImportActiveRef.current} onClick={cancelProjectImport}>{projectImportProgress?.phase === 'uploading' ? 'Cancel upload' : projectImportActiveRef.current ? 'Cancel import' : 'Cancel'}</Button><Button icon={FileUp} loading={projectBusy} disabled={!projectWorkspaceConnected || projectImportAnalysisStatus === 'checking' || !projectImportTrusted || projectBusy || projectImportRenameRequired && !projectImportName.trim() || projectImportSharingWarning && !projectImportSharingApproved || projectImportPlugins.length > 0 && !projectImportPluginsApproved || !projectImportCompatibility && projectImportEncrypted && projectImportPassword.length < 12 || projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' || projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && !projectImportOldVersionApproved} onClick={handleImportProject}>{projectImportAnalysisStatus === 'checking' ? 'Checking file…' : projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' ? 'Newer ARC Studio required' : projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' ? 'Import older project' : projectImportRenameRequired ? 'Import with new name' : projectImportPlugins.length > 0 && projectImportPluginsApproved ? 'Import with plugins' : projectImportPlugins.length > 0 ? 'Review plugin requirements' : projectImportSharingWarning ? 'Import project' : projectImportTrusted ? 'Import project' : 'Trust and continue'}</Button></>}
       >
         <div className="project-import-warning">
           <strong>Only import a project from someone you trust.</strong>
           <p>Project files contain graphs, settings, and assets. Importing adds the project to this workspace and marks it trusted here.</p>
           {projectImportAnalysisStatus === 'checking' && <div className="project-import-analysis-status" role="status" aria-live="polite">Checking project file…</div>}
           {projectImportProgress?.phase === 'uploading' && <div className="project-import-analysis-status" role="status" aria-live="polite">Uploading project{projectImportProgress.total > 0 ? ` · ${Math.min(100, Math.floor(projectImportProgress.loaded / projectImportProgress.total * 100))}%` : '…'}{projectImportProgress.total > 0 && <progress max={projectImportProgress.total} value={Math.min(projectImportProgress.loaded, projectImportProgress.total)} />}</div>}
-          {projectImportProgress?.phase === 'processing' && <div className="project-import-analysis-status" role="status" aria-live="polite">Verifying project archive and copying assets. Large projects can take a while…</div>}
+          {projectImportProgress?.phase === 'processing' && <div className="project-import-analysis-status" role="status" aria-live="polite">Processing project archive. Large files can take a while…</div>}
           {projectImportAnalysisStatus === 'error' && <div className="project-import-analysis-status" role="alert">Could not verify this project file.</div>}
+          {projectImportError && <p className="field-error" role="alert">{projectImportError}</p>}
           {!projectImportCompatibility && <label className="project-import-checkbox-label"><input type="checkbox" checked={projectImportTrusted} onChange={(event) => setProjectImportTrusted(event.target.checked)} /><span>I trust the source of this project file.</span></label>}
           {projectImportRenameRequired && <div className="project-import-compatibility-warning project-import-rename-warning" role="group" aria-label="Choose a name for the imported project"><strong>A project with this name already exists</strong><p>Choose a different name for this imported copy. The existing project will not be changed.</p><label htmlFor="project-import-new-name">New project name</label><input id="project-import-new-name" className="studio-field" value={projectImportName} maxLength={64} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} onChange={(event) => { setProjectImportName(event.target.value); setProjectImportError(''); }} /></div>}
           {projectImportTrusted && projectImportSharingWarning && <div className="project-import-compatibility-warning" role="alert">
@@ -9667,7 +10458,6 @@ export function App() {
           )}
           {projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && <div className="project-import-compatibility-warning" role="alert"><strong>Older project version</strong><p>{projectImportCompatibility.unknownProjectVersion ? 'This file does not record an ARC Studio version.' : `Created with ARC Studio ${projectImportCompatibility.projectVersion}; this is at least 10 releases older than ${projectImportCompatibility.currentVersion}.`} Its graphs or settings may behave differently. Review it before using it.</p><label><input type="checkbox" checked={projectImportOldVersionApproved} onChange={(event) => setProjectImportOldVersionApproved(event.target.checked)} /><span>I understand and want to import this older project.</span></label></div>}
           {projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' && <div className="project-import-compatibility-warning" role="alert"><strong>Update ARC Studio to import this project</strong><p>Created with ARC Studio {projectImportCompatibility.projectVersion}. This workspace runs {projectImportCompatibility.currentVersion || 'an older version'}; open it with ARC Studio {projectImportCompatibility.projectVersion} or newer.</p></div>}
-          {projectImportError && <p className="field-error" role="alert">{projectImportError}</p>}
         </div>
       </Modal>
       <Modal isOpen={projectTemplateDialog} onClose={() => { if (!projectBusy) { setProjectTemplateDialog(false); setProjectError(''); } }} title="Create from template" subtitle="Pick a starter project and give it a name." footer={<><Button variant="secondary" disabled={projectBusy} onClick={() => setProjectTemplateDialog(false)}>Cancel</Button><Button icon={Plus} loading={projectBusy} disabled={!newProjectName.trim() || projectActionsDisabled} onClick={handleCreateProjectFromTemplate}>Create project</Button></>}>
@@ -9769,7 +10559,7 @@ export function App() {
         {projectExportDialog && (
           <div className="project-export-body">
             <p className="project-export-summary">
-              Export this project including its graphs, settings, and assets.
+              Export this project including its graphs, settings, and assets. The connected gateway token is not included.
             </p>
 
             {projectExportDialog.omittedFields > 0 && (
@@ -9784,7 +10574,7 @@ export function App() {
                     <strong>Include sensitive secrets</strong>
                     <p>
                       This project contains {projectExportDialog.omittedFields} sensitive field{projectExportDialog.omittedFields === 1 ? '' : 's'}.
-                      Eligible secrets are omitted by default for safety. Discord bot tokens are always stripped.
+                      Eligible sensitive fields are omitted by default for safety.
                     </p>
                   </div>
                 </label>
@@ -9882,32 +10672,39 @@ export function App() {
             {promptDialog?.cancelText || 'Cancel'}
           </Button>
           <Button
-            disabled={!promptDialog?.value?.trim()}
-            onClick={() => promptDialog?.resolve?.(promptDialog.value)}
+            variant={promptDialog?.variant === 'danger' ? 'danger' : 'primary'}
+            disabled={!promptDialog?.value?.trim() || promptDialog?.expectedValue !== undefined && promptDialog.value.trim() !== promptDialog.expectedValue}
+            onClick={() => promptDialog?.resolve?.(promptDialog.kind === 'text-confirm' ? promptDialog.value.trim() : promptDialog.value)}
           >
             {promptDialog?.confirmText || 'Save'}
           </Button>
         </>}
       >
         {promptDialog && (
-          <form
-            className="modal-prompt-form"
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (promptDialog.value?.trim()) promptDialog.resolve(promptDialog.value);
-            }}
-          >
-            <TextInput
-              autoFocus
-              label={promptDialog.label || 'Value'}
-              placeholder={promptDialog.placeholder || ''}
-              value={promptDialog.value}
-              onChange={(e) => setPromptDialog((cur) => cur ? { ...cur, value: e.target.value } : null)}
-            />
-          </form>
+          <>
+            {promptDialog.message && <p className="modal-dialog-message">{promptDialog.message}</p>}
+            <form
+              className="modal-prompt-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!promptDialog.value?.trim()) return;
+                if (promptDialog.expectedValue !== undefined && promptDialog.value.trim() !== promptDialog.expectedValue) return;
+                promptDialog.resolve(promptDialog.kind === 'text-confirm' ? promptDialog.value.trim() : promptDialog.value);
+              }}
+            >
+              <TextInput
+                autoFocus
+                label={promptDialog.label || 'Value'}
+                placeholder={promptDialog.placeholder || ''}
+                maxLength={promptDialog.maxLength}
+                value={promptDialog.value}
+                onChange={(e) => setPromptDialog((cur) => cur ? { ...cur, value: e.target.value } : null)}
+              />
+            </form>
+          </>
         )}
       </Modal>
-      <LazyMountedFeature Component={UserManagementModal} isOpen={!desktopMode && isUserMgmtOpen} loadingLabel="Opening Team access…" isDesktop={desktopMode} onClose={() => setIsUserMgmtOpen(false)} authToken={authToken} currentUsername={currentUser?.username} currentUserId={currentUser?.id} onCurrentUserChange={setCurrentUser} />
+      <LazyMountedFeature Component={UserManagementModal} isOpen={isUserMgmtOpen} loadingLabel="Opening Team access…" isDesktop={desktopMode} onClose={() => setIsUserMgmtOpen(false)} authToken={authToken} currentUsername={currentUser?.username} currentUserId={currentUser?.id} onCurrentUserChange={setCurrentUser} />
       {fileDropCanvasBounds && document.querySelector('.canvas-workspace') && createPortal(
         <div className="global-file-drop-overlay" style={fileDropCanvasBounds} aria-label="Drop .arcproject or .arcgraph file to import">
           Drop .arcproject or .arcgraph here to import
@@ -10885,7 +11682,13 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
       addError(`A connection uses a missing node pin: ${missing.join(' → ')}.`, target.id);
     }
     else if (sourcePin.type === 'arg' && (targetPin.type === 'boolean' || targetPin.type === 'exec')) addError('An arg socket cannot connect to a boolean input. Use Check Value or a comparison node to produce a boolean.', target.id);
-    else if (sourcePin.type !== targetPin.type && sourcePin.type !== 'any' && targetPin.type !== 'any' && sourcePin.type !== 'arg' && targetPin.type !== 'arg' && !isConvertiblePinPair(sourcePin.type, targetPin.type)) addError('A connection joins incompatible pin types.', target.id);
+    else if (sourcePin.type !== targetPin.type && sourcePin.type !== 'any' && targetPin.type !== 'any' && sourcePin.type !== 'arg' && targetPin.type !== 'arg' && !isConvertiblePinPair(sourcePin.type, targetPin.type)) {
+      const sourceLabel = source.label || definitions.get(source.type)?.label || source.type;
+      const targetLabel = target.label || definitions.get(target.type)?.label || target.type;
+      const sourcePinLabel = sourcePin.label || wire.sourcePinId;
+      const targetPinLabel = targetPin.label || wire.targetPinId;
+      addError(`A connection joins incompatible pin types: ${sourceLabel} output ${sourcePinLabel} (${sourcePin.type}) cannot connect to ${targetLabel} input ${targetPinLabel} (${targetPin.type}).`, target.id);
+    }
     else if (sourcePin.type === 'string' && targetPin.type === 'string') {
       const sourceMeaning = semanticStringPin(wire.sourcePinId, sourcePin);
       const targetMeaning = semanticStringPin(wire.targetPinId, targetPin);
@@ -11031,6 +11834,10 @@ function graphPin(node, direction, pinId, variables, graphLookup = null, connect
       if (entryIndex >= 2 && entryIndex <= entryCount) return { id: pinId, type: 'exec' };
       return null;
     }
+  }
+  if (node.type === 'action_moderate_member' && direction === 'outputs' && pinId === 'failure_exec'
+    && connections.some((wire) => wire.sourceNodeId === node.id && wire.sourcePinId === 'failure_exec')) {
+    return { id: 'failure_exec', label: 'Failed (legacy)', type: 'exec' };
   }
   if (node.type === 'event_slash_command' && direction === 'outputs' && pinId.startsWith('option_')) {
     const option = flattenSlashParameters(node.data?.options).find((item) => item.pinId === pinId)?.option;
