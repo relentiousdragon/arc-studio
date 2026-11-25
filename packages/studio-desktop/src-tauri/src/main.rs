@@ -1290,7 +1290,7 @@ fn open_desktop_prompt(
     }
 
     let blocking = payload.get("blocking").and_then(serde_json::Value::as_bool).unwrap_or(true);
-    let dismiss_on_parent_focus = matches!(kind, "editor-settings" | "app-settings" | "command-browser" | "graph-validation");
+    let dismiss_on_parent_focus = matches!(kind, "editor-settings" | "app-settings" | "command-browser" | "graph-validation" | "team-access");
     if !blocking && matches!(kind, "editor-settings" | "shortcuts-help" | "template-syntax-help") {
         let existing_label = {
             let sessions = state.sessions.lock().map_err(|_| "A desktop prompt could not be opened.".to_string())?;
