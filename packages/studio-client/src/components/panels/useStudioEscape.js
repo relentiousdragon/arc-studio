@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 //
 export function useStudioEscape(onEscape) {
   const callbackRef = useRef(onEscape);
@@ -35,4 +35,31 @@ export function useStudioSwitchClose(kind, onRequestClose) {
 
 export function notifyStudioSwitchCancelled() {
   window.dispatchEvent(new Event('arc:studio-switch-cancelled'));
+}
+
+export function useStudioDiscardConfirmation({ desktopMode = false, requestConfirmation, title, subtitle, message, onClose }) {
+  const pendingRef = useRef(false);
+
+  return useCallback(async () => {
+    if (!desktopMode || typeof requestConfirmation !== 'function') return false;
+    if (pendingRef.current) return true;
+    pendingRef.current = true;
+    try {
+      const confirmed = await requestConfirmation({
+        title,
+        subtitle,
+        message,
+        confirmText: 'Discard changes',
+        cancelText: 'Keep editing',
+        variant: 'danger'
+      });
+      if (confirmed) onClose?.();
+      else notifyStudioSwitchCancelled();
+    } catch {
+      notifyStudioSwitchCancelled();
+    } finally {
+      pendingRef.current = false;
+    }
+    return true;
+  }, [desktopMode, message, onClose, requestConfirmation, subtitle, title]);
 }
