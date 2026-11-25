@@ -1142,6 +1142,7 @@ export function App() {
   const externalCollaborativeWorkspace = !desktopMode || workspaceMode === 'remote';
   const [workspaceSwitchOpen, setWorkspaceSwitchOpen] = useState(false);
   const localSessionRef = useRef(null);
+  const workspaceReturnRef = useRef(null);
   const authCompleteRef = useRef(null);
   const connectWorkspaceRef = useRef(null);
   if (desktopMode && !localSessionRef.current) {
@@ -7634,6 +7635,7 @@ export function App() {
 
   const handleAuthComplete = async (token, user, persistSession = true, modeOverride = '') => {
     const activeWorkspaceMode = modeOverride || workspaceModeRef.current;
+    if (authToken !== token) setIsReady(false);
     if (desktopMode && !persistSession) safeStorageRemove('arc_token');
     else safeStorageSet('arc_token', token);
     if (desktopMode && activeWorkspaceMode === 'local') {
@@ -8940,42 +8942,63 @@ export function App() {
         if (localStorage.getItem('arc_local_keep_signed_in') !== 'false') writeLocalDesktopSessionToken(authToken);
         else removeLocalDesktopSessionToken();
       } catch { writeLocalDesktopSessionToken(authToken); }
-    } else if (workspaceMode === 'remote' && authToken) {
-      try { await fetch(apiUrl('/api/auth/logout'), { method: 'POST', headers: { 'x-arc-token': authToken } }); } catch {}
-      safeStorageRemove('arc_token');
-      setAuthToken('');
-      setCurrentUser(null);
     }
+    workspaceReturnRef.current = authToken && currentUser ? {
+      mode: workspaceMode,
+      url: workspaceMode === 'remote' ? remoteWorkspaceUrl : '',
+      name: workspaceMode === 'remote' ? remoteWorkspaceName : '',
+      token: authToken,
+      user: currentUser
+    } : null;
+    safeStorageRemove('arc_token');
+    setAuthToken('');
+    setCurrentUser(null);
     setWorkspaceSwitchOpen(true);
   };
 
-  const handleBackToLocalEditor = async () => {
+  const handleBackToWorkspaceEditor = async () => {
     if (desktopMode) await closeDesktopPrompts().catch(() => {});
-    const session = localSessionRef.current;
+    const session = workspaceReturnRef.current;
     if (!session?.token) return;
-    try { localStorage.setItem('arc_workspace_mode', 'local'); } catch {}
-    setWorkspaceMode('local');
-    setWorkspaceError('');
     try {
-      const response = await fetch(apiUrl('/api/auth/me'), { headers: { 'x-arc-token': session.token } });
+      localStorage.setItem('arc_workspace_mode', session.mode);
+      if (session.mode === 'remote') localStorage.setItem('arc_remote_workspace_url', session.url);
+    } catch {}
+    setWorkspaceMode(session.mode);
+    if (session.mode === 'remote') {
+      setRemoteWorkspaceUrl(session.url);
+      setRemoteWorkspaceName(session.name || '');
+      try { localStorage.setItem('arc_remote_workspace_name', session.name || ''); } catch {}
+    }
+    setWorkspaceError('');
+    setIsReady(false);
+    try {
+      const profileUrl = session.mode === 'remote'
+        ? new URL('/api/auth/me', normalizeWorkspaceUrl(session.url)).href
+        : apiUrl('/api/auth/me');
+      const response = await fetch(profileUrl, { headers: { 'x-arc-token': session.token } });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok || !data.user) throw new Error('The saved Local Workspace session has expired. Sign in again.');
-      localSessionRef.current = { token: session.token, user: data.user };
+      if (!response.ok || !data.user) throw new Error(`The saved ${session.mode === 'local' ? 'Local Workspace' : 'workspace'} session has expired. Sign in again.`);
+      if (session.mode === 'local') localSessionRef.current = { token: session.token, user: data.user };
       safeStorageSet('arc_token', session.token);
       setAuthToken(session.token);
       setCurrentUser(data.user);
       setWorkspaceError('');
       setWorkspaceSwitchOpen(false);
-      setIsReady(false);
+      workspaceReturnRef.current = null;
       setWorkspaceRevision((revision) => revision + 1);
-    } catch {
-      localSessionRef.current = null;
-      removeLocalDesktopSessionToken();
+    } catch (error) {
+      if (session.mode === 'local') {
+        localSessionRef.current = null;
+        removeLocalDesktopSessionToken();
+      }
+      workspaceReturnRef.current = null;
       safeStorageRemove('arc_token');
       setAuthToken('');
       setCurrentUser(null);
-      setWorkspaceError('');
+      setWorkspaceError(error?.message || 'The saved session has expired. Sign in again.');
       setWorkspaceSwitchOpen(false);
+      setIsReady(true);
     }
   };
 
@@ -9321,7 +9344,7 @@ export function App() {
       await showDesktopPrompt({
         kind: 'team-access',
         title: 'Team access',
-        blocking: true,
+        blocking: false,
         authToken,
         currentUsername: currentUser?.username || '',
         currentUserId: currentUser?.id || '',
@@ -9594,8 +9617,8 @@ export function App() {
           startOnRemoteWorkspace={desktopMode && workspaceSwitchOpen}
           remoteWorkspaceUrl={remoteWorkspaceUrl}
           workspaceName={desktopMode ? workspaceMode === 'remote' ? remoteWorkspaceName : 'Local Workspace' : remoteWorkspaceName}
-          localSessionAvailable={desktopMode && (workspaceSwitchOpen || workspaceMode === 'remote') && Boolean(localSessionRef.current?.token)}
-          onBackToEditor={handleBackToLocalEditor}
+          localSessionAvailable={desktopMode && workspaceSwitchOpen && Boolean(workspaceReturnRef.current?.token)}
+          onBackToEditor={handleBackToWorkspaceEditor}
           networkOnline={networkOnline}
           workspaceError={workspaceError}
           workspaceCompatibilityNotice={workspaceCompatibilityNotice}
@@ -9726,7 +9749,6 @@ export function App() {
           {localDesktopWorkspace && <button className="rail-button" onClick={handleAutoLayout} title="Arrange nodes" aria-label="Arrange nodes"><LayoutGrid size={17} /></button>}
           <button className="rail-button" onClick={() => handleExportGraph()} disabled={!activeGraph?.nodes?.length} title={!activeGraph ? 'Open a graph to export it' : activeGraph.nodes?.length ? 'Export graph' : 'Add a node before exporting this graph'} aria-label="Export graph"><Braces size={17} /></button>
           <div className="rail-spacer" />
-          {canManageTeam && <button className="rail-button" onClick={handleOpenTeamAccess} title="Team access" aria-label="Team access"><Users size={17} /></button>}
           {desktopMode
             ? <DesktopRailAccountMenu user={currentUser} onOpenSettings={openEditorSettings} onSwitchWorkspace={handleSwitchWorkspace} onLogout={handleLogout} canManageTeam={canManageTeam} onOpenUsers={handleOpenTeamAccess} />
             : <button className="rail-button" onClick={openShortcutHelp} title="Keyboard shortcuts" aria-label="Keyboard shortcuts"><CircleHelp size={17} /></button>}
