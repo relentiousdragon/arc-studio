@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronDown, X } from 'lucide-react';
 //
-export function Modal({ isOpen, onClose, onConfirm, title, subtitle, icon: Icon, iconClassName = '', headerMeta, children, footer, maxWidth, panelClassName = '', shake = false, showScrollCue = false, initialFocusRef = null }) {
+export function Modal({ isOpen, onClose, onConfirm, title, subtitle, icon: Icon, iconClassName = '', headerMeta, children, footer, maxWidth, panelClassName = '', shake = false, showScrollCue = false, initialFocusRef = null, showCloseButton = true, nativeWindow = false, hideHeader = false }) {
   const dialogRef = useRef(null);
   const bodyRef = useRef(null);
   const [hasMoreContent, setHasMoreContent] = useState(false);
@@ -55,6 +55,7 @@ export function Modal({ isOpen, onClose, onConfirm, title, subtitle, icon: Icon,
     else dialogRef.current?.focus({ preventScroll: true });
     const onKeyDown = (event) => {
       if (event.key === 'Escape') {
+        if (nativeWindow && [...document.querySelectorAll('[role="dialog"][aria-modal="true"]')].some((dialog) => dialog !== dialogRef.current)) return;
         event.preventDefault();
         onCloseRef.current?.();
         return;
@@ -85,23 +86,23 @@ export function Modal({ isOpen, onClose, onConfirm, title, subtitle, icon: Icon,
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isOpen, initialFocusRef]);
+  }, [isOpen, initialFocusRef, nativeWindow]);
 
   if (!isOpen) return null;
   const widthClass = String(maxWidth || '').includes('2xl') ? 'modal-wide' : String(maxWidth || '').includes('lg') ? 'modal-medium' : '';
-  const modal = <div className="dialog-scrim" onMouseDown={(event) => event.target === event.currentTarget && onClose?.()}>
-    <section ref={dialogRef} className={`modal-panel ${widthClass} ${panelClassName} ${shake ? 'is-shaking' : ''}`} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1}>
-      <header className="modal-header">
+  const panel = <section ref={dialogRef} className={`modal-panel ${widthClass} ${panelClassName} ${nativeWindow ? 'is-native-window' : ''} ${shake ? 'is-shaking' : ''}`} role="dialog" aria-modal={nativeWindow ? 'false' : 'true'} aria-label={title} tabIndex={-1}>
+      {!hideHeader && <header className="modal-header">
         {Icon && <div className={`modal-title-icon ${iconClassName}`}><Icon size={17} /></div>}
         <div className="modal-title-copy"><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div>
         {headerMeta && <div className="modal-header-meta">{headerMeta}</div>}
-        <button type="button" className="icon-button" onClick={(event) => { event.stopPropagation(); onClose?.(); }} aria-label="Close dialog"><X size={17} /></button>
-      </header>
+        {showCloseButton && <button type="button" className="icon-button" onClick={(event) => { event.stopPropagation(); onClose?.(); }} aria-label="Close dialog"><X size={17} /></button>}
+      </header>}
       <div ref={bodyRef} className="modal-body">{children}</div>
       {showScrollCue && scrollCueMounted && <button type="button" className={`modal-scroll-cue ${hasMoreContent ? '' : 'is-hiding'}`} aria-label="Scroll to the remaining options" onClick={() => bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight, behavior: 'smooth' })}><ChevronDown size={15} /></button>}
       {footer && <footer className="modal-footer">{footer}</footer>}
-    </section>
-  </div>;
+  </section>;
+  if (nativeWindow) return panel;
+  const modal = <div className="dialog-scrim" onMouseDown={(event) => event.target === event.currentTarget && onClose?.()}>{panel}</div>;
   const modalRoot = typeof document === 'undefined' ? null : document.querySelector('.app-root') || document.body;
   return modalRoot ? createPortal(modal, modalRoot) : modal;
 }
