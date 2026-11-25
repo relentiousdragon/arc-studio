@@ -1898,7 +1898,9 @@ server.listen(serverConfig.port, serverConfig.host, () => {
   console.log(`${bannerLabel('Master Setup Key:')}Hidden`);
   console.log(`${bannerLabel('Project Log Retention:')}${retention}`);
   console.log(`==============================================================================`);
-  for (const check of diagnostics.checks.filter((item) => item.status !== 'PASS')) console.log(`  ${check.status} ${check.name}: ${check.message}`);
+  for (const check of diagnostics.checks.filter((item) => item.status !== 'PASS')) {
+    logger.log(check.status === 'FAIL' ? 'ERROR' : check.status, `${check.name}: ${check.message}`);
+  }
   const loopbackHost = ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(serverConfig.host.toLowerCase());
   if (loopbackHost && activePort !== 3000) {
     const warning = `Server binds to ${serverConfig.host}:${activePort}. If a reverse proxy exposes this workspace, point its upstream here and forward WebSocket upgrades for /ws with the path unchanged. successful login only confirms HTTP access.`;
