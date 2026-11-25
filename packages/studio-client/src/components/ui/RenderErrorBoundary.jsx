@@ -1,4 +1,5 @@
 import React from 'react';
+import { AuthGridCanvas } from '../splash/AuthGridCanvas.jsx';
 //
 export class RenderErrorBoundary extends React.Component {
   state = { failed: false };
@@ -19,6 +20,7 @@ export class RenderErrorBoundary extends React.Component {
 
 export function AppCrashScreen() {
   return <main className="app-crash-screen" role="alert">
+    <AuthGridCanvas ambientHotspots={false} />
     <div className="app-crash-content">
       <img src="/arc.png" alt="ARC Studio" />
       <h1>Uh oh, something went wrong.</h1>
