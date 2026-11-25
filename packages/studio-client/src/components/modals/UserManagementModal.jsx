@@ -30,7 +30,8 @@ const PERMISSION_OPTIONS = [
   { value: 'simulation:run', label: 'Run simulations', detail: 'Use the offline simulator and debugger.' },
   { value: 'logs:read', label: 'View logs', detail: 'Read workspace and bot logs.' },
   { value: 'bot:control', label: 'Control bot', detail: 'Connect or disconnect the Discord gateway.' },
-  { value: 'emojis:upload', label: 'Manage emojis', detail: 'Upload and manage application emojis.' }
+  { value: 'emojis:upload', label: 'Manage emojis', detail: 'Upload and manage application emojis.' },
+  { value: 'plugins:import-local', label: 'Import local plugins', detail: 'With Edit graphs, import plugin packs and adapters from local files.' }
 ];
 
 function DiscordDeliveryStatus({ status }) {

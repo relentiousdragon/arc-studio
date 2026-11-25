@@ -1355,7 +1355,9 @@ export class PluginStore {
         ? existing?.sourceType === 'local'
         : requirement?.sourceType === 'catalog' && existing?.sourceType === 'catalog' && repo && existing?.repositoryUrl === repo;
       const alreadyAvailable = Boolean(existing && existing.version === requirement?.version && sameSource);
-      const source = requirement?.sourceType === 'local' ? (allowLocal ? 'Included local plugin' : 'Local plugin, not included in graph files') : repo || requirement?.sourceUrl || 'Unknown source';
+      const source = requirement?.sourceType === 'local'
+        ? canImportLocal ? 'Included local plugin' : allowLocal ? 'Local host runtime requires separate review' : 'Requires Import local plugins permission'
+        : repo || requirement?.sourceUrl || 'Unknown source';
       return {
         id: String(requirement?.id || '').slice(0, 64),
         name: String(requirement?.name || requirement?.id || 'Unknown plugin').slice(0, 100),

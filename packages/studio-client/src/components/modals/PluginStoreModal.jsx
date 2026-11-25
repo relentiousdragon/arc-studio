@@ -60,7 +60,7 @@ function validateRepositoryUrl(value) {
   } catch { return 'Enter a valid HTTPS GitHub or GitLab repository URL.'; }
 }
 
-export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canInstall = false, canManageSource = false, sidebarWidth = 360, onSidebarResize, isDesktop = false }) {
+export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canInstall = false, canImportLocal = false, canManageSource = false, sidebarWidth = 360, onSidebarResize, isDesktop = false }) {
   const desktopMode = Boolean(isDesktop);
   const [catalog, setCatalog] = useState([]);
   const [catalogUnavailable, setCatalogUnavailable] = useState(false);
@@ -96,6 +96,9 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
   const onInstalledRef = useRef(onInstalled);
 
   useEffect(() => { onInstalledRef.current = onInstalled; }, [onInstalled]);
+  useEffect(() => {
+    if (!canImportLocal && activeTab === 'local') setActiveTab('store');
+  }, [activeTab, canImportLocal]);
 
   useEffect(() => {
     if (!authToken || !canInstall) return undefined;
@@ -236,6 +239,10 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
   };
 
   const importLocalFolder = async (event) => {
+    if (!canImportLocal) {
+      setError('Local plugin imports require the Import local plugins permission.');
+      return;
+    }
     const files = Array.from(event.target.files || []);
     event.target.value = '';
     if (!files.length) return;
@@ -304,6 +311,7 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
   };
 
   const confirmInstall = async (choices = null) => {
+    if (confirmAction?.kind === 'local' && !canImportLocal) return { ok: false, error: 'Local plugin imports require the Import local plugins permission.' };
     const selectedPermissions = Array.isArray(choices?.permissions) ? choices.permissions : permissionSelection;
     const trusted = typeof choices?.trust === 'boolean' ? choices.trust : confirmTrust;
     const autoUpdate = typeof choices?.autoUpdate === 'boolean' ? choices.autoUpdate : confirmAutoUpdate;
@@ -495,7 +503,7 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
           ['installed', 'Installed', installed.length],
           ['store', 'Store', catalog.length],
           ['source', 'Source'],
-          ['local', 'Local']
+          ...(canImportLocal ? [['local', 'Local']] : [])
         ].map(([id, label, count]) => <button key={id} type="button" className={activeTab === id ? 'is-active' : ''} aria-current={activeTab === id ? 'page' : undefined} onClick={() => {
           setActiveTab(id);
           setError('');
@@ -578,12 +586,12 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
         </div>
         <p className="plugin-store-update-note">The catalogue lists plugins published by this repository.</p>
       </>}
-      {activeTab === 'local' && <>
+      {activeTab === 'local' && canImportLocal && <>
         <div className="plugin-local-import">
           <div><strong>Import from a folder</strong><small>Select a plugin folder containing <code>arc-plugin.json</code>. WebAssembly adapters also need <code>adapter.wasm</code>.</small></div>
-          <label className={`plugin-local-import-button ${!canInstall || importingLocal ? 'is-disabled' : ''}`}>
+          <label className={`plugin-local-import-button ${!canImportLocal || importingLocal ? 'is-disabled' : ''}`}>
             <FolderOpen size={14} />{importingLocal ? 'Reading…' : 'Choose folder'}
-            <input type="file" multiple directory="" webkitdirectory="" disabled={!canInstall || importingLocal} onChange={importLocalFolder} aria-label="Import plugin folder" />
+            <input type="file" multiple directory="" webkitdirectory="" disabled={!canImportLocal || importingLocal} onChange={importLocalFolder} aria-label="Import plugin folder" />
           </label>
         </div>
         <div className="plugin-store-notice"><AlertTriangle size={13} />Install only plugins from sources and publishers you trust.</div>

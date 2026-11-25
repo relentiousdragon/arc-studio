@@ -14,7 +14,7 @@ export const RolePermissions = Object.freeze({
   operator: ['graphs:read', 'bot:control', 'emojis:upload', 'simulation:run', 'logs:read'],
   viewer: ['graphs:read', 'logs:read']
 });
-export const WorkspacePermissions = Object.freeze([...new Set(Object.values(RolePermissions).flat().filter((permission) => permission !== '*'))]);
+export const WorkspacePermissions = Object.freeze([...new Set([...Object.values(RolePermissions).flat().filter((permission) => permission !== '*'), 'plugins:import-local'])]);
 
 export class UserStore extends EventEmitter {
   constructor(options = {}) {

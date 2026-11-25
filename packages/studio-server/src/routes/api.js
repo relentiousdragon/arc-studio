@@ -34,6 +34,7 @@ import { ProjectMediaStore } from '../engine/ProjectMediaStore.js';
 import { inspectArcProjectArchive, prepareArcProjectImport } from '../storage/ArcArchiveFile.js';
 //
 const ACTIVITY_WEBHOOK_AVATAR_URL = 'https://raw.githubusercontent.com/relentiousdragon/arc-studio/main/packages/studio-client/public/arc.png';
+const canImportLocalPlugins = (user) => user?.permissions?.includes('*') || user?.permissions?.includes('plugins:import-local');
 
 function decodeArcArchiveRequest(value) {
   const fileLabel = 'graph file';
@@ -1126,7 +1127,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
         if (controller.signal.aborted) throw controller.signal.reason || new Error('Project upload cancelled.');
         const payload = inspection.payload;
         const pluginRequirements = Array.isArray(payload?.plugins) ? payload.plugins : [];
-        const pluginPlan = PluginStore.projectImportRequirements(pluginRequirements);
+        const pluginPlan = PluginStore.projectImportRequirements(pluginRequirements, { allowLocal: canImportLocalPlugins(req.user) });
         const hasText = !inspection.encrypted && hasImportableTextContent(payload);
         const session = {
           id: requestedCreationId,
@@ -1190,7 +1191,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       if (controller.signal.aborted) throw controller.signal.reason;
       const bundle = session.prepared.bundle;
       const pluginRequirements = Array.isArray(bundle?.plugins) ? bundle.plugins : [];
-      const pluginPlan = PluginStore.projectImportRequirements(pluginRequirements);
+      const pluginPlan = PluginStore.projectImportRequirements(pluginRequirements, { allowLocal: canImportLocalPlugins(req.user) });
       const sessionReply = { importSessionId: session.id };
       if (!req.headers['x-arc-trusted'] || req.headers['x-arc-trusted'] !== 'true') throw new TypeError('Confirm that you trust this project file before importing it.');
       if (pluginPlan.length && req.headers['x-arc-import-plugins'] !== 'true') {
@@ -1862,7 +1863,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     catch (error) { res.status(502).json({ error: error.message || 'Could not check for plugin updates.' }); }
   });
 
-  router.post('/plugins/import-local', requirePermission('graphs:write'), (req, res) => {
+  router.post('/plugins/import-local', requirePermission('graphs:write'), requirePermission('plugins:import-local'), (req, res) => {
     const previousRevision = registryRevision();
     try {
       if (req.body?.trustConfirmed !== true) return res.status(400).json({ error: 'Confirm that you trust this local plugin before importing it.' });
@@ -1875,7 +1876,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     }
   });
 
-  router.post('/plugins/import-adapter', requirePermission('graphs:write'), (req, res) => {
+  router.post('/plugins/import-adapter', requirePermission('graphs:write'), requirePermission('plugins:import-local'), (req, res) => {
     const previousRevision = registryRevision();
     try {
       if (req.body?.trustConfirmed !== true) return res.status(400).json({ error: 'Confirm that you trust this local plugin adapter before importing it.' });
@@ -1888,7 +1889,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     }
   });
 
-  router.post('/plugins/import-host-adapter', requirePermission('graphs:write'), async (req, res) => {
+  router.post('/plugins/import-host-adapter', requirePermission('graphs:write'), requirePermission('plugins:import-local'), async (req, res) => {
     const previousRevision = registryRevision();
     try {
       if (req.body?.trustConfirmed !== true || req.body?.hostCodeConfirmed !== true) {
