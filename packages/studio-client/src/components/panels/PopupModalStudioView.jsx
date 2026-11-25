@@ -3,7 +3,7 @@ import { ArrowLeft, BookmarkPlus, Check, Moon, Save, Sun, X } from 'lucide-react
 import { ModalNodeBuilder } from '../nodes/ModalNodeBuilder.jsx';
 import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
-import { notifyStudioSwitchCancelled, useStudioEscape, useStudioSwitchClose } from './useStudioEscape.js';
+import { notifyStudioSwitchCancelled, useStudioDiscardConfirmation, useStudioEscape, useStudioSwitchClose } from './useStudioEscape.js';
 //
 function validateModal(modal) {
   const title = String(modal?.title || '').trim();
@@ -76,6 +76,8 @@ export function PopupModalStudioView({
   onSaveAsset,
   graphVariables = [],
   templateValuePaths = [],
+  desktopMode = false,
+  requestConfirmation,
   onDraftChange,
   onApply,
   onClose
@@ -90,7 +92,12 @@ export function PopupModalStudioView({
   const fields = Array.isArray(modal?.components) ? modal.components : [];
   const issue = validateModal(modal);
   const hasChanges = JSON.stringify(modal) !== initialDraft.current;
-  const requestClose = () => hasChanges ? setDiscardOpen(true) : onClose?.();
+  const requestNativeDiscard = useStudioDiscardConfirmation({ desktopMode, requestConfirmation, title: 'Discard modal edits?', subtitle: isAssetMode ? 'Your changes have not been saved.' : 'Your changes have not been applied to the graph.', message: isAssetMode ? 'Save the modal to keep these edits in your library.' : 'Apply the modal to keep these edits in this graph.', onClose });
+  const requestClose = async () => {
+    if (!hasChanges) return onClose?.();
+    if (await requestNativeDiscard()) return;
+    setDiscardOpen(true);
+  };
   useStudioEscape(requestClose);
   useStudioSwitchClose('popup-modal', requestClose);
   useEffect(() => setPreviewTheme(theme === 'light' ? 'light' : 'dark'), [theme]);
@@ -101,6 +108,7 @@ export function PopupModalStudioView({
 
   useEffect(() => {
     const onKeyDown = (event) => {
+      if (window.__ARC_STUDIO_PROMPT_BLOCKED__) return;
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
         event.preventDefault();
         event.stopPropagation();
