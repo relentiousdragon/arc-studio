@@ -1681,7 +1681,14 @@ export class GraphRunner {
             setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value),
             log
           });
-          if (result !== false) currentExecWires.push(...(result === 'failure' ? findExecOutputs(targetNode.id, 'failure_exec') : findExecContinuation(targetNode.id, wire.targetPinId)));
+          if (result !== false) {
+            if (result === 'failure' && targetNode.type === 'action_moderate_member') {
+              const legacyFailureWires = findExecOutputs(targetNode.id, 'failure_exec');
+              currentExecWires.push(...(legacyFailureWires.length ? legacyFailureWires : findExecContinuation(targetNode.id, wire.targetPinId)));
+            } else {
+              currentExecWires.push(...(result === 'failure' ? findExecOutputs(targetNode.id, 'failure_exec') : findExecContinuation(targetNode.id, wire.targetPinId)));
+            }
+          }
         } else if (['action_send_message', 'action_edit_message', 'action_delete_message', 'action_add_reaction', 'action_remove_reaction'].includes(targetNode.type)) {
           const { executeDiscordMessageNode } = await import('./nodes/runtime/discord_messages.js');
           await executeDiscordMessageNode(targetNode, {
@@ -1722,6 +1729,23 @@ export class GraphRunner {
               await context.rest.createInteractionResponse(interactionId || 'mock', interactionToken, { type: 4, data: { content: deploymentError, flags: 64 } });
             }
           } else {
+            const targetGuildId = String(resolveDataInput(targetNode, 'guild_id', targetNode.data?.guild_id || '') || '').trim();
+            const invokingGuildId = String(eventPayload?.guild_id || '');
+            if (targetGuildId && targetGuildId !== invokingGuildId) {
+              deploymentError = 'Guild deployments must target the server where this command was invoked.';
+              if (interactionToken && !interactionState.acknowledged) {
+                interactionState.acknowledged = true;
+                await context.rest.createInteractionResponse(interactionId || 'mock', interactionToken, { type: 4, data: { content: deploymentError, flags: 64 } });
+              }
+            }
+            if (deploymentError) {
+              dataCache.set(`${targetNode.id}:deployed_count`, 0);
+              dataCache.set(`${targetNode.id}:success`, false);
+              dataCache.set(`${targetNode.id}:error`, deploymentError);
+              log(`[Deploy Slash Commands] ${deploymentError}`);
+              currentExecWires.push(...findExecContinuation(targetNode.id, wire.targetPinId));
+              continue;
+            }
             if (interactionToken && !interactionState.acknowledged) {
               interactionState.acknowledged = true;
               interactionState.deferred = true;
@@ -1732,9 +1756,15 @@ export class GraphRunner {
               finally { interactionState.pending = null; }
             }
             try {
-              deployment = await context.deploySlashCommands();
+              const guildId = targetGuildId;
+              const commandKeysConnected = Boolean(findInputConnection(targetNode.id, 'command_keys'));
+              const rawCommandKeys = resolveDataInput(targetNode, 'command_keys', targetNode.data?.command_keys || []);
+              if (commandKeysConnected && !Array.isArray(rawCommandKeys)) throw new Error('The Commands input must be an array of command keys.');
+              const commandKeys = Array.isArray(rawCommandKeys) && rawCommandKeys.length ? rawCommandKeys : null;
+              deployment = await context.deploySlashCommands({ guildIds: guildId ? [guildId] : [], commandKeys });
               const count = Number(deployment?.deployed ?? deployment?.commands ?? 0);
-              if (interactionToken && context.rest.editOriginalInteractionResponse) await context.rest.editOriginalInteractionResponse(interactionState.applicationId || eventPayload?.application_id, interactionToken, { content: `Deployed ${count} slash command${count === 1 ? '' : 's'}.` });
+              const targetLabel = guildId ? ` to server ${guildId}` : ' globally';
+              if (interactionToken && context.rest.editOriginalInteractionResponse) await context.rest.editOriginalInteractionResponse(interactionState.applicationId || eventPayload?.application_id, interactionToken, { content: `Deployed ${count} application command${count === 1 ? '' : 's'}${targetLabel}.` });
             } catch (error) {
               deploymentError = error?.message || String(error);
               if (interactionToken && interactionState.deferred && context.rest.editOriginalInteractionResponse) {
