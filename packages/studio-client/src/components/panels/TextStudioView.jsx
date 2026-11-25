@@ -7,7 +7,7 @@ import { DiscordTextField } from '../ui/DiscordTextField.jsx';
 import { EditorMinimap } from './EditorMinimap.jsx';
 import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
-import { notifyStudioSwitchCancelled, useStudioEscape, useStudioSwitchClose } from './useStudioEscape.js';
+import { notifyStudioSwitchCancelled, useStudioDiscardConfirmation, useStudioEscape, useStudioSwitchClose } from './useStudioEscape.js';
 import { getJsonIssues } from '../../core/jsonDiagnostics.js';
 import { replaceNullTemplateValues } from '../../core/templatePreview.js';
 import { getTextLanguage } from '../ui/mediaTypes.js';
@@ -74,6 +74,26 @@ function renderSearchLine(line, lineStart, matches, activeMatchIndex, startIndex
   if (cursor < line.length) segments.push(line.slice(cursor));
   const nextIndex = index > startIndex && matches[index - 1].end > lineEnd + 1 ? index - 1 : index;
   return { content: segments.length ? segments : line || ' ', nextIndex };
+}
+
+function findLineAtOffset(lineStarts, offset) {
+  let low = 0;
+  let high = lineStarts.length - 1;
+  let line = 0;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    if (lineStarts[middle] <= offset) {
+      line = middle;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return line;
+}
+
+function getTextareaCaretOffset(textarea) {
+  return textarea.selectionDirection === 'backward' ? textarea.selectionStart : textarea.selectionEnd;
 }
 
 function highlightTokenMatches(line, expression, classify) {
@@ -224,8 +244,9 @@ function buildHighlightedLines(text, isJson, sourceLanguage = '') {
   });
 }
 
-export function TextStudioView({ label, contentType = '', value = '', readOnly = false, plainText = false, loading = false, loadError = '', sharedDraft, remoteCursors = [], collaborators = [], appEmojis = [], graphVariables = [], templateValuePaths = [], templateSuggestions = [], templateFunctions = [], connectedTemplateArguments = [], templatePreviewValues = {}, maxLength, onApply, onClose, onDraftChange, onCursorChange }) {
+export function TextStudioView({ label, contentType = '', value = '', readOnly = false, plainText = false, loading = false, loadError = '', sharedDraft, remoteCursors = [], collaborators = [], appEmojis = [], graphVariables = [], templateValuePaths = [], templateSuggestions = [], templateFunctions = [], connectedTemplateArguments = [], templatePreviewValues = {}, maxLength, desktopMode = false, requestConfirmation, onApply, onClose, onDraftChange, onCursorChange }) {
   const [draft, setDraft] = useState(String(value ?? ''));
+  const [cursorOffset, setCursorOffset] = useState(0);
   const [activePane, setActivePane] = useState('editor');
   const [scrollMetrics, setScrollMetrics] = useState({ top: 0, height: 0, view: 0 });
   const [previewScrollMetrics, setPreviewScrollMetrics] = useState({ top: 0, height: 0, view: 0 });
@@ -247,6 +268,15 @@ export function TextStudioView({ label, contentType = '', value = '', readOnly =
   const remoteCaretLayerRef = useRef(null);
   const previewScrollRef = useRef(null);
   const lines = useMemo(() => draft.split('\n'), [draft]);
+  const lineStarts = useMemo(() => {
+    let offset = 0;
+    return lines.map((line) => {
+      const start = offset;
+      offset += line.length + 1;
+      return start;
+    });
+  }, [lines]);
+  const currentLine = findLineAtOffset(lineStarts, cursorOffset);
   const largeFileMode = lines.length > 2500 || draft.length > 200000;
   const blocks = useMemo(() => plainText || largeFileMode ? [] : countDiscordCodeBlocks(draft), [draft, largeFileMode, plainText]);
   const characterCount = useMemo(() => largeFileMode ? draft.length : Array.from(draft).length, [draft, largeFileMode]);
@@ -258,6 +288,10 @@ export function TextStudioView({ label, contentType = '', value = '', readOnly =
   const jsonIssues = useMemo(() => (isJson && !largeFileMode ? getJsonIssues(jsonContent) : []), [isJson, jsonContent, largeFileMode]);
   const jsonIssueLineOffset = useMemo(() => (jsonBlock ? draft.slice(0, draft.indexOf(jsonBlock[0]) + jsonBlock[1].length).split('\n').length - 1 : 0), [draft, jsonBlock]);
   const jsonIssueLines = useMemo(() => new Set(jsonIssues.map((issue) => issue.line + jsonIssueLineOffset)), [jsonIssues, jsonIssueLineOffset]);
+  const gutterLineClassName = (lineIndex) => [
+    lineIndex === currentLine ? 'is-active-line' : '',
+    jsonIssueLines.has(lineIndex + 1) ? 'is-invalid-line' : ''
+  ].filter(Boolean).join(' ') || undefined;
   const jsonError = useMemo(() => {
     if (!jsonIssues.length) return '';
     const first = jsonIssues[0];
@@ -341,6 +375,7 @@ export function TextStudioView({ label, contentType = '', value = '', readOnly =
       if (!editor || !match) return;
       editor.focus();
       editor.setSelectionRange(match.start, match.end);
+      updateCursorPosition(match.end);
       const line = draft.slice(0, match.start).split('\n').length - 1;
       editor.scrollTop = Math.max(0, line * 22 - editor.clientHeight / 2);
     });
@@ -366,8 +401,13 @@ export function TextStudioView({ label, contentType = '', value = '', readOnly =
     setActiveMatchIndex((current) => current >= searchMatches.length ? 0 : current);
   }, [searchMatches]);
 
-  const close = () => {
-    if (!readOnly && draft !== String(value ?? '')) { setDiscardPromptOpen(true); return; }
+  const requestNativeDiscard = useStudioDiscardConfirmation({ desktopMode, requestConfirmation, title: 'Discard text changes?', subtitle: 'These edits have not been applied.', message: 'Your text changes will be lost.', onClose });
+  const close = async () => {
+    if (!readOnly && draft !== String(value ?? '')) {
+      if (await requestNativeDiscard()) return;
+      setDiscardPromptOpen(true);
+      return;
+    }
     onClose?.();
   };
   useStudioSwitchClose('text', close);
@@ -450,6 +490,11 @@ export function TextStudioView({ label, contentType = '', value = '', readOnly =
     beforeInputRef.current = null;
     setDraft(next);
     onDraftChange?.(next, event.target.selectionStart);
+    setCursorOffset(getTextareaCaretOffset(event.target));
+  };
+  const updateCursorPosition = (offset) => {
+    setCursorOffset(offset);
+    onCursorChange?.(offset);
   };
   const captureSnapshot = () => ({
     text: draft,
@@ -470,7 +515,7 @@ export function TextStudioView({ label, contentType = '', value = '', readOnly =
     destination.push(current);
     setDraft(target.text);
     onDraftChange?.(target.text, target.start);
-    onCursorChange?.(target.start);
+    updateCursorPosition(target.end);
     requestAnimationFrame(() => {
       const editor = editorRef.current;
       if (!editor) return;
@@ -506,7 +551,7 @@ export function TextStudioView({ label, contentType = '', value = '', readOnly =
       recordProgrammaticEdit();
       setDraft(next);
       onDraftChange?.(next, start + 2);
-      onCursorChange?.(start + 2);
+      updateCursorPosition(start + 2);
       requestAnimationFrame(() => { editor.selectionStart = editor.selectionEnd = start + 2; });
       return;
     }
@@ -527,7 +572,7 @@ export function TextStudioView({ label, contentType = '', value = '', readOnly =
     recordProgrammaticEdit();
     setDraft(next);
     onDraftChange?.(next, caret);
-    onCursorChange?.(caret);
+    updateCursorPosition(caret);
     requestAnimationFrame(() => { editor.selectionStart = editor.selectionEnd = caret; });
   };
   const formatJson = () => {
@@ -537,7 +582,7 @@ export function TextStudioView({ label, contentType = '', value = '', readOnly =
       if (next !== draft) recordProgrammaticEdit();
       setDraft(next);
       onDraftChange?.(next, next.length);
-      onCursorChange?.(next.length);
+      updateCursorPosition(next.length);
     }
     catch { /* inline validator explains why formatting is unavailable */ }
   };
@@ -571,8 +616,11 @@ export function TextStudioView({ label, contentType = '', value = '', readOnly =
         : loadError ? <div className="discord-text-studio-file-status is-error" role="alert"><strong>Could not load this file</strong><span>{loadError}</span></div>
           : <>
             <div className={`discord-text-studio-gutter ${largeFileMode ? 'is-virtual' : ''}`} ref={gutterRef} aria-hidden="true">
-              {largeFileMode ? <div style={{ top: 15 + gutterStart * 22 - scrollMetrics.top }}>{gutterRows.map((_, index) => <span key={gutterStart + index}>{gutterStart + index + 1}</span>)}</div>
-                : lines.map((_, index) => <span key={index} className={jsonIssueLines.has(index + 1) ? 'is-invalid-line' : undefined}>{index + 1}</span>)}
+              {largeFileMode ? <div style={{ top: 15 + gutterStart * 22 - scrollMetrics.top }}>{gutterRows.map((_, index) => {
+                const lineIndex = gutterStart + index;
+                return <span key={lineIndex} className={gutterLineClassName(lineIndex)}>{lineIndex + 1}</span>;
+              })}</div>
+                : lines.map((_, index) => <span key={index} className={gutterLineClassName(index)}>{index + 1}</span>)}
             </div>
             <div className="discord-text-studio-editor-viewport">
               {useHighlightLayer && <pre ref={codeLayerRef} className="discord-text-studio-code-layer" aria-hidden="true">{highlightedLines.map((line, index) => <span key={index} className={`discord-text-studio-line ${line.isCode ? 'is-code' : ''}`}>{line.content}</span>)}</pre>}
@@ -584,7 +632,7 @@ export function TextStudioView({ label, contentType = '', value = '', readOnly =
                 const column = before.at(-1).length;
                 return <span key={peer.username} className="discord-text-remote-caret" style={{ left: 18 + column * 7.83, top: 15 + line * 22, '--collaborator-color': peer.color }}><i /><b>{peer.username}</b></span>;
               })}</div>}
-              <DiscordTextField as="textarea" ref={editorRef} className="discord-text-studio-editor" readOnly={readOnly} value={draft} onBeforeInput={handleBeforeInput} onChange={changeDraft} onKeyDown={handleEditorKeyDown} onKeyUp={(event) => onCursorChange?.(event.currentTarget.selectionStart)} onClick={(event) => onCursorChange?.(event.currentTarget.selectionStart)} onScroll={syncScroll} onPointerDown={(event) => event.stopPropagation()} spellCheck={false} autoFocus wrap="off" aria-label={`${label} text`} discordAutocomplete templateAutocomplete appEmojis={appEmojis} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} templateFunctions={templateFunctions} />
+              <DiscordTextField as="textarea" ref={editorRef} className="discord-text-studio-editor" readOnly={readOnly} value={draft} onBeforeInput={handleBeforeInput} onChange={changeDraft} onKeyDown={handleEditorKeyDown} onKeyUp={(event) => updateCursorPosition(getTextareaCaretOffset(event.currentTarget))} onClick={(event) => updateCursorPosition(getTextareaCaretOffset(event.currentTarget))} onSelect={(event) => setCursorOffset(getTextareaCaretOffset(event.currentTarget))} onMouseUp={(event) => updateCursorPosition(getTextareaCaretOffset(event.currentTarget))} onScroll={syncScroll} onPointerDown={(event) => event.stopPropagation()} spellCheck={false} autoFocus wrap="off" aria-label={`${label} text`} discordAutocomplete templateAutocomplete appEmojis={appEmojis} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} templateFunctions={templateFunctions} />
             </div>
             <EditorMinimap text={draft} lines={lines} simplified={largeFileMode} language={sourceLanguage} isJson={isJson} jsonIssueLines={jsonIssueLines} searchMatches={largeFileMode ? [] : searchMatches} searchOpen={searchOpen && !largeFileMode} scrollTop={scrollMetrics.top} scrollHeight={scrollMetrics.height} viewHeight={scrollMetrics.view} editorLineHeight={22} onScrollTo={scrollEditorTo} />
           </>}
@@ -601,7 +649,7 @@ export function TextStudioView({ label, contentType = '', value = '', readOnly =
         <EditorMinimap text={previewText} language={sourceLanguage} isJson={isJson} jsonIssueLines={jsonIssueLines} searchMatches={[]} searchOpen={false} scrollTop={previewScrollMetrics.top} scrollHeight={previewScrollMetrics.height} viewHeight={previewScrollMetrics.view} editorLineHeight={22} onScrollTo={scrollPreviewTo} />
       </div>
     </div>}
-    <footer className="discord-text-studio-footer"><TemplateSyntaxHelp connectedArguments={connectedTemplateArguments} /><span className={maxLength && characterCount > maxLength ? 'is-over-limit' : ''}>{characterCount.toLocaleString()}{maxLength ? ` / ${maxLength.toLocaleString()} chars` : ' chars'}</span><span>{jsonError ? <em className="text-editor-json-error" role="status">{jsonError}</em> : isJson ? 'Valid JSON' : `${lines.length.toLocaleString()} lines${blocks.length ? ` · ${blocks.length} code ${blocks.length === 1 ? 'block' : 'blocks'}` : ''}`}</span>{isJson && !readOnly && <button type="button" className="text-editor-format-json" disabled={Boolean(jsonError)} onClick={formatJson}>Format JSON</button>}</footer>
+    <footer className="discord-text-studio-footer"><TemplateSyntaxHelp connectedArguments={connectedTemplateArguments} desktopMode={desktopMode} /><span className={maxLength && characterCount > maxLength ? 'is-over-limit' : ''}>{characterCount.toLocaleString()}{maxLength ? ` / ${maxLength.toLocaleString()} chars` : ' chars'}</span><span>{jsonError ? <em className="text-editor-json-error" role="status">{jsonError}</em> : isJson ? 'Valid JSON' : `${lines.length.toLocaleString()} lines${blocks.length ? ` · ${blocks.length} code ${blocks.length === 1 ? 'block' : 'blocks'}` : ''}`}</span>{isJson && !readOnly && <button type="button" className="text-editor-format-json" disabled={Boolean(jsonError)} onClick={formatJson}>Format JSON</button>}</footer>
     <Modal isOpen={discardPromptOpen} onClose={() => { setDiscardPromptOpen(false); notifyStudioSwitchCancelled(); }} title="Discard text changes?" subtitle="These edits have not been applied." footer={<><Button variant="secondary" onClick={() => { setDiscardPromptOpen(false); notifyStudioSwitchCancelled(); }}>Keep editing</Button><Button variant="danger" onClick={onClose}>Discard changes</Button></>}><p className="close-graph-copy">Your graph or variable stays unchanged until you choose Apply.</p></Modal>
   </section>;
 }
