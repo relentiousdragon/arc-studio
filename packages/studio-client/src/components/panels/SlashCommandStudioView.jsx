@@ -3,7 +3,7 @@ import { ArrowLeft, Check, ChevronDown, ChevronUp, Plus, Redo2, Trash2, Undo2 } 
 import { AnimatedCheckbox, AnimatedDropdown } from '../ui/CustomControls.jsx';
 import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
-import { notifyStudioSwitchCancelled, useStudioEscape, useStudioSwitchClose } from './useStudioEscape.js';
+import { notifyStudioSwitchCancelled, useStudioDiscardConfirmation, useStudioEscape, useStudioSwitchClose } from './useStudioEscape.js';
 import { validateSlashCommandOptions } from '../../../../studio-server/src/engine/SlashCommandOptions.js';
 
 const MAX_OPTIONS = 25;
@@ -63,6 +63,8 @@ export function SlashCommandStudioView({
   onRedo,
   onDraftChange,
   onApply,
+  desktopMode = false,
+  requestConfirmation,
   onClose
 }) {
   const draft = Array.isArray(options) ? options : [];
@@ -73,7 +75,12 @@ export function SlashCommandStudioView({
   const stableIdsRef = useRef(new Map());
   const changed = JSON.stringify(draft) !== JSON.stringify(appliedOptions);
   const issue = validateSlashCommandOptions(draft, commandName)[0] || '';
-  const requestClose = () => changed ? setDiscardOpen(true) : onClose?.();
+  const requestNativeDiscard = useStudioDiscardConfirmation({ desktopMode, requestConfirmation, title: 'Discard option changes?', subtitle: 'These edits have not been applied to the graph.', message: 'Your command option changes will be lost.', onClose });
+  const requestClose = async () => {
+    if (!changed) return onClose?.();
+    if (await requestNativeDiscard()) return;
+    setDiscardOpen(true);
+  };
   useStudioEscape(requestClose);
   useStudioSwitchClose('arguments', requestClose);
 
