@@ -6,6 +6,8 @@ import { SidebarResizeHandle } from '../ui/SidebarResizeHandle.jsx';
 import { Button } from '../ui/Button.jsx';
 import { TextInput, Toggle } from '../ui/Inputs.jsx';
 import { compareArcVersions } from '../../core/appUpdates.js';
+import { showDesktopPrompt } from '../../core/desktopPrompts.js';
+import { emitTo, listen as listenTauriEvent } from '@tauri-apps/api/event';
 //
 async function readResponse(response, fallback) {
   const data = await response.json().catch(() => ({}));
@@ -58,7 +60,8 @@ function validateRepositoryUrl(value) {
   } catch { return 'Enter a valid HTTPS GitHub or GitLab repository URL.'; }
 }
 
-export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canInstall = false, canManageSource = false, sidebarWidth = 360, onSidebarResize }) {
+export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canInstall = false, canManageSource = false, sidebarWidth = 360, onSidebarResize, isDesktop = false }) {
+  const desktopMode = Boolean(isDesktop);
   const [catalog, setCatalog] = useState([]);
   const [catalogUnavailable, setCatalogUnavailable] = useState(false);
   const [studioVersion, setStudioVersion] = useState(window.__arc?.version || '0.0.0');
@@ -87,6 +90,9 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsError, setSettingsError] = useState('');
   const [clearPluginSecrets, setClearPluginSecrets] = useState([]);
+  const pluginPromptOpenRef = useRef(false);
+  const confirmInstallRef = useRef(null);
+  const [nativePluginPromptFallback, setNativePluginPromptFallback] = useState(false);
   const onInstalledRef = useRef(onInstalled);
 
   useEffect(() => { onInstalledRef.current = onInstalled; }, [onInstalled]);
@@ -297,9 +303,13 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
     }
   };
 
-  const confirmInstall = async () => {
-    if (!confirmAction || (!confirmAction.permissionReviewOnly && !confirmTrust)) return;
-    if (!confirmAction.permissionReviewOnly && (confirmAction.plugin?.kind === 'host-adapter' || confirmAction.pack?.kind === 'host-adapter') && !hostRuntimeAcknowledged) return;
+  const confirmInstall = async (choices = null) => {
+    const selectedPermissions = Array.isArray(choices?.permissions) ? choices.permissions : permissionSelection;
+    const trusted = typeof choices?.trust === 'boolean' ? choices.trust : confirmTrust;
+    const autoUpdate = typeof choices?.autoUpdate === 'boolean' ? choices.autoUpdate : confirmAutoUpdate;
+    const runtimeAcknowledged = typeof choices?.runtimeAcknowledged === 'boolean' ? choices.runtimeAcknowledged : hostRuntimeAcknowledged;
+    if (!confirmAction || (!confirmAction.permissionReviewOnly && !trusted)) return { ok: false, error: 'Confirm that you trust this plugin and its source.' };
+    if (!confirmAction.permissionReviewOnly && (confirmAction.plugin?.kind === 'host-adapter' || confirmAction.pack?.kind === 'host-adapter') && !runtimeAcknowledged) return { ok: false, error: 'Confirm that you trust this server runtime.' };
     const pluginId = confirmAction.kind === 'store' ? confirmAction.plugin.id : confirmAction.pack.id;
     setBusyId(pluginId || 'local-import');
     setImportingLocal(confirmAction.kind === 'local');
@@ -311,17 +321,17 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
       if (confirmAction.kind === 'store' && confirmAction.permissionReviewOnly) {
         endpoint = `/api/plugins/${encodeURIComponent(confirmAction.plugin.id)}/permissions`;
         method = 'PUT';
-        body = { permissions: permissionSelection };
+        body = { permissions: selectedPermissions };
       } else if (confirmAction.kind === 'store') {
         endpoint = `/api/plugins/${encodeURIComponent(confirmAction.plugin.id)}/install`;
         body = {
-          autoUpdate: confirmAutoUpdate,
+          autoUpdate,
           trustConfirmed: true,
-          permissions: permissionSelection,
+          permissions: selectedPermissions,
           expectedVersion: confirmAction.plugin.version,
           expectedSha256: confirmAction.plugin.sha256 || '',
           expectedRepositoryUrl: confirmAction.plugin.repositoryUrl || '',
-          hostCodeConfirmed: hostRuntimeAcknowledged
+          hostCodeConfirmed: runtimeAcknowledged
         };
       } else {
         endpoint = confirmAction.pack?.kind === 'host-adapter'
@@ -335,14 +345,14 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
             runtimeBase64: await fileToBase64(confirmAction.hostRuntimeFile),
             exportFiles: await Promise.all(confirmAction.hostExportFiles.map(async ({ relativePath, file }) => ({ relativePath, base64: await fileToBase64(file) }))),
             packageLockBase64: confirmAction.lockFile ? await fileToBase64(confirmAction.lockFile) : '',
-            permissions: permissionSelection,
-            hostCodeConfirmed: hostRuntimeAcknowledged,
+            permissions: selectedPermissions,
+            hostCodeConfirmed: runtimeAcknowledged,
             autoUpdate: false,
             trustConfirmed: true
           }
           : confirmAction.pack?.kind === 'wasm-adapter'
-            ? { manifest: confirmAction.pack, wasmBase64: await fileToBase64(confirmAction.adapterFile), autoUpdate: confirmAutoUpdate, trustConfirmed: true }
-            : { pack: confirmAction.pack, autoUpdate: confirmAutoUpdate, trustConfirmed: true };
+          ? { manifest: confirmAction.pack, wasmBase64: await fileToBase64(confirmAction.adapterFile), autoUpdate, trustConfirmed: true }
+          : { pack: confirmAction.pack, autoUpdate, trustConfirmed: true };
       }
       const response = await fetch(apiUrl(endpoint), {
         method,
@@ -355,13 +365,16 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
       setConfirmAction(null);
       setActiveTab('installed');
       await loadStore();
+      return { ok: true };
     } catch (installError) {
       setError(installError.message || 'Could not install plugin.');
+      return { ok: false, error: installError.message || 'Could not install plugin.' };
     } finally {
       setBusyId('');
       setImportingLocal(false);
     }
   };
+  confirmInstallRef.current = confirmInstall;
 
   const saveRepository = async () => {
     const validation = validateRepositoryUrl(repositoryDraft);
@@ -400,6 +413,74 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
   const isUntrustedSource = Boolean(localImport || confirmationPlugin?.sourceTrust === 'custom');
   const hostRuntimeConfirmationRequired = (confirmationPlugin?.kind === 'host-adapter' && !isBundledPlugin)
     || (localImport?.pack?.kind === 'host-adapter');
+  const pluginPromptTitle = confirmAction?.permissionReviewOnly ? 'Plugin permissions' : 'Review plugin install';
+  const pluginWarning = hostRuntimeConfirmationRequired
+    ? `${confirmationPlugin?.sourceTrust === 'default' ? `${defaultCatalogTrustText('host-adapter')} ` : ''}This adapter and its dependencies run as server code with the workspace server account’s OS access. ARC does not sandbox them. npm install scripts are disabled. Only install code from a publisher you trust.`
+    : isBundledPlugin
+      ? 'This integration runs in the ARC server. Its host permissions are enforced per project and per database operation.'
+      : localImport
+        ? localImport.pack?.kind === 'host-adapter' ? 'This unverified local host adapter runs as server code with the workspace server account’s OS access. ARC does not sandbox it. Review its source and dependencies before installing.' : 'This local plugin has no verified publisher or source. Its WebAssembly module is isolated, but review its manifest, source and digest before installing.'
+        : isUntrustedSource
+          ? 'This plugin is from a non-default source. ARC has not reviewed or verified the publisher. Its pack digest only confirms that the downloaded file matches this catalogue entry.'
+          : defaultCatalogTrustText(confirmationPlugin?.kind || localImport?.pack?.kind);
+  const pluginPromptReview = {
+    name: confirmationPlugin?.name || localImport?.name || 'Plugin',
+    id: confirmationPlugin?.id || localImport?.pack?.id || '',
+    version: confirmationPlugin?.version || localImport?.version || '',
+    minArcStudioVersion: confirmationPlugin?.minArcStudioVersion || localImport?.pack?.minArcStudioVersion || '',
+    author: confirmationPlugin?.author || localImport?.pack?.author || '',
+    sourceUrl: confirmationSource,
+    sourceLabel: localImport ? 'Local folder import · source is unverified' : confirmationPlugin?.sourceTrust === 'local' ? 'Local development checkout' : confirmationPlugin?.sourceTrust === 'default' ? 'Default ARC plugin source' : confirmationPlugin?.sourceTrust === 'bundled' || confirmationPlugin?.builtIn ? 'Bundled with ARC Studio' : 'Outside the default plugin source',
+    warning: pluginWarning,
+    permissionReviewOnly: Boolean(confirmAction?.permissionReviewOnly),
+    permissions: confirmationPermissions.map(({ id, name, description }) => ({ id, name, description })),
+    dependencies: [...confirmationNpmDependencies, ...confirmationRuntimeDependencies.map((name) => ({ name, version: 'Included with ARC' }))].map(({ name, version }) => ({ name, version })),
+    showAutoUpdate: !confirmAction?.permissionReviewOnly && !confirmationPlugin?.builtIn && !['host-adapter', 'wasm-adapter'].includes(confirmationPlugin?.kind),
+    requiresRuntimeTrust: hostRuntimeConfirmationRequired
+  };
+
+  useEffect(() => {
+    if (!desktopMode || !confirmAction || pluginPromptOpenRef.current) return undefined;
+    const actionSnapshot = confirmAction;
+    pluginPromptOpenRef.current = true;
+    setNativePluginPromptFallback(false);
+    showDesktopPrompt({
+      kind: 'plugin-action',
+      title: pluginPromptTitle,
+      subtitle: confirmAction.permissionReviewOnly ? 'Choose the capabilities granted in this project' : 'Check the publisher before continuing',
+      blocking: true,
+      confirmText: confirmAction.permissionReviewOnly ? 'Save permissions' : localImport ? 'Import plugin' : 'Install plugin',
+      review: pluginPromptReview,
+      permissionSelection,
+      confirmTrust,
+      confirmAutoUpdate,
+      hostRuntimeAcknowledged,
+      canInstall,
+      clientContext: { ...(window.__ARC_STUDIO_CONFIG__ || {}), desktop: true }
+    }).then(() => {
+      setConfirmAction((current) => current === actionSnapshot ? null : current);
+    }).catch((error) => {
+      console.warn('[ARC] Native plugin review window is unavailable. Using the in app review.', error);
+      setNativePluginPromptFallback(true);
+    }).finally(() => { pluginPromptOpenRef.current = false; });
+    return undefined;
+  }, [canInstall, confirmAction, confirmAutoUpdate, confirmTrust, desktopMode, hostRuntimeAcknowledged, localImport, permissionSelection, pluginPromptReview, pluginPromptTitle]);
+
+  useEffect(() => {
+    if (!desktopMode) return undefined;
+    let unlisten;
+    listenTauriEvent('arc:desktop-window-action', async (event) => {
+      const { actionId, action, value = {}, promptLabel } = event.payload || {};
+      if (action !== 'plugin-confirm' || typeof actionId !== 'string' || typeof promptLabel !== 'string' || !promptLabel.startsWith('arc-prompt-')) return;
+      let result = null;
+      let error = '';
+      try { result = await confirmInstallRef.current?.(value); }
+      catch (reason) { error = reason?.message || 'Could not save plugin settings.'; }
+      try { await emitTo(promptLabel, 'arc:desktop-window-action-result', { actionId, result, error }); }
+      catch (reason) { console.warn('[ARC] Could not return the plugin review result.', reason); }
+    }).then((stop) => { unlisten = stop; }).catch((error) => console.warn('[ARC] Could not receive plugin review actions.', error));
+    return () => unlisten?.();
+  }, [desktopMode]);
 
   return <>
     {isOpen && <aside className="plugin-store-sidebar" aria-label="Plugin store" style={{ '--arc-sidebar-width': `${sidebarWidth}px` }}>
@@ -557,7 +638,7 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
       </>}
     </Modal>
 
-    <Modal isOpen={Boolean(confirmAction)} onClose={() => !busyId && setConfirmAction(null)} title={confirmAction?.permissionReviewOnly ? 'Plugin permissions' : 'Review plugin install'} subtitle={confirmAction?.permissionReviewOnly ? 'Choose the capabilities granted in this project' : 'Check the publisher before continuing'} icon={ShieldCheck} showScrollCue footer={<><Button variant="secondary" disabled={Boolean(busyId)} onClick={() => setConfirmAction(null)}>Cancel</Button><Button loading={Boolean(busyId)} disabled={(!confirmAction?.permissionReviewOnly && !confirmTrust) || (!confirmAction?.permissionReviewOnly && hostRuntimeConfirmationRequired && !hostRuntimeAcknowledged) || !canInstall} onClick={confirmInstall}>{confirmAction?.permissionReviewOnly ? 'Save permissions' : localImport ? 'Import plugin' : 'Install plugin'}</Button></>}>
+    <Modal isOpen={Boolean(confirmAction) && (!desktopMode || nativePluginPromptFallback)} onClose={() => !busyId && setConfirmAction(null)} title={confirmAction?.permissionReviewOnly ? 'Plugin permissions' : 'Review plugin install'} subtitle={confirmAction?.permissionReviewOnly ? 'Choose the capabilities granted in this project' : 'Check the publisher before continuing'} icon={ShieldCheck} showScrollCue footer={<><Button variant="secondary" disabled={Boolean(busyId)} onClick={() => setConfirmAction(null)}>Cancel</Button><Button loading={Boolean(busyId)} disabled={(!confirmAction?.permissionReviewOnly && !confirmTrust) || (!confirmAction?.permissionReviewOnly && hostRuntimeConfirmationRequired && !hostRuntimeAcknowledged) || !canInstall} onClick={confirmInstall}>{confirmAction?.permissionReviewOnly ? 'Save permissions' : localImport ? 'Import plugin' : 'Install plugin'}</Button></>}>
       {error && <p className="plugin-store-error">{error}</p>}
       <div className="plugin-trust-summary"><strong>{confirmationPlugin?.name || localImport?.name}</strong><span>{confirmationPlugin?.id || localImport?.pack?.id} · v{confirmationPlugin?.version || localImport?.version}</span><span>Requires ARC Studio {confirmationPlugin?.minArcStudioVersion || localImport?.pack?.minArcStudioVersion} or newer</span>{(confirmationPlugin?.author || localImport?.pack?.author) && <span>Publisher: {confirmationPlugin?.author || localImport?.pack?.author}</span>}<span>{localImport ? 'Local folder import · source is unverified' : confirmationPlugin?.sourceTrust === 'local' ? 'Local development checkout' : confirmationPlugin?.sourceTrust === 'default' ? 'Default ARC plugin source' : confirmationPlugin?.sourceTrust === 'bundled' || confirmationPlugin?.builtIn ? 'Bundled with ARC Studio' : 'Outside the default plugin source'}</span><a href={confirmationSource?.startsWith('http') ? confirmationSource : undefined} target="_blank" rel="noreferrer">{confirmationSource}</a></div>
       <div className="plugin-trust-warning"><AlertTriangle size={15} /><span>{hostRuntimeConfirmationRequired ? `${confirmationPlugin?.sourceTrust === 'default' ? `${defaultCatalogTrustText('host-adapter')} ` : ''}This adapter and its dependencies run as server code with the workspace server account’s OS access. ARC does not sandbox them. npm install scripts are disabled. Only install code from a publisher you trust.` : isBundledPlugin ? 'This integration runs in the ARC server. Its host permissions are enforced per project and per database operation.' : localImport ? localImport.pack?.kind === 'host-adapter' ? 'This unverified local host adapter runs as server code with the workspace server account’s OS access. ARC does not sandbox it. Review its source and dependencies before installing.' : 'This local plugin has no verified publisher or source. Its WebAssembly module is isolated, but review its manifest, source and digest before installing.' : isUntrustedSource ? 'This plugin is from a non-default source. ARC has not reviewed or verified the publisher. Its pack digest only confirms that the downloaded file matches this catalogue entry.' : defaultCatalogTrustText(confirmationPlugin?.kind || localImport?.pack?.kind)}</span></div>
