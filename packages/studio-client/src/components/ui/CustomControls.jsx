@@ -18,18 +18,23 @@ export function AnimatedCheckbox({ checked = false, onChange, label, className =
 
 export function AnimatedDropdown({
   value, onChange, options = [], placeholder = 'Select…', ariaLabel, className = '', onPointerDown,
-  searchable = options.length >= 8, searchThreshold = 8, disabled = false, multiple = false
+  searchable = options.length >= 8, searchThreshold = 8, disabled = false, multiple = false, maxSelections = 0
 }) {
   const generatedId = useId();
   const rootRef = useRef(null);
   const triggerRef = useRef(null);
   const menuRef = useRef(null);
   const searchRef = useRef(null);
+  const ignoreTriggerClickRef = useRef(false);
   const [open, setOpen] = useState(false);
   const [menuPosition, setMenuPosition] = useState(null);
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
   const uiScale = getArcUiScale();
+  const themeRoot = globalThis.document?.querySelector('.app-root');
+  const menuTheme = themeRoot?.getAttribute('data-theme') || globalThis.document?.documentElement?.getAttribute('data-theme') || 'dark';
+  const menuReleaseChannel = themeRoot?.getAttribute('data-release-channel') || globalThis.document?.documentElement?.getAttribute('data-release-channel') || 'stable';
+  const menuFontScale = Number(themeRoot?.getAttribute('data-font-scale') || 100) / 100;
   const searchRequested = Boolean(searchable);
   const selected = options.find((option) => option.value === value);
   const selectedValues = multiple && Array.isArray(value) ? value.map(String) : [];
@@ -62,13 +67,18 @@ export function AnimatedDropdown({
     const closeOutside = (event) => {
       if (!rootRef.current?.contains(event.target) && !menuRef.current?.contains(event.target)) setOpen(false);
     };
+    const closeOnFocusOutside = (event) => {
+      if (!rootRef.current?.contains(event.target) && !menuRef.current?.contains(event.target)) setOpen(false);
+    };
     const closeOnEscape = (event) => {
       if (event.key === 'Escape') { event.stopPropagation(); setOpen(false); }
     };
     document.addEventListener('pointerdown', closeOutside, true);
+    document.addEventListener('focusin', closeOnFocusOutside, true);
     document.addEventListener('keydown', closeOnEscape);
     return () => {
       document.removeEventListener('pointerdown', closeOutside, true);
+      document.removeEventListener('focusin', closeOnFocusOutside, true);
       document.removeEventListener('keydown', closeOnEscape);
     };
   }, [open, generatedId]);
@@ -128,8 +138,11 @@ export function AnimatedDropdown({
   const choose = (option) => {
     if (multiple) {
       const entry = String(option.value);
+      if (!selectedValues.includes(entry) && maxSelections > 0 && selectedValues.length >= maxSelections) return;
       onChange?.(selectedValues.includes(entry) ? selectedValues.filter((item) => item !== entry) : [...selectedValues, entry]);
       setQuery('');
+      if (searchRef.current) searchRef.current.focus({ preventScroll: true });
+      else triggerRef.current?.focus({ preventScroll: true });
       return;
     }
     onChange?.(option.value);
@@ -160,7 +173,6 @@ export function AnimatedDropdown({
     ref={rootRef}
     className={`arc-dropdown ${open ? 'is-open' : ''} ${className}`}
     onPointerDown={onPointerDown}
-    onBlur={(event) => { if (!rootRef.current?.contains(event.relatedTarget) && !menuRef.current?.contains(event.relatedTarget)) setOpen(false); }}
   >
     <button
       ref={triggerRef}
@@ -171,7 +183,20 @@ export function AnimatedDropdown({
       aria-label={ariaLabel}
       aria-controls={`dropdown-${generatedId}`}
       disabled={disabled}
-      onClick={() => {
+      onPointerDown={(event) => {
+        ignoreTriggerClickRef.current = open && event.button === 0;
+        if (ignoreTriggerClickRef.current) {
+          setOpen(false);
+          setMenuPosition(null);
+          setQuery('');
+        }
+      }}
+      onClick={(event) => {
+        if (event.detail > 0 && ignoreTriggerClickRef.current) {
+          ignoreTriggerClickRef.current = false;
+          return;
+        }
+        ignoreTriggerClickRef.current = false;
         const nextOpen = !open;
         setOpen(nextOpen);
         setQuery('');
@@ -186,10 +211,12 @@ export function AnimatedDropdown({
     {open && createPortal(<div
       ref={menuRef}
       className="arc-dropdown-menu"
+      data-theme={menuTheme}
+      data-release-channel={menuReleaseChannel}
       id={`dropdown-${generatedId}`}
       role="listbox"
       aria-label={ariaLabel}
-      style={{ left: menuPosition?.left ?? -10000, top: menuPosition?.top ?? -10000, bottom: menuPosition?.bottom ?? 'auto', width: menuPosition?.width, maxHeight: menuPosition?.maxHeight, transform: `scale(${uiScale})`, transformOrigin: menuPosition?.placement === 'above' ? 'bottom left' : 'top left', '--dropdown-options-height': `${menuPosition?.optionsHeight ?? 220}px` }}
+      style={{ left: menuPosition?.left ?? -10000, top: menuPosition?.top ?? -10000, bottom: menuPosition?.bottom ?? 'auto', width: menuPosition?.width, maxHeight: menuPosition?.maxHeight, transform: `scale(${uiScale})`, transformOrigin: menuPosition?.placement === 'above' ? 'bottom left' : 'top left', '--arc-font-scale': menuFontScale, '--dropdown-options-height': `${menuPosition?.optionsHeight ?? 220}px` }}
       onPointerDown={(event) => { event.stopPropagation(); onPointerDown?.(event); }}
     >
       {menuPosition?.showSearch && <label className="arc-dropdown-search"><Search size={13} /><input ref={searchRef} value={query} onChange={(event) => { setQuery(event.target.value); setActiveIndex(0); }} onKeyDown={handleKeyDown} placeholder="Search…" aria-label="Search options" /></label>}
