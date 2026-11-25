@@ -1727,9 +1727,17 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     res.json({ success: true, status: botManager.status });
   });
 
+  router.get('/bot/commands/guilds', requirePermission('bot:control'), (req, res) => {
+    res.set('Cache-Control', 'private, max-age=15, stale-while-revalidate=60');
+    res.json({ guilds: botManager.getKnownBotGuilds(), gatewayConnected: botManager.status === 'ONLINE' });
+  });
+
   router.post('/bot/commands/deploy', requirePermission('bot:control'), async (req, res) => {
     try {
-      const result = await botManager.deploySlashCommands(req.body?.graphs, req.body?.planHash);
+      const result = await botManager.deploySlashCommands(req.body?.graphs, req.body?.planHash, {
+        guildIds: req.body?.guildIds,
+        commandKeys: req.body?.commandKeys
+      });
       res.json({ success: true, ...result });
     } catch (err) {
       res.status(err.status || 400).json({ error: err.message, retryAfterMs: err.retryAfterMs, discordAuthWarning: botManager.discordAuthWarning || null });
@@ -1738,7 +1746,10 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
 
   router.post('/bot/commands/preview', requirePermission('bot:control'), async (req, res) => {
     try {
-      const plan = await botManager.previewSlashCommands(req.body?.graphs);
+      const plan = await botManager.previewSlashCommands(req.body?.graphs, {
+        guildIds: req.body?.guildIds,
+        commandKeys: req.body?.commandKeys
+      });
       res.json({ success: true, ...plan });
     } catch (err) {
       res.status(err.status || 400).json({ error: err.message, retryAfterMs: err.retryAfterMs, discordAuthWarning: botManager.discordAuthWarning || null });
