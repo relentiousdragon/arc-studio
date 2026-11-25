@@ -9799,6 +9799,8 @@ body:has(.control-dock.is-resizing) .canvas-collaborator-navigation-layer {
 .deployment-command-selection > label { display: flex; min-height: 42px; align-items: center; gap: 10px; padding: 7px 11px; border-bottom: 1px solid var(--line-soft); cursor: pointer; }
 .deployment-command-selection > label:last-child { border-bottom: 0; }
 .deployment-command-selection > label:hover { background: var(--panel-hover); }
+.deployment-command-selection.is-readonly > label { cursor: default; }
+.deployment-command-selection.is-readonly > label:hover { background: transparent; }
 .deployment-command-selection > label > input { width: 15px; height: 15px; flex: 0 0 auto; accent-color: var(--accent); }
 .deployment-command-selection > label > span { display: grid; min-width: 0; flex: 1; gap: 3px; }
 .deployment-command-selection code { overflow: hidden; color: var(--text); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
@@ -14674,6 +14676,10 @@ body:has(.control-dock.is-resizing) .canvas-collaborator-navigation-layer {
   font-size: calc((10px) * var(--arc-font-scale, 1));
   cursor: pointer;
   transition: color .16s ease, background .16s ease, border-color .16s ease;
+}
+
+.workspace-switcher .workspace-back-editor {
+  grid-column: 1 / -1;
 }
 
 .workspace-switcher button:hover {
