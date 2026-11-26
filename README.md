@@ -17,6 +17,8 @@
 ARC Studio is a Visual Node Based Discord bot Creator, built with Node, Tauri Rust, React, Vite and the chezcord lib for Discord API.
 Create your Discord bot then export code to run it anywhere on the node.js runtime!
 
+The [Chezcord Gateway events and intents guide](packages/chezcord/docs/GATEWAY_EVENTS_AND_INTENTS.md) explains event listening and required intents.
+
 ## What you can do
 
 - Build bot workflows in the graph editor
@@ -135,5 +137,3 @@ ARC Studio and Chezcord are licensed under the [Apache License 2.0](LICENSE). Se
 [ARC Studio Community Discord Server](https://discord.gg/FMv3T6XSyq)
 
 [Termux Labs Discord Server](https://discord.gg/Cet9px5ZnZ) (Application only)
-
-2 November 2026
