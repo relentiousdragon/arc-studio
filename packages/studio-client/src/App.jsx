@@ -2,6 +2,7 @@ import React, { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo
 import { createPortal } from 'react-dom';
 import { AlertCircle, AppWindow, ArrowLeftRight, Bot, Braces, ChevronDown, CircleHelp, Database, Download, FileCode2, FileUp, Folder, FolderTree, LayoutGrid, LoaderCircle, LockKeyhole, LogOut, MoreHorizontal, PackageOpen, Pencil, Plus, Save, Search, ShieldCheck, SlidersHorizontal, Sparkles, Ticket, TrendingUp, Trash2, Users, X } from 'lucide-react';
 import { DISCORD_OBJECT_PROPERTIES } from 'chezcord';
+import { GatewayIntentCatalog, normalizeGatewayIntentName } from 'chezcord/gateway-events';
 import { TopBar } from './components/navigation/TopBar.jsx';
 import { NodeCanvas } from './components/canvas/NodeCanvas.jsx';
 import { ControlDock } from './components/dock/ControlDock.jsx';
@@ -6320,7 +6321,13 @@ export function App() {
         const definition = BuiltInNodeDefinitions.find((item) => item.type === node.type);
         if (!definition || definition.pluginAdapter) issues.push({ graphId: graph.id, nodeId: node.id, graphName: graph.name || 'Untitled graph', kind: 'error', message: `${node.label || node.type}: this node type is not supported by the standalone bot runtime.` });
       }
-      const gatewayIntents = [...new Set(['GUILDS', 'GUILD_EMOJIS_AND_STICKERS', ...enabledExportGraphs.flatMap((graph) => (graph.nodes || []).flatMap((node) => BuiltInNodeDefinitions.find((definition) => definition.type === node.type)?.gatewayIntents || []))])].sort();
+      const gatewayIntents = [...new Set([
+        'GUILDS',
+        'GUILD_EXPRESSIONS',
+        ...enabledExportGraphs.flatMap((graph) => (graph.nodes || []).flatMap((node) => (
+          BuiltInNodeDefinitions.find((definition) => definition.type === node.type)?.gatewayIntents || []
+        )))
+      ].map(normalizeGatewayIntentName))].sort();
       const disabledIntents = gatewayIntents.filter((intent) => botProfile?.intentSummary?.some((item) => item.key === intent && item.portalEnabled === false));
       for (const intent of disabledIntents) issues.push({ kind: 'warning', message: `${intent.replaceAll('_', ' ')} is required by the exported graphs but is currently disabled in the Discord Developer Portal.` });
       const permissions = new Set();
@@ -11214,9 +11221,11 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
   const hasEventNode = nodes.some(isEventTrigger);
   if (!isFunction && !hasEventNode && hasActionNode) warnings.push('This graph has Discord actions but no event node to run them.');
   if (!isFunction && hasEventNode && !hasActionNode) warnings.push('This graph has no action nodes.');
-  const privilegedEventIntents = new Set(nodes.flatMap((node) => definitions.get(node.type)?.gatewayIntents || []).filter((intent) => ['GUILD_MEMBERS', 'GUILD_PRESENCES', 'MESSAGE_CONTENT'].includes(intent)));
+  const privilegedEventIntents = new Set(nodes.flatMap((node) => definitions.get(node.type)?.gatewayIntents || [])
+    .map(normalizeGatewayIntentName)
+    .filter((intent) => GatewayIntentCatalog[intent]?.privileged));
   const disabledPrivilegedIntents = [...privilegedEventIntents].filter((intent) => intentSummary?.some((item) => item.key === intent && item.portalEnabled === false));
-  if (disabledPrivilegedIntents.length) warnings.push(`Enable ${disabledPrivilegedIntents.map((intent) => ({ GUILD_MEMBERS: 'Server Members', GUILD_PRESENCES: 'Presence', MESSAGE_CONTENT: 'Message Content' })[intent]).join(' and ')} intent${disabledPrivilegedIntents.length > 1 ? 's' : ''} in the Discord Developer Portal, then reconnect the gateway.`);
+  if (disabledPrivilegedIntents.length) warnings.push(`Enable ${disabledPrivilegedIntents.map((intent) => GatewayIntentCatalog[intent]?.label || intent).join(' and ')} intent${disabledPrivilegedIntents.length > 1 ? 's' : ''} in the Discord Developer Portal, then reconnect the gateway.`);
 
   const hasConfiguredEmbed = (node) => {
     const blocks = Array.isArray(node.data?.blocks) ? node.data.blocks : null;
