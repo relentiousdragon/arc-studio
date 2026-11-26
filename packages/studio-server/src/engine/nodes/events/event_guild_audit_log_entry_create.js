@@ -5,9 +5,6 @@ export default {
   "label": "On Audit Log Entry Created",
   "color": "#5865F2",
   "gatewayEvent": "GUILD_AUDIT_LOG_ENTRY_CREATE",
-  "gatewayIntents": [
-    "GUILD_MODERATION"
-  ],
   "inputs": [],
   "outputs": [
     {

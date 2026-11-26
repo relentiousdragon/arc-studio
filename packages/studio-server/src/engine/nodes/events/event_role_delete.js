@@ -5,9 +5,6 @@ export default {
   "label": "On Role Deleted",
   "color": "#5865F2",
   "gatewayEvent": "GUILD_ROLE_DELETE",
-  "gatewayIntents": [
-    "GUILDS"
-  ],
   "inputs": [],
   "outputs": [
     {

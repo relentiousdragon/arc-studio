@@ -5,9 +5,6 @@ export default {
   "label": "On Typing Started",
   "color": "#5865F2",
   "gatewayEvent": "TYPING_START",
-  "gatewayIntents": [
-    "GUILD_MESSAGE_TYPING"
-  ],
   "inputs": [],
   "outputs": [
     {

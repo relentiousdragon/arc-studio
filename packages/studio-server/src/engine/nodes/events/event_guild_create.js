@@ -5,9 +5,6 @@ export default {
   "label": "On Server Available",
   "color": "#5865F2",
   "gatewayEvent": "GUILD_CREATE",
-  "gatewayIntents": [
-    "GUILDS"
-  ],
   "inputs": [],
   "outputs": [
     {

@@ -5,7 +5,6 @@ export default {
   label: 'On Web Request',
   color: '#0ea5e9',
   gatewayEvent: 'WEB_SERVER_REQUEST',
-  gatewayIntents: [],
   editorControls: [
     { type: 'select', key: 'method', label: 'HTTP Method', defaultValue: 'GET', options: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].map((value) => ({ value, label: value })) },
     { type: 'text', key: 'path', label: 'Route Path', defaultValue: '/api/:id', placeholder: '/api/:id' },

@@ -5,7 +5,6 @@ export default {
   "label": "On Bot Ready",
   "color": "#5865F2",
   "gatewayEvent": "READY",
-  "gatewayIntents": [],
   "inputs": [],
   "outputs": [
     {

@@ -5,9 +5,6 @@ export default {
   "label": "On Server Unavailable",
   "color": "#5865F2",
   "gatewayEvent": "GUILD_DELETE",
-  "gatewayIntents": [
-    "GUILDS"
-  ],
   "inputs": [],
   "outputs": [
     {

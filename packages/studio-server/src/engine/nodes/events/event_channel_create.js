@@ -5,9 +5,6 @@ export default {
   "label": "On Channel Created",
   "color": "#5865F2",
   "gatewayEvent": "CHANNEL_CREATE",
-  "gatewayIntents": [
-    "GUILDS"
-  ],
   "inputs": [],
   "outputs": [
     {

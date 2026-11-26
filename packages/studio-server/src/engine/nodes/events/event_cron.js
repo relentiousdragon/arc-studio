@@ -5,7 +5,6 @@ export default {
   "label": "On Schedule",
   "color": "#5865F2",
   "gatewayEvent": "CRON_TICK",
-  "gatewayIntents": [],
   "editorControls": [
     {
       "type": "text",

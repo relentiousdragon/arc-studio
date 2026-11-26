@@ -5,9 +5,6 @@ export default {
   "label": "On All Reactions Removed",
   "color": "#5865F2",
   "gatewayEvent": "MESSAGE_REACTION_REMOVE_ALL",
-  "gatewayIntents": [
-    "GUILD_MESSAGE_REACTIONS"
-  ],
   "inputs": [],
   "outputs": [
     {

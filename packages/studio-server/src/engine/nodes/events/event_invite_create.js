@@ -5,9 +5,6 @@ export default {
   "label": "On Invite Created",
   "color": "#5865F2",
   "gatewayEvent": "INVITE_CREATE",
-  "gatewayIntents": [
-    "GUILD_INVITES"
-  ],
   "inputs": [],
   "outputs": [
     {

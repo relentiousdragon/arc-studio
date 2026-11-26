@@ -5,10 +5,6 @@ export default {
   "label": "On Message Deleted",
   "color": "#5865F2",
   "gatewayEvent": "MESSAGE_DELETE",
-  "gatewayIntents": [
-    "GUILD_MESSAGES",
-    "DIRECT_MESSAGES"
-  ],
   "inputs": [],
   "outputs": [
     {

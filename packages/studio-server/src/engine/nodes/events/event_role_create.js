@@ -5,9 +5,6 @@ export default {
   "label": "On Role Created",
   "color": "#5865F2",
   "gatewayEvent": "GUILD_ROLE_CREATE",
-  "gatewayIntents": [
-    "GUILDS"
-  ],
   "inputs": [],
   "outputs": [
     {

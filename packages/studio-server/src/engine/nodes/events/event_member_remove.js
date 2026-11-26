@@ -5,9 +5,6 @@ export default {
   "label": "On Member Left",
   "color": "#5865F2",
   "gatewayEvent": "GUILD_MEMBER_REMOVE",
-  "gatewayIntents": [
-    "GUILD_MEMBERS"
-  ],
   "inputs": [],
   "outputs": [
     {

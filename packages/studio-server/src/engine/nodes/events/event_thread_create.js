@@ -5,9 +5,6 @@ export default {
   "label": "On Thread Created",
   "color": "#5865F2",
   "gatewayEvent": "THREAD_CREATE",
-  "gatewayIntents": [
-    "GUILD_MESSAGES"
-  ],
   "inputs": [],
   "outputs": [
     {

@@ -5,9 +5,6 @@ export default {
   "label": "On Scheduled Event Updated",
   "color": "#5865F2",
   "gatewayEvent": "GUILD_SCHEDULED_EVENT_UPDATE",
-  "gatewayIntents": [
-    "GUILD_SCHEDULED_EVENTS"
-  ],
   "inputs": [],
   "outputs": [
     {

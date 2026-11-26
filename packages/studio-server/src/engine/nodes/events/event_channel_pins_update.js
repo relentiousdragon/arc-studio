@@ -5,9 +5,6 @@ export default {
   "label": "On Pins Updated",
   "color": "#5865F2",
   "gatewayEvent": "CHANNEL_PINS_UPDATE",
-  "gatewayIntents": [
-    "GUILD_MESSAGES"
-  ],
   "inputs": [],
   "outputs": [
     {

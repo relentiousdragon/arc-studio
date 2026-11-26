@@ -5,9 +5,6 @@ export default {
   "label": "On User Unbanned",
   "color": "#5865F2",
   "gatewayEvent": "GUILD_BAN_REMOVE",
-  "gatewayIntents": [
-    "GUILD_MODERATION"
-  ],
   "inputs": [],
   "outputs": [
     {

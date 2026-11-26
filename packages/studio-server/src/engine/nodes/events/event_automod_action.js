@@ -5,9 +5,6 @@ export default {
   "label": "On AutoMod Action",
   "color": "#5865F2",
   "gatewayEvent": "AUTO_MODERATION_ACTION_EXECUTION",
-  "gatewayIntents": [
-    "AUTO_MODERATION_EXECUTION"
-  ],
   "inputs": [],
   "outputs": [
     {

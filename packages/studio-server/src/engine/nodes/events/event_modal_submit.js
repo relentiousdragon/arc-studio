@@ -5,7 +5,6 @@ export default {
   label: 'On Modal Submitted',
   color: '#5865F2',
   gatewayEvent: 'INTERACTION_CREATE',
-  gatewayIntents: [],
   gatewayInteractionType: 5,
   defaultData: {
     custom_id: ''

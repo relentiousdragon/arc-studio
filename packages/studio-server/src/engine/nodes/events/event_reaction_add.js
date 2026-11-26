@@ -5,10 +5,6 @@ export default {
   "label": "On Reaction Added",
   "color": "#5865F2",
   "gatewayEvent": "MESSAGE_REACTION_ADD",
-  "gatewayIntents": [
-    "GUILD_MESSAGE_REACTIONS",
-    "DIRECT_MESSAGE_REACTIONS"
-  ],
   "inputs": [],
   "outputs": [
     {

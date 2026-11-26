@@ -5,9 +5,6 @@ export default {
   "label": "On Channel Updated",
   "color": "#5865F2",
   "gatewayEvent": "CHANNEL_UPDATE",
-  "gatewayIntents": [
-    "GUILDS"
-  ],
   "inputs": [],
   "outputs": [
     {

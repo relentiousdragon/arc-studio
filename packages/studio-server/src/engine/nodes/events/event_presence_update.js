@@ -5,9 +5,6 @@ export default {
   "label": "On Presence Updated",
   "color": "#5865F2",
   "gatewayEvent": "PRESENCE_UPDATE",
-  "gatewayIntents": [
-    "GUILD_PRESENCES"
-  ],
   "inputs": [],
   "outputs": [
     {

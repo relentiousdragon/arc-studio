@@ -5,9 +5,6 @@ export default {
   "label": "On Member Joined",
   "color": "#5865F2",
   "gatewayEvent": "GUILD_MEMBER_ADD",
-  "gatewayIntents": [
-    "GUILD_MEMBERS"
-  ],
   "inputs": [],
   "outputs": [
     {

@@ -5,9 +5,6 @@ export default {
   "label": "On Thread Updated",
   "color": "#5865F2",
   "gatewayEvent": "THREAD_UPDATE",
-  "gatewayIntents": [
-    "GUILD_MESSAGES"
-  ],
   "inputs": [],
   "outputs": [
     {

@@ -5,9 +5,6 @@ export default {
   "label": "On Invite Deleted",
   "color": "#5865F2",
   "gatewayEvent": "INVITE_DELETE",
-  "gatewayIntents": [
-    "GUILD_INVITES"
-  ],
   "inputs": [],
   "outputs": [
     {

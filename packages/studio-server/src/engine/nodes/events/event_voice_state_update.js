@@ -5,9 +5,6 @@ export default {
   "label": "On Voice State Changed",
   "color": "#5865F2",
   "gatewayEvent": "VOICE_STATE_UPDATE",
-  "gatewayIntents": [
-    "GUILD_VOICE_STATES"
-  ],
   "inputs": [],
   "outputs": [
     {

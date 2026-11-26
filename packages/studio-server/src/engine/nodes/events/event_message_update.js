@@ -5,11 +5,6 @@ export default {
   "label": "On Message Updated",
   "color": "#5865F2",
   "gatewayEvent": "MESSAGE_UPDATE",
-  "gatewayIntents": [
-    "GUILD_MESSAGES",
-    "DIRECT_MESSAGES",
-    "MESSAGE_CONTENT"
-  ],
   "inputs": [],
   "outputs": [
     {

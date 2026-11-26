@@ -5,9 +5,6 @@ export default {
   "label": "On Role Updated",
   "color": "#5865F2",
   "gatewayEvent": "GUILD_ROLE_UPDATE",
-  "gatewayIntents": [
-    "GUILDS"
-  ],
   "inputs": [],
   "outputs": [
     {

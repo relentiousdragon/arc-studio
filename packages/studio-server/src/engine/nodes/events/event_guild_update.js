@@ -5,9 +5,6 @@ export default {
   "label": "On Server Updated",
   "color": "#5865F2",
   "gatewayEvent": "GUILD_UPDATE",
-  "gatewayIntents": [
-    "GUILDS"
-  ],
   "inputs": [],
   "outputs": [
     {

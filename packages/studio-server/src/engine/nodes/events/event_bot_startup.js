@@ -5,7 +5,6 @@ export default {
   "label": "On Bot Startup",
   "color": "#5865F2",
   "gatewayEvent": "BOT_STARTUP",
-  "gatewayIntents": [],
   "editorControls": [
     {
       "type": "checkbox",

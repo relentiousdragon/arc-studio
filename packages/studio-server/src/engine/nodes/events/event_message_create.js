@@ -6,12 +6,6 @@ export default {
   label: 'On Message Create',
   color: '#5865F2',
   gatewayEvent: 'MESSAGE_CREATE',
-  gatewayIntents: [
-    'GUILDS',
-    'GUILD_MESSAGES',
-    'DIRECT_MESSAGES',
-    'MESSAGE_CONTENT'
-  ],
   inputs: [],
   outputs: [
     { id: 'exec', label: 'Exec', type: 'exec', description: "Runs for every new message."},

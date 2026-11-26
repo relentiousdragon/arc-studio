@@ -5,7 +5,6 @@ export default {
   label: 'On Select Menu Used',
   color: '#5865F2',
   gatewayEvent: 'INTERACTION_CREATE',
-  gatewayIntents: [],
   gatewayInteractionType: 3,
   gatewayComponentTypes: [
     3,

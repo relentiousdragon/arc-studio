@@ -5,9 +5,6 @@ export default {
   "label": "On User Banned",
   "color": "#5865F2",
   "gatewayEvent": "GUILD_BAN_ADD",
-  "gatewayIntents": [
-    "GUILD_MODERATION"
-  ],
   "inputs": [],
   "outputs": [
     {

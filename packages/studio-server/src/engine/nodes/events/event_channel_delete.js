@@ -5,9 +5,6 @@ export default {
   "label": "On Channel Deleted",
   "color": "#5865F2",
   "gatewayEvent": "CHANNEL_DELETE",
-  "gatewayIntents": [
-    "GUILDS"
-  ],
   "inputs": [],
   "outputs": [
     {
