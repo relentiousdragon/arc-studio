@@ -153,6 +153,7 @@ select,
 
 html {
   -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-x: none;
 }
 
 html,
