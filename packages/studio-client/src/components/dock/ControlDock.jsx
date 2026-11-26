@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { emitTo, listen as listenTauriEvent } from '@tauri-apps/api/event';
+import { GatewayIntentCatalog } from 'chezcord/gateway-events';
 import {
   Activity, AlertTriangle, Archive, Check, ChevronDown, ChevronLeft, ChevronUp, CircleCheck, CircleX, ClipboardCopy, Cpu, FileText,
   GitCompare, Globe2, PictureInPicture2, Play, Plus, Save, Search, Server, ShieldCheck, Smile, Square, StepForward, Terminal, Trash2, Upload, X
@@ -565,7 +566,9 @@ export function ControlDock({
       const locations = groups.get(key).locations;
       if (!location.graph || !locations.some((item) => item.graph?.id === location.graph.id)) locations.push(location);
     };
-    const privilegedIntentLabels = { GUILD_MEMBERS: 'Server Members', GUILD_PRESENCES: 'Presence', MESSAGE_CONTENT: 'Message Content' };
+    const privilegedIntentLabels = Object.entries(GatewayIntentCatalog)
+      .filter(([, intent]) => intent.privileged && !intent.aliasOf)
+      .map(([key, intent]) => ({ key, label: intent.label }));
     const freshIntentStatus = new Map((commandReview?.intents || []).map((intent) => [intent.key, intent.portalEnabled]));
     for (const { graph, report } of graphValidationReports) {
       for (const [severity, messages] of [['error', report.errors || []], ['warning', report.warnings || []]]) {
@@ -573,7 +576,7 @@ export function ControlDock({
           const duplicateName = severity === 'error' ? duplicateSlashCommandName(message) : '';
           let reviewMessage = duplicateName ? duplicateSlashCommandMessage(duplicateName) : message;
           if (severity === 'warning' && message.includes('Discord Developer Portal') && commandReview) {
-            const mentionedIntents = Object.entries(privilegedIntentLabels).filter(([, label]) => message.includes(label)).map(([key, label]) => ({ key, label }));
+            const mentionedIntents = privilegedIntentLabels.filter(({ label }) => message.includes(label));
             if (mentionedIntents.length) {
               const confirmedDisabled = mentionedIntents.filter(({ key }) => freshIntentStatus.get(key) === false);
               if (!confirmedDisabled.length) continue;
