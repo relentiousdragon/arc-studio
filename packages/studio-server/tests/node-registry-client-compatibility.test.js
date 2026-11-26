@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readdir } from 'node:fs/promises';
 import test, { beforeEach } from 'node:test';
+import { GatewayEventCatalog } from 'chezcord/gateway-events';
 import { BuiltInNodeDefinitions, BundledNodeTypes, createDefaultNodeData, getAvailableNodeDefinitions, getNodeRegistryDefinitions, isNodeTypeCreatable, isNodeTypeSupported, registerPluginNodeDefinitions, setWorkspaceNodeDefinitions } from '../../studio-client/src/components/nodes/nodeDefinitions.js';
 import { getNodeRegistryRequiredFeatures, NODE_REGISTRY_PROTOCOL_VERSION } from '../src/engine/NodeRegistryContract.js';
 import { NodeDefinitions, PinTypes } from '../src/engine/NodeRegistry.js';
@@ -32,8 +33,18 @@ test('each built-in schema is defined once in its own module and indexed', async
     const module = await import(new URL(filename, directory));
     const registryEntry = structuredClone(NodeDefinitions[type]);
     delete registryEntry.templatePaths;
+    delete registryEntry.gatewayIntents;
+    delete registryEntry.gatewayConditionalIntents;
+    delete registryEntry.gatewayPayloadType;
     for (const direction of ['inputs', 'outputs']) registryEntry[direction] = registryEntry[direction].map(({ semanticType, ...pin }) => pin);
-    assert.deepEqual(module.default, registryEntry, `${filename} must match its registry entry apart from derived pin semantics and event template paths`);
+    assert.deepEqual(module.default, registryEntry, `${filename} must match its registry entry apart from derived pin semantics, event template paths, and catalog metadata`);
+    if (NodeDefinitions[type].gatewayEvent) {
+      const metadata = GatewayEventCatalog[NodeDefinitions[type].gatewayEvent];
+      assert.deepEqual(NodeDefinitions[type].gatewayIntents, metadata?.intents || [], `${type} intents must come from the Chezcord catalog`);
+      assert.deepEqual(NodeDefinitions[type].gatewayConditionalIntents, metadata?.conditionalIntents || [], `${type} conditional intents must come from the Chezcord catalog`);
+      assert.equal(NodeDefinitions[type].gatewayPayloadType, metadata?.payloadType, `${type} payload type must come from the Chezcord catalog`);
+      assert.equal(Object.hasOwn(module.default, 'gatewayIntents'), false, `${filename} must not duplicate catalog intent metadata`);
+    }
     for (const direction of ['inputs', 'outputs']) {
       const pins = module.default[direction];
       assert.ok(Array.isArray(pins), `${type}.${direction} must be an array`);
