@@ -130,6 +130,7 @@ export const GatewayIntents = Object.freeze({
   GUILD_MEMBERS: 1 << 1,
   GUILD_MODERATION: 1 << 2,
   GUILD_EMOJIS_AND_STICKERS: 1 << 3,
+  GUILD_EXPRESSIONS: 1 << 3,
   GUILD_INTEGRATIONS: 1 << 4,
   GUILD_WEBHOOKS: 1 << 5,
   GUILD_INVITES: 1 << 6,
@@ -144,7 +145,9 @@ export const GatewayIntents = Object.freeze({
   MESSAGE_CONTENT: 1 << 15,
   GUILD_SCHEDULED_EVENTS: 1 << 16,
   AUTO_MODERATION_CONFIGURATION: 1 << 20,
-  AUTO_MODERATION_EXECUTION: 1 << 21
+  AUTO_MODERATION_EXECUTION: 1 << 21,
+  GUILD_MESSAGE_POLLS: 1 << 24,
+  DIRECT_MESSAGE_POLLS: 1 << 25
 });
 
 export const ActivityTypes = Object.freeze({
