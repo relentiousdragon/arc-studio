@@ -1,4 +1,5 @@
 import { Client, CommandStatistics, GatewayIntents, RESTClient } from 'chezcord';
+import { GatewayIntentCatalog, normalizeGatewayIntentName } from 'chezcord/gateway-events';
 import { Logger } from './Logger.js';
 import { registerAsyncEventHandler } from './AsyncEventHandler.js';
 import { MockGateway } from './MockGateway.js';
@@ -2297,7 +2298,8 @@ export class BotManager {
 
   getIntentPlan(graphs = [...this.graphs.values()]) {
     const requiredIntents = new Set(graphs.filter((graph) => graph?.enabled !== false).flatMap((graph) => (graph.nodes || [])
-      .flatMap((node) => NodeDefinitions[node.type]?.gatewayIntents || [])));
+      .flatMap((node) => NodeDefinitions[node.type]?.gatewayIntents || [])
+      .map(normalizeGatewayIntentName)));
     const appFlags = this.botProfile?.application?.flags_new ?? this.botProfile?.application?.flags;
     let flags = null;
     try { if (appFlags !== undefined && appFlags !== null) flags = BigInt(appFlags); } catch {}
@@ -2307,24 +2309,19 @@ export class BotManager {
       if (states.includes(true)) return true;
       return states.includes(null) ? null : false;
     };
-    const intentInfo = {
-      GUILDS: ['Guilds', false, true], GUILD_MEMBERS: ['Guild members', true, configured(14, 15)],
-      GUILD_MODERATION: ['Server moderation', false, true], GUILD_EMOJIS_AND_STICKERS: ['Server emojis and stickers', false, true],
-      GUILD_INTEGRATIONS: ['Integrations', false, true], GUILD_WEBHOOKS: ['Webhooks', false, true], GUILD_INVITES: ['Invites', false, true],
-      GUILD_VOICE_STATES: ['Voice states', false, true], GUILD_PRESENCES: ['Presence updates', true, configured(12, 13)],
-      GUILD_MESSAGES: ['Guild messages', false, true], GUILD_MESSAGE_REACTIONS: ['Guild reactions', false, true],
-      GUILD_MESSAGE_TYPING: ['Guild typing', false, true], DIRECT_MESSAGES: ['Direct messages', false, true],
-      DIRECT_MESSAGE_REACTIONS: ['Direct message reactions', false, true], DIRECT_MESSAGE_TYPING: ['Direct message typing', false, true],
-      MESSAGE_CONTENT: ['Message content', true, configured(18, 19)], GUILD_SCHEDULED_EVENTS: ['Scheduled events', false, true],
-      AUTO_MODERATION_CONFIGURATION: ['AutoMod configuration', false, true], AUTO_MODERATION_EXECUTION: ['AutoMod actions', false, true]
-    };
-    return Object.entries(GatewayIntents).map(([key, bit]) => ({
-      key, label: intentInfo[key]?.[0] || key.replaceAll('_', ' ').toLowerCase(),
-      required: key === 'GUILDS' || requiredIntents.has(key),
-      privileged: intentInfo[key]?.[1] || false,
-      portalEnabled: intentInfo[key]?.[2] === undefined ? true : intentInfo[key][2],
-      bit
-    }));
+    return Object.entries(GatewayIntents)
+      .filter(([key]) => !GatewayIntentCatalog[key]?.aliasOf)
+      .map(([key, bit]) => {
+        const metadata = GatewayIntentCatalog[key];
+        return {
+          key,
+          label: metadata.label,
+          required: key === 'GUILDS' || requiredIntents.has(key),
+          privileged: metadata.privileged,
+          portalEnabled: metadata.privileged ? configured(...(metadata.applicationFlagBits || [])) : true,
+          bit
+        };
+      });
   }
 
   async refreshIntentPlan(force = false) {
