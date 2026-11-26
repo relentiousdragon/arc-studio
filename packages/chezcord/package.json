@@ -1,17 +1,32 @@
 {
   "name": "chezcord",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "description": "Discord API v10 and Gateway v10 library for Node.js",
   "type": "module",
   "main": "./src/index.js",
   "browser": "./src/browser.js",
+  "types": "./types/index.d.ts",
   "exports": {
     ".": {
-      "browser": "./src/browser.js",
+      "browser": {
+        "types": "./types/browser.d.ts",
+        "default": "./src/browser.js"
+      },
+      "types": "./types/index.d.ts",
       "default": "./src/index.js"
     },
-    "./constants": "./src/constants.js",
-    "./builders": "./src/builders/index.js"
+    "./constants": {
+      "types": "./types/constants.d.ts",
+      "default": "./src/constants.js"
+    },
+    "./gateway-events": {
+      "types": "./types/gateway-events.d.ts",
+      "default": "./src/gateway/EventCatalog.js"
+    },
+    "./builders": {
+      "types": "./types/builders.d.ts",
+      "default": "./src/builders/index.js"
+    }
   },
   "scripts": {
     "test": "node --test tests/unit.test.js"
