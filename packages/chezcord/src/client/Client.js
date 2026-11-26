@@ -2,11 +2,69 @@
  * Emits `gatewayDispatch` with the raw Discord event name and payload for every Gateway dispatch
  */
 import { EventEmitter } from 'node:events';
-import { RESTClient } from '../rest/RESTClient.js';
+import { RESTClient, InteractionAlreadyAcknowledgedError } from '../rest/RESTClient.js';
 import { GatewayShard } from '../gateway/GatewayShard.js';
 import { GatewayIntents, GatewayOpcodes, InteractionCallbackTypes } from '../constants.js';
 import { InteractionCollector, MessageCollector } from './Collectors.js';
 //
+function makeInteraction(client, payload) {
+  let acknowledgementAttempted = false;
+  let deferred = false;
+  let replied = false;
+  const interaction = { ...payload };
+  const acknowledge = (callbackType, data) => {
+    if (acknowledgementAttempted) throw new InteractionAlreadyAcknowledgedError(payload.id);
+    acknowledgementAttempted = true;
+    return client.rest.createInteractionResponse(payload.id, payload.token, {
+      type: callbackType,
+      ...(data ? { data } : {})
+    });
+  };
+
+  Object.defineProperties(interaction, {
+    deferred: { get: () => deferred },
+    replied: { get: () => replied },
+    reply: {
+      value: async (contentOrPayload, options = {}) => {
+        const data = typeof contentOrPayload === 'string' ? { content: contentOrPayload } : { ...(contentOrPayload || {}) };
+        if (options.ephemeral || data.ephemeral === true) data.flags = (Number(data.flags) || 0) | 64;
+        delete data.ephemeral;
+        const result = await acknowledge(InteractionCallbackTypes.CHANNEL_MESSAGE_WITH_SOURCE, data);
+        replied = true;
+        return result;
+      }
+    },
+    deferReply: {
+      value: async (options = {}) => {
+        const result = await acknowledge(
+          InteractionCallbackTypes.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
+          options.ephemeral ? { flags: 64 } : undefined
+        );
+        deferred = true;
+        return result;
+      }
+    },
+    deferUpdate: {
+      value: async () => {
+        const result = await acknowledge(InteractionCallbackTypes.DEFERRED_UPDATE_MESSAGE);
+        deferred = true;
+        return result;
+      }
+    },
+    editReply: {
+      value: async (contentOrPayload) => {
+        if (!acknowledgementAttempted) throw new Error('Acknowledge the interaction before calling editReply().');
+        const data = typeof contentOrPayload === 'string' ? { content: contentOrPayload } : contentOrPayload;
+        const result = await client.rest.editOriginalInteractionResponse(payload.application_id, payload.token, data || {});
+        replied = true;
+        return result;
+      }
+    }
+  });
+
+  return interaction;
+}
+
 export class Client extends EventEmitter {
   /**
    * @param {object} [options]
@@ -73,7 +131,7 @@ export class Client extends EventEmitter {
     });
 
     listen('MESSAGE_CREATE', (msg) => this.emit('messageCreate', msg));
-    listen('INTERACTION_CREATE', (interaction) => this.emit('interactionCreate', interaction));
+    listen('INTERACTION_CREATE', (interaction) => this.emit('interactionCreate', makeInteraction(this, interaction)));
     listen('GUILD_CREATE', (guild) => this.emit('guildCreate', guild));
     listen('GUILD_MEMBER_ADD', (member) => this.emit('guildMemberAdd', member));
 
