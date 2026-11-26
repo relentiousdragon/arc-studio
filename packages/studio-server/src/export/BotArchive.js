@@ -864,7 +864,7 @@ function formatError(error) {
 }
 const graphs = JSON.parse(fs.readFileSync(new URL('../graphs.json', import.meta.url), 'utf8'));
 const projectDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const requiredIntentNames = new Set(['GUILDS', 'GUILD_EMOJIS_AND_STICKERS']);
+const requiredIntentNames = new Set(['GUILDS', 'GUILD_EXPRESSIONS']);
 for (const graph of graphs.filter((item) => item.enabled !== false)) for (const node of graph.nodes || []) {
   for (const intent of NodeDefinitions[node.type]?.gatewayIntents || []) requiredIntentNames.add(intent);
 }
